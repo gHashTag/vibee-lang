@@ -591,6 +591,176 @@ pub const MetricsExporter = struct {
     }
 };
 
+// v23.28: Health Check for monitoring
+pub const HealthStatusLevel = enum {
+    healthy, // All systems operational
+    degraded, // Some issues but functional
+    unhealthy, // Critical issues
+
+    pub fn toString(self: HealthStatusLevel) []const u8 {
+        return switch (self) {
+            .healthy => "healthy",
+            .degraded => "degraded",
+            .unhealthy => "unhealthy",
+        };
+    }
+
+    pub fn toInt(self: HealthStatusLevel) u8 {
+        return switch (self) {
+            .healthy => 1,
+            .degraded => 0,
+            .unhealthy => 0,
+        };
+    }
+};
+
+pub const ComponentHealth = struct {
+    name: []const u8,
+    status: HealthStatusLevel,
+    message: []const u8 = "",
+};
+
+pub const HealthStatus = struct {
+    status: HealthStatusLevel = .healthy,
+    version: []const u8 = "23.28",
+    uptime_ms: i64 = 0,
+    start_time: i64 = 0,
+    // Component checks
+    circuit_breaker_healthy: bool = true,
+    retry_metrics_healthy: bool = true,
+    domain_breakers_healthy: bool = true,
+    // Metrics summary
+    success_rate: f32 = 1.0,
+    total_operations: u64 = 0,
+    open_circuits: u32 = 0,
+
+    const Self = @This();
+
+    /// Check if overall status is healthy
+    pub fn isHealthy(self: Self) bool {
+        return self.status == .healthy;
+    }
+
+    /// Get HTTP status code for health endpoint
+    pub fn getHttpStatusCode(self: Self) u16 {
+        return switch (self.status) {
+            .healthy => 200,
+            .degraded => 200,
+            .unhealthy => 503,
+        };
+    }
+};
+
+pub const HealthCheck = struct {
+    allocator: Allocator,
+    start_time: i64,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .start_time = std.time.milliTimestamp(),
+        };
+    }
+
+    /// Get current health status from agent (v23.28)
+    pub fn getStatus(self: Self, agent: *RealAgent) HealthStatus {
+        const now = std.time.milliTimestamp();
+        const uptime = now - self.start_time;
+
+        var status = HealthStatus{
+            .uptime_ms = uptime,
+            .start_time = self.start_time,
+            .success_rate = agent.retry_metrics.getSuccessRate(),
+            .total_operations = agent.retry_metrics.total_operations,
+        };
+
+        // Check global circuit breaker
+        status.circuit_breaker_healthy = agent.circuit_breaker.state != .open;
+
+        // Check domain circuit breakers
+        var open_count: u32 = 0;
+        var it = agent.domain_circuit_breakers.valueIterator();
+        while (it.next()) |cb| {
+            if (cb.state == .open) {
+                open_count += 1;
+            }
+        }
+        status.open_circuits = open_count;
+        status.domain_breakers_healthy = open_count == 0;
+
+        // Check retry metrics health (success rate > 50%)
+        status.retry_metrics_healthy = status.success_rate >= 0.5 or status.total_operations == 0;
+
+        // Determine overall status
+        if (!status.circuit_breaker_healthy) {
+            status.status = .unhealthy;
+        } else if (!status.domain_breakers_healthy or !status.retry_metrics_healthy) {
+            status.status = .degraded;
+        } else {
+            status.status = .healthy;
+        }
+
+        return status;
+    }
+
+    /// Export health status to JSON (v23.28)
+    pub fn toJson(self: Self, status: HealthStatus) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        var writer = buffer.writer();
+
+        try writer.writeAll("{\n");
+        try writer.print("  \"status\": \"{s}\",\n", .{status.status.toString()});
+        try writer.print("  \"version\": \"{s}\",\n", .{status.version});
+        try writer.print("  \"uptime_ms\": {d},\n", .{status.uptime_ms});
+        try writer.print("  \"start_time\": {d},\n", .{status.start_time});
+        try writer.writeAll("  \"components\": {\n");
+        try writer.print("    \"circuit_breaker\": {s},\n", .{if (status.circuit_breaker_healthy) "true" else "false"});
+        try writer.print("    \"retry_metrics\": {s},\n", .{if (status.retry_metrics_healthy) "true" else "false"});
+        try writer.print("    \"domain_breakers\": {s}\n", .{if (status.domain_breakers_healthy) "true" else "false"});
+        try writer.writeAll("  },\n");
+        try writer.writeAll("  \"metrics\": {\n");
+        try writer.print("    \"success_rate\": {d:.4},\n", .{status.success_rate});
+        try writer.print("    \"total_operations\": {d},\n", .{status.total_operations});
+        try writer.print("    \"open_circuits\": {d}\n", .{status.open_circuits});
+        try writer.writeAll("  }\n");
+        try writer.writeAll("}\n");
+
+        return buffer.toOwnedSlice();
+    }
+
+    /// Export health status to Prometheus format (v23.28)
+    pub fn toPrometheus(self: Self, status: HealthStatus) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        var writer = buffer.writer();
+
+        // Health status gauge (1 = healthy, 0 = unhealthy)
+        try writer.writeAll("# HELP vibee_health_status Health status (1=healthy, 0=unhealthy)\n");
+        try writer.writeAll("# TYPE vibee_health_status gauge\n");
+        try writer.print("vibee_health_status {d}\n\n", .{status.status.toInt()});
+
+        // Uptime
+        try writer.writeAll("# HELP vibee_uptime_seconds Uptime in seconds\n");
+        try writer.writeAll("# TYPE vibee_uptime_seconds counter\n");
+        try writer.print("vibee_uptime_seconds {d}\n\n", .{@divFloor(status.uptime_ms, 1000)});
+
+        // Component health
+        try writer.writeAll("# HELP vibee_component_health Component health (1=healthy, 0=unhealthy)\n");
+        try writer.writeAll("# TYPE vibee_component_health gauge\n");
+        try writer.print("vibee_component_health{{component=\"circuit_breaker\"}} {d}\n", .{@as(u8, if (status.circuit_breaker_healthy) 1 else 0)});
+        try writer.print("vibee_component_health{{component=\"retry_metrics\"}} {d}\n", .{@as(u8, if (status.retry_metrics_healthy) 1 else 0)});
+        try writer.print("vibee_component_health{{component=\"domain_breakers\"}} {d}\n\n", .{@as(u8, if (status.domain_breakers_healthy) 1 else 0)});
+
+        // Open circuits
+        try writer.writeAll("# HELP vibee_open_circuits Number of open circuit breakers\n");
+        try writer.writeAll("# TYPE vibee_open_circuits gauge\n");
+        try writer.print("vibee_open_circuits {d}\n", .{status.open_circuits});
+
+        return buffer.toOwnedSlice();
+    }
+};
+
 /// Extract domain from URL (v23.27)
 /// Returns empty string if URL is invalid
 fn extractDomain(url: []const u8) []const u8 {
@@ -638,6 +808,8 @@ pub const RealAgent = struct {
     circuit_breaker: CircuitBreaker = .{},
     // v23.27: Per-domain circuit breakers
     domain_circuit_breakers: std.StringHashMap(CircuitBreaker),
+    // v23.28: Start time for uptime tracking
+    start_time: i64 = 0,
 
     const Self = @This();
 
@@ -651,6 +823,7 @@ pub const RealAgent = struct {
             .message_id = 1,
             .domain_stats = std.StringHashMap(DomainStats).init(allocator),
             .domain_circuit_breakers = std.StringHashMap(CircuitBreaker).init(allocator),
+            .start_time = std.time.milliTimestamp(),
         };
 
         // v23.21: Auto-load domain stats from file
@@ -1657,6 +1830,28 @@ pub const RealAgent = struct {
         var file = try std.fs.cwd().createFile(filename, .{});
         defer file.close();
         try file.writeAll(json);
+    }
+
+    /// Get health status (v23.28)
+    pub fn getHealthStatus(self: *Self) HealthStatus {
+        var health_check = HealthCheck.init(self.allocator);
+        // Use agent's start time if available, otherwise use health check's
+        health_check.start_time = self.start_time;
+        return health_check.getStatus(self);
+    }
+
+    /// Export health status to JSON (v23.28)
+    pub fn exportHealthToJson(self: *Self) ![]u8 {
+        const health_check = HealthCheck.init(self.allocator);
+        const status = health_check.getStatus(self);
+        return health_check.toJson(status);
+    }
+
+    /// Export health status to Prometheus format (v23.28)
+    pub fn exportHealthToPrometheus(self: *Self) ![]u8 {
+        const health_check = HealthCheck.init(self.allocator);
+        const status = health_check.getStatus(self);
+        return health_check.toPrometheus(status);
     }
 
     /// Print retry metrics summary (v23.19)
@@ -3020,4 +3215,128 @@ test "extractDomain helper function (v23.27)" {
     // Empty cases
     try std.testing.expectEqualStrings("", extractDomain("https://"));
     try std.testing.expectEqualStrings("", extractDomain(""));
+}
+
+// v23.28: Health Check Tests
+test "HealthStatusLevel enum (v23.28)" {
+    try std.testing.expectEqualStrings("healthy", HealthStatusLevel.healthy.toString());
+    try std.testing.expectEqualStrings("degraded", HealthStatusLevel.degraded.toString());
+    try std.testing.expectEqualStrings("unhealthy", HealthStatusLevel.unhealthy.toString());
+
+    try std.testing.expectEqual(@as(u8, 1), HealthStatusLevel.healthy.toInt());
+    try std.testing.expectEqual(@as(u8, 0), HealthStatusLevel.degraded.toInt());
+    try std.testing.expectEqual(@as(u8, 0), HealthStatusLevel.unhealthy.toInt());
+}
+
+test "HealthStatus default values (v23.28)" {
+    const status = HealthStatus{};
+    try std.testing.expectEqual(HealthStatusLevel.healthy, status.status);
+    try std.testing.expect(status.isHealthy());
+    try std.testing.expectEqual(@as(u16, 200), status.getHttpStatusCode());
+}
+
+test "HealthStatus HTTP codes (v23.28)" {
+    var healthy = HealthStatus{ .status = .healthy };
+    try std.testing.expectEqual(@as(u16, 200), healthy.getHttpStatusCode());
+
+    var degraded = HealthStatus{ .status = .degraded };
+    try std.testing.expectEqual(@as(u16, 200), degraded.getHttpStatusCode());
+
+    var unhealthy = HealthStatus{ .status = .unhealthy };
+    try std.testing.expectEqual(@as(u16, 503), unhealthy.getHttpStatusCode());
+}
+
+test "HealthCheck getStatus healthy (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    const health_check = HealthCheck.init(allocator);
+    const status = health_check.getStatus(&agent);
+
+    try std.testing.expectEqual(HealthStatusLevel.healthy, status.status);
+    try std.testing.expect(status.circuit_breaker_healthy);
+    try std.testing.expect(status.retry_metrics_healthy);
+    try std.testing.expect(status.domain_breakers_healthy);
+}
+
+test "HealthCheck getStatus degraded (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Simulate low success rate
+    agent.retry_metrics.total_operations = 10;
+    agent.retry_metrics.successful_operations = 3; // 30% success rate
+
+    const health_check = HealthCheck.init(allocator);
+    const status = health_check.getStatus(&agent);
+
+    try std.testing.expectEqual(HealthStatusLevel.degraded, status.status);
+    try std.testing.expect(!status.retry_metrics_healthy);
+}
+
+test "HealthCheck getStatus unhealthy (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Open global circuit breaker
+    agent.circuit_breaker.state = .open;
+
+    const health_check = HealthCheck.init(allocator);
+    const status = health_check.getStatus(&agent);
+
+    try std.testing.expectEqual(HealthStatusLevel.unhealthy, status.status);
+    try std.testing.expect(!status.circuit_breaker_healthy);
+}
+
+test "HealthCheck toJson (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    const health_check = HealthCheck.init(allocator);
+    const status = health_check.getStatus(&agent);
+    const json = try health_check.toJson(status);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"status\": \"healthy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"components\"") != null);
+}
+
+test "HealthCheck toPrometheus (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    const health_check = HealthCheck.init(allocator);
+    const status = health_check.getStatus(&agent);
+    const prom = try health_check.toPrometheus(status);
+    defer allocator.free(prom);
+
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_health_status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_uptime_seconds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_component_health") != null);
+}
+
+test "RealAgent health methods (v23.28)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Test getHealthStatus
+    const status = agent.getHealthStatus();
+    try std.testing.expect(status.isHealthy());
+
+    // Test exportHealthToJson
+    const json = try agent.exportHealthToJson();
+    defer allocator.free(json);
+    try std.testing.expect(json.len > 0);
+
+    // Test exportHealthToPrometheus
+    const prom = try agent.exportHealthToPrometheus();
+    defer allocator.free(prom);
+    try std.testing.expect(prom.len > 0);
 }
