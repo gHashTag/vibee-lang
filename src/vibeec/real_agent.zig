@@ -25,6 +25,7 @@ pub const AgentError = error{
     ElementNotFound,
     ClickFailed,
     Timeout,
+    ComponentNotInitialized, // v23.44: Component not initialized
 };
 
 pub const AgentConfig = struct {
@@ -2851,7 +2852,7 @@ pub fn shouldRetry(attempt: u32, max_retries: u32, circuit_state: CircuitBreaker
     return error_category.shouldRetry();
 }
 
-/// Pure function: Classify error into category (v23.29, v23.35)
+/// Pure function: Classify error into category (v23.29, v23.35, v23.44)
 pub fn classifyError(err: AgentError) ErrorCategory {
     return switch (err) {
         AgentError.NavigationFailed, AgentError.EvaluationFailed => .transient,
@@ -2860,6 +2861,7 @@ pub fn classifyError(err: AgentError) ErrorCategory {
         AgentError.ElementNotFound, AgentError.ClickFailed => .transient,
         AgentError.ParseError => .permanent,
         AgentError.OutOfMemory => .permanent,
+        AgentError.ComponentNotInitialized => .permanent, // v23.44
     };
 }
 
@@ -3686,6 +3688,11 @@ pub const RealAgent = struct {
     domain_circuit_breakers: std.StringHashMap(CircuitBreaker),
     // v23.28: Start time for uptime tracking
     start_time: i64 = 0,
+    // v23.44: Integrated components for WebArena
+    dom_extractor: ?*DOMExtractor = null,
+    form_interaction: ?*FormInteraction = null,
+    action_executor: ?*ActionExecutor = null,
+    action_parser: ?*ActionParser = null,
 
     const Self = @This();
 
@@ -3711,12 +3718,52 @@ pub const RealAgent = struct {
         return self;
     }
 
+    /// Initialize integrated components (v23.44)
+    /// Call after init() to enable DOM extraction, form interaction, and action execution
+    pub fn initComponents(self: *Self) !void {
+        // Allocate and initialize DOM extractor
+        const dom = try self.allocator.create(DOMExtractor);
+        dom.* = DOMExtractor.init(self.allocator, self);
+        self.dom_extractor = dom;
+
+        // Allocate and initialize form interaction
+        const form = try self.allocator.create(FormInteraction);
+        form.* = FormInteraction.init(self.allocator, self);
+        self.form_interaction = form;
+
+        // Allocate and initialize action parser
+        const parser = try self.allocator.create(ActionParser);
+        parser.* = ActionParser.init(self.allocator);
+        self.action_parser = parser;
+
+        // Allocate and initialize action executor
+        const executor = try self.allocator.create(ActionExecutor);
+        executor.* = ActionExecutor.init(self.allocator, self);
+        self.action_executor = executor;
+    }
+
     pub fn deinit(self: *Self) void {
         // v23.21: Auto-save domain stats to file
         self.saveDomainStats() catch {};
 
         // v23.32: Auto-save circuit breakers to file
         self.saveDomainCircuitBreakers() catch {};
+
+        // v23.44: Deinit integrated components
+        if (self.action_executor) |executor| {
+            executor.deinit();
+            self.allocator.destroy(executor);
+        }
+        if (self.action_parser) |parser| {
+            self.allocator.destroy(parser);
+        }
+        if (self.form_interaction) |form| {
+            self.allocator.destroy(form);
+        }
+        if (self.dom_extractor) |dom| {
+            dom.deinit();
+            self.allocator.destroy(dom);
+        }
 
         // Free domain keys
         var it = self.domain_stats.keyIterator();
@@ -3744,6 +3791,84 @@ pub const RealAgent = struct {
 
         // v23.15: Enable Network domain for network idle detection
         self.enableNetworkDomain() catch {};
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // v23.44: CONVENIENCE METHODS - Unified API for WebArena
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /// Get page text content via DOM extractor component (v23.44)
+    pub fn getPageTextViaComponent(self: *Self) AgentError![]u8 {
+        if (self.dom_extractor) |dom| {
+            return dom.getPageText();
+        }
+        return AgentError.ComponentNotInitialized;
+    }
+
+    /// Get interactive elements on page via component (v23.44)
+    pub fn getInteractiveElementsViaComponent(self: *Self) AgentError![]Element {
+        if (self.dom_extractor) |dom| {
+            return dom.getInteractiveElements();
+        }
+        return AgentError.ComponentNotInitialized;
+    }
+
+    /// Fill input field via form interaction component (v23.44)
+    pub fn fillInputViaComponent(self: *Self, selector: []const u8, value: []const u8) AgentError!void {
+        if (self.form_interaction) |form| {
+            return form.fillInput(selector, value);
+        }
+        return AgentError.ComponentNotInitialized;
+    }
+
+    /// Execute parsed action via action executor component (v23.44)
+    pub fn executeActionViaComponent(self: *Self, action: Action) ActionResult {
+        if (self.action_executor) |executor| {
+            return executor.execute(action);
+        }
+        return ActionResult.fail(action, "ComponentNotInitialized");
+    }
+
+    /// Parse and execute action from text (v23.44)
+    pub fn parseAndExecute(self: *Self, action_text: []const u8) ?ActionResult {
+        if (self.action_parser) |parser| {
+            if (parser.parse(action_text)) |action| {
+                return self.executeActionViaComponent(action);
+            }
+        }
+        return null;
+    }
+
+    /// Run full task cycle: observe -> think -> act (v23.44)
+    /// Returns list of action results from the task execution
+    pub fn runTask(self: *Self, instruction: []const u8, max_steps: u32) ![]ActionResult {
+        var results = std.ArrayList(ActionResult).init(self.allocator);
+        errdefer results.deinit();
+
+        var step: u32 = 0;
+        while (step < max_steps) : (step += 1) {
+            // 1. OBSERVE: Get page context
+            const page_text = self.getPageTextViaComponent() catch |err| {
+                std.debug.print("[TASK] Step {d}: Failed to get page text: {s}\n", .{ step, @errorName(err) });
+                break;
+            };
+            defer self.allocator.free(page_text);
+
+            // 2. Build context for LLM (simplified - real impl would call LLM)
+            std.debug.print("[TASK] Step {d}: Instruction: {s}\n", .{ step, instruction });
+            std.debug.print("[TASK] Page text length: {d} bytes\n", .{page_text.len});
+
+            // 3. For now, just log - real implementation would:
+            //    - Send context + instruction to LLM
+            //    - Parse LLM response into Action
+            //    - Execute action
+            //    - Check if task complete
+
+            // Placeholder: task complete after first observation
+            break;
+        }
+
+        return results.toOwnedSlice();
     }
 
     /// Enable CDP Network domain (v23.15)
@@ -3844,6 +3969,41 @@ pub const RealAgent = struct {
                 if (end > value_start) {
                     return self.allocator.dupe(u8, frame.payload[value_start..end]) catch return AgentError.OutOfMemory;
                 }
+            }
+        }
+
+        return AgentError.ParseError;
+    }
+
+    /// Evaluate JavaScript expression and return result (v23.44)
+    pub fn evaluate(self: *Self, expression: []const u8) AgentError![]u8 {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        var cmd_buf: [4096]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Runtime.evaluate\",\"params\":{{\"expression\":\"{s}\",\"returnByValue\":true}}}}", .{ self.message_id, expression }) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        defer self.allocator.free(frame.payload);
+
+        // Extract value from response
+        // Format: {"id":N,"result":{"result":{"type":"string","value":"..."}}}
+        if (std.mem.indexOf(u8, frame.payload, "\"value\":\"")) |start| {
+            const value_start = start + 9;
+            if (std.mem.indexOf(u8, frame.payload[value_start..], "\"")) |end| {
+                return self.allocator.dupe(u8, frame.payload[value_start .. value_start + end]) catch return AgentError.OutOfMemory;
+            }
+        }
+
+        // Try to extract non-string value
+        if (std.mem.indexOf(u8, frame.payload, "\"value\":")) |start| {
+            const value_start = start + 8;
+            var end = value_start;
+            while (end < frame.payload.len and frame.payload[end] != ',' and frame.payload[end] != '}') : (end += 1) {}
+            if (end > value_start) {
+                return self.allocator.dupe(u8, frame.payload[value_start..end]) catch return AgentError.OutOfMemory;
             }
         }
 
@@ -7955,4 +8115,78 @@ test "RetryConfig adaptive selects strategy based on pattern (v23.33)" {
     // getDelayWithJitter should use full jitter strategy
     const delay = config.getDelayWithJitter(1);
     try std.testing.expect(delay > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.44: AGENT INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "RealAgent component fields exist (v23.44)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Components should be null before initComponents
+    try std.testing.expect(agent.dom_extractor == null);
+    try std.testing.expect(agent.form_interaction == null);
+    try std.testing.expect(agent.action_executor == null);
+    try std.testing.expect(agent.action_parser == null);
+}
+
+test "RealAgent initComponents (v23.44)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Initialize components
+    try agent.initComponents();
+
+    // Components should be initialized
+    try std.testing.expect(agent.dom_extractor != null);
+    try std.testing.expect(agent.form_interaction != null);
+    try std.testing.expect(agent.action_executor != null);
+    try std.testing.expect(agent.action_parser != null);
+}
+
+test "RealAgent convenience methods without components (v23.44)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Without initComponents, convenience methods should return ComponentNotInitialized
+    const text_result = agent.getPageTextViaComponent();
+    try std.testing.expectError(AgentError.ComponentNotInitialized, text_result);
+
+    const elements_result = agent.getInteractiveElementsViaComponent();
+    try std.testing.expectError(AgentError.ComponentNotInitialized, elements_result);
+
+    const fill_result = agent.fillInputViaComponent("#test", "value");
+    try std.testing.expectError(AgentError.ComponentNotInitialized, fill_result);
+}
+
+test "RealAgent parseAndExecute without components (v23.44)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    // Without initComponents, parseAndExecute should return null
+    const result = agent.parseAndExecute("click #button");
+    try std.testing.expect(result == null);
+}
+
+test "RealAgent executeActionViaComponent without components (v23.44)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    const action = Action{ .action_type = .click, .selector = "#btn" };
+    const result = agent.executeActionViaComponent(action);
+
+    try std.testing.expect(!result.success);
+    try std.testing.expectEqualStrings("ComponentNotInitialized", result.error_message.?);
+}
+
+test "ComponentNotInitialized error classification (v23.44)" {
+    const category = classifyError(AgentError.ComponentNotInitialized);
+    try std.testing.expectEqual(ErrorCategory.permanent, category);
 }
