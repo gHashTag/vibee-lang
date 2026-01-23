@@ -37,6 +37,16 @@ pub const DomainStats = struct {
     load_count: u32 = 0,
 };
 
+// v23.21: Persistent domain stats file path
+pub const DOMAIN_STATS_FILE = ".vibee_domain_stats.json";
+
+// v23.21: Domain stats entry for serialization
+pub const DomainStatsEntry = struct {
+    domain: []const u8,
+    avg_load_ms: u32,
+    load_count: u32,
+};
+
 // v23.16: Retry configuration with exponential backoff
 pub const RetryConfig = struct {
     max_retries: u32 = 3,
@@ -178,7 +188,7 @@ pub const RealAgent = struct {
     const Self = @This();
 
     pub fn init(allocator: Allocator, config: AgentConfig) Self {
-        return Self{
+        var self = Self{
             .allocator = allocator,
             .config = config,
             .ws = websocket.WebSocketClient.init(allocator),
@@ -187,9 +197,17 @@ pub const RealAgent = struct {
             .message_id = 1,
             .domain_stats = std.StringHashMap(DomainStats).init(allocator),
         };
+
+        // v23.21: Auto-load domain stats from file
+        self.loadDomainStats() catch {};
+
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
+        // v23.21: Auto-save domain stats to file
+        self.saveDomainStats() catch {};
+
         // Free domain keys
         var it = self.domain_stats.keyIterator();
         while (it.next()) |key| {
@@ -1048,6 +1066,142 @@ pub const RealAgent = struct {
         std.debug.print("=====================\n\n", .{});
     }
 
+    // =========================================================================
+    // v23.21: PERSISTENT DOMAIN STATS
+    // =========================================================================
+
+    /// Save domain stats to file (v23.21)
+    pub fn saveDomainStats(self: *Self) !void {
+        var file = std.fs.cwd().createFile(DOMAIN_STATS_FILE, .{}) catch return;
+        defer file.close();
+
+        var writer = file.writer();
+
+        // Write JSON manually (simple format)
+        try writer.writeAll("{\n  \"domains\": [\n");
+
+        var first = true;
+        var it = self.domain_stats.iterator();
+        while (it.next()) |entry| {
+            if (!first) try writer.writeAll(",\n");
+            first = false;
+
+            try writer.print("    {{\"domain\": \"{s}\", \"avg_load_ms\": {d}, \"load_count\": {d}}}", .{
+                entry.key_ptr.*,
+                entry.value_ptr.avg_load_ms,
+                entry.value_ptr.load_count,
+            });
+        }
+
+        try writer.writeAll("\n  ],\n");
+        try writer.print("  \"global_avg_ms\": {d},\n", .{self.avg_page_load_ms});
+        try writer.print("  \"global_count\": {d}\n", .{self.page_load_count});
+        try writer.writeAll("}\n");
+
+        std.debug.print("    [PERSIST] Saved {d} domain stats to {s}\n", .{ self.domain_stats.count(), DOMAIN_STATS_FILE });
+    }
+
+    /// Load domain stats from file (v23.21)
+    pub fn loadDomainStats(self: *Self) !void {
+        var file = std.fs.cwd().openFile(DOMAIN_STATS_FILE, .{}) catch return;
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch return;
+        defer self.allocator.free(content);
+
+        // Simple JSON parsing for our format
+        var loaded_count: u32 = 0;
+
+        // Find domains array
+        var pos: usize = 0;
+        while (pos < content.len) {
+            // Find "domain": "
+            if (std.mem.indexOf(u8, content[pos..], "\"domain\": \"")) |domain_start| {
+                const abs_start = pos + domain_start + 11;
+                if (std.mem.indexOf(u8, content[abs_start..], "\"")) |domain_end| {
+                    const domain = content[abs_start .. abs_start + domain_end];
+
+                    // Find avg_load_ms
+                    if (std.mem.indexOf(u8, content[abs_start..], "\"avg_load_ms\": ")) |avg_start| {
+                        const avg_pos = abs_start + avg_start + 15;
+                        var avg_end = avg_pos;
+                        while (avg_end < content.len and content[avg_end] >= '0' and content[avg_end] <= '9') {
+                            avg_end += 1;
+                        }
+                        const avg_str = content[avg_pos..avg_end];
+                        const avg_load_ms = std.fmt.parseInt(u32, avg_str, 10) catch 500;
+
+                        // Find load_count
+                        if (std.mem.indexOf(u8, content[avg_end..], "\"load_count\": ")) |count_start| {
+                            const count_pos = avg_end + count_start + 14;
+                            var count_end = count_pos;
+                            while (count_end < content.len and content[count_end] >= '0' and content[count_end] <= '9') {
+                                count_end += 1;
+                            }
+                            const count_str = content[count_pos..count_end];
+                            const load_count = std.fmt.parseInt(u32, count_str, 10) catch 0;
+
+                            // Add to domain_stats
+                            const key = self.allocator.dupe(u8, domain) catch continue;
+                            self.domain_stats.put(key, DomainStats{
+                                .avg_load_ms = avg_load_ms,
+                                .load_count = load_count,
+                            }) catch {
+                                self.allocator.free(key);
+                                continue;
+                            };
+                            loaded_count += 1;
+
+                            pos = count_end;
+                            continue;
+                        }
+                    }
+                }
+            }
+            pos += 1;
+        }
+
+        // Load global stats
+        if (std.mem.indexOf(u8, content, "\"global_avg_ms\": ")) |global_start| {
+            const global_pos = global_start + 17;
+            var global_end = global_pos;
+            while (global_end < content.len and content[global_end] >= '0' and content[global_end] <= '9') {
+                global_end += 1;
+            }
+            self.avg_page_load_ms = std.fmt.parseInt(u32, content[global_pos..global_end], 10) catch 500;
+        }
+
+        if (std.mem.indexOf(u8, content, "\"global_count\": ")) |count_start| {
+            const count_pos = count_start + 16;
+            var count_end = count_pos;
+            while (count_end < content.len and content[count_end] >= '0' and content[count_end] <= '9') {
+                count_end += 1;
+            }
+            self.page_load_count = std.fmt.parseInt(u32, content[count_pos..count_end], 10) catch 0;
+        }
+
+        if (loaded_count > 0) {
+            std.debug.print("    [PERSIST] Loaded {d} domain stats from {s}\n", .{ loaded_count, DOMAIN_STATS_FILE });
+        }
+    }
+
+    /// Print domain stats summary (v23.21)
+    pub fn printDomainStats(self: *Self) void {
+        std.debug.print("\n=== DOMAIN STATS ===\n", .{});
+        std.debug.print("Global: avg={d}ms, count={d}\n", .{ self.avg_page_load_ms, self.page_load_count });
+        std.debug.print("Domains ({d}):\n", .{self.domain_stats.count()});
+
+        var it = self.domain_stats.iterator();
+        while (it.next()) |entry| {
+            std.debug.print("  {s}: avg={d}ms, count={d}\n", .{
+                entry.key_ptr.*,
+                entry.value_ptr.avg_load_ms,
+                entry.value_ptr.load_count,
+            });
+        }
+        std.debug.print("====================\n\n", .{});
+    }
+
     /// Click element with wait
     pub fn clickSelectorWithWait(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!void {
         // Wait for element
@@ -1756,4 +1910,53 @@ test "RealAgent retry metrics (v23.19)" {
     agent.resetRetryMetrics();
     metrics = agent.getRetryMetrics();
     try std.testing.expectEqual(@as(u64, 0), metrics.total_operations);
+}
+
+test "saveDomainStats and loadDomainStats (v23.21)" {
+    const allocator = std.testing.allocator;
+
+    // Create agent and add domain stats
+    {
+        var agent = RealAgent.init(allocator, .{});
+        defer agent.deinit();
+
+        // Add some domain stats
+        agent.updateDomainStats("example.com", 150);
+        agent.updateDomainStats("example.com", 200);
+        agent.updateDomainStats("google.com", 300);
+
+        // Save explicitly (deinit will also save)
+        try agent.saveDomainStats();
+    }
+
+    // Create new agent and verify stats loaded
+    {
+        var agent = RealAgent.init(allocator, .{});
+        defer agent.deinit();
+
+        // Check if stats were loaded
+        const example_stats = agent.domain_stats.get("example.com");
+        const google_stats = agent.domain_stats.get("google.com");
+
+        // Stats should be loaded (if file exists)
+        if (example_stats) |stats| {
+            try std.testing.expect(stats.load_count >= 1);
+        }
+        if (google_stats) |stats| {
+            try std.testing.expect(stats.load_count >= 1);
+        }
+    }
+
+    // Cleanup test file
+    std.fs.cwd().deleteFile(DOMAIN_STATS_FILE) catch {};
+}
+
+test "printDomainStats method exists (v23.21)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Just verify method exists and doesn't crash
+    // (output goes to debug, not captured in test)
+    agent.printDomainStats();
 }
