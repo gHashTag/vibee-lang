@@ -1813,6 +1813,451 @@ pub const FormAction = enum {
     clear,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.43: ACTION PARSING - LLM Command Interface for WebArena
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Action type for LLM commands (v23.43)
+pub const ActionType = enum {
+    click,
+    type_text,
+    navigate,
+    scroll,
+    select,
+    check,
+    uncheck,
+    submit,
+    wait,
+    extract,
+    screenshot,
+    go_back,
+    go_forward,
+    refresh,
+    hover,
+    press_key,
+    none,
+
+    pub fn toString(self: ActionType) []const u8 {
+        return switch (self) {
+            .click => "click",
+            .type_text => "type",
+            .navigate => "navigate",
+            .scroll => "scroll",
+            .select => "select",
+            .check => "check",
+            .uncheck => "uncheck",
+            .submit => "submit",
+            .wait => "wait",
+            .extract => "extract",
+            .screenshot => "screenshot",
+            .go_back => "go_back",
+            .go_forward => "go_forward",
+            .refresh => "refresh",
+            .hover => "hover",
+            .press_key => "press_key",
+            .none => "none",
+        };
+    }
+
+    pub fn fromString(s: []const u8) ActionType {
+        if (std.mem.eql(u8, s, "click")) return .click;
+        if (std.mem.eql(u8, s, "type") or std.mem.eql(u8, s, "type_text") or std.mem.eql(u8, s, "fill")) return .type_text;
+        if (std.mem.eql(u8, s, "navigate") or std.mem.eql(u8, s, "goto") or std.mem.eql(u8, s, "go")) return .navigate;
+        if (std.mem.eql(u8, s, "scroll") or std.mem.eql(u8, s, "scroll_down") or std.mem.eql(u8, s, "scroll_up")) return .scroll;
+        if (std.mem.eql(u8, s, "select") or std.mem.eql(u8, s, "choose")) return .select;
+        if (std.mem.eql(u8, s, "check")) return .check;
+        if (std.mem.eql(u8, s, "uncheck")) return .uncheck;
+        if (std.mem.eql(u8, s, "submit")) return .submit;
+        if (std.mem.eql(u8, s, "wait")) return .wait;
+        if (std.mem.eql(u8, s, "extract") or std.mem.eql(u8, s, "get_text")) return .extract;
+        if (std.mem.eql(u8, s, "screenshot")) return .screenshot;
+        if (std.mem.eql(u8, s, "back") or std.mem.eql(u8, s, "go_back")) return .go_back;
+        if (std.mem.eql(u8, s, "forward") or std.mem.eql(u8, s, "go_forward")) return .go_forward;
+        if (std.mem.eql(u8, s, "refresh") or std.mem.eql(u8, s, "reload")) return .refresh;
+        if (std.mem.eql(u8, s, "hover")) return .hover;
+        if (std.mem.eql(u8, s, "press") or std.mem.eql(u8, s, "press_key") or std.mem.eql(u8, s, "key")) return .press_key;
+        return .none;
+    }
+
+    pub fn requiresSelector(self: ActionType) bool {
+        return switch (self) {
+            .click, .type_text, .select, .check, .uncheck, .submit, .hover, .extract => true,
+            .navigate, .scroll, .wait, .screenshot, .go_back, .go_forward, .refresh, .press_key, .none => false,
+        };
+    }
+
+    pub fn requiresValue(self: ActionType) bool {
+        return switch (self) {
+            .type_text, .navigate, .select, .scroll, .wait, .press_key => true,
+            else => false,
+        };
+    }
+};
+
+/// Action parsed from LLM response (v23.43)
+pub const Action = struct {
+    action_type: ActionType,
+    selector: ?[]const u8 = null,
+    value: ?[]const u8 = null,
+    reasoning: ?[]const u8 = null,
+    confidence: f32 = 1.0,
+
+    const Self = @This();
+
+    /// Validate action has required fields (v23.43)
+    pub fn isValid(self: Self) bool {
+        if (self.action_type == .none) return false;
+        if (self.action_type.requiresSelector() and self.selector == null) return false;
+        if (self.action_type.requiresValue() and self.value == null) return false;
+        return true;
+    }
+
+    /// Create click action (v23.43)
+    pub fn click(selector: []const u8) Self {
+        return Self{ .action_type = .click, .selector = selector };
+    }
+
+    /// Create type action (v23.43)
+    pub fn typeText(selector: []const u8, text: []const u8) Self {
+        return Self{ .action_type = .type_text, .selector = selector, .value = text };
+    }
+
+    /// Create navigate action (v23.43)
+    pub fn navigate(url: []const u8) Self {
+        return Self{ .action_type = .navigate, .value = url };
+    }
+
+    /// Create scroll action (v23.43)
+    pub fn scroll(direction: []const u8) Self {
+        return Self{ .action_type = .scroll, .value = direction };
+    }
+
+    /// Create select action (v23.43)
+    pub fn selectOption(selector: []const u8, option: []const u8) Self {
+        return Self{ .action_type = .select, .selector = selector, .value = option };
+    }
+
+    /// Export to JSON (v23.43)
+    pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
+
+        try buffer.appendSlice("{\n");
+        try std.fmt.format(buffer.writer(), "  \"action\": \"{s}\",\n", .{self.action_type.toString()});
+        
+        if (self.selector) |sel| {
+            try std.fmt.format(buffer.writer(), "  \"selector\": \"{s}\",\n", .{sel});
+        }
+        if (self.value) |val| {
+            try std.fmt.format(buffer.writer(), "  \"value\": \"{s}\",\n", .{val});
+        }
+        if (self.reasoning) |reason| {
+            try std.fmt.format(buffer.writer(), "  \"reasoning\": \"{s}\",\n", .{reason});
+        }
+        try std.fmt.format(buffer.writer(), "  \"confidence\": {d:.2}\n", .{self.confidence});
+        try buffer.appendSlice("}");
+
+        return buffer.toOwnedSlice();
+    }
+};
+
+/// Action execution result (v23.43)
+pub const ActionResult = struct {
+    success: bool,
+    action: Action,
+    error_message: ?[]const u8 = null,
+    extracted_data: ?[]const u8 = null,
+    duration_ms: u32 = 0,
+
+    pub fn ok(action: Action) ActionResult {
+        return ActionResult{ .success = true, .action = action };
+    }
+
+    pub fn fail(action: Action, message: []const u8) ActionResult {
+        return ActionResult{ .success = false, .action = action, .error_message = message };
+    }
+};
+
+/// Action Parser - parses LLM responses into executable actions (v23.43)
+pub const ActionParser = struct {
+    allocator: Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{ .allocator = allocator };
+    }
+
+    /// Parse action from JSON format (v23.43)
+    /// Expected: {"action": "click", "selector": "#btn", "value": "..."}
+    pub fn parseJson(self: *Self, json: []const u8) ?Action {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, json, .{}) catch return null;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+
+        // Get action type
+        const action_str = if (obj.get("action")) |a| switch (a) {
+            .string => |s| s,
+            else => return null,
+        } else return null;
+
+        const action_type = ActionType.fromString(action_str);
+        if (action_type == .none) return null;
+
+        var action = Action{ .action_type = action_type };
+
+        // Get optional fields
+        if (obj.get("selector")) |s| if (s == .string) {
+            action.selector = self.allocator.dupe(u8, s.string) catch null;
+        };
+        if (obj.get("value")) |v| if (v == .string) {
+            action.value = self.allocator.dupe(u8, v.string) catch null;
+        };
+        if (obj.get("reasoning")) |r| if (r == .string) {
+            action.reasoning = self.allocator.dupe(u8, r.string) catch null;
+        };
+        if (obj.get("confidence")) |c| if (c == .float) {
+            action.confidence = @floatCast(c.float);
+        };
+
+        return action;
+    }
+
+    /// Parse action from simple text format (v23.43)
+    /// Expected: "click #button" or "type #input hello world"
+    pub fn parseSimple(self: *Self, text: []const u8) ?Action {
+        _ = self;
+        var iter = std.mem.splitScalar(u8, text, ' ');
+        
+        const action_str = iter.next() orelse return null;
+        const action_type = ActionType.fromString(action_str);
+        if (action_type == .none) return null;
+
+        var action = Action{ .action_type = action_type };
+
+        // Get selector if required
+        if (action_type.requiresSelector()) {
+            action.selector = iter.next();
+            if (action.selector == null) return null;
+        }
+
+        // Get value - rest of the string
+        if (action_type.requiresValue()) {
+            const rest = iter.rest();
+            if (rest.len > 0) {
+                action.value = rest;
+            } else if (action_type == .navigate) {
+                // For navigate, selector might be the URL
+                action.value = action.selector;
+                action.selector = null;
+            }
+        }
+
+        return action;
+    }
+
+    /// Parse action from LLM response - tries multiple formats (v23.43)
+    pub fn parse(self: *Self, response: []const u8) ?Action {
+        // Try JSON first
+        if (std.mem.indexOf(u8, response, "{")) |start| {
+            if (std.mem.lastIndexOf(u8, response, "}")) |end| {
+                if (end > start) {
+                    if (self.parseJson(response[start .. end + 1])) |action| {
+                        return action;
+                    }
+                }
+            }
+        }
+
+        // Try simple format
+        const trimmed = std.mem.trim(u8, response, " \t\n\r");
+        return self.parseSimple(trimmed);
+    }
+};
+
+/// Action Executor - executes parsed actions (v23.43)
+pub const ActionExecutor = struct {
+    allocator: Allocator,
+    agent: *RealAgent,
+    form: FormInteraction,
+    dom: DOMExtractor,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, agent: *RealAgent) Self {
+        return Self{
+            .allocator = allocator,
+            .agent = agent,
+            .form = FormInteraction.init(allocator, agent),
+            .dom = DOMExtractor.init(allocator, agent),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.dom.deinit();
+    }
+
+    /// Execute a single action (v23.43)
+    pub fn execute(self: *Self, action: Action) ActionResult {
+        if (!action.isValid()) {
+            return ActionResult.fail(action, "Invalid action: missing required fields");
+        }
+
+        const start_time = std.time.milliTimestamp();
+
+        const result = switch (action.action_type) {
+            .click => self.executeClick(action),
+            .type_text => self.executeType(action),
+            .navigate => self.executeNavigate(action),
+            .scroll => self.executeScroll(action),
+            .select => self.executeSelect(action),
+            .check => self.executeCheck(action, true),
+            .uncheck => self.executeCheck(action, false),
+            .submit => self.executeSubmit(action),
+            .wait => self.executeWait(action),
+            .extract => self.executeExtract(action),
+            .go_back => self.executeGoBack(action),
+            .go_forward => self.executeGoForward(action),
+            .refresh => self.executeRefresh(action),
+            .hover => self.executeHover(action),
+            .press_key => self.executePressKey(action),
+            .screenshot, .none => ActionResult.fail(action, "Action not implemented"),
+        };
+
+        var final_result = result;
+        final_result.duration_ms = @intCast(std.time.milliTimestamp() - start_time);
+        return final_result;
+    }
+
+    fn executeClick(self: *Self, action: Action) ActionResult {
+        self.agent.clickSelector(action.selector.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeType(self: *Self, action: Action) ActionResult {
+        self.form.fillInput(action.selector.?, action.value.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeNavigate(self: *Self, action: Action) ActionResult {
+        self.agent.navigate(action.value.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeScroll(self: *Self, action: Action) ActionResult {
+        const direction = action.value orelse "down";
+        const js = if (std.mem.eql(u8, direction, "up"))
+            "window.scrollBy(0, -500)"
+        else if (std.mem.eql(u8, direction, "top"))
+            "window.scrollTo(0, 0)"
+        else if (std.mem.eql(u8, direction, "bottom"))
+            "window.scrollTo(0, document.body.scrollHeight)"
+        else
+            "window.scrollBy(0, 500)";
+
+        _ = self.agent.evaluate(js) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeSelect(self: *Self, action: Action) ActionResult {
+        self.form.selectOption(action.selector.?, action.value.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeCheck(self: *Self, action: Action, checked: bool) ActionResult {
+        self.form.checkCheckbox(action.selector.?, checked) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeSubmit(self: *Self, action: Action) ActionResult {
+        self.form.submitForm(action.selector.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeWait(_: *Self, action: Action) ActionResult {
+        const ms_str = action.value orelse "1000";
+        const ms = std.fmt.parseInt(u64, ms_str, 10) catch 1000;
+        std.time.sleep(ms * std.time.ns_per_ms);
+        return ActionResult.ok(action);
+    }
+
+    fn executeExtract(self: *Self, action: Action) ActionResult {
+        const text = self.dom.getElementText(action.selector.?) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        var result = ActionResult.ok(action);
+        result.extracted_data = text;
+        return result;
+    }
+
+    fn executeGoBack(self: *Self, action: Action) ActionResult {
+        _ = self.agent.evaluate("window.history.back()") catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeGoForward(self: *Self, action: Action) ActionResult {
+        _ = self.agent.evaluate("window.history.forward()") catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeRefresh(self: *Self, action: Action) ActionResult {
+        _ = self.agent.evaluate("window.location.reload()") catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executeHover(self: *Self, action: Action) ActionResult {
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\(function() {{
+            \\  var el = document.querySelector('{s}');
+            \\  if (!el) return 'error';
+            \\  el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true }}));
+            \\  return 'ok';
+            \\}})()
+        , .{action.selector.?}) catch return ActionResult.fail(action, "Buffer overflow");
+
+        _ = self.agent.evaluate(js) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+
+    fn executePressKey(self: *Self, action: Action) ActionResult {
+        const key = action.value orelse "Enter";
+        var js_buffer: [512]u8 = undefined;
+        const js = std.fmt.bufPrint(&js_buffer,
+            \\document.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{s}', bubbles: true }}))
+        , .{key}) catch return ActionResult.fail(action, "Buffer overflow");
+
+        _ = self.agent.evaluate(js) catch |err| {
+            return ActionResult.fail(action, @errorName(err));
+        };
+        return ActionResult.ok(action);
+    }
+};
+
 // v23.22: Circuit Breaker Pattern
 pub const CircuitBreakerState = enum {
     closed, // Normal operation, requests allowed
@@ -6030,6 +6475,195 @@ test "FormFieldValue struct (v23.42)" {
     try std.testing.expectEqualStrings("input[name=email]", field.selector);
     try std.testing.expectEqualStrings("test@example.com", field.value);
     try std.testing.expectEqual(FormAction.fill, field.action);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v23.43: ACTION PARSING TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ActionType fromString (v23.43)" {
+    try std.testing.expectEqual(ActionType.click, ActionType.fromString("click"));
+    try std.testing.expectEqual(ActionType.type_text, ActionType.fromString("type"));
+    try std.testing.expectEqual(ActionType.type_text, ActionType.fromString("fill"));
+    try std.testing.expectEqual(ActionType.navigate, ActionType.fromString("navigate"));
+    try std.testing.expectEqual(ActionType.navigate, ActionType.fromString("goto"));
+    try std.testing.expectEqual(ActionType.scroll, ActionType.fromString("scroll"));
+    try std.testing.expectEqual(ActionType.select, ActionType.fromString("select"));
+    try std.testing.expectEqual(ActionType.go_back, ActionType.fromString("back"));
+    try std.testing.expectEqual(ActionType.refresh, ActionType.fromString("reload"));
+    try std.testing.expectEqual(ActionType.none, ActionType.fromString("unknown"));
+}
+
+test "ActionType toString (v23.43)" {
+    try std.testing.expectEqualStrings("click", ActionType.click.toString());
+    try std.testing.expectEqualStrings("type", ActionType.type_text.toString());
+    try std.testing.expectEqualStrings("navigate", ActionType.navigate.toString());
+    try std.testing.expectEqualStrings("scroll", ActionType.scroll.toString());
+}
+
+test "ActionType requiresSelector (v23.43)" {
+    try std.testing.expect(ActionType.click.requiresSelector());
+    try std.testing.expect(ActionType.type_text.requiresSelector());
+    try std.testing.expect(ActionType.select.requiresSelector());
+    try std.testing.expect(!ActionType.navigate.requiresSelector());
+    try std.testing.expect(!ActionType.scroll.requiresSelector());
+    try std.testing.expect(!ActionType.go_back.requiresSelector());
+}
+
+test "ActionType requiresValue (v23.43)" {
+    try std.testing.expect(ActionType.type_text.requiresValue());
+    try std.testing.expect(ActionType.navigate.requiresValue());
+    try std.testing.expect(ActionType.select.requiresValue());
+    try std.testing.expect(!ActionType.click.requiresValue());
+    try std.testing.expect(!ActionType.submit.requiresValue());
+}
+
+test "Action factory methods (v23.43)" {
+    const click_action = Action.click("#button");
+    try std.testing.expectEqual(ActionType.click, click_action.action_type);
+    try std.testing.expectEqualStrings("#button", click_action.selector.?);
+
+    const type_action = Action.typeText("#input", "hello");
+    try std.testing.expectEqual(ActionType.type_text, type_action.action_type);
+    try std.testing.expectEqualStrings("#input", type_action.selector.?);
+    try std.testing.expectEqualStrings("hello", type_action.value.?);
+
+    const nav_action = Action.navigate("https://example.com");
+    try std.testing.expectEqual(ActionType.navigate, nav_action.action_type);
+    try std.testing.expectEqualStrings("https://example.com", nav_action.value.?);
+}
+
+test "Action isValid (v23.43)" {
+    const valid_click = Action.click("#btn");
+    try std.testing.expect(valid_click.isValid());
+
+    const invalid_click = Action{ .action_type = .click, .selector = null };
+    try std.testing.expect(!invalid_click.isValid());
+
+    const valid_nav = Action.navigate("https://example.com");
+    try std.testing.expect(valid_nav.isValid());
+
+    const invalid_nav = Action{ .action_type = .navigate, .value = null };
+    try std.testing.expect(!invalid_nav.isValid());
+
+    const none_action = Action{ .action_type = .none };
+    try std.testing.expect(!none_action.isValid());
+}
+
+test "Action toJson (v23.43)" {
+    const allocator = std.testing.allocator;
+    const action = Action{
+        .action_type = .click,
+        .selector = "#submit-btn",
+        .reasoning = "Click submit button",
+        .confidence = 0.95,
+    };
+
+    const json = try action.toJson(allocator);
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"action\": \"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"selector\": \"#submit-btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"reasoning\"") != null);
+}
+
+test "ActionResult ok and fail (v23.43)" {
+    const action = Action.click("#btn");
+
+    const ok_result = ActionResult.ok(action);
+    try std.testing.expect(ok_result.success);
+    try std.testing.expect(ok_result.error_message == null);
+
+    const fail_result = ActionResult.fail(action, "Element not found");
+    try std.testing.expect(!fail_result.success);
+    try std.testing.expectEqualStrings("Element not found", fail_result.error_message.?);
+}
+
+test "ActionParser parseJson (v23.43)" {
+    const allocator = std.heap.page_allocator;
+    var parser = ActionParser.init(allocator);
+
+    const json =
+        \\{"action": "click", "selector": "#submit", "reasoning": "Submit form"}
+    ;
+
+    const action = parser.parseJson(json);
+    try std.testing.expect(action != null);
+    try std.testing.expectEqual(ActionType.click, action.?.action_type);
+    try std.testing.expectEqualStrings("#submit", action.?.selector.?);
+}
+
+test "ActionParser parseJson type action (v23.43)" {
+    const allocator = std.heap.page_allocator;
+    var parser = ActionParser.init(allocator);
+
+    const json =
+        \\{"action": "type", "selector": "#email", "value": "test@example.com"}
+    ;
+
+    const action = parser.parseJson(json);
+    try std.testing.expect(action != null);
+    try std.testing.expectEqual(ActionType.type_text, action.?.action_type);
+    try std.testing.expectEqualStrings("#email", action.?.selector.?);
+    try std.testing.expectEqualStrings("test@example.com", action.?.value.?);
+}
+
+test "ActionParser parseSimple (v23.43)" {
+    const allocator = std.testing.allocator;
+    var parser = ActionParser.init(allocator);
+
+    const action1 = parser.parseSimple("click #button");
+    try std.testing.expect(action1 != null);
+    try std.testing.expectEqual(ActionType.click, action1.?.action_type);
+    try std.testing.expectEqualStrings("#button", action1.?.selector.?);
+
+    const action2 = parser.parseSimple("type #input hello world");
+    try std.testing.expect(action2 != null);
+    try std.testing.expectEqual(ActionType.type_text, action2.?.action_type);
+    try std.testing.expectEqualStrings("#input", action2.?.selector.?);
+    try std.testing.expectEqualStrings("hello world", action2.?.value.?);
+}
+
+test "ActionParser parse mixed format (v23.43)" {
+    const allocator = std.heap.page_allocator;
+    var parser = ActionParser.init(allocator);
+
+    // JSON embedded in text
+    const response1 = "I will click the button: {\"action\": \"click\", \"selector\": \"#btn\"}";
+    const action1 = parser.parse(response1);
+    try std.testing.expect(action1 != null);
+    try std.testing.expectEqual(ActionType.click, action1.?.action_type);
+
+    // Simple format
+    const response2 = "scroll down";
+    const action2 = parser.parse(response2);
+    try std.testing.expect(action2 != null);
+    try std.testing.expectEqual(ActionType.scroll, action2.?.action_type);
+}
+
+test "ActionParser invalid input (v23.43)" {
+    const allocator = std.testing.allocator;
+    var parser = ActionParser.init(allocator);
+
+    const action1 = parser.parseJson("not json");
+    try std.testing.expect(action1 == null);
+
+    const action2 = parser.parseJson("{\"action\": \"unknown_action\"}");
+    try std.testing.expect(action2 == null);
+
+    const action3 = parser.parseSimple("");
+    try std.testing.expect(action3 == null);
+}
+
+test "ActionExecutor init (v23.43)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var executor = ActionExecutor.init(allocator, &agent);
+    defer executor.deinit();
+
+    try std.testing.expect(executor.agent == &agent);
 }
 
 test "RetryMetrics with histogram (v23.26)" {
