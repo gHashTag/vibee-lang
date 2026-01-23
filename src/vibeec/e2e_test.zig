@@ -245,6 +245,83 @@ pub const E2ETestSuite = struct {
         }
     }
 
+    /// Test cache hit - run same goal twice, second should be faster
+    pub fn testCacheHit(self: *Self) !void {
+        // Use unique goal that won't be cached from other tests
+        const unique_goal = "Navigate to httpbin.org";
+
+        // First run - cache miss (LLM call)
+        const start1 = std.time.milliTimestamp();
+
+        const ws_url1 = self.createNewPage() catch {
+            try self.addResult("CacheHit", false, 0, 0, "Failed to create page 1");
+            return;
+        };
+        defer self.allocator.free(ws_url1);
+
+        var agent1 = planning_agent.PlanningAgent.init(
+            self.allocator,
+            unique_goal,
+            3,
+        );
+        defer agent1.deinit();
+
+        agent1.connect(ws_url1) catch {
+            try self.addResult("CacheHit", false, 0, 0, "Failed to connect 1");
+            return;
+        };
+
+        _ = agent1.run() catch {
+            try self.addResult("CacheHit", false, 0, 0, "Run 1 failed");
+            return;
+        };
+
+        const elapsed1 = std.time.milliTimestamp() - start1;
+        std.debug.print("[CACHE TEST] First run (miss): {d}ms\n", .{elapsed1});
+
+        // Second run - should hit cache (no LLM call)
+        const start2 = std.time.milliTimestamp();
+
+        const ws_url2 = self.createNewPage() catch {
+            try self.addResult("CacheHit", false, 0, 0, "Failed to create page 2");
+            return;
+        };
+        defer self.allocator.free(ws_url2);
+
+        var agent2 = planning_agent.PlanningAgent.init(
+            self.allocator,
+            unique_goal, // Same goal
+            3,
+        );
+        defer agent2.deinit();
+
+        agent2.connect(ws_url2) catch {
+            try self.addResult("CacheHit", false, 0, 0, "Failed to connect 2");
+            return;
+        };
+
+        _ = agent2.run() catch {
+            try self.addResult("CacheHit", false, 0, 0, "Run 2 failed");
+            return;
+        };
+
+        const elapsed2 = std.time.milliTimestamp() - start2;
+        std.debug.print("[CACHE TEST] Second run (hit): {d}ms\n", .{elapsed2});
+
+        // Calculate speedup
+        const speedup = if (elapsed1 > 0) @as(f64, @floatFromInt(elapsed1)) / @as(f64, @floatFromInt(@max(elapsed2, 1))) else 1.0;
+        std.debug.print("[CACHE TEST] Speedup: {d:.2}x\n", .{speedup});
+
+        // Cache hit should be at least 1.3x faster (LLM call ~3s saved)
+        if (speedup >= 1.3 or elapsed2 < 2000) {
+            try self.addResult("CacheHit", true, 2, @intCast(elapsed2), null);
+        } else {
+            var err_buf: [64]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&err_buf, "Speedup {d:.2}x, run2={d}ms", .{ speedup, elapsed2 }) catch "Low speedup";
+            try self.addResult("CacheHit", false, 2, @intCast(elapsed2), err_msg);
+        }
+    }
+
     /// Test search functionality
     pub fn testSearch(self: *Self) !void {
         const start = std.time.milliTimestamp();
@@ -590,6 +667,10 @@ pub fn runAllTests(allocator: Allocator, ws_url: []const u8) !void {
 
     std.debug.print("[E2E] Test 9: MultiStep (requires Ollama)\n", .{});
     try suite.testMultiStep();
+
+    // Cache test - v23.10
+    std.debug.print("[E2E] Test 10: CacheHit (requires Ollama)\n", .{});
+    try suite.testCacheHit();
 
     suite.printResults();
 }

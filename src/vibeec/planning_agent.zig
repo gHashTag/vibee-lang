@@ -168,6 +168,178 @@ pub const Action = struct {
 // ═══════════════════════════════════════════════════════════════════════════════
 // PLANNING AGENT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ACTION CACHE - v23.10
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const CachedAction = struct {
+    action: Action,
+    success_count: u32,
+    fail_count: u32,
+    last_used: i64,
+};
+
+pub const ActionCache = struct {
+    allocator: Allocator,
+    cache: std.StringHashMap(CachedAction),
+    hits: u32,
+    misses: u32,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .cache = std.StringHashMap(CachedAction).init(allocator),
+            .hits = 0,
+            .misses = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        // Free all keys
+        var it = self.cache.keyIterator();
+        while (it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.cache.deinit();
+    }
+
+    /// Normalize goal to cache key: extract domain + action type
+    pub fn goalToKey(self: *Self, goal: []const u8) ![]const u8 {
+        var key_buf: [128]u8 = undefined;
+        var key_len: usize = 0;
+
+        // Extract action type
+        const action_keywords = [_]struct { pattern: []const u8, action: []const u8 }{
+            .{ .pattern = "go to", .action = "nav" },
+            .{ .pattern = "Go to", .action = "nav" },
+            .{ .pattern = "navigate", .action = "nav" },
+            .{ .pattern = "Navigate", .action = "nav" },
+            .{ .pattern = "open", .action = "nav" },
+            .{ .pattern = "Open", .action = "nav" },
+            .{ .pattern = "visit", .action = "nav" },
+            .{ .pattern = "Visit", .action = "nav" },
+            .{ .pattern = "search", .action = "search" },
+            .{ .pattern = "Search", .action = "search" },
+            .{ .pattern = "click", .action = "click" },
+            .{ .pattern = "Click", .action = "click" },
+        };
+
+        var action_type: []const u8 = "other";
+        for (action_keywords) |kw| {
+            if (std.mem.indexOf(u8, goal, kw.pattern) != null) {
+                action_type = kw.action;
+                break;
+            }
+        }
+
+        // Copy action type
+        @memcpy(key_buf[0..action_type.len], action_type);
+        key_len = action_type.len;
+        key_buf[key_len] = ':';
+        key_len += 1;
+
+        // Extract domain from goal
+        const domain_markers = [_][]const u8{ ".com", ".org", ".net", ".io", ".dev" };
+        for (domain_markers) |marker| {
+            if (std.mem.indexOf(u8, goal, marker)) |marker_pos| {
+                // Find start of domain
+                var domain_start = marker_pos;
+                while (domain_start > 0 and goal[domain_start - 1] != ' ' and goal[domain_start - 1] != '\t') {
+                    domain_start -= 1;
+                }
+                const domain_end = marker_pos + marker.len;
+                const domain = goal[domain_start..domain_end];
+                const copy_len = @min(domain.len, key_buf.len - key_len - 1);
+                @memcpy(key_buf[key_len .. key_len + copy_len], domain[0..copy_len]);
+                key_len += copy_len;
+                break;
+            }
+        }
+
+        // If no domain found, use first 20 chars of goal
+        if (key_len <= action_type.len + 1) {
+            const goal_preview = goal[0..@min(goal.len, 20)];
+            @memcpy(key_buf[key_len .. key_len + goal_preview.len], goal_preview);
+            key_len += goal_preview.len;
+        }
+
+        return self.allocator.dupe(u8, key_buf[0..key_len]);
+    }
+
+    /// Lookup cached action for goal
+    pub fn lookup(self: *Self, goal: []const u8) ?Action {
+        const key = self.goalToKey(goal) catch return null;
+        defer self.allocator.free(key);
+
+        if (self.cache.get(key)) |*entry| {
+            // Check if action is reliable (success > fail)
+            if (entry.success_count > entry.fail_count) {
+                self.hits += 1;
+                std.debug.print("    [CACHE] HIT: {s} (success={d})\n", .{ key, entry.success_count });
+                return entry.action;
+            }
+        }
+
+        self.misses += 1;
+        std.debug.print("    [CACHE] MISS: {s}\n", .{key});
+        return null;
+    }
+
+    /// Store successful action in cache
+    pub fn store(self: *Self, goal: []const u8, action: Action) void {
+        const key = self.goalToKey(goal) catch return;
+
+        if (self.cache.getPtr(key)) |entry| {
+            // Update existing entry
+            entry.success_count += 1;
+            entry.last_used = std.time.timestamp();
+            entry.action = action;
+            self.allocator.free(key);
+        } else {
+            // New entry
+            self.cache.put(key, CachedAction{
+                .action = action,
+                .success_count = 1,
+                .fail_count = 0,
+                .last_used = std.time.timestamp(),
+            }) catch {
+                self.allocator.free(key);
+            };
+        }
+        std.debug.print("    [CACHE] STORE: goal cached\n", .{});
+    }
+
+    /// Mark action as failed (for invalidation)
+    pub fn markFailed(self: *Self, goal: []const u8) void {
+        const key = self.goalToKey(goal) catch return;
+        defer self.allocator.free(key);
+
+        if (self.cache.getPtr(key)) |entry| {
+            entry.fail_count += 1;
+            std.debug.print("    [CACHE] FAIL: {s} (fails={d})\n", .{ key, entry.fail_count });
+        }
+    }
+
+    /// Get cache statistics
+    pub fn getStats(self: *Self) struct { hits: u32, misses: u32, entries: u32 } {
+        return .{
+            .hits = self.hits,
+            .misses = self.misses,
+            .entries = @intCast(self.cache.count()),
+        };
+    }
+};
+
+// Global cache instance (shared across agent instances)
+var global_cache: ?ActionCache = null;
+
+pub fn getGlobalCache(allocator: Allocator) *ActionCache {
+    if (global_cache == null) {
+        global_cache = ActionCache.init(allocator);
+    }
+    return &global_cache.?;
+}
 
 pub const LLMProvider = enum {
     ollama, // Local Ollama (default)
@@ -415,9 +587,39 @@ pub const PlanningAgent = struct {
     }
 
     /// Main agent loop: Observe → Think → Act → Repeat
+    /// v23.10: Added action caching for sub-second repeated goals
     pub fn run(self: *Self) ![]const u8 {
         std.debug.print("\n[AGENT] Starting task: {s}\n", .{self.state.goal});
         std.debug.print("[AGENT] Max steps: {d}\n\n", .{self.state.max_steps});
+
+        // v23.10: Check cache FIRST for instant execution
+        var cache = getGlobalCache(self.allocator);
+        if (cache.lookup(self.state.goal)) |cached_action| {
+            std.debug.print("[CACHE] Using cached action!\n", .{});
+            self.state.current_step = 1;
+
+            // Execute cached action directly
+            try self.act(cached_action);
+
+            // Quick verify
+            std.time.sleep(500 * std.time.ns_per_ms);
+            try self.observe();
+
+            if (self.quickGoalCheck()) {
+                self.state.done = true;
+                self.state.result = "Goal achieved (cached)";
+                cache.store(self.state.goal, cached_action); // Reinforce success
+                std.debug.print("[CACHE] Cached action succeeded!\n", .{});
+                return self.state.result.?;
+            } else {
+                // Cache miss - action didn't work, mark as failed
+                cache.markFailed(self.state.goal);
+                std.debug.print("[CACHE] Cached action failed, falling back to LLM\n", .{});
+            }
+        }
+
+        // Track first action for caching
+        var first_action: ?Action = null;
 
         while (!self.state.done and self.state.current_step < self.state.max_steps) {
             self.state.current_step += 1;
@@ -435,6 +637,11 @@ pub const PlanningAgent = struct {
             std.debug.print("[THINK] Asking LLM...\n", .{});
             const action = try self.think();
             std.debug.print("[THINK] Action: {s}\n", .{@tagName(action.action_type)});
+
+            // Save first action for caching
+            if (first_action == null and action.action_type != .fail) {
+                first_action = action;
+            }
 
             // 3. ACT
             std.debug.print("[ACT] Executing...\n", .{});
@@ -458,6 +665,11 @@ pub const PlanningAgent = struct {
                     self.state.done = true;
                     self.state.result = "Goal achieved (auto-detected)";
                     std.debug.print("[REFLECT] Goal achieved!\n", .{});
+
+                    // v23.10: Cache successful first action
+                    if (first_action) |fa| {
+                        cache.store(self.state.goal, fa);
+                    }
                 }
             }
 
@@ -470,6 +682,16 @@ pub const PlanningAgent = struct {
         if (!self.state.done) {
             std.debug.print("[TIMEOUT] Max steps reached\n", .{});
             return "Max steps reached without completion";
+        }
+
+        // v23.10: Cache on success
+        if (self.state.done and first_action != null) {
+            const result = self.state.result orelse "";
+            if (std.mem.indexOf(u8, result, "achieved") != null or
+                std.mem.indexOf(u8, result, "completed") != null)
+            {
+                cache.store(self.state.goal, first_action.?);
+            }
         }
 
         return self.state.result orelse "Task completed";
@@ -1626,4 +1848,86 @@ test "parseJsonAction with form actions" {
     const action2 = parseJsonAction(json2);
     try std.testing.expect(action2 != null);
     try std.testing.expectEqual(ActionType.check_box, action2.?.action_type);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTION CACHE TESTS - v23.10
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ActionCache initialization" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const stats = cache.getStats();
+    try std.testing.expectEqual(@as(u32, 0), stats.hits);
+    try std.testing.expectEqual(@as(u32, 0), stats.misses);
+    try std.testing.expectEqual(@as(u32, 0), stats.entries);
+}
+
+test "ActionCache goalToKey - navigation" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const key = try cache.goalToKey("Go to example.com");
+    defer std.testing.allocator.free(key);
+
+    // Should extract "nav:example.com"
+    try std.testing.expect(std.mem.indexOf(u8, key, "nav") != null);
+    try std.testing.expect(std.mem.indexOf(u8, key, "example.com") != null);
+}
+
+test "ActionCache goalToKey - search" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const key = try cache.goalToKey("Search for cats on google.com");
+    defer std.testing.allocator.free(key);
+
+    try std.testing.expect(std.mem.indexOf(u8, key, "search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, key, "google.com") != null);
+}
+
+test "ActionCache store and lookup" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const action = Action.navigate("https://example.com");
+    cache.store("Go to example.com", action);
+
+    // First lookup should miss (need success_count > fail_count)
+    // Store again to increase success_count
+    cache.store("Go to example.com", action);
+
+    const result = cache.lookup("Go to example.com");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(ActionType.navigate, result.?.action_type);
+}
+
+test "ActionCache miss on unknown goal" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const result = cache.lookup("Do something random");
+    try std.testing.expect(result == null);
+
+    const stats = cache.getStats();
+    try std.testing.expectEqual(@as(u32, 1), stats.misses);
+}
+
+test "ActionCache invalidation on failure" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const action = Action.navigate("https://example.com");
+    cache.store("Go to example.com", action);
+    cache.store("Go to example.com", action); // success_count = 2
+
+    // Mark as failed twice
+    cache.markFailed("Go to example.com");
+    cache.markFailed("Go to example.com");
+    cache.markFailed("Go to example.com"); // fail_count = 3
+
+    // Now lookup should return null (fail > success)
+    const result = cache.lookup("Go to example.com");
+    try std.testing.expect(result == null);
 }
