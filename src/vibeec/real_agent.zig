@@ -978,6 +978,12 @@ pub const RealAgent = struct {
 
     /// Wait for selector with retry (v23.16, v23.19: metrics)
     pub fn waitForSelectorWithRetry(self: *Self, selector: []const u8, timeout_ms: u32) AgentError!RetryResult {
+        // v23.23: Check circuit breaker
+        if (!self.circuit_breaker.canExecute()) {
+            std.debug.print("    [CIRCUIT] waitForSelector blocked - circuit is OPEN\n", .{});
+            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        }
+
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
@@ -995,6 +1001,7 @@ pub const RealAgent = struct {
 
                 if (attempts > self.retry_config.max_retries) {
                     self.retry_metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure(); // v23.23
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
@@ -1010,6 +1017,7 @@ pub const RealAgent = struct {
 
             if (found) {
                 self.retry_metrics.successful_operations += 1;
+                self.circuit_breaker.recordSuccess(); // v23.23
                 return RetryResult{
                     .success = true,
                     .attempts = attempts + 1,
@@ -1037,6 +1045,7 @@ pub const RealAgent = struct {
         }
 
         self.retry_metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
             .success = false,
             .attempts = attempts,
@@ -1046,6 +1055,12 @@ pub const RealAgent = struct {
 
     /// Wait for page load with retry (v23.16, v23.17: smart timeout)
     pub fn waitForPageLoadWithRetry(self: *Self, timeout_ms: u32) AgentError!RetryResult {
+        // v23.23: Check circuit breaker
+        if (!self.circuit_breaker.canExecute()) {
+            std.debug.print("    [CIRCUIT] waitForPageLoad blocked - circuit is OPEN\n", .{});
+            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        }
+
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
@@ -1064,6 +1079,7 @@ pub const RealAgent = struct {
 
                 if (attempts > self.retry_config.max_retries) {
                     self.retry_metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure(); // v23.23
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
@@ -1077,6 +1093,7 @@ pub const RealAgent = struct {
 
             if (loaded) {
                 self.retry_metrics.successful_operations += 1;
+                self.circuit_breaker.recordSuccess(); // v23.23
                 return RetryResult{
                     .success = true,
                     .attempts = attempts + 1,
@@ -1104,6 +1121,7 @@ pub const RealAgent = struct {
         }
 
         self.retry_metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
             .success = false,
             .attempts = attempts,
@@ -1113,6 +1131,12 @@ pub const RealAgent = struct {
 
     /// Click with retry (v23.16, v23.20: metrics)
     pub fn clickWithRetry(self: *Self, selector: []const u8) AgentError!RetryResult {
+        // v23.23: Check circuit breaker
+        if (!self.circuit_breaker.canExecute()) {
+            std.debug.print("    [CIRCUIT] click blocked - circuit is OPEN\n", .{});
+            return RetryResult{ .success = false, .attempts = 0, .total_delay_ms = 0 };
+        }
+
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
@@ -1128,6 +1152,7 @@ pub const RealAgent = struct {
 
                 if (attempts > self.retry_config.max_retries) {
                     self.retry_metrics.failed_operations += 1;
+                    self.circuit_breaker.recordFailure(); // v23.23
                     return err;
                 }
                 const delay = self.retry_config.getDelayWithJitter(attempts - 1);
@@ -1141,6 +1166,7 @@ pub const RealAgent = struct {
             };
 
             self.retry_metrics.successful_operations += 1;
+            self.circuit_breaker.recordSuccess(); // v23.23
             return RetryResult{
                 .success = true,
                 .attempts = attempts + 1,
@@ -1149,6 +1175,7 @@ pub const RealAgent = struct {
         }
 
         self.retry_metrics.failed_operations += 1;
+        self.circuit_breaker.recordFailure(); // v23.23
         return RetryResult{
             .success = false,
             .attempts = attempts,
