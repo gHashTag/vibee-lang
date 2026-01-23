@@ -248,8 +248,7 @@ pub const E2ETestSuite = struct {
     /// Test cache hit - run same goal twice, second should be faster
     pub fn testCacheHit(self: *Self) !void {
         // Use unique goal that won't be cached from other tests
-        // Use timestamp to ensure uniqueness
-        const unique_goal = "Navigate to jsonplaceholder.typicode.com";
+        const unique_goal = "Go to wikipedia.org";
 
         // First run - cache miss (LLM call)
         const start1 = std.time.milliTimestamp();

@@ -1321,7 +1321,9 @@ pub const PlanningAgent = struct {
                 if (arg.len > 0) {
                     std.debug.print("    Navigating to: {s}\n", .{arg});
                     try self.browser.navigate(arg);
-                    std.time.sleep(400 * std.time.ns_per_ms); // v23.13: reduced from 800ms
+                    // v23.14: waitForPageLoad() is now called inside navigate()
+                    // Small additional delay for JS execution
+                    std.time.sleep(100 * std.time.ns_per_ms);
                 }
             },
             .click => {

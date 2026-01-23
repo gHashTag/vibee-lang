@@ -38,6 +38,9 @@ pub const RealAgent = struct {
     http: http_client.HttpClient,
     connected: bool,
     message_id: u32,
+    // v23.14: Adaptive timing
+    avg_page_load_ms: u32 = 500,
+    page_load_count: u32 = 0,
 
     const Self = @This();
 
@@ -79,6 +82,17 @@ pub const RealAgent = struct {
         // Read response
         const frame = self.ws.receive() catch return AgentError.NavigationFailed;
         self.allocator.free(frame.payload);
+
+        // v23.14: Wait for page to load instead of fixed sleep
+        const start = std.time.milliTimestamp();
+        const loaded = self.waitForPageLoad(2000) catch false; // 2s timeout
+        const elapsed = std.time.milliTimestamp() - start;
+
+        if (loaded) {
+            std.debug.print("    [NAV] Page loaded in {d}ms (avg: {d}ms)\n", .{ elapsed, self.avg_page_load_ms });
+        } else {
+            std.debug.print("    [NAV] Page load timeout after {d}ms\n", .{elapsed});
+        }
     }
 
     /// Get page title
@@ -136,6 +150,9 @@ pub const RealAgent = struct {
     /// Uses Runtime.evaluate to get element coordinates, then dispatches mouse events
     pub fn clickSelector(self: *Self, selector: []const u8) AgentError!void {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // v23.14: Quick wait for element (500ms) before clicking
+        _ = self.waitForSelector(selector, 500) catch {};
 
         // Step 1: Get element bounding box via JavaScript
         var cmd_buf: [2048]u8 = undefined;
@@ -317,7 +334,7 @@ pub const RealAgent = struct {
         return false; // Timeout
     }
 
-    /// Wait for page to finish loading (v23.13)
+    /// Wait for page to finish loading (v23.14: with adaptive timing)
     pub fn waitForPageLoad(self: *Self, timeout_ms: u32) AgentError!bool {
         if (!self.connected) return AgentError.BrowserConnectionFailed;
 
@@ -338,6 +355,9 @@ pub const RealAgent = struct {
 
             // Check if complete
             if (std.mem.indexOf(u8, frame.payload, "\"value\":\"complete\"") != null) {
+                // v23.14: Update adaptive timing
+                const elapsed = std.time.milliTimestamp() - start_time;
+                self.updatePageLoadStats(@intCast(elapsed));
                 return true;
             }
 
@@ -346,6 +366,25 @@ pub const RealAgent = struct {
         }
 
         return false; // Timeout
+    }
+
+    /// Update adaptive page load statistics (v23.14)
+    fn updatePageLoadStats(self: *Self, load_time_ms: u32) void {
+        // Exponential moving average
+        if (self.page_load_count == 0) {
+            self.avg_page_load_ms = load_time_ms;
+        } else {
+            // EMA with alpha = 0.3
+            self.avg_page_load_ms = (self.avg_page_load_ms * 7 + load_time_ms * 3) / 10;
+        }
+        self.page_load_count += 1;
+    }
+
+    /// Get adaptive timeout based on history (v23.14)
+    pub fn getAdaptiveTimeout(self: *Self) u32 {
+        // Use 2x average with minimum of 500ms
+        const adaptive = self.avg_page_load_ms * 2;
+        return @max(adaptive, 500);
     }
 
     /// Click element with wait
