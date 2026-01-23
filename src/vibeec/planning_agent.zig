@@ -171,11 +171,50 @@ pub const Action = struct {
 // ACTION CACHE - v23.10
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTION SEQUENCE - v23.12
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const MAX_SEQUENCE_LENGTH: usize = 8;
+
+pub const ActionSequence = struct {
+    actions: [MAX_SEQUENCE_LENGTH]Action,
+    length: usize,
+
+    pub fn init() ActionSequence {
+        return ActionSequence{
+            .actions = undefined,
+            .length = 0,
+        };
+    }
+
+    pub fn append(self: *ActionSequence, action: Action) bool {
+        if (self.length >= MAX_SEQUENCE_LENGTH) return false;
+        self.actions[self.length] = action;
+        self.length += 1;
+        return true;
+    }
+
+    pub fn get(self: *const ActionSequence, index: usize) ?Action {
+        if (index >= self.length) return null;
+        return self.actions[index];
+    }
+
+    pub fn getSlice(self: *const ActionSequence) []const Action {
+        return self.actions[0..self.length];
+    }
+};
+
 pub const CachedAction = struct {
-    action: Action,
+    action: Action, // First action (for single-step compatibility)
+    sequence: ActionSequence, // Full sequence for multi-step tasks
     success_count: u32,
     fail_count: u32,
     last_used: i64,
+
+    pub fn hasSequence(self: *const CachedAction) bool {
+        return self.sequence.length > 1;
+    }
 };
 
 pub const ActionCache = struct {
@@ -267,39 +306,39 @@ pub const ActionCache = struct {
         return self.allocator.dupe(u8, key_buf[0..key_len]);
     }
 
-    /// Lookup cached action for goal
+    /// Lookup cached action for goal (returns first action only)
     pub fn lookup(self: *Self, goal: []const u8) ?Action {
-        const key = self.goalToKey(goal) catch return null;
-        defer self.allocator.free(key);
-
-        if (self.cache.get(key)) |*entry| {
-            // Check if action is reliable (success > fail)
-            if (entry.success_count > entry.fail_count) {
-                self.hits += 1;
-                std.debug.print("    [CACHE] HIT: {s} (success={d})\n", .{ key, entry.success_count });
-                return entry.action;
-            }
+        if (self.lookupSequence(goal)) |seq| {
+            return seq.get(0);
         }
-
-        self.misses += 1;
-        std.debug.print("    [CACHE] MISS: {s}\n", .{key});
         return null;
     }
 
-    /// Store successful action in cache
+    /// Store successful action in cache (single action)
     pub fn store(self: *Self, goal: []const u8, action: Action) void {
+        var seq = ActionSequence.init();
+        _ = seq.append(action);
+        self.storeSequence(goal, seq);
+    }
+
+    /// Store successful action sequence in cache (v23.12)
+    pub fn storeSequence(self: *Self, goal: []const u8, sequence: ActionSequence) void {
+        if (sequence.length == 0) return;
+
         const key = self.goalToKey(goal) catch return;
 
         if (self.cache.getPtr(key)) |entry| {
             // Update existing entry
             entry.success_count += 1;
             entry.last_used = std.time.timestamp();
-            entry.action = action;
+            entry.action = sequence.actions[0];
+            entry.sequence = sequence;
             self.allocator.free(key);
         } else {
             // New entry
             self.cache.put(key, CachedAction{
-                .action = action,
+                .action = sequence.actions[0],
+                .sequence = sequence,
                 .success_count = 1,
                 .fail_count = 0,
                 .last_used = std.time.timestamp(),
@@ -307,7 +346,29 @@ pub const ActionCache = struct {
                 self.allocator.free(key);
             };
         }
-        std.debug.print("    [CACHE] STORE: goal cached\n", .{});
+        std.debug.print("    [CACHE] STORE: {d}-step sequence cached\n", .{sequence.length});
+    }
+
+    /// Lookup cached sequence for goal (v23.12)
+    pub fn lookupSequence(self: *Self, goal: []const u8) ?ActionSequence {
+        const key = self.goalToKey(goal) catch return null;
+        defer self.allocator.free(key);
+
+        if (self.cache.get(key)) |entry| {
+            if (entry.success_count > entry.fail_count) {
+                self.hits += 1;
+                if (entry.sequence.length > 1) {
+                    std.debug.print("    [CACHE] SEQ HIT: {s} ({d} steps)\n", .{ key, entry.sequence.length });
+                } else {
+                    std.debug.print("    [CACHE] HIT: {s}\n", .{key});
+                }
+                return entry.sequence;
+            }
+        }
+
+        self.misses += 1;
+        std.debug.print("    [CACHE] MISS: {s}\n", .{key});
+        return null;
     }
 
     /// Mark action as failed (for invalidation)
@@ -345,13 +406,13 @@ pub const ActionCache = struct {
         return "/tmp/.vibee_cache.json";
     }
 
-    /// Serialize cache to JSON string
+    /// Serialize cache to JSON string (v23.12: with sequences)
     pub fn serializeToJson(self: *Self) ![]const u8 {
-        var json_buf: [16384]u8 = undefined;
+        var json_buf: [32768]u8 = undefined; // Increased for sequences
         var pos: usize = 0;
 
-        // Header
-        const header = "{\"version\":1,\"entries\":[";
+        // Header (version 2 for sequences)
+        const header = "{\"version\":2,\"entries\":[";
         @memcpy(json_buf[pos .. pos + header.len], header);
         pos += header.len;
 
@@ -366,7 +427,7 @@ pub const ActionCache = struct {
             // Check TTL
             const now = std.time.timestamp();
             if (now - entry.value_ptr.last_used > TTL_SECONDS) {
-                continue; // Skip expired entries
+                continue;
             }
 
             if (!first) {
@@ -375,27 +436,42 @@ pub const ActionCache = struct {
             }
             first = false;
 
-            // Serialize entry
-            const action = entry.value_ptr.action;
-            const action_type_str = @tagName(action.action_type);
-            const action_arg = action.getArg();
-
-            // Escape key and arg for JSON
+            // Escape key
             var escaped_key: [256]u8 = undefined;
-            var escaped_arg: [512]u8 = undefined;
             const key_escaped = escapeJsonString(entry.key_ptr.*, &escaped_key);
-            const arg_escaped = escapeJsonString(action_arg, &escaped_arg);
 
-            const entry_json = std.fmt.bufPrint(json_buf[pos..], "{{\"key\":\"{s}\",\"action_type\":\"{s}\",\"action_arg\":\"{s}\",\"success\":{d},\"fail\":{d},\"last_used\":{d}}}", .{
+            // Start entry
+            const entry_start = std.fmt.bufPrint(json_buf[pos..], "{{\"key\":\"{s}\",\"seq_len\":{d},\"seq\":[", .{
                 key_escaped,
-                action_type_str,
-                arg_escaped,
+                entry.value_ptr.sequence.length,
+            }) catch break;
+            pos += entry_start.len;
+
+            // Serialize sequence
+            for (entry.value_ptr.sequence.getSlice(), 0..) |action, i| {
+                if (i > 0) {
+                    json_buf[pos] = ',';
+                    pos += 1;
+                }
+
+                var escaped_arg: [512]u8 = undefined;
+                const arg_escaped = escapeJsonString(action.getArg(), &escaped_arg);
+
+                const action_json = std.fmt.bufPrint(json_buf[pos..], "{{\"t\":\"{s}\",\"a\":\"{s}\"}}", .{
+                    @tagName(action.action_type),
+                    arg_escaped,
+                }) catch break;
+                pos += action_json.len;
+            }
+
+            // End entry
+            const entry_end = std.fmt.bufPrint(json_buf[pos..], "],\"success\":{d},\"fail\":{d},\"last_used\":{d}}}", .{
                 entry.value_ptr.success_count,
                 entry.value_ptr.fail_count,
                 entry.value_ptr.last_used,
             }) catch break;
+            pos += entry_end.len;
 
-            pos += entry_json.len;
             count += 1;
         }
 
@@ -494,9 +570,8 @@ pub const ActionCache = struct {
         try self.deserializeFromJson(json);
     }
 
-    /// Deserialize cache from JSON
+    /// Deserialize cache from JSON (v23.12: with sequences)
     pub fn deserializeFromJson(self: *Self, json: []const u8) !void {
-        // Simple JSON parsing - find entries array
         const entries_start = std.mem.indexOf(u8, json, "\"entries\":[") orelse return;
         const array_start = entries_start + 11;
 
@@ -504,8 +579,10 @@ pub const ActionCache = struct {
         var loaded: u32 = 0;
         const now = std.time.timestamp();
 
+        // Check version for format
+        const is_v2 = std.mem.indexOf(u8, json, "\"version\":2") != null;
+
         while (pos < json.len) {
-            // Find next entry
             const entry_start = std.mem.indexOf(u8, json[pos..], "{\"key\":\"") orelse break;
             pos += entry_start;
 
@@ -514,19 +591,79 @@ pub const ActionCache = struct {
             const key_end = std.mem.indexOf(u8, json[key_start..], "\"") orelse break;
             const key = json[key_start .. key_start + key_end];
 
-            // Parse action_type
-            const type_marker = std.mem.indexOf(u8, json[pos..], "\"action_type\":\"") orelse break;
-            const type_start = pos + type_marker + 15;
-            const type_end = std.mem.indexOf(u8, json[type_start..], "\"") orelse break;
-            const action_type_str = json[type_start .. type_start + type_end];
+            var sequence = ActionSequence.init();
 
-            // Parse action_arg
-            const arg_marker = std.mem.indexOf(u8, json[pos..], "\"action_arg\":\"") orelse break;
-            const arg_start = pos + arg_marker + 14;
-            const arg_end = std.mem.indexOf(u8, json[arg_start..], "\"") orelse break;
-            const action_arg = json[arg_start .. arg_start + arg_end];
+            if (is_v2) {
+                // v23.12: Parse sequence array
+                const seq_start = std.mem.indexOf(u8, json[pos..], "\"seq\":[") orelse break;
+                var seq_pos = pos + seq_start + 7;
 
-            // Parse success count
+                while (seq_pos < json.len and sequence.length < MAX_SEQUENCE_LENGTH) {
+                    // Find action in sequence
+                    const action_start = std.mem.indexOf(u8, json[seq_pos..], "{\"t\":\"") orelse break;
+                    seq_pos += action_start + 6;
+
+                    // Parse type
+                    const type_end = std.mem.indexOf(u8, json[seq_pos..], "\"") orelse break;
+                    const action_type_str = json[seq_pos .. seq_pos + type_end];
+                    seq_pos += type_end;
+
+                    // Parse arg
+                    const arg_start = std.mem.indexOf(u8, json[seq_pos..], "\"a\":\"") orelse break;
+                    seq_pos += arg_start + 5;
+                    const arg_end = std.mem.indexOf(u8, json[seq_pos..], "\"") orelse break;
+                    const action_arg = json[seq_pos .. seq_pos + arg_end];
+                    seq_pos += arg_end;
+
+                    // Create action
+                    const action = if (std.mem.eql(u8, action_type_str, "navigate"))
+                        Action.navigate(action_arg)
+                    else if (std.mem.eql(u8, action_type_str, "click"))
+                        Action.click(action_arg)
+                    else if (std.mem.eql(u8, action_type_str, "type_text"))
+                        Action.typeText(action_arg)
+                    else if (std.mem.eql(u8, action_type_str, "press_enter"))
+                        Action.pressEnter()
+                    else
+                        continue;
+
+                    _ = sequence.append(action);
+
+                    // Check for end of sequence
+                    if (std.mem.indexOf(u8, json[seq_pos..], "]") != null and
+                        (std.mem.indexOf(u8, json[seq_pos..], "{\"t\":") == null or
+                        std.mem.indexOf(u8, json[seq_pos..], "]").? < std.mem.indexOf(u8, json[seq_pos..], "{\"t\":").?))
+                    {
+                        break;
+                    }
+                }
+            } else {
+                // v1 format: single action
+                const type_marker = std.mem.indexOf(u8, json[pos..], "\"action_type\":\"") orelse break;
+                const type_start = pos + type_marker + 15;
+                const type_end = std.mem.indexOf(u8, json[type_start..], "\"") orelse break;
+                const action_type_str = json[type_start .. type_start + type_end];
+
+                const arg_marker = std.mem.indexOf(u8, json[pos..], "\"action_arg\":\"") orelse break;
+                const arg_start = pos + arg_marker + 14;
+                const arg_end = std.mem.indexOf(u8, json[arg_start..], "\"") orelse break;
+                const action_arg = json[arg_start .. arg_start + arg_end];
+
+                const action = if (std.mem.eql(u8, action_type_str, "navigate"))
+                    Action.navigate(action_arg)
+                else if (std.mem.eql(u8, action_type_str, "click"))
+                    Action.click(action_arg)
+                else if (std.mem.eql(u8, action_type_str, "type_text"))
+                    Action.typeText(action_arg)
+                else if (std.mem.eql(u8, action_type_str, "press_enter"))
+                    Action.pressEnter()
+                else
+                    Action.navigate(action_arg);
+
+                _ = sequence.append(action);
+            }
+
+            // Parse counts
             const success_marker = std.mem.indexOf(u8, json[pos..], "\"success\":") orelse break;
             const success_start = pos + success_marker + 10;
             var success_end = success_start;
@@ -535,7 +672,6 @@ pub const ActionCache = struct {
             }
             const success_count = std.fmt.parseInt(u32, json[success_start..success_end], 10) catch 0;
 
-            // Parse fail count
             const fail_marker = std.mem.indexOf(u8, json[pos..], "\"fail\":") orelse break;
             const fail_start = pos + fail_marker + 7;
             var fail_end = fail_start;
@@ -544,7 +680,6 @@ pub const ActionCache = struct {
             }
             const fail_count = std.fmt.parseInt(u32, json[fail_start..fail_end], 10) catch 0;
 
-            // Parse last_used
             const last_marker = std.mem.indexOf(u8, json[pos..], "\"last_used\":") orelse break;
             const last_start = pos + last_marker + 12;
             var last_end = last_start;
@@ -556,25 +691,19 @@ pub const ActionCache = struct {
             // Check TTL
             if (now - last_used > TTL_SECONDS) {
                 pos = last_end;
-                continue; // Skip expired
+                continue;
             }
 
-            // Create action
-            const action = if (std.mem.eql(u8, action_type_str, "navigate"))
-                Action.navigate(action_arg)
-            else if (std.mem.eql(u8, action_type_str, "click"))
-                Action.click(action_arg)
-            else if (std.mem.eql(u8, action_type_str, "type_text"))
-                Action.typeText(action_arg)
-            else if (std.mem.eql(u8, action_type_str, "press_enter"))
-                Action.pressEnter()
-            else
-                Action.navigate(action_arg); // Default
+            if (sequence.length == 0) {
+                pos = last_end;
+                continue;
+            }
 
             // Store in cache
             const key_copy = self.allocator.dupe(u8, key) catch continue;
             self.cache.put(key_copy, CachedAction{
-                .action = action,
+                .action = sequence.actions[0],
+                .sequence = sequence,
                 .success_count = success_count,
                 .fail_count = fail_count,
                 .last_used = last_used,
@@ -884,39 +1013,41 @@ pub const PlanningAgent = struct {
     }
 
     /// Main agent loop: Observe → Think → Act → Repeat
-    /// v23.10: Added action caching for sub-second repeated goals
+    /// v23.12: Added sequence caching for multi-step tasks
     pub fn run(self: *Self) ![]const u8 {
         std.debug.print("\n[AGENT] Starting task: {s}\n", .{self.state.goal});
         std.debug.print("[AGENT] Max steps: {d}\n\n", .{self.state.max_steps});
 
-        // v23.10: Check cache FIRST for instant execution
+        // v23.12: Check cache for SEQUENCE first
         var cache = getGlobalCache(self.allocator);
-        if (cache.lookup(self.state.goal)) |cached_action| {
-            std.debug.print("[CACHE] Using cached action!\n", .{});
-            self.state.current_step = 1;
+        if (cache.lookupSequence(self.state.goal)) |cached_seq| {
+            std.debug.print("[CACHE] Using cached sequence ({d} steps)!\n", .{cached_seq.length});
 
-            // Execute cached action directly
-            try self.act(cached_action);
+            // Execute entire cached sequence
+            for (cached_seq.getSlice()) |cached_action| {
+                self.state.current_step += 1;
+                std.debug.print("═══ Cached Step {d}/{d} ═══\n", .{ self.state.current_step, cached_seq.length });
+                try self.act(cached_action);
+                std.time.sleep(300 * std.time.ns_per_ms);
+            }
 
-            // Quick verify
-            std.time.sleep(500 * std.time.ns_per_ms);
+            // Verify goal achieved
             try self.observe();
-
             if (self.quickGoalCheck()) {
                 self.state.done = true;
-                self.state.result = "Goal achieved (cached)";
-                cache.store(self.state.goal, cached_action); // Reinforce success
-                std.debug.print("[CACHE] Cached action succeeded!\n", .{});
+                self.state.result = "Goal achieved (cached sequence)";
+                cache.storeSequence(self.state.goal, cached_seq); // Reinforce
+                std.debug.print("[CACHE] Cached sequence succeeded!\n", .{});
                 return self.state.result.?;
             } else {
-                // Cache miss - action didn't work, mark as failed
                 cache.markFailed(self.state.goal);
-                std.debug.print("[CACHE] Cached action failed, falling back to LLM\n", .{});
+                std.debug.print("[CACHE] Cached sequence failed, falling back to LLM\n", .{});
+                self.state.current_step = 0; // Reset for LLM path
             }
         }
 
-        // Track first action for caching
-        var first_action: ?Action = null;
+        // v23.12: Track ALL actions for sequence caching
+        var action_sequence = ActionSequence.init();
 
         while (!self.state.done and self.state.current_step < self.state.max_steps) {
             self.state.current_step += 1;
@@ -935,9 +1066,9 @@ pub const PlanningAgent = struct {
             const action = try self.think();
             std.debug.print("[THINK] Action: {s}\n", .{@tagName(action.action_type)});
 
-            // Save first action for caching
-            if (first_action == null and action.action_type != .fail) {
-                first_action = action;
+            // v23.12: Add action to sequence (skip done/fail)
+            if (action.action_type != .done and action.action_type != .fail) {
+                _ = action_sequence.append(action);
             }
 
             // 3. ACT
@@ -963,9 +1094,9 @@ pub const PlanningAgent = struct {
                     self.state.result = "Goal achieved (auto-detected)";
                     std.debug.print("[REFLECT] Goal achieved!\n", .{});
 
-                    // v23.10: Cache successful first action
-                    if (first_action) |fa| {
-                        cache.store(self.state.goal, fa);
+                    // v23.12: Cache entire sequence
+                    if (action_sequence.length > 0) {
+                        cache.storeSequence(self.state.goal, action_sequence);
                     }
                 }
             }
@@ -981,13 +1112,13 @@ pub const PlanningAgent = struct {
             return "Max steps reached without completion";
         }
 
-        // v23.10: Cache on success
-        if (self.state.done and first_action != null) {
+        // v23.12: Cache sequence on success
+        if (self.state.done and action_sequence.length > 0) {
             const result = self.state.result orelse "";
             if (std.mem.indexOf(u8, result, "achieved") != null or
                 std.mem.indexOf(u8, result, "completed") != null)
             {
-                cache.store(self.state.goal, first_action.?);
+                cache.storeSequence(self.state.goal, action_sequence);
             }
         }
 
@@ -2247,11 +2378,11 @@ test "ActionCache serializeToJson" {
     const json = try cache.serializeToJson();
     defer std.testing.allocator.free(json);
 
-    // Check JSON structure
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":1") != null);
+    // Check JSON structure (v2 format with sequences)
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"entries\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "nav:example.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "navigate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"seq\":[") != null);
 }
 
 test "ActionCache deserializeFromJson" {
@@ -2305,4 +2436,100 @@ test "ActionCache TTL expiration" {
     // Entry should not be loaded (expired)
     const stats = cache.getStats();
     try std.testing.expectEqual(@as(u32, 0), stats.entries);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SEQUENCE TESTS - v23.12
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ActionSequence initialization" {
+    const seq = ActionSequence.init();
+    try std.testing.expectEqual(@as(usize, 0), seq.length);
+}
+
+test "ActionSequence append and get" {
+    var seq = ActionSequence.init();
+
+    _ = seq.append(Action.navigate("https://google.com"));
+    _ = seq.append(Action.typeText("hello"));
+    _ = seq.append(Action.pressEnter());
+
+    try std.testing.expectEqual(@as(usize, 3), seq.length);
+
+    const action0 = seq.get(0);
+    try std.testing.expect(action0 != null);
+    try std.testing.expectEqual(ActionType.navigate, action0.?.action_type);
+
+    const action1 = seq.get(1);
+    try std.testing.expect(action1 != null);
+    try std.testing.expectEqual(ActionType.type_text, action1.?.action_type);
+
+    const action2 = seq.get(2);
+    try std.testing.expect(action2 != null);
+    try std.testing.expectEqual(ActionType.press_enter, action2.?.action_type);
+}
+
+test "ActionSequence max length" {
+    var seq = ActionSequence.init();
+
+    // Fill to max
+    var i: usize = 0;
+    while (i < MAX_SEQUENCE_LENGTH) : (i += 1) {
+        const ok = seq.append(Action.navigate("test"));
+        try std.testing.expect(ok);
+    }
+
+    // Should fail on overflow
+    const overflow = seq.append(Action.navigate("overflow"));
+    try std.testing.expect(!overflow);
+    try std.testing.expectEqual(MAX_SEQUENCE_LENGTH, seq.length);
+}
+
+test "ActionCache storeSequence and lookupSequence" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    // Create multi-step sequence
+    var seq = ActionSequence.init();
+    _ = seq.append(Action.navigate("https://google.com"));
+    _ = seq.append(Action.typeText("zig programming"));
+    _ = seq.append(Action.pressEnter());
+
+    // Store sequence
+    cache.storeSequence("Search for zig on google.com", seq);
+    cache.storeSequence("Search for zig on google.com", seq); // success_count = 2
+
+    // Lookup should return full sequence
+    const result = cache.lookupSequence("Search for zig on google.com");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 3), result.?.length);
+}
+
+test "ActionCache sequence serialization roundtrip" {
+    var cache1 = ActionCache.init(std.testing.allocator);
+    defer cache1.deinit();
+
+    // Create multi-step sequence
+    var seq = ActionSequence.init();
+    _ = seq.append(Action.navigate("https://duckduckgo.com"));
+    _ = seq.append(Action.typeText("test query"));
+    _ = seq.append(Action.pressEnter());
+
+    cache1.storeSequence("Search on duckduckgo", seq);
+    cache1.storeSequence("Search on duckduckgo", seq);
+
+    // Serialize
+    const json = try cache1.serializeToJson();
+    defer std.testing.allocator.free(json);
+
+    // Deserialize
+    var cache2 = ActionCache.init(std.testing.allocator);
+    defer cache2.deinit();
+
+    try cache2.deserializeFromJson(json);
+
+    // Verify sequence preserved
+    const result = cache2.lookupSequence("Search on duckduckgo");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 3), result.?.length);
 }
