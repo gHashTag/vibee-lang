@@ -1311,10 +1311,14 @@ pub const NavigateOperation = struct {
 };
 
 /// Wait for selector operation for RetryExecutor (v23.35)
+/// Wait for selector operation with timeout escalation (v23.35, v23.36)
 pub const WaitSelectorOperation = struct {
     selector: []const u8,
     timeout_ms: u32,
     agent: *RealAgent,
+    // v23.36: Timeout escalation
+    timeout_multiplier: f32 = 1.5,
+    current_attempt: u32 = 0,
 
     const Self = @This();
 
@@ -1322,8 +1326,35 @@ pub const WaitSelectorOperation = struct {
         return .wait_selector;
     }
 
+    /// Get escalated timeout based on current attempt (v23.36)
+    pub fn getEscalatedTimeout(self: *Self) u32 {
+        if (self.current_attempt == 0) return self.timeout_ms;
+        
+        var multiplier: f32 = 1.0;
+        var i: u32 = 0;
+        while (i < self.current_attempt) : (i += 1) {
+            multiplier *= self.timeout_multiplier;
+        }
+        
+        const escalated = @as(f32, @floatFromInt(self.timeout_ms)) * multiplier;
+        // Cap at 30 seconds max
+        const max_timeout: u32 = 30000;
+        return @min(@as(u32, @intFromFloat(escalated)), max_timeout);
+    }
+
+    /// Increment attempt counter (v23.36)
+    pub fn nextAttempt(self: *Self) void {
+        self.current_attempt += 1;
+    }
+
+    /// Reset attempt counter (v23.36)
+    pub fn resetAttempts(self: *Self) void {
+        self.current_attempt = 0;
+    }
+
     pub fn execute(self: *Self) AgentError!bool {
-        return self.agent.waitForSelector(self.selector, self.timeout_ms);
+        const timeout = self.getEscalatedTimeout();
+        return self.agent.waitForSelector(self.selector, timeout);
     }
 };
 
@@ -1344,9 +1375,13 @@ pub const ClickOperation = struct {
 };
 
 /// Wait for page load operation for RetryExecutor (v23.35)
+/// Wait for page load operation with timeout escalation (v23.35, v23.36)
 pub const WaitPageLoadOperation = struct {
     timeout_ms: u32,
     agent: *RealAgent,
+    // v23.36: Timeout escalation
+    timeout_multiplier: f32 = 1.5,
+    current_attempt: u32 = 0,
 
     const Self = @This();
 
@@ -1354,8 +1389,35 @@ pub const WaitPageLoadOperation = struct {
         return .wait_page_load;
     }
 
+    /// Get escalated timeout based on current attempt (v23.36)
+    pub fn getEscalatedTimeout(self: *Self) u32 {
+        if (self.current_attempt == 0) return self.timeout_ms;
+        
+        var multiplier: f32 = 1.0;
+        var i: u32 = 0;
+        while (i < self.current_attempt) : (i += 1) {
+            multiplier *= self.timeout_multiplier;
+        }
+        
+        const escalated = @as(f32, @floatFromInt(self.timeout_ms)) * multiplier;
+        // Cap at 60 seconds max for page loads
+        const max_timeout: u32 = 60000;
+        return @min(@as(u32, @intFromFloat(escalated)), max_timeout);
+    }
+
+    /// Increment attempt counter (v23.36)
+    pub fn nextAttempt(self: *Self) void {
+        self.current_attempt += 1;
+    }
+
+    /// Reset attempt counter (v23.36)
+    pub fn resetAttempts(self: *Self) void {
+        self.current_attempt = 0;
+    }
+
     pub fn execute(self: *Self) AgentError!bool {
-        return self.agent.waitForPageLoad(self.timeout_ms);
+        const timeout = self.getEscalatedTimeout();
+        return self.agent.waitForPageLoad(timeout);
     }
 };
 
@@ -1717,12 +1779,14 @@ pub const RetryExecutor = struct {
     }
 
     /// Execute WaitSelectorOperation with retry logic (v23.35)
+    /// Execute WaitSelectorOperation with retry and timeout escalation (v23.35, v23.36)
     pub fn executeWaitSelector(self: *Self, op: *WaitSelectorOperation) RetryExecutionResult {
         var attempt: u32 = 0;
         var total_delay: u32 = 0;
         var last_error: ?AgentError = null;
 
         self.metrics.total_operations += 1;
+        op.resetAttempts(); // v23.36: Reset timeout escalation
 
         if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
             self.metrics.failed_operations += 1;
@@ -1735,9 +1799,13 @@ pub const RetryExecutor = struct {
         }
 
         while (attempt <= self.config.max_retries) {
+            // v23.36: Log escalated timeout
+            const current_timeout = op.getEscalatedTimeout();
+            
             const found = op.execute() catch |err| {
                 last_error = err;
                 attempt += 1;
+                op.nextAttempt(); // v23.36: Escalate timeout for next attempt
                 self.metrics.total_retries += 1;
                 self.metrics.selector_retries += 1;
 
@@ -1760,9 +1828,12 @@ pub const RetryExecutor = struct {
                 self.metrics.total_delay_ms += decision.delay_ms;
                 self.metrics.recordDelay(decision.delay_ms);
 
-                std.debug.print("    [RETRY-EXEC] waitSelector attempt {d}/{d}, waiting {d}ms\n", .{
+                const next_timeout = op.getEscalatedTimeout();
+                std.debug.print("    [RETRY-EXEC] waitSelector attempt {d}/{d}, timeout {d}ms -> {d}ms, waiting {d}ms\n", .{
                     attempt,
                     self.config.max_retries + 1,
+                    current_timeout,
+                    next_timeout,
                     decision.delay_ms,
                 });
 
@@ -1779,8 +1850,9 @@ pub const RetryExecutor = struct {
                     .total_delay_ms = total_delay,
                 };
             } else {
-                // Element not found but no error - retry
+                // Element not found but no error - retry with escalated timeout
                 attempt += 1;
+                op.nextAttempt(); // v23.36: Escalate timeout
                 self.metrics.total_retries += 1;
                 self.metrics.selector_retries += 1;
                 
@@ -1814,12 +1886,14 @@ pub const RetryExecutor = struct {
     }
 
     /// Execute WaitPageLoadOperation with retry logic (v23.35)
+    /// Execute WaitPageLoadOperation with retry and timeout escalation (v23.35, v23.36)
     pub fn executeWaitPageLoad(self: *Self, op: *WaitPageLoadOperation) RetryExecutionResult {
         var attempt: u32 = 0;
         var total_delay: u32 = 0;
         var last_error: ?AgentError = null;
 
         self.metrics.total_operations += 1;
+        op.resetAttempts(); // v23.36: Reset timeout escalation
 
         if (!shouldRetry(0, self.config.max_retries, self.circuit_breaker.state, .transient)) {
             self.metrics.failed_operations += 1;
@@ -1832,9 +1906,13 @@ pub const RetryExecutor = struct {
         }
 
         while (attempt <= self.config.max_retries) {
+            // v23.36: Log escalated timeout
+            const current_timeout = op.getEscalatedTimeout();
+            
             const loaded = op.execute() catch |err| {
                 last_error = err;
                 attempt += 1;
+                op.nextAttempt(); // v23.36: Escalate timeout for next attempt
                 self.metrics.total_retries += 1;
                 self.metrics.page_load_retries += 1;
 
@@ -1857,9 +1935,12 @@ pub const RetryExecutor = struct {
                 self.metrics.total_delay_ms += decision.delay_ms;
                 self.metrics.recordDelay(decision.delay_ms);
 
-                std.debug.print("    [RETRY-EXEC] waitPageLoad attempt {d}/{d}, waiting {d}ms\n", .{
+                const next_timeout = op.getEscalatedTimeout();
+                std.debug.print("    [RETRY-EXEC] waitPageLoad attempt {d}/{d}, timeout {d}ms -> {d}ms, waiting {d}ms\n", .{
                     attempt,
                     self.config.max_retries + 1,
+                    current_timeout,
+                    next_timeout,
                     decision.delay_ms,
                 });
 
@@ -1876,8 +1957,9 @@ pub const RetryExecutor = struct {
                     .total_delay_ms = total_delay,
                 };
             } else {
-                // Page not loaded but no error - retry
+                // Page not loaded but no error - retry with escalated timeout
                 attempt += 1;
+                op.nextAttempt(); // v23.36: Escalate timeout
                 self.metrics.total_retries += 1;
                 self.metrics.page_load_retries += 1;
                 
@@ -4791,12 +4873,106 @@ test "WaitSelectorOperation getType (v23.35)" {
     try std.testing.expectEqual(OperationType.wait_selector, WaitSelectorOperation.getType());
 }
 
+test "WaitSelectorOperation timeout escalation (v23.36)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitSelectorOperation{
+        .selector = "#test",
+        .timeout_ms = 1000,
+        .agent = &agent,
+        .timeout_multiplier = 1.5,
+    };
+
+    // First attempt: base timeout
+    try std.testing.expectEqual(@as(u32, 1000), op.getEscalatedTimeout());
+
+    // After first retry: 1000 * 1.5 = 1500
+    op.nextAttempt();
+    try std.testing.expectEqual(@as(u32, 1500), op.getEscalatedTimeout());
+
+    // After second retry: 1000 * 1.5 * 1.5 = 2250
+    op.nextAttempt();
+    try std.testing.expectEqual(@as(u32, 2250), op.getEscalatedTimeout());
+
+    // Reset should go back to base
+    op.resetAttempts();
+    try std.testing.expectEqual(@as(u32, 1000), op.getEscalatedTimeout());
+}
+
+test "WaitSelectorOperation timeout cap at 30s (v23.36)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitSelectorOperation{
+        .selector = "#test",
+        .timeout_ms = 10000, // 10 seconds base
+        .agent = &agent,
+        .timeout_multiplier = 2.0, // Aggressive multiplier
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at 30 seconds
+    try std.testing.expect(op.getEscalatedTimeout() <= 30000);
+}
+
 test "ClickOperation getType (v23.35)" {
     try std.testing.expectEqual(OperationType.click, ClickOperation.getType());
 }
 
 test "WaitPageLoadOperation getType (v23.35)" {
     try std.testing.expectEqual(OperationType.wait_page_load, WaitPageLoadOperation.getType());
+}
+
+test "WaitPageLoadOperation timeout escalation (v23.36)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitPageLoadOperation{
+        .timeout_ms = 5000,
+        .agent = &agent,
+        .timeout_multiplier = 1.5,
+    };
+
+    // First attempt: base timeout
+    try std.testing.expectEqual(@as(u32, 5000), op.getEscalatedTimeout());
+
+    // After first retry: 5000 * 1.5 = 7500
+    op.nextAttempt();
+    try std.testing.expectEqual(@as(u32, 7500), op.getEscalatedTimeout());
+
+    // After second retry: 5000 * 1.5 * 1.5 = 11250
+    op.nextAttempt();
+    try std.testing.expectEqual(@as(u32, 11250), op.getEscalatedTimeout());
+}
+
+test "WaitPageLoadOperation timeout cap at 60s (v23.36)" {
+    const allocator = std.testing.allocator;
+    var agent = initTestAgent(allocator);
+    defer agent.deinit();
+
+    var op = WaitPageLoadOperation{
+        .timeout_ms = 20000, // 20 seconds base
+        .agent = &agent,
+        .timeout_multiplier = 2.0,
+    };
+
+    // Escalate many times
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        op.nextAttempt();
+    }
+
+    // Should be capped at 60 seconds for page loads
+    try std.testing.expect(op.getEscalatedTimeout() <= 60000);
 }
 
 test "RetryExecutor fromAgent (v23.35)" {
