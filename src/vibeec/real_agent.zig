@@ -43,6 +43,9 @@ pub const RetryConfig = struct {
     initial_delay_ms: u32 = 500,
     backoff_factor: f32 = 2.0,
     max_delay_ms: u32 = 8000,
+    // v23.17: Timeout adjustment on retry
+    timeout_factor: f32 = 1.5, // Increase timeout by 50% on each retry
+    max_timeout_ms: u32 = 30000, // Cap at 30 seconds
 
     /// Calculate delay for given attempt (0-indexed)
     pub fn getDelay(self: RetryConfig, attempt: u32) u32 {
@@ -54,6 +57,18 @@ pub const RetryConfig = struct {
         }
         const result: u32 = @intFromFloat(delay);
         return @min(result, self.max_delay_ms);
+    }
+
+    /// Calculate adjusted timeout for given attempt (v23.17)
+    pub fn getTimeout(self: RetryConfig, base_timeout: u32, attempt: u32) u32 {
+        if (attempt == 0) return base_timeout;
+        var timeout: f32 = @floatFromInt(base_timeout);
+        var i: u32 = 0;
+        while (i < attempt) : (i += 1) {
+            timeout *= self.timeout_factor;
+        }
+        const result: u32 = @intFromFloat(timeout);
+        return @min(result, self.max_timeout_ms);
     }
 };
 
@@ -732,14 +747,18 @@ pub const RealAgent = struct {
         var total_delay: u32 = 0;
 
         while (attempts <= self.retry_config.max_retries) {
-            const found = self.waitForSelector(selector, timeout_ms) catch |err| {
+            // v23.17: Increase timeout on each retry
+            const current_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
+
+            const found = self.waitForSelector(selector, current_timeout) catch |err| {
                 attempts += 1;
                 if (attempts > self.retry_config.max_retries) {
                     return err;
                 }
                 const delay = self.retry_config.getDelay(attempts - 1);
+                const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
                 total_delay += delay;
-                std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms\n", .{ attempts, delay });
+                std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, delay, next_timeout });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
             };
@@ -752,15 +771,16 @@ pub const RealAgent = struct {
                 };
             }
 
-            // Not found, retry with backoff
+            // Not found, retry with backoff and increased timeout
             attempts += 1;
             if (attempts > self.retry_config.max_retries) {
                 break;
             }
 
             const delay = self.retry_config.getDelay(attempts - 1);
+            const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
-            std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
+            std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
         }
 
@@ -771,13 +791,16 @@ pub const RealAgent = struct {
         };
     }
 
-    /// Wait for page load with retry (v23.16)
+    /// Wait for page load with retry (v23.16, v23.17: smart timeout)
     pub fn waitForPageLoadWithRetry(self: *Self, timeout_ms: u32) AgentError!RetryResult {
         var attempts: u32 = 0;
         var total_delay: u32 = 0;
 
         while (attempts <= self.retry_config.max_retries) {
-            const loaded = self.waitForPageLoad(timeout_ms) catch |err| {
+            // v23.17: Increase timeout on each retry
+            const current_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
+
+            const loaded = self.waitForPageLoad(current_timeout) catch |err| {
                 attempts += 1;
                 if (attempts > self.retry_config.max_retries) {
                     return err;
@@ -802,8 +825,9 @@ pub const RealAgent = struct {
             }
 
             const delay = self.retry_config.getDelay(attempts - 1);
+            const next_timeout = self.retry_config.getTimeout(timeout_ms, attempts);
             total_delay += delay;
-            std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
+            std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
         }
 
@@ -1427,4 +1451,46 @@ test "setRetryConfig changes config" {
 
     try std.testing.expectEqual(@as(u32, 5), agent.retry_config.max_retries);
     try std.testing.expectEqual(@as(u32, 1000), agent.retry_config.initial_delay_ms);
+}
+
+test "RetryConfig timeout adjustment (v23.17)" {
+    const config = RetryConfig{
+        .timeout_factor = 1.5,
+        .max_timeout_ms = 30000,
+    };
+
+    const base_timeout: u32 = 1000;
+
+    // Attempt 0: 1000ms (no change)
+    try std.testing.expectEqual(@as(u32, 1000), config.getTimeout(base_timeout, 0));
+    // Attempt 1: 1000 * 1.5 = 1500ms
+    try std.testing.expectEqual(@as(u32, 1500), config.getTimeout(base_timeout, 1));
+    // Attempt 2: 1000 * 1.5 * 1.5 = 2250ms
+    try std.testing.expectEqual(@as(u32, 2250), config.getTimeout(base_timeout, 2));
+    // Attempt 3: 1000 * 1.5^3 = 3375ms
+    try std.testing.expectEqual(@as(u32, 3375), config.getTimeout(base_timeout, 3));
+}
+
+test "RetryConfig timeout capped at max" {
+    const config = RetryConfig{
+        .timeout_factor = 2.0,
+        .max_timeout_ms = 5000,
+    };
+
+    const base_timeout: u32 = 2000;
+
+    // Attempt 0: 2000ms
+    try std.testing.expectEqual(@as(u32, 2000), config.getTimeout(base_timeout, 0));
+    // Attempt 1: 2000 * 2 = 4000ms
+    try std.testing.expectEqual(@as(u32, 4000), config.getTimeout(base_timeout, 1));
+    // Attempt 2: 2000 * 4 = 8000ms, but capped at 5000ms
+    try std.testing.expectEqual(@as(u32, 5000), config.getTimeout(base_timeout, 2));
+    // Attempt 3: would be 16000ms, but capped at 5000ms
+    try std.testing.expectEqual(@as(u32, 5000), config.getTimeout(base_timeout, 3));
+}
+
+test "RetryConfig default timeout_factor" {
+    const config = RetryConfig{};
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), config.timeout_factor, 0.01);
+    try std.testing.expectEqual(@as(u32, 30000), config.max_timeout_ms);
 }
