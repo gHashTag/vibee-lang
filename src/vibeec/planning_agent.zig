@@ -329,16 +329,313 @@ pub const ActionCache = struct {
             .entries = @intCast(self.cache.count()),
         };
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PERSISTENCE - v23.11
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const CACHE_VERSION: u32 = 1;
+    const MAX_ENTRIES: usize = 100;
+    const TTL_SECONDS: i64 = 24 * 60 * 60; // 24 hours
+
+    /// Get cache file path (~/.vibee/cache.json)
+    fn getCacheFilePath(self: *Self) ![]const u8 {
+        _ = self;
+        // Use /tmp for simplicity (cross-platform)
+        return "/tmp/.vibee_cache.json";
+    }
+
+    /// Serialize cache to JSON string
+    pub fn serializeToJson(self: *Self) ![]const u8 {
+        var json_buf: [16384]u8 = undefined;
+        var pos: usize = 0;
+
+        // Header
+        const header = "{\"version\":1,\"entries\":[";
+        @memcpy(json_buf[pos .. pos + header.len], header);
+        pos += header.len;
+
+        // Entries
+        var first = true;
+        var it = self.cache.iterator();
+        var count: usize = 0;
+
+        while (it.next()) |entry| {
+            if (count >= MAX_ENTRIES) break;
+
+            // Check TTL
+            const now = std.time.timestamp();
+            if (now - entry.value_ptr.last_used > TTL_SECONDS) {
+                continue; // Skip expired entries
+            }
+
+            if (!first) {
+                json_buf[pos] = ',';
+                pos += 1;
+            }
+            first = false;
+
+            // Serialize entry
+            const action = entry.value_ptr.action;
+            const action_type_str = @tagName(action.action_type);
+            const action_arg = action.getArg();
+
+            // Escape key and arg for JSON
+            var escaped_key: [256]u8 = undefined;
+            var escaped_arg: [512]u8 = undefined;
+            const key_escaped = escapeJsonString(entry.key_ptr.*, &escaped_key);
+            const arg_escaped = escapeJsonString(action_arg, &escaped_arg);
+
+            const entry_json = std.fmt.bufPrint(json_buf[pos..], "{{\"key\":\"{s}\",\"action_type\":\"{s}\",\"action_arg\":\"{s}\",\"success\":{d},\"fail\":{d},\"last_used\":{d}}}", .{
+                key_escaped,
+                action_type_str,
+                arg_escaped,
+                entry.value_ptr.success_count,
+                entry.value_ptr.fail_count,
+                entry.value_ptr.last_used,
+            }) catch break;
+
+            pos += entry_json.len;
+            count += 1;
+        }
+
+        // Footer
+        const footer = "]}";
+        @memcpy(json_buf[pos .. pos + footer.len], footer);
+        pos += footer.len;
+
+        return self.allocator.dupe(u8, json_buf[0..pos]);
+    }
+
+    /// Escape string for JSON
+    fn escapeJsonString(input: []const u8, output: []u8) []const u8 {
+        var out_pos: usize = 0;
+        for (input) |c| {
+            if (out_pos >= output.len - 2) break;
+            switch (c) {
+                '"' => {
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                    output[out_pos] = '"';
+                    out_pos += 1;
+                },
+                '\\' => {
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                },
+                '\n' => {
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                    output[out_pos] = 'n';
+                    out_pos += 1;
+                },
+                '\r' => {
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                    output[out_pos] = 'r';
+                    out_pos += 1;
+                },
+                '\t' => {
+                    output[out_pos] = '\\';
+                    out_pos += 1;
+                    output[out_pos] = 't';
+                    out_pos += 1;
+                },
+                else => {
+                    output[out_pos] = c;
+                    out_pos += 1;
+                },
+            }
+        }
+        return output[0..out_pos];
+    }
+
+    /// Save cache to file
+    pub fn saveToFile(self: *Self) !void {
+        const path = try self.getCacheFilePath();
+        const json = try self.serializeToJson();
+        defer self.allocator.free(json);
+
+        const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+            std.debug.print("[CACHE] Failed to create file: {}\n", .{err});
+            return;
+        };
+        defer file.close();
+
+        _ = file.write(json) catch |err| {
+            std.debug.print("[CACHE] Failed to write: {}\n", .{err});
+            return;
+        };
+
+        std.debug.print("[CACHE] Saved {d} entries to {s}\n", .{ self.cache.count(), path });
+    }
+
+    /// Load cache from file
+    pub fn loadFromFile(self: *Self) !void {
+        const path = try self.getCacheFilePath();
+
+        const file = std.fs.cwd().openFile(path, .{}) catch {
+            std.debug.print("[CACHE] No cache file found, starting fresh\n", .{});
+            return;
+        };
+        defer file.close();
+
+        var buf: [16384]u8 = undefined;
+        const bytes_read = file.readAll(&buf) catch {
+            std.debug.print("[CACHE] Failed to read cache file\n", .{});
+            return;
+        };
+
+        if (bytes_read == 0) return;
+
+        const json = buf[0..bytes_read];
+        try self.deserializeFromJson(json);
+    }
+
+    /// Deserialize cache from JSON
+    pub fn deserializeFromJson(self: *Self, json: []const u8) !void {
+        // Simple JSON parsing - find entries array
+        const entries_start = std.mem.indexOf(u8, json, "\"entries\":[") orelse return;
+        const array_start = entries_start + 11;
+
+        var pos = array_start;
+        var loaded: u32 = 0;
+        const now = std.time.timestamp();
+
+        while (pos < json.len) {
+            // Find next entry
+            const entry_start = std.mem.indexOf(u8, json[pos..], "{\"key\":\"") orelse break;
+            pos += entry_start;
+
+            // Parse key
+            const key_start = pos + 8;
+            const key_end = std.mem.indexOf(u8, json[key_start..], "\"") orelse break;
+            const key = json[key_start .. key_start + key_end];
+
+            // Parse action_type
+            const type_marker = std.mem.indexOf(u8, json[pos..], "\"action_type\":\"") orelse break;
+            const type_start = pos + type_marker + 15;
+            const type_end = std.mem.indexOf(u8, json[type_start..], "\"") orelse break;
+            const action_type_str = json[type_start .. type_start + type_end];
+
+            // Parse action_arg
+            const arg_marker = std.mem.indexOf(u8, json[pos..], "\"action_arg\":\"") orelse break;
+            const arg_start = pos + arg_marker + 14;
+            const arg_end = std.mem.indexOf(u8, json[arg_start..], "\"") orelse break;
+            const action_arg = json[arg_start .. arg_start + arg_end];
+
+            // Parse success count
+            const success_marker = std.mem.indexOf(u8, json[pos..], "\"success\":") orelse break;
+            const success_start = pos + success_marker + 10;
+            var success_end = success_start;
+            while (success_end < json.len and json[success_end] >= '0' and json[success_end] <= '9') {
+                success_end += 1;
+            }
+            const success_count = std.fmt.parseInt(u32, json[success_start..success_end], 10) catch 0;
+
+            // Parse fail count
+            const fail_marker = std.mem.indexOf(u8, json[pos..], "\"fail\":") orelse break;
+            const fail_start = pos + fail_marker + 7;
+            var fail_end = fail_start;
+            while (fail_end < json.len and json[fail_end] >= '0' and json[fail_end] <= '9') {
+                fail_end += 1;
+            }
+            const fail_count = std.fmt.parseInt(u32, json[fail_start..fail_end], 10) catch 0;
+
+            // Parse last_used
+            const last_marker = std.mem.indexOf(u8, json[pos..], "\"last_used\":") orelse break;
+            const last_start = pos + last_marker + 12;
+            var last_end = last_start;
+            while (last_end < json.len and json[last_end] >= '0' and json[last_end] <= '9') {
+                last_end += 1;
+            }
+            const last_used = std.fmt.parseInt(i64, json[last_start..last_end], 10) catch 0;
+
+            // Check TTL
+            if (now - last_used > TTL_SECONDS) {
+                pos = last_end;
+                continue; // Skip expired
+            }
+
+            // Create action
+            const action = if (std.mem.eql(u8, action_type_str, "navigate"))
+                Action.navigate(action_arg)
+            else if (std.mem.eql(u8, action_type_str, "click"))
+                Action.click(action_arg)
+            else if (std.mem.eql(u8, action_type_str, "type_text"))
+                Action.typeText(action_arg)
+            else if (std.mem.eql(u8, action_type_str, "press_enter"))
+                Action.pressEnter()
+            else
+                Action.navigate(action_arg); // Default
+
+            // Store in cache
+            const key_copy = self.allocator.dupe(u8, key) catch continue;
+            self.cache.put(key_copy, CachedAction{
+                .action = action,
+                .success_count = success_count,
+                .fail_count = fail_count,
+                .last_used = last_used,
+            }) catch {
+                self.allocator.free(key_copy);
+                continue;
+            };
+
+            loaded += 1;
+            pos = last_end;
+        }
+
+        std.debug.print("[CACHE] Loaded {d} entries from file\n", .{loaded});
+    }
+
+    /// Clean expired entries
+    pub fn cleanExpired(self: *Self) void {
+        const now = std.time.timestamp();
+        var to_remove = std.ArrayList([]const u8).init(self.allocator);
+        defer to_remove.deinit();
+
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            if (now - entry.value_ptr.last_used > TTL_SECONDS) {
+                to_remove.append(entry.key_ptr.*) catch continue;
+            }
+        }
+
+        for (to_remove.items) |key| {
+            _ = self.cache.remove(key);
+            self.allocator.free(key);
+        }
+
+        if (to_remove.items.len > 0) {
+            std.debug.print("[CACHE] Cleaned {d} expired entries\n", .{to_remove.items.len});
+        }
+    }
 };
 
 // Global cache instance (shared across agent instances)
 var global_cache: ?ActionCache = null;
+var cache_loaded: bool = false;
 
 pub fn getGlobalCache(allocator: Allocator) *ActionCache {
     if (global_cache == null) {
         global_cache = ActionCache.init(allocator);
+        // Load from file on first access
+        if (!cache_loaded) {
+            global_cache.?.loadFromFile() catch {};
+            cache_loaded = true;
+        }
     }
     return &global_cache.?;
+}
+
+/// Save global cache to file (call before exit)
+pub fn saveGlobalCache() void {
+    if (global_cache) |*cache| {
+        cache.cleanExpired();
+        cache.saveToFile() catch {};
+    }
 }
 
 pub const LLMProvider = enum {
@@ -693,6 +990,9 @@ pub const PlanningAgent = struct {
                 cache.store(self.state.goal, first_action.?);
             }
         }
+
+        // v23.11: Save cache to file after each successful run
+        saveGlobalCache();
 
         return self.state.result orelse "Task completed";
     }
@@ -1930,4 +2230,79 @@ test "ActionCache invalidation on failure" {
     // Now lookup should return null (fail > success)
     const result = cache.lookup("Go to example.com");
     try std.testing.expect(result == null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERSISTENCE TESTS - v23.11
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ActionCache serializeToJson" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const action = Action.navigate("https://example.com");
+    cache.store("Go to example.com", action);
+    cache.store("Go to example.com", action);
+
+    const json = try cache.serializeToJson();
+    defer std.testing.allocator.free(json);
+
+    // Check JSON structure
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"entries\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "nav:example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "navigate") != null);
+}
+
+test "ActionCache deserializeFromJson" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const json = "{\"version\":1,\"entries\":[{\"key\":\"nav:test.com\",\"action_type\":\"navigate\",\"action_arg\":\"https://test.com\",\"success\":5,\"fail\":0,\"last_used\":9999999999}]}";
+
+    try cache.deserializeFromJson(json);
+
+    // Check entry was loaded
+    const stats = cache.getStats();
+    try std.testing.expectEqual(@as(u32, 1), stats.entries);
+}
+
+test "ActionCache serialize and deserialize roundtrip" {
+    // Create and populate cache
+    var cache1 = ActionCache.init(std.testing.allocator);
+    defer cache1.deinit();
+
+    cache1.store("Go to example.com", Action.navigate("https://example.com"));
+    cache1.store("Go to example.com", Action.navigate("https://example.com"));
+    cache1.store("Click button", Action.click("#submit"));
+    cache1.store("Click button", Action.click("#submit"));
+
+    // Serialize
+    const json = try cache1.serializeToJson();
+    defer std.testing.allocator.free(json);
+
+    // Deserialize into new cache
+    var cache2 = ActionCache.init(std.testing.allocator);
+    defer cache2.deinit();
+
+    try cache2.deserializeFromJson(json);
+
+    // Check both caches have same entries
+    const stats1 = cache1.getStats();
+    const stats2 = cache2.getStats();
+    try std.testing.expectEqual(stats1.entries, stats2.entries);
+}
+
+test "ActionCache TTL expiration" {
+    var cache = ActionCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    // Create entry with old timestamp (expired)
+    const old_json = "{\"version\":1,\"entries\":[{\"key\":\"nav:old.com\",\"action_type\":\"navigate\",\"action_arg\":\"https://old.com\",\"success\":5,\"fail\":0,\"last_used\":1000}]}";
+
+    try cache.deserializeFromJson(old_json);
+
+    // Entry should not be loaded (expired)
+    const stats = cache.getStats();
+    try std.testing.expectEqual(@as(u32, 0), stats.entries);
 }
