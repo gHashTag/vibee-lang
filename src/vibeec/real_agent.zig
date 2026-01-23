@@ -47,6 +47,22 @@ pub const DomainStatsEntry = struct {
     load_count: u32,
 };
 
+// v23.25: Jitter Strategy enum
+// Based on AWS Architecture Blog recommendations for distributed systems
+pub const JitterStrategy = enum {
+    equal, // Equal jitter: delay/2 + random(0, delay/2) - balanced approach
+    full, // Full jitter: random(0, delay) - maximum spread, best for high contention
+    decorrelated, // Decorrelated jitter: min(max_delay, random(base, prev_delay * 3)) - AWS recommended
+
+    pub fn toString(self: JitterStrategy) []const u8 {
+        return switch (self) {
+            .equal => "equal",
+            .full => "full",
+            .decorrelated => "decorrelated",
+        };
+    }
+};
+
 // v23.16: Retry configuration with exponential backoff
 pub const RetryConfig = struct {
     max_retries: u32 = 3,
@@ -59,6 +75,10 @@ pub const RetryConfig = struct {
     // v23.18: Jitter for distributed systems
     jitter_factor: f32 = 0.2, // ±20% random variation
     use_jitter: bool = true,
+    // v23.25: Jitter strategy selection
+    jitter_strategy: JitterStrategy = .equal,
+    // v23.25: Previous delay for decorrelated jitter
+    prev_delay_ms: u32 = 0,
 
     /// Calculate delay for given attempt (0-indexed)
     pub fn getDelay(self: RetryConfig, attempt: u32) u32 {
@@ -72,13 +92,64 @@ pub const RetryConfig = struct {
         return @min(result, self.max_delay_ms);
     }
 
-    /// Calculate delay with jitter (v23.18)
+    /// Get full jitter: random(0, delay) (v23.25)
+    /// Maximum spread, best for high contention scenarios
+    pub fn getFullJitter(self: RetryConfig, attempt: u32) u32 {
+        const base_delay = self.getDelay(attempt);
+        if (base_delay == 0) return 0;
+
+        const now = std.time.milliTimestamp();
+        const seed: u64 = @bitCast(now);
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+
+        // Full jitter: random value between 0 and base_delay
+        const result = random.intRangeAtMost(u32, 0, base_delay);
+        return @max(result, 100); // Minimum 100ms
+    }
+
+    /// Get decorrelated jitter: min(max_delay, random(base, prev_delay * 3)) (v23.25)
+    /// AWS recommended approach - provides good spread while maintaining progress
+    pub fn getDecorrelatedJitter(self: RetryConfig, attempt: u32, prev_delay: u32) u32 {
+        const base_delay = self.initial_delay_ms;
+        const effective_prev = if (prev_delay == 0) base_delay else prev_delay;
+
+        const now = std.time.milliTimestamp();
+        const seed: u64 = @bitCast(now);
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+
+        // Decorrelated: random between base and prev_delay * 3
+        const upper_bound = @min(effective_prev * 3, self.max_delay_ms);
+        const lower_bound = @min(base_delay, upper_bound);
+
+        if (upper_bound <= lower_bound) return lower_bound;
+
+        const result = random.intRangeAtMost(u32, lower_bound, upper_bound);
+        _ = attempt; // Used for consistency with other methods
+        return @max(result, 100); // Minimum 100ms
+    }
+
+    /// Calculate delay with jitter using selected strategy (v23.25)
     /// Prevents thundering herd problem in distributed systems
     pub fn getDelayWithJitter(self: RetryConfig, attempt: u32) u32 {
         const base_delay = self.getDelay(attempt);
         if (!self.use_jitter or self.jitter_factor == 0) {
             return base_delay;
         }
+
+        // Use strategy-specific jitter calculation
+        return switch (self.jitter_strategy) {
+            .full => self.getFullJitter(attempt),
+            .decorrelated => self.getDecorrelatedJitter(attempt, self.prev_delay_ms),
+            .equal => self.getEqualJitter(attempt),
+        };
+    }
+
+    /// Get equal jitter: delay/2 + random(0, delay/2) (v23.25)
+    /// Balanced approach - original implementation
+    fn getEqualJitter(self: RetryConfig, attempt: u32) u32 {
+        const base_delay = self.getDelay(attempt);
 
         // Generate pseudo-random jitter using timestamp
         const now = std.time.milliTimestamp();
@@ -2398,4 +2469,101 @@ test "RealAgent export methods (v23.24)" {
     const cb_json = try agent.exportCircuitBreakerToJson();
     defer allocator.free(cb_json);
     try std.testing.expect(cb_json.len > 0);
+}
+
+// v23.25: Jitter Strategy Tests
+test "JitterStrategy enum values (v23.25)" {
+    try std.testing.expectEqualStrings("equal", JitterStrategy.equal.toString());
+    try std.testing.expectEqualStrings("full", JitterStrategy.full.toString());
+    try std.testing.expectEqualStrings("decorrelated", JitterStrategy.decorrelated.toString());
+}
+
+test "RetryConfig default jitter strategy (v23.25)" {
+    const config = RetryConfig{};
+    try std.testing.expectEqual(JitterStrategy.equal, config.jitter_strategy);
+    try std.testing.expectEqual(@as(u32, 0), config.prev_delay_ms);
+}
+
+test "getFullJitter returns value in range (v23.25)" {
+    const config = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_strategy = .full,
+    };
+
+    // Full jitter should return value between 0 and base_delay
+    const delay = config.getFullJitter(1);
+    const base_delay = config.getDelay(1); // 2000ms with factor 2.0
+
+    try std.testing.expect(delay >= 100); // Minimum 100ms
+    try std.testing.expect(delay <= base_delay);
+}
+
+test "getDecorrelatedJitter returns value in range (v23.25)" {
+    const config = RetryConfig{
+        .initial_delay_ms = 500,
+        .max_delay_ms = 8000,
+        .jitter_strategy = .decorrelated,
+    };
+
+    // Decorrelated jitter: random(base, prev_delay * 3)
+    const delay = config.getDecorrelatedJitter(1, 1000);
+
+    try std.testing.expect(delay >= 100); // Minimum 100ms
+    try std.testing.expect(delay <= config.max_delay_ms);
+}
+
+test "getDecorrelatedJitter with zero prev_delay (v23.25)" {
+    const config = RetryConfig{
+        .initial_delay_ms = 500,
+        .max_delay_ms = 8000,
+    };
+
+    // With prev_delay = 0, should use initial_delay_ms as base
+    const delay = config.getDecorrelatedJitter(1, 0);
+
+    try std.testing.expect(delay >= 100);
+    try std.testing.expect(delay <= config.max_delay_ms);
+}
+
+test "getDelayWithJitter uses strategy (v23.25)" {
+    // Test equal strategy
+    var config_equal = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_strategy = .equal,
+        .use_jitter = true,
+    };
+    const delay_equal = config_equal.getDelayWithJitter(1);
+    try std.testing.expect(delay_equal >= 100);
+
+    // Test full strategy
+    var config_full = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_strategy = .full,
+        .use_jitter = true,
+    };
+    const delay_full = config_full.getDelayWithJitter(1);
+    try std.testing.expect(delay_full >= 100);
+
+    // Test decorrelated strategy
+    var config_decorr = RetryConfig{
+        .initial_delay_ms = 1000,
+        .jitter_strategy = .decorrelated,
+        .prev_delay_ms = 500,
+        .use_jitter = true,
+    };
+    const delay_decorr = config_decorr.getDelayWithJitter(1);
+    try std.testing.expect(delay_decorr >= 100);
+}
+
+test "RealAgent with custom jitter strategy (v23.25)" {
+    const allocator = std.testing.allocator;
+    var agent = RealAgent.init(allocator, .{});
+    defer agent.deinit();
+
+    // Change jitter strategy
+    agent.retry_config.jitter_strategy = .full;
+    try std.testing.expectEqual(JitterStrategy.full, agent.retry_config.jitter_strategy);
+
+    agent.retry_config.jitter_strategy = .decorrelated;
+    try std.testing.expectEqual(JitterStrategy.decorrelated, agent.retry_config.jitter_strategy);
 }
