@@ -210,6 +210,8 @@ pub const RetryMetrics = struct {
     selector_retries: u32 = 0,
     page_load_retries: u32 = 0,
     click_retries: u32 = 0,
+    // v23.26: Histogram for delay distribution
+    delay_histogram: Histogram = Histogram{},
 
     /// Get success rate (0.0 - 1.0)
     pub fn getSuccessRate(self: RetryMetrics) f32 {
@@ -229,9 +231,126 @@ pub const RetryMetrics = struct {
         return @as(f32, @floatFromInt(self.total_delay_ms)) / @as(f32, @floatFromInt(self.total_retries));
     }
 
+    /// Record delay in histogram (v23.26)
+    pub fn recordDelay(self: *RetryMetrics, delay_ms: u32) void {
+        self.delay_histogram.observe(delay_ms);
+    }
+
+    /// Get delay percentiles (v23.26)
+    pub fn getDelayP50(self: RetryMetrics) u32 {
+        return self.delay_histogram.getP50();
+    }
+
+    pub fn getDelayP90(self: RetryMetrics) u32 {
+        return self.delay_histogram.getP90();
+    }
+
+    pub fn getDelayP95(self: RetryMetrics) u32 {
+        return self.delay_histogram.getP95();
+    }
+
+    pub fn getDelayP99(self: RetryMetrics) u32 {
+        return self.delay_histogram.getP99();
+    }
+
     /// Reset all metrics
     pub fn reset(self: *RetryMetrics) void {
         self.* = RetryMetrics{};
+    }
+};
+
+// v23.26: Histogram for latency distribution
+pub const Histogram = struct {
+    // Bucket boundaries in milliseconds (exponential: 100, 200, 400, 800, 1600, 3200, 6400, 12800)
+    const BUCKET_COUNT = 8;
+    const BUCKET_BOUNDARIES = [_]u32{ 100, 200, 400, 800, 1600, 3200, 6400, 12800 };
+
+    buckets: [BUCKET_COUNT]u64 = [_]u64{0} ** BUCKET_COUNT,
+    overflow: u64 = 0, // Values > 12800ms
+    count: u64 = 0,
+    sum: u64 = 0,
+    min: u32 = std.math.maxInt(u32),
+    max: u32 = 0,
+
+    const Self = @This();
+
+    /// Observe a value and add to appropriate bucket
+    pub fn observe(self: *Self, value: u32) void {
+        self.count += 1;
+        self.sum += value;
+
+        if (value < self.min) self.min = value;
+        if (value > self.max) self.max = value;
+
+        // Find bucket
+        var found = false;
+        for (BUCKET_BOUNDARIES, 0..) |boundary, i| {
+            if (value <= boundary) {
+                self.buckets[i] += 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            self.overflow += 1;
+        }
+    }
+
+    /// Get percentile value (p = 0.0 to 1.0)
+    /// Uses linear interpolation within buckets
+    pub fn getPercentile(self: Self, p: f32) u32 {
+        if (self.count == 0) return 0;
+        if (p <= 0.0) return self.min;
+        if (p >= 1.0) return self.max;
+
+        const target_count: u64 = @intFromFloat(@as(f32, @floatFromInt(self.count)) * p);
+        var cumulative: u64 = 0;
+
+        for (self.buckets, 0..) |bucket_count, i| {
+            cumulative += bucket_count;
+            if (cumulative >= target_count) {
+                return BUCKET_BOUNDARIES[i];
+            }
+        }
+
+        // In overflow bucket
+        return BUCKET_BOUNDARIES[BUCKET_COUNT - 1];
+    }
+
+    /// Get p50 (median)
+    pub fn getP50(self: Self) u32 {
+        return self.getPercentile(0.5);
+    }
+
+    /// Get p90
+    pub fn getP90(self: Self) u32 {
+        return self.getPercentile(0.9);
+    }
+
+    /// Get p95
+    pub fn getP95(self: Self) u32 {
+        return self.getPercentile(0.95);
+    }
+
+    /// Get p99
+    pub fn getP99(self: Self) u32 {
+        return self.getPercentile(0.99);
+    }
+
+    /// Get average
+    pub fn getAverage(self: Self) f32 {
+        if (self.count == 0) return 0.0;
+        return @as(f32, @floatFromInt(self.sum)) / @as(f32, @floatFromInt(self.count));
+    }
+
+    /// Reset histogram
+    pub fn reset(self: *Self) void {
+        self.* = Histogram{};
+    }
+
+    /// Get bucket boundaries for export
+    pub fn getBucketBoundaries() []const u32 {
+        return &BUCKET_BOUNDARIES;
     }
 };
 
@@ -367,6 +486,16 @@ pub const MetricsExporter = struct {
         try writer.print("    \"selector_retries\": {d},\n", .{metrics.selector_retries});
         try writer.print("    \"page_load_retries\": {d},\n", .{metrics.page_load_retries});
         try writer.print("    \"click_retries\": {d}\n", .{metrics.click_retries});
+        try writer.writeAll("  },\n");
+        // v23.26: Histogram percentiles
+        try writer.writeAll("  \"delay_percentiles\": {\n");
+        try writer.print("    \"p50\": {d},\n", .{metrics.getDelayP50()});
+        try writer.print("    \"p90\": {d},\n", .{metrics.getDelayP90()});
+        try writer.print("    \"p95\": {d},\n", .{metrics.getDelayP95()});
+        try writer.print("    \"p99\": {d},\n", .{metrics.getDelayP99()});
+        try writer.print("    \"min\": {d},\n", .{metrics.delay_histogram.min});
+        try writer.print("    \"max\": {d},\n", .{metrics.delay_histogram.max});
+        try writer.print("    \"count\": {d}\n", .{metrics.delay_histogram.count});
         try writer.writeAll("  }\n");
         try writer.writeAll("}\n");
 
@@ -415,7 +544,31 @@ pub const MetricsExporter = struct {
 
         try writer.writeAll("# HELP vibee_retry_delay_ms_max Maximum delay in milliseconds\n");
         try writer.writeAll("# TYPE vibee_retry_delay_ms_max gauge\n");
-        try writer.print("vibee_retry_delay_ms_max {d}\n", .{metrics.max_delay_ms});
+        try writer.print("vibee_retry_delay_ms_max {d}\n\n", .{metrics.max_delay_ms});
+
+        // v23.26: Histogram for delay distribution
+        try writer.writeAll("# HELP vibee_retry_delay_ms Histogram of retry delays\n");
+        try writer.writeAll("# TYPE vibee_retry_delay_ms histogram\n");
+
+        // Export bucket counts (cumulative)
+        const boundaries = Histogram.getBucketBoundaries();
+        var cumulative: u64 = 0;
+        for (boundaries, 0..) |boundary, i| {
+            cumulative += metrics.delay_histogram.buckets[i];
+            try writer.print("vibee_retry_delay_ms_bucket{{le=\"{d}\"}} {d}\n", .{ boundary, cumulative });
+        }
+        cumulative += metrics.delay_histogram.overflow;
+        try writer.print("vibee_retry_delay_ms_bucket{{le=\"+Inf\"}} {d}\n", .{cumulative});
+        try writer.print("vibee_retry_delay_ms_sum {d}\n", .{metrics.delay_histogram.sum});
+        try writer.print("vibee_retry_delay_ms_count {d}\n\n", .{metrics.delay_histogram.count});
+
+        // Percentiles as gauges
+        try writer.writeAll("# HELP vibee_retry_delay_percentile Delay percentiles\n");
+        try writer.writeAll("# TYPE vibee_retry_delay_percentile gauge\n");
+        try writer.print("vibee_retry_delay_percentile{{quantile=\"0.5\"}} {d}\n", .{metrics.getDelayP50()});
+        try writer.print("vibee_retry_delay_percentile{{quantile=\"0.9\"}} {d}\n", .{metrics.getDelayP90()});
+        try writer.print("vibee_retry_delay_percentile{{quantile=\"0.95\"}} {d}\n", .{metrics.getDelayP95()});
+        try writer.print("vibee_retry_delay_percentile{{quantile=\"0.99\"}} {d}\n", .{metrics.getDelayP99()});
 
         return buffer.toOwnedSlice();
     }
@@ -1116,6 +1269,8 @@ pub const RealAgent = struct {
                 if (delay > self.retry_metrics.max_delay_ms) {
                     self.retry_metrics.max_delay_ms = delay;
                 }
+                // v23.26: Record in histogram
+                self.retry_metrics.recordDelay(delay);
 
                 std.debug.print("    [RETRY] Navigate attempt {d}/{d} failed, waiting {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay });
 
@@ -1181,6 +1336,7 @@ pub const RealAgent = struct {
                 total_delay += delay;
                 self.retry_metrics.total_delay_ms += delay;
                 if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+                self.retry_metrics.recordDelay(delay); // v23.26
 
                 std.debug.print("    [RETRY] waitForSelector attempt {d} failed, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, delay, next_timeout });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
@@ -1211,6 +1367,7 @@ pub const RealAgent = struct {
             total_delay += delay;
             self.retry_metrics.total_delay_ms += delay;
             if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+            self.retry_metrics.recordDelay(delay); // v23.26
 
             std.debug.print("    [RETRY] Selector not found, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
@@ -1258,6 +1415,7 @@ pub const RealAgent = struct {
                 total_delay += delay;
                 self.retry_metrics.total_delay_ms += delay;
                 if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+                self.retry_metrics.recordDelay(delay); // v23.26
 
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
                 continue;
@@ -1287,6 +1445,7 @@ pub const RealAgent = struct {
             total_delay += delay;
             self.retry_metrics.total_delay_ms += delay;
             if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+            self.retry_metrics.recordDelay(delay); // v23.26
 
             std.debug.print("    [RETRY] Page load timeout, attempt {d}/{d}, waiting {d}ms, next timeout: {d}ms\n", .{ attempts, self.retry_config.max_retries + 1, delay, next_timeout });
             std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
@@ -1331,6 +1490,7 @@ pub const RealAgent = struct {
                 total_delay += delay;
                 self.retry_metrics.total_delay_ms += delay;
                 if (delay > self.retry_metrics.max_delay_ms) self.retry_metrics.max_delay_ms = delay;
+                self.retry_metrics.recordDelay(delay); // v23.26
 
                 std.debug.print("    [RETRY] Click failed, attempt {d}, waiting {d}ms\n", .{ attempts, delay });
                 std.time.sleep(@as(u64, delay) * std.time.ns_per_ms);
@@ -2566,4 +2726,122 @@ test "RealAgent with custom jitter strategy (v23.25)" {
 
     agent.retry_config.jitter_strategy = .decorrelated;
     try std.testing.expectEqual(JitterStrategy.decorrelated, agent.retry_config.jitter_strategy);
+}
+
+// v23.26: Histogram Tests
+test "Histogram initial state (v23.26)" {
+    const hist = Histogram{};
+    try std.testing.expectEqual(@as(u64, 0), hist.count);
+    try std.testing.expectEqual(@as(u64, 0), hist.sum);
+    try std.testing.expectEqual(std.math.maxInt(u32), hist.min);
+    try std.testing.expectEqual(@as(u32, 0), hist.max);
+}
+
+test "Histogram observe single value (v23.26)" {
+    var hist = Histogram{};
+    hist.observe(150);
+
+    try std.testing.expectEqual(@as(u64, 1), hist.count);
+    try std.testing.expectEqual(@as(u64, 150), hist.sum);
+    try std.testing.expectEqual(@as(u32, 150), hist.min);
+    try std.testing.expectEqual(@as(u32, 150), hist.max);
+    // 150 should be in bucket 1 (<=200)
+    try std.testing.expectEqual(@as(u64, 1), hist.buckets[1]);
+}
+
+test "Histogram observe multiple values (v23.26)" {
+    var hist = Histogram{};
+    hist.observe(50); // bucket 0 (<=100)
+    hist.observe(150); // bucket 1 (<=200)
+    hist.observe(500); // bucket 3 (<=800)
+    hist.observe(5000); // bucket 6 (<=6400)
+    hist.observe(20000); // overflow (>12800)
+
+    try std.testing.expectEqual(@as(u64, 5), hist.count);
+    try std.testing.expectEqual(@as(u64, 25700), hist.sum);
+    try std.testing.expectEqual(@as(u32, 50), hist.min);
+    try std.testing.expectEqual(@as(u32, 20000), hist.max);
+    try std.testing.expectEqual(@as(u64, 1), hist.overflow);
+}
+
+test "Histogram percentiles (v23.26)" {
+    var hist = Histogram{};
+    // Add 10 values in first bucket (<=100)
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        hist.observe(50);
+    }
+    // Add 90 values in second bucket (<=200)
+    i = 0;
+    while (i < 90) : (i += 1) {
+        hist.observe(150);
+    }
+
+    // p50 should be in bucket 1 (<=200) since 50% of 100 = 50, and first bucket has only 10
+    try std.testing.expectEqual(@as(u32, 200), hist.getP50());
+    // p90 should be in bucket 1
+    try std.testing.expectEqual(@as(u32, 200), hist.getP90());
+}
+
+test "Histogram getAverage (v23.26)" {
+    var hist = Histogram{};
+    hist.observe(100);
+    hist.observe(200);
+    hist.observe(300);
+
+    const avg = hist.getAverage();
+    try std.testing.expect(avg > 199.0 and avg < 201.0);
+}
+
+test "Histogram reset (v23.26)" {
+    var hist = Histogram{};
+    hist.observe(500);
+    hist.observe(1000);
+    hist.reset();
+
+    try std.testing.expectEqual(@as(u64, 0), hist.count);
+    try std.testing.expectEqual(@as(u64, 0), hist.sum);
+}
+
+test "RetryMetrics with histogram (v23.26)" {
+    var metrics = RetryMetrics{};
+    metrics.recordDelay(500);
+    metrics.recordDelay(1000);
+    metrics.recordDelay(1500);
+
+    try std.testing.expectEqual(@as(u64, 3), metrics.delay_histogram.count);
+    try std.testing.expect(metrics.getDelayP50() > 0);
+    try std.testing.expect(metrics.getDelayP90() > 0);
+}
+
+test "MetricsExporter JSON with histogram (v23.26)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    metrics.recordDelay(500);
+    metrics.recordDelay(1000);
+
+    const exporter = MetricsExporter.init(allocator);
+    const json = try exporter.exportRetryMetricsToJson(metrics);
+    defer allocator.free(json);
+
+    // Check that histogram data is in JSON
+    try std.testing.expect(std.mem.indexOf(u8, json, "delay_percentiles") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "p50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "p99") != null);
+}
+
+test "MetricsExporter Prometheus with histogram (v23.26)" {
+    const allocator = std.testing.allocator;
+    var metrics = RetryMetrics{};
+    metrics.recordDelay(500);
+    metrics.recordDelay(1000);
+
+    const exporter = MetricsExporter.init(allocator);
+    const prom = try exporter.exportRetryMetricsToPrometheus(metrics);
+    defer allocator.free(prom);
+
+    // Check that histogram buckets are in Prometheus format
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_delay_ms_bucket") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "le=\"+Inf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prom, "vibee_retry_delay_percentile") != null);
 }
