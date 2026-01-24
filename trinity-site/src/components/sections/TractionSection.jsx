@@ -1,4 +1,5 @@
 import { useI18n } from '../../i18n/context'
+import Section from '../Section'
 import MetricCard from '../MetricCard'
 
 export default function TractionSection() {
@@ -7,8 +8,11 @@ export default function TractionSection() {
   
   if (!tr) return null
 
+  // Select first 6 metrics for symmetry
+  const displayMetrics = tr.metrics?.slice(0, 6)
+
   return (
-    <section id="traction">
+    <Section id="traction">
       <div className="tight fade">
         <h2 dangerouslySetInnerHTML={{ __html: tr.title }} />
         <p style={{ marginBottom: '4rem' }}>{tr.sub}</p>
@@ -25,11 +29,10 @@ export default function TractionSection() {
       </div>
 
       <div className="grid-row fade">
-        {tr.metrics?.map((m, i) => (
+        {displayMetrics?.map((m, i) => (
           <MetricCard key={i} value={m.value} label={m.label} color={m.color} />
         ))}
-        {/* Fill to 6 items if needed for symmetry, or just center the 4 */}
       </div>
-    </section>
+    </Section>
   )
 }
