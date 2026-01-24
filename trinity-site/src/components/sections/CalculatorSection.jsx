@@ -6,8 +6,8 @@ export default function CalculatorSection() {
   const { lang } = useI18n()
   const [nodes, setNodes] = useState(100)
 
-  const binaryCost = nodes * 24 * 30 * 2 // $2/hour per node
-  const trinityCost = binaryCost * 0.4
+  const binaryCost = nodes * 24 * 30 * 2 // $2/hour per node (Standard A100/H100)
+  const trinityCost = binaryCost / 578.8 // Hyper-Singularity V5.0 Efficiency
   const savings = binaryCost - trinityCost
 
   return (
