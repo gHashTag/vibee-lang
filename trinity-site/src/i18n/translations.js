@@ -191,7 +191,7 @@ export const translations = {
     
     competition: {
       title: '<span class="grad">Competition</span> Matrix',
-      headers: ['Company', 'Architecture', 'Valuation', 'Ternary?', 'Open?'],
+      headers: ['Company', 'Architecture', 'Valuation', 'Ternary', 'Open'],
       rows: [
         { company: 'NVIDIA', arch: 'Binary GPU', val: '$3T', ternary: false, open: false },
         { company: 'Cerebras', arch: 'Binary Wafer', val: '$4B', ternary: false, open: false },
@@ -207,7 +207,54 @@ export const translations = {
       sub: 'Based on peer-reviewed research and 60+ years of ternary computing',
       papersTitle: 'Key Research Papers'
     },
-    
+
+    technology: {
+      title: '<span class="grad">Technology</span> Architecture',
+      sub: 'How TRINITY Works',
+      layers: [
+        { title: 'TERNARY ALU', desc: '3-state logic' },
+        { title: 'TERNARY MEMORY', desc: '3-level storage' },
+        { title: 'TERNARY I/O', desc: 'Interface layer' }
+      ],
+      softwareStack: 'TRINITY SOFTWARE STACK',
+      innovations: [
+        'Multi-threshold CMOS for native 3-state logic',
+        'Golden ratio optimization (φ² + 1/φ² = 3)',
+        'Zero-overhead ternary neural network execution'
+      ]
+    },
+
+    milestones: {
+      title: '18-Month <span class="grad">Milestones</span>',
+      sub: 'What $2M Buys',
+      quarters: [
+        { q: 'Q1 2026', title: 'Foundation', items: ['Complete TALU RTL design', 'FPGA prototype working', 'Benchmark vs emulation'] },
+        { q: 'Q2 2026', title: 'Validation', items: ['Run ternary NN on FPGA', 'Demonstrate 3× speedup', 'First beta customers'] },
+        { q: 'Q3 2026', title: 'Product', items: ['TRINITY-FPGA PCIe card', 'SDK and documentation', '5 paying customers'] },
+        { q: 'Q4 2026', title: 'Scale', items: ['$500K ARR', 'ASIC design complete', 'Series A fundraise'] }
+      ],
+      success: ['3×+ speedup demonstrated', '10+ customers', '$1M+ pipeline']
+    },
+
+    vision: {
+      title: '<span class="grad">Vision</span> 2032',
+      quote: '"Binary was the 20th century. Ternary is the 21st."',
+      goals: [
+        'TRINITY chips in every AI data center',
+        'Standard for ternary neural network inference',
+        '$1B+ revenue, profitable',
+        'IPO or strategic acquisition'
+      ],
+      whyNow: [
+        'Ternary AI is proven (Microsoft, Meta, Google)',
+        'No native hardware exists (first mover)',
+        '$50B market growing 25%+ annually',
+        'Strong technical foundation (working VM)',
+        'Clear path to product and revenue'
+      ],
+      closing: 'The mathematics of the universe favors three states.'
+    },
+
     invest: {
       title: '<span class="grad">Investment</span>',
       useTitle: 'Use of Funds',
@@ -435,7 +482,7 @@ export const translations = {
     
     competition: {
       title: 'Матрица <span class="grad">конкурентов</span>',
-      headers: ['Компания', 'Архитектура', 'Оценка', 'Троичное?', 'Open?'],
+      headers: ['Компания', 'Архитектура', 'Оценка', 'Троичное', 'Open'],
       rows: [
         { company: 'NVIDIA', arch: 'Бинарный GPU', val: '$3T', ternary: false, open: false },
         { company: 'Cerebras', arch: 'Бинарный Wafer', val: '$4B', ternary: false, open: false },
@@ -451,7 +498,54 @@ export const translations = {
       sub: 'Основано на рецензируемых исследованиях и 60+ годах троичных вычислений',
       papersTitle: 'Ключевые научные работы'
     },
-    
+
+    technology: {
+      title: '<span class="grad">Технология</span>',
+      sub: 'Как работает TRINITY',
+      layers: [
+        { title: 'TERNARY ALU', desc: '3-состояния' },
+        { title: 'TERNARY MEMORY', desc: '3-уровня' },
+        { title: 'TERNARY I/O', desc: 'Интерфейс' }
+      ],
+      softwareStack: 'TRINITY SOFTWARE STACK',
+      innovations: [
+        'Multi-threshold CMOS для нативной 3-state логики',
+        'Оптимизация золотым сечением (φ² + 1/φ² = 3)',
+        'Нулевые накладные расходы для троичных нейросетей'
+      ]
+    },
+
+    milestones: {
+      title: '18 месяцев <span class="grad">майлстоуны</span>',
+      sub: 'Что покупают $2M',
+      quarters: [
+        { q: 'Q1 2026', title: 'Фундамент', items: ['RTL дизайн TALU', 'FPGA прототип', 'Бенчмарки'] },
+        { q: 'Q2 2026', title: 'Валидация', items: ['Троичные NN на FPGA', 'Демо 3× ускорения', 'Первые бета-клиенты'] },
+        { q: 'Q3 2026', title: 'Продукт', items: ['TRINITY-FPGA PCIe', 'SDK и документация', '5 платящих клиентов'] },
+        { q: 'Q4 2026', title: 'Масштаб', items: ['$500K ARR', 'ASIC дизайн', 'Раунд A'] }
+      ],
+      success: ['3×+ ускорение', '10+ клиентов', '$1M+ пайплайн']
+    },
+
+    vision: {
+      title: '<span class="grad">Видение</span> 2032',
+      quote: '"Бинарное — это 20 век. Троичное — 21 век."',
+      goals: [
+        'TRINITY чипы в каждом AI дата-центре',
+        'Стандарт для троичного инференса',
+        '$1B+ выручки, прибыльность',
+        'IPO или стратегическое поглощение'
+      ],
+      whyNow: [
+        'Троичный AI доказан (Microsoft, Meta, Google)',
+        'Нет нативного железа (первые на рынке)',
+        'Рынок $50B растет 25%+ в год',
+        'Рабочий технический фундамент (VM)',
+        'Чёткий путь к продукту и выручке'
+      ],
+      closing: 'Математика вселенной благоприятствует трём состояниям.'
+    },
+
     invest: {
       title: '<span class="grad">Инвестиции</span>',
       useTitle: 'Распределение средств',

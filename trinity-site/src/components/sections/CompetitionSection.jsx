@@ -23,7 +23,7 @@ export default function CompetitionSection() {
                   padding: '0.8rem', 
                   borderBottom: '1px solid var(--border)', 
                   color: 'var(--muted)', 
-                  textAlign: 'left', 
+                  textAlign: 'center', 
                   fontWeight: '500',
                   fontSize: '0.75rem',
                   textTransform: 'uppercase',

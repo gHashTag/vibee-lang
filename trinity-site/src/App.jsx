@@ -12,6 +12,9 @@ import {
   ProductSection,
   FinancialsSection,
   BusinessModelSection,
+  TechnologySection,
+  MilestonesSection,
+  VisionSection,
   GTMSection,
   CompetitionSection,
   RoadmapSection,
@@ -36,11 +39,14 @@ export default function App() {
         <ProductSection />
         <FinancialsSection />
         <BusinessModelSection />
+        <TechnologySection />
+        <MilestonesSection />
         <GTMSection />
         <CompetitionSection />
         <RoadmapSection />
         <TeamSection />
         <EcosystemSection />
+        <VisionSection />
         <InvestSection />
       </main>
       <footer style={{ textAlign: 'center', padding: '3rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
