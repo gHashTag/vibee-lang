@@ -37,9 +37,9 @@ export default function Navigation() {
           {item}
         </a>
       ))}
-      <button className="lang-toggle" onClick={switchLang}>
+      <div className="lang-toggle" onClick={switchLang}>
         {t.langSwitch}
-      </button>
+      </div>
     </nav>
   )
 }
