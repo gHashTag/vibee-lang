@@ -46,7 +46,9 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist
 var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$IntlProvider$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/components/IntlProvider.js [app-rsc] (ecmascript)"); // Correct path
 ;
 ;
-async function LocaleLayout({ children, params: { locale } }) {
+async function LocaleLayout({ children, params }) {
+    const resolvedParams = await params;
+    const locale = resolvedParams.locale;
     let messages;
     try {
         messages = (await __turbopack_context__.f({
@@ -70,7 +72,7 @@ async function LocaleLayout({ children, params: { locale } }) {
         children: children
     }, void 0, false, {
         fileName: "[project]/src/app/[locale]/layout.jsx",
-        lineNumber: 14,
+        lineNumber: 17,
         columnNumber: 5
     }, this);
 }

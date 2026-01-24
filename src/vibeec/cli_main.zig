@@ -17,16 +17,17 @@ pub const VERSION = "0.4.0";
 
 const Command = enum {
     compile,
-    run,      // Run via bytecode VM (the only way!)
-    vm,       // Fast VM mode for .999 files
-    bench,    // Benchmark with detailed timing
-    profile,  // Profile opcodes
+    run, // Run via bytecode VM (the only way!)
+    vm, // Fast VM mode for .999 files
+    bench, // Benchmark with detailed timing
+    profile, // Profile opcodes
     check,
     lex,
     parse,
     repl,
     version,
     help,
+    tri, // Compile to native Trinity code (.tri)
     unknown,
 };
 
@@ -34,17 +35,17 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    
+
     if (args.len < 2) {
         printUsage();
         return;
     }
-    
+
     const cmd = parseCommand(args[1]);
-    
+
     switch (cmd) {
         .compile => {
             if (args.len < 3) {
@@ -75,9 +76,9 @@ pub fn main() !void {
                 printError("Missing file argument for 'bench'");
                 return;
             }
-            const iterations: u32 = if (args.len >= 4) 
+            const iterations: u32 = if (args.len >= 4)
                 std.fmt.parseInt(u32, args[3], 10) catch 10
-            else 
+            else
                 10;
             try benchmarkVM(args[2], iterations, allocator);
         },
@@ -113,6 +114,13 @@ pub fn main() !void {
         .repl => {
             printInfo("REPL mode - use vibee-repl binary");
         },
+        .tri => {
+            if (args.len < 3) {
+                printError("Missing file argument for 'tri'");
+                return;
+            }
+            try compileToTri(args[2], allocator);
+        },
         .version => printVersion(),
         .help => printUsage(),
         .unknown => {
@@ -132,6 +140,7 @@ fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "lex") or std.mem.eql(u8, arg, "l")) return .lex;
     if (std.mem.eql(u8, arg, "parse") or std.mem.eql(u8, arg, "p")) return .parse;
     if (std.mem.eql(u8, arg, "repl")) return .repl;
+    if (std.mem.eql(u8, arg, "tri") or std.mem.eql(u8, arg, "t")) return .tri;
     if (std.mem.eql(u8, arg, "version") or std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) return .version;
     if (std.mem.eql(u8, arg, "help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) return .help;
     return .unknown;
@@ -144,15 +153,15 @@ fn compileFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     var compiler = coptic_compiler.Compiler.init(allocator, source, path);
     var result = compiler.compile();
     defer result.deinit(allocator);
-    
+
     if (result.success) {
         printSuccess("Compilation successful!");
         std.debug.print("\n{s}\n", .{result.code});
-        
+
         // Stats
         std.debug.print("\n--- Stats ---\n", .{});
         std.debug.print("Tokens: {}\n", .{result.tokens_count});
@@ -165,10 +174,42 @@ fn compileFile(path: []const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("  [{d}:{d}] {s}\n", .{ err.line, err.column, err.message });
         }
     }
-    
+
     for (result.warnings.items) |warn| {
         std.debug.print("  Warning [{d}:{d}]: {s}\n", .{ warn.line, warn.column, warn.message });
     }
+}
+
+fn compileToTri(path: []const u8, allocator: std.mem.Allocator) !void {
+    const source = readFile(path, allocator) catch |err| {
+        printError("Cannot read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Прямая компиляция в CIS (Триады)
+    const ops = @import("coptic_codegen_real.zig").compileToCIS(source, allocator) catch |err| {
+        printError("Coptic Native Compilation failed");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(ops);
+
+    const output_path = try std.mem.concat(allocator, u8, &.{ std.fs.path.stem(path), ".tri" });
+    defer allocator.free(output_path);
+
+    var file = try std.fs.cwd().createFile(output_path, .{});
+    defer file.close();
+
+    for (ops) |op| {
+        var buf: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(op, &buf);
+        try file.writeAll(buf[0..len]);
+    }
+
+    printSuccess("Trinity Native compilation successful!");
+    std.debug.print("  Output: {s} ({d} triads)\n", .{ output_path, ops.len });
 }
 
 // Run file via bytecode VM - the ONLY execution method
@@ -179,29 +220,29 @@ fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     // Parse
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch |err| {
         printError("Parse error");
         std.debug.print("  Error: {}\n", .{err});
         return;
     };
     defer ast.deinit();
-    
+
     // Compile to bytecode
     var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
     defer compiler.deinit();
-    
+
     compiler.compile(&ast) catch |err| {
         printError("Bytecode compilation error");
         std.debug.print("  Error: {}\n", .{err});
         return;
     };
-    
+
     const code = compiler.getCode();
     const constants = compiler.getConstants();
-    
+
     // Execute on VM
     var vm = vm_runtime.VM.init(allocator) catch |err| {
         printError("VM initialization error");
@@ -209,19 +250,19 @@ fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer vm.deinit();
-    
+
     vm.load(code, constants);
-    
+
     const result = vm.runFast() catch |err| {
         printError("VM runtime error");
         std.debug.print("  Error: {}\n", .{err});
         return;
     };
-    
+
     // Print result
     var buf: [256]u8 = undefined;
     const result_str = std.fmt.bufPrint(&buf, "{}", .{result}) catch "?";
-    
+
     // Print VM stats
     printSuccess("VM execution complete");
     std.debug.print("  Instructions: {}\n", .{vm.instructions_executed});
@@ -237,45 +278,41 @@ fn profileVM(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     var parser = coptic_parser.Parser.init(source, allocator);
     var ast = parser.parseProgram() catch {
         std.debug.print("Parse error\n", .{});
         return;
     };
     defer ast.deinit();
-    
+
     var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
     defer compiler.deinit();
-    
+
     compiler.compile(&ast) catch {
         std.debug.print("Compile error\n", .{});
         return;
     };
-    
+
     const code = compiler.getCode();
     const constants = compiler.getConstants();
-    
+
     var vm = vm_runtime.VM.init(allocator) catch {
         std.debug.print("VM init error\n", .{});
         return;
     };
     defer vm.deinit();
-    
+
     vm.load(code, constants);
     _ = vm.run() catch |err| {
         std.debug.print("Runtime error: {}\n", .{err});
         return;
     };
-    
+
     // Print profile
     vm.printProfile(15);
-    
-    std.debug.print("\nTotal: {d} ops in {d:.2} µs ({d:.0} ops/s)\n", .{
-        vm.instructions_executed,
-        vm.getExecutionTimeUs(),
-        vm.getOpsPerSecond()
-    });
+
+    std.debug.print("\nTotal: {d} ops in {d:.2} µs ({d:.0} ops/s)\n", .{ vm.instructions_executed, vm.getExecutionTimeUs(), vm.getOpsPerSecond() });
 }
 
 // Fast VM mode - minimal overhead, maximum performance
@@ -286,13 +323,13 @@ fn runFastVM(path: []const u8, allocator: std.mem.Allocator) !void {
     if (is_ternary) {
         std.debug.print("⚡ TERNARY MODE (.999)\n", .{});
     }
-    
+
     const source = readFile(path, allocator) catch |err| {
         std.debug.print("Error: {}\n", .{err});
         return;
     };
     defer allocator.free(source);
-    
+
     // Parse
     var parser = coptic_parser.Parser.init(source, allocator);
     var ast = parser.parseProgram() catch {
@@ -300,37 +337,37 @@ fn runFastVM(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer ast.deinit();
-    
+
     // Compile
     var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
     defer compiler.deinit();
-    
+
     compiler.compile(&ast) catch {
         std.debug.print("Compile error\n", .{});
         return;
     };
-    
+
     const code = compiler.getCode();
     const constants = compiler.getConstants();
-    
+
     // Run VM
     var vm = vm_runtime.VM.init(allocator) catch {
         std.debug.print("VM init error\n", .{});
         return;
     };
     defer vm.deinit();
-    
+
     vm.load(code, constants);
-    
+
     const result = vm.run() catch |err| {
         std.debug.print("Runtime error: {}\n", .{err});
         return;
     };
-    
+
     // Print only result and timing
     const time_us = vm.getExecutionTimeUs();
     const ops_sec = vm.getOpsPerSecond();
-    
+
     // Print result value
     switch (result) {
         .int_val => |v| std.debug.print("{d}\n", .{v}),
@@ -347,17 +384,15 @@ fn runFastVM(path: []const u8, allocator: std.mem.Allocator) !void {
                 buf[i] = if (trit < 0) '-' else if (trit > 0) '+' else '0';
                 val = @divTrunc(val - trit, 3);
             }
-            std.debug.print("0t{s}({d})\n", .{buf[0..3], v});
+            std.debug.print("0t{s}({d})\n", .{ buf[0..3], v });
         },
         .nil => {},
         else => std.debug.print("result\n", .{}),
     }
-    
+
     // Print stats
     std.debug.print("---\n", .{});
-    std.debug.print("{d} ops | {d:.1} µs | {d:.0} ops/s\n", .{
-        vm.instructions_executed, time_us, ops_sec
-    });
+    std.debug.print("{d} ops | {d:.1} µs | {d:.0} ops/s\n", .{ vm.instructions_executed, time_us, ops_sec });
 }
 
 // Production benchmark with detailed metrics
@@ -368,7 +403,7 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
         return;
     };
     defer allocator.free(source);
-    
+
     // Measure parse time
     const parse_start = std.time.nanoTimestamp();
     var parser = coptic_parser.Parser.init(source, allocator);
@@ -379,54 +414,55 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
     };
     defer ast.deinit();
     const parse_time = std.time.nanoTimestamp() - parse_start;
-    
+
     // Measure compile time
     const compile_start = std.time.nanoTimestamp();
     var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
     defer compiler.deinit();
-    
+
     compiler.compile(&ast) catch |err| {
         printError("Bytecode compilation error");
         std.debug.print("  Error: {}\n", .{err});
         return;
     };
     const compile_time = std.time.nanoTimestamp() - compile_start;
-    
+
     const code = compiler.getCode();
     const constants = compiler.getConstants();
-    
+
     // Benchmark runs (no warmup - each run is independent)
     var total_time_ns: u64 = 0;
     var total_instructions: u64 = 0;
     var min_time_ns: u64 = std.math.maxInt(u64);
     var max_time_ns: u64 = 0;
     var final_result: @import("bytecode.zig").Value = .{ .nil = {} };
-    
+
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
         var vm = vm_runtime.VM.init(allocator) catch return;
         defer vm.deinit();
         vm.load(code, constants);
-        
+
         final_result = vm.run() catch .{ .nil = {} };
-        
+
         const exec_time = vm.getExecutionTimeNs();
         total_time_ns += exec_time;
         total_instructions += vm.instructions_executed;
-        
+
         if (exec_time < min_time_ns) min_time_ns = exec_time;
         if (exec_time > max_time_ns) max_time_ns = exec_time;
     }
-    
+
     // Calculate statistics
     const avg_time_ns = total_time_ns / iterations;
     const avg_instructions = total_instructions / iterations;
     const avg_time_us = @as(f64, @floatFromInt(avg_time_ns)) / 1000.0;
     const avg_time_ms = @as(f64, @floatFromInt(avg_time_ns)) / 1_000_000.0;
-    const ops_per_sec = if (avg_time_ns > 0) 
+    const ops_per_sec = if (avg_time_ns > 0)
         @as(f64, @floatFromInt(avg_instructions)) / (@as(f64, @floatFromInt(avg_time_ns)) / 1_000_000_000.0)
-    else 0;
-    
+    else
+        0;
+
     // Print benchmark report
     std.debug.print("\n", .{});
     std.debug.print("╔══════════════════════════════════════════════════════════════════╗\n", .{});
@@ -442,13 +478,13 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
     std.debug.print("║   Constants:     {d:>12}                                       ║\n", .{constants.len});
     std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
     std.debug.print("║ EXECUTION PHASE (VM only)                                        ║\n", .{});
-    std.debug.print("║   Avg time:      {d:>12.3} µs ({d:.3} ms)                       ║\n", .{avg_time_us, avg_time_ms});
+    std.debug.print("║   Avg time:      {d:>12.3} µs ({d:.3} ms)                       ║\n", .{ avg_time_us, avg_time_ms });
     std.debug.print("║   Min time:      {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(min_time_ns)) / 1000.0});
     std.debug.print("║   Max time:      {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(max_time_ns)) / 1000.0});
     std.debug.print("║   Instructions:  {d:>12}                                       ║\n", .{avg_instructions});
     std.debug.print("║   Ops/sec:       {d:>12.0}                                       ║\n", .{ops_per_sec});
     std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
-    
+
     // Print result
     var buf: [64]u8 = undefined;
     const result_str = switch (final_result) {
@@ -469,19 +505,19 @@ fn checkFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     // Lexer check
     var lexer = coptic_lexer.Lexer.init(source);
     var token_count: u32 = 0;
     var lex_errors: u32 = 0;
-    
+
     while (true) {
         const tok = lexer.nextToken();
         token_count += 1;
         if (tok.kind == .invalid) lex_errors += 1;
         if (tok.kind == .eof) break;
     }
-    
+
     // Parser check
     var parser = coptic_parser.Parser.init(source, allocator);
     var ast = parser.parseProgram() catch {
@@ -489,14 +525,14 @@ fn checkFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer ast.deinit();
-    
+
     // Semantic check
     var semantic = coptic_semantic.SemanticAnalyzer.init(allocator);
     defer semantic.deinit();
     semantic.setup();
     semantic.setSource(source);
     semantic.analyze(&ast) catch {};
-    
+
     // Report
     if (lex_errors == 0 and semantic.errors.items.len == 0) {
         printSuccess("Check passed!");
@@ -516,9 +552,9 @@ fn lexFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     var lexer = coptic_lexer.Lexer.init(source);
-    
+
     std.debug.print("--- Tokens ---\n", .{});
     while (true) {
         const tok = lexer.nextToken();
@@ -539,7 +575,7 @@ fn parseFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer allocator.free(source);
-    
+
     var parser = coptic_parser.Parser.init(source, allocator);
     var ast = parser.parseProgram() catch |err| {
         printError("Parse error");
@@ -547,7 +583,7 @@ fn parseFile(path: []const u8, allocator: std.mem.Allocator) !void {
         return;
     };
     defer ast.deinit();
-    
+
     std.debug.print("--- AST ---\n", .{});
     printAst(&ast, 0, source);
 }
@@ -562,7 +598,7 @@ fn printAst(node: *const coptic_parser.AstNode, depth: u32, source: []const u8) 
         std.debug.print(" \"{s}\"", .{node.token.lexeme(source)});
     }
     std.debug.print("\n", .{});
-    
+
     for (node.children.items) |*child| {
         printAst(child, depth + 1, source);
     }
@@ -589,6 +625,7 @@ fn printUsage() void {
         \\  repl                Start REPL
         \\  version, -v         Show version
         \\  help, -h            Show this help
+        \\  tri, t <file>       Compile to native .tri (Trinity code)
         \\
         \\Examples:
         \\  vibee run hello.999

@@ -23,9 +23,9 @@ pub const TokenKind = enum(u8) {
     int_literal,
     float_literal,
     string_literal,
-    hex_literal,      // 0xFF
-    binary_literal,   // 0b1010
-    ternary_literal,  // 0t120 (balanced ternary)
+    hex_literal, // 0xFF
+    binary_literal, // 0b1010
+    ternary_literal, // 0t120 (balanced ternary)
     identifier,
     coptic_identifier,
     trit_true,
@@ -54,6 +54,7 @@ pub const TokenKind = enum(u8) {
     kw_none,
     kw_ok,
     kw_err,
+    kw_module,
     kw_and,
     kw_or,
     kw_not,
@@ -61,44 +62,45 @@ pub const TokenKind = enum(u8) {
     op_minus,
     op_star,
     op_slash,
-    op_percent,       // %
+    op_percent, // %
     // Ternary operators (balanced ternary arithmetic)
-    op_plus_t,        // +t (TRYTE_ADD)
-    op_minus_t,       // -t (TRYTE_SUB)
-    op_star_t,        // *t (TRYTE_MUL)
-    op_lt_t,          // <t (TRYTE_LT)
-    op_eqeq_t,        // ==t (TRYTE_EQ)
+    op_plus_t, // +t (TRYTE_ADD)
+    op_minus_t, // -t (TRYTE_SUB)
+    op_star_t, // *t (TRYTE_MUL)
+    op_lt_t, // <t (TRYTE_LT)
+    op_eqeq_t, // ==t (TRYTE_EQ)
     op_eq,
     op_eqeq,
-    op_fat_arrow,     // =>
-    op_neq,           // !=
-    op_lt,            // <
-    op_gt,            // >
-    op_compose,       // >> (function composition)
-    op_lte,           // <=
-    op_gte,           // >=
-    op_and,           // &&
-    op_or,            // ||
-    op_bitor,         // | (single pipe for OR patterns)
-    op_pipe,          // |>
-    op_range,         // .. (range pattern)
-    op_nullish,       // ??
+    op_fat_arrow, // =>
+    op_arrow, // ->
+    op_neq, // !=
+    op_lt, // <
+    op_gt, // >
+    op_compose, // >> (function composition)
+    op_lte, // <=
+    op_gte, // >=
+    op_and, // &&
+    op_or, // ||
+    op_bitor, // | (single pipe for OR patterns)
+    op_pipe, // |>
+    op_range, // .. (range pattern)
+    op_nullish, // ??
     op_optional_chain, // ?.
-    op_not,           // !
+    op_not, // !
     lparen,
     rparen,
     lbrace,
     rbrace,
-    lbracket,         // [
-    rbracket,         // ]
+    lbracket, // [
+    rbracket, // ]
     semicolon,
     colon,
     comma,
-    dot,              // .
-    dot_dot_dot,      // ...
-    question,         // ?
+    dot, // .
+    dot_dot_dot, // ...
+    question, // ?
     newline,
-    comment,          // // or /* */
+    comment, // // or /* */
 };
 
 pub const Token = struct {
@@ -140,7 +142,12 @@ pub const Lexer = struct {
 
         // Single char tokens
         switch (c) {
-            '\n' => { self.advance(); self.line += 1; self.column = 1; return self.makeTokenAt(.newline, start, 1, start_col); },
+            '\n' => {
+                self.advance();
+                self.line += 1;
+                self.column = 1;
+                return self.makeTokenAt(.newline, start, 1, start_col);
+            },
             '+' => {
                 self.advance();
                 // Check for +t (ternary add)
@@ -156,6 +163,10 @@ pub const Lexer = struct {
                 if (self.pos < self.source.len and self.source[self.pos] == 't') {
                     self.advance();
                     return self.makeTokenAt(.op_minus_t, start, 2, start_col);
+                }
+                if (self.pos < self.source.len and self.source[self.pos] == '>') {
+                    self.advance();
+                    return self.makeTokenAt(.op_arrow, start, 2, start_col);
                 }
                 return self.makeTokenAt(.op_minus, start, 1, start_col);
             },
@@ -180,16 +191,46 @@ pub const Lexer = struct {
                 }
                 return self.makeTokenAt(.op_slash, start, 1, start_col);
             },
-            '%' => { self.advance(); return self.makeTokenAt(.op_percent, start, 1, start_col); },
-            '(' => { self.advance(); return self.makeTokenAt(.lparen, start, 1, start_col); },
-            ')' => { self.advance(); return self.makeTokenAt(.rparen, start, 1, start_col); },
-            '{' => { self.advance(); return self.makeTokenAt(.lbrace, start, 1, start_col); },
-            '}' => { self.advance(); return self.makeTokenAt(.rbrace, start, 1, start_col); },
-            '[' => { self.advance(); return self.makeTokenAt(.lbracket, start, 1, start_col); },
-            ']' => { self.advance(); return self.makeTokenAt(.rbracket, start, 1, start_col); },
-            ';' => { self.advance(); return self.makeTokenAt(.semicolon, start, 1, start_col); },
-            ':' => { self.advance(); return self.makeTokenAt(.colon, start, 1, start_col); },
-            ',' => { self.advance(); return self.makeTokenAt(.comma, start, 1, start_col); },
+            '%' => {
+                self.advance();
+                return self.makeTokenAt(.op_percent, start, 1, start_col);
+            },
+            '(' => {
+                self.advance();
+                return self.makeTokenAt(.lparen, start, 1, start_col);
+            },
+            ')' => {
+                self.advance();
+                return self.makeTokenAt(.rparen, start, 1, start_col);
+            },
+            '{' => {
+                self.advance();
+                return self.makeTokenAt(.lbrace, start, 1, start_col);
+            },
+            '}' => {
+                self.advance();
+                return self.makeTokenAt(.rbrace, start, 1, start_col);
+            },
+            '[' => {
+                self.advance();
+                return self.makeTokenAt(.lbracket, start, 1, start_col);
+            },
+            ']' => {
+                self.advance();
+                return self.makeTokenAt(.rbracket, start, 1, start_col);
+            },
+            ';' => {
+                self.advance();
+                return self.makeTokenAt(.semicolon, start, 1, start_col);
+            },
+            ':' => {
+                self.advance();
+                return self.makeTokenAt(.colon, start, 1, start_col);
+            },
+            ',' => {
+                self.advance();
+                return self.makeTokenAt(.comma, start, 1, start_col);
+            },
             '.' => {
                 self.advance();
                 // Check for ... (spread/rest operator)
@@ -299,7 +340,10 @@ pub const Lexer = struct {
             '"' => return self.scanString(start, start_col),
             '0'...'9' => return self.scanNumber(start, start_col),
             'a'...'z', 'A'...'Z', '_' => return self.scanIdentifier(start, start_col),
-            else => { self.advance(); return self.makeTokenAt(.invalid, start, 1, start_col); },
+            else => {
+                self.advance();
+                return self.makeTokenAt(.invalid, start, 1, start_col);
+            },
         }
     }
 
@@ -324,20 +368,24 @@ pub const Lexer = struct {
         if (self.pos >= self.source.len) return .{ .codepoint = null, .len = 0 };
         const b0 = self.source[self.pos];
         if (b0 < 0x80) {
-            self.pos += 1; self.column += 1;
+            self.pos += 1;
+            self.column += 1;
             return .{ .codepoint = b0, .len = 1 };
         }
         if (b0 & 0xE0 == 0xC0 and self.pos + 1 < self.source.len) {
             const cp = (@as(u21, b0 & 0x1F) << 6) | (self.source[self.pos + 1] & 0x3F);
-            self.pos += 2; self.column += 1;
+            self.pos += 2;
+            self.column += 1;
             return .{ .codepoint = cp, .len = 2 };
         }
         if (b0 & 0xF0 == 0xE0 and self.pos + 2 < self.source.len) {
             const cp = (@as(u21, b0 & 0x0F) << 12) | (@as(u21, self.source[self.pos + 1] & 0x3F) << 6) | (self.source[self.pos + 2] & 0x3F);
-            self.pos += 3; self.column += 1;
+            self.pos += 3;
+            self.column += 1;
             return .{ .codepoint = cp, .len = 3 };
         }
-        self.pos += 1; self.column += 1;
+        self.pos += 1;
+        self.column += 1;
         return .{ .codepoint = null, .len = 1 };
     }
 
@@ -346,38 +394,43 @@ pub const Lexer = struct {
         if (self.source[self.pos] == '0' and self.pos + 1 < self.source.len) {
             const next = self.source[self.pos + 1];
             if (next == 'x' or next == 'X') {
-                self.advance(); self.advance(); // skip 0x
+                self.advance();
+                self.advance(); // skip 0x
                 return self.scanHexNumber(start, start_col);
             }
             if (next == 'b' or next == 'B') {
-                self.advance(); self.advance(); // skip 0b
+                self.advance();
+                self.advance(); // skip 0b
                 return self.scanBinaryNumber(start, start_col);
             }
             if (next == 't' or next == 'T') {
-                self.advance(); self.advance(); // skip 0t
+                self.advance();
+                self.advance(); // skip 0t
                 return self.scanTernaryNumber(start, start_col);
             }
         }
-        
+
         var is_float = false;
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
-            if (c >= '0' and c <= '9') { self.advance(); }
-            else if (c == '_') { self.advance(); } // allow 1_000_000
+            if (c >= '0' and c <= '9') {
+                self.advance();
+            } else if (c == '_') {
+                self.advance();
+            } // allow 1_000_000
             else if (c == '.' and !is_float) {
                 // Check if this is a range operator (..) - don't consume the dot
                 if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '.') {
                     break; // Stop here, let the main lexer handle ..
                 }
-                is_float = true; 
-                self.advance(); 
-            }
-            else break;
+                is_float = true;
+                self.advance();
+            } else break;
         }
         const len: u16 = @intCast(self.pos - start);
         return self.makeTokenAt(if (is_float) .float_literal else .int_literal, start, len, start_col);
     }
-    
+
     fn scanHexNumber(self: *Lexer, start: u32, start_col: u16) Token {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
@@ -388,7 +441,7 @@ pub const Lexer = struct {
         const len: u16 = @intCast(self.pos - start);
         return self.makeTokenAt(.hex_literal, start, len, start_col);
     }
-    
+
     fn scanBinaryNumber(self: *Lexer, start: u32, start_col: u16) Token {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
@@ -399,20 +452,24 @@ pub const Lexer = struct {
         const len: u16 = @intCast(self.pos - start);
         return self.makeTokenAt(.binary_literal, start, len, start_col);
     }
-    
+
     fn scanTernaryNumber(self: *Lexer, start: u32, start_col: u16) Token {
         // Balanced ternary: digits are 0, 1, 2 (or T, 0, 1 for -1, 0, +1)
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
-            if (c >= '0' and c <= '2') { self.advance(); }
-            else if (c == 'T' or c == 't') { self.advance(); } // T = -1 in balanced ternary
-            else if (c == '_') { self.advance(); }
-            else break;
+            if (c >= '0' and c <= '2') {
+                self.advance();
+            } else if (c == 'T' or c == 't') {
+                self.advance();
+            } // T = -1 in balanced ternary
+            else if (c == '_') {
+                self.advance();
+            } else break;
         }
         const len: u16 = @intCast(self.pos - start);
         return self.makeTokenAt(.ternary_literal, start, len, start_col);
     }
-    
+
     fn scanLineComment(self: *Lexer, start: u32, start_col: u16) Token {
         self.advance(); // skip second /
         while (self.pos < self.source.len and self.source[self.pos] != '\n') {
@@ -421,17 +478,19 @@ pub const Lexer = struct {
         const len: u16 = @intCast(self.pos - start);
         return self.makeTokenAt(.comment, start, len, start_col);
     }
-    
+
     fn scanBlockComment(self: *Lexer, start: u32, start_col: u16) Token {
         self.advance(); // skip *
         var depth: u32 = 1;
         while (self.pos + 1 < self.source.len and depth > 0) {
             if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
                 depth -= 1;
-                self.advance(); self.advance();
+                self.advance();
+                self.advance();
             } else if (self.source[self.pos] == '/' and self.source[self.pos + 1] == '*') {
                 depth += 1;
-                self.advance(); self.advance();
+                self.advance();
+                self.advance();
             } else {
                 if (self.source[self.pos] == '\n') {
                     self.line += 1;
@@ -473,6 +532,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, lex, "const")) return .kw_const;
         if (std.mem.eql(u8, lex, "var")) return .kw_var;
         if (std.mem.eql(u8, lex, "let")) return .kw_let;
+        if (std.mem.eql(u8, lex, "module")) return .kw_module;
         if (std.mem.eql(u8, lex, "func")) return .kw_func;
         if (std.mem.eql(u8, lex, "fn")) return .kw_func;
         if (std.mem.eql(u8, lex, "return")) return .kw_return;
@@ -505,8 +565,9 @@ pub const Lexer = struct {
     fn skipWhitespace(self: *Lexer) void {
         while (self.pos < self.source.len) {
             const c = self.source[self.pos];
-            if (c == ' ' or c == '\t' or c == '\r') { self.advance(); }
-            else break;
+            if (c == ' ' or c == '\t' or c == '\r') {
+                self.advance();
+            } else break;
         }
     }
 
@@ -520,19 +581,18 @@ pub const Lexer = struct {
     }
 
     fn makeTokenAt(self: *Lexer, kind: TokenKind, start: u32, len: u16, col: u16) Token {
-        _ = self;
-        return .{ .kind = kind, .start = start, .len = len, .line = 1, .column = col };
+        return .{ .kind = kind, .start = start, .len = len, .line = self.line, .column = col };
     }
 
     pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
         var lexer = Lexer.init(source);
-        var tokens = std.ArrayList(Token).init(allocator);
+        var tokens = std.ArrayListUnmanaged(Token){};
         while (true) {
             const tok = lexer.nextToken();
-            try tokens.append(tok);
+            try tokens.append(allocator, tok);
             if (tok.kind == .eof) break;
         }
-        return tokens.toOwnedSlice();
+        return try tokens.toOwnedSlice(allocator);
     }
 };
 

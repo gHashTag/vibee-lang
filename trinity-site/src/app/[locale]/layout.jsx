@@ -1,6 +1,9 @@
 import {IntlProvider} from '../../components/IntlProvider'; // Correct path
 
-export default async function LocaleLayout({ children, params: {locale} }) {
+export default async function LocaleLayout({ children, params }) {
+  const resolvedParams = await params;
+  const locale = resolvedParams.locale;
+
   let messages;
   try {
     messages = (await import(`../../../messages/${locale}.json`)).default;

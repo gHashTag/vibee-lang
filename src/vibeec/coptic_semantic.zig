@@ -20,7 +20,7 @@ pub const Type = enum {
     string_,
     func,
     void_,
-    
+
     pub fn toString(self: Type) []const u8 {
         return switch (self) {
             .unknown => "unknown",
@@ -49,7 +49,7 @@ pub const Scope = struct {
     symbols: std.StringHashMap(Symbol),
     parent: ?*Scope,
     level: u32,
-    
+
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) Scope {
         return .{
             .symbols = std.StringHashMap(Symbol).init(allocator),
@@ -57,21 +57,21 @@ pub const Scope = struct {
             .level = if (parent) |p| p.level + 1 else 0,
         };
     }
-    
+
     pub fn deinit(self: *Scope) void {
         self.symbols.deinit();
     }
-    
+
     pub fn define(self: *Scope, name: []const u8, symbol: Symbol) !void {
         try self.symbols.put(name, symbol);
     }
-    
+
     pub fn lookup(self: *Scope, name: []const u8) ?Symbol {
         if (self.symbols.get(name)) |sym| return sym;
         if (self.parent) |p| return p.lookup(name);
         return null;
     }
-    
+
     pub fn lookupLocal(self: *Scope, name: []const u8) ?Symbol {
         return self.symbols.get(name);
     }
@@ -87,36 +87,36 @@ pub const SemanticAnalyzer = struct {
     allocator: std.mem.Allocator,
     current_scope: *Scope,
     global_scope: Scope,
-    errors: std.ArrayList(SemanticError),
-    warnings: std.ArrayList(SemanticError),
+    errors: std.ArrayListUnmanaged(SemanticError),
+    warnings: std.ArrayListUnmanaged(SemanticError),
     source: []const u8,
-    
+
     pub fn init(allocator: std.mem.Allocator) SemanticAnalyzer {
         return SemanticAnalyzer{
             .allocator = allocator,
             .current_scope = undefined,
             .global_scope = Scope.init(allocator, null),
-            .errors = std.ArrayList(SemanticError).init(allocator),
-            .warnings = std.ArrayList(SemanticError).init(allocator),
+            .errors = .{},
+            .warnings = .{},
             .source = "",
         };
     }
-    
+
     pub fn setSource(self: *SemanticAnalyzer, source: []const u8) void {
         self.source = source;
     }
-    
+
     pub fn setup(self: *SemanticAnalyzer) void {
         self.current_scope = &self.global_scope;
         self.defineBuiltins() catch {};
     }
-    
+
     pub fn deinit(self: *SemanticAnalyzer) void {
         self.global_scope.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        self.errors.deinit(self.allocator);
+        self.warnings.deinit(self.allocator);
     }
-    
+
     fn defineBuiltins(self: *SemanticAnalyzer) !void {
         // Built-in constants
         try self.current_scope.define("phi", .{
@@ -138,16 +138,17 @@ pub const SemanticAnalyzer = struct {
             .column = 0,
         });
     }
-    
+
     pub const AnalyzeError = error{OutOfMemory};
-    
+
     pub fn analyze(self: *SemanticAnalyzer, ast: *const AstNode) AnalyzeError!void {
         self.visitNode(ast) catch |err| return err;
     }
-    
+
     fn visitNode(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         switch (node.kind) {
             .program => try self.visitProgram(node),
+            .module_decl => {}, // Ничего не делаем для объявлений модулей в семантике пока что
             .const_decl => try self.visitConstDecl(node),
             .var_decl => try self.visitVarDecl(node),
             .func_decl => try self.visitFuncDecl(node),
@@ -161,35 +162,35 @@ pub const SemanticAnalyzer = struct {
             },
         }
     }
-    
+
     fn visitProgram(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         for (node.children.items) |*child| {
             try self.visitNode(child);
         }
     }
-    
+
     fn visitConstDecl(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         if (node.children.items.len < 1) return;
-        
+
         const name_node = &node.children.items[0];
         const name = name_node.token.lexeme(self.getSource());
-        
+
         // Check for redefinition
         if (self.current_scope.lookupLocal(name)) |_| {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .message = "Symbol already defined in this scope",
                 .line = name_node.token.line,
                 .column = name_node.token.column,
             });
             return;
         }
-        
+
         // Infer type from value
         var type_: Type = .unknown;
         if (node.children.items.len > 1) {
             type_ = self.inferType(&node.children.items[1]);
         }
-        
+
         try self.current_scope.define(name, .{
             .name = name,
             .type_ = type_,
@@ -200,27 +201,27 @@ pub const SemanticAnalyzer = struct {
             .column = name_node.token.column,
         });
     }
-    
+
     fn visitVarDecl(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         if (node.children.items.len < 1) return;
-        
+
         const name_node = &node.children.items[0];
         const name = name_node.token.lexeme(self.getSource());
-        
+
         if (self.current_scope.lookupLocal(name)) |_| {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .message = "Symbol already defined in this scope",
                 .line = name_node.token.line,
                 .column = name_node.token.column,
             });
             return;
         }
-        
+
         var type_: Type = .unknown;
         if (node.children.items.len > 1) {
             type_ = self.inferType(&node.children.items[1]);
         }
-        
+
         try self.current_scope.define(name, .{
             .name = name,
             .type_ = type_,
@@ -231,13 +232,13 @@ pub const SemanticAnalyzer = struct {
             .column = name_node.token.column,
         });
     }
-    
+
     fn visitFuncDecl(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         if (node.children.items.len < 1) return;
-        
+
         const name_node = &node.children.items[0];
         const name = name_node.token.lexeme(self.getSource());
-        
+
         try self.current_scope.define(name, .{
             .name = name,
             .type_ = .func,
@@ -247,51 +248,51 @@ pub const SemanticAnalyzer = struct {
             .line = name_node.token.line,
             .column = name_node.token.column,
         });
-        
+
         // TODO: Create new scope for function body
     }
-    
+
     fn visitIdentifier(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         const name = node.token.lexeme(self.getSource());
-        
+
         if (self.current_scope.lookup(name) == null) {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .message = "Undefined symbol",
                 .line = node.token.line,
                 .column = node.token.column,
             });
         }
     }
-    
+
     fn visitBinary(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         for (node.children.items) |*child| {
             try self.visitNode(child);
         }
     }
-    
+
     fn visitCall(self: *SemanticAnalyzer, node: *const AstNode) AnalyzeError!void {
         if (node.children.items.len < 1) return;
-        
+
         const callee = &node.children.items[0];
         const name = callee.token.lexeme(self.getSource());
-        
+
         if (self.current_scope.lookup(name)) |sym| {
             if (sym.type_ != .func) {
-                try self.warnings.append(.{
+                try self.warnings.append(self.allocator, .{
                     .message = "Calling non-function",
                     .line = callee.token.line,
                     .column = callee.token.column,
                 });
             }
         }
-        
+
         // Check arguments
         var i: usize = 1;
         while (i < node.children.items.len) : (i += 1) {
             try self.visitNode(&node.children.items[i]);
         }
     }
-    
+
     fn inferType(self: *SemanticAnalyzer, node: *const AstNode) Type {
         _ = self;
         return switch (node.kind) {
@@ -301,11 +302,11 @@ pub const SemanticAnalyzer = struct {
             else => .unknown,
         };
     }
-    
+
     fn getSource(self: *SemanticAnalyzer) []const u8 {
         return self.source;
     }
-    
+
     pub fn hasErrors(self: *SemanticAnalyzer) bool {
         return self.errors.items.len > 0;
     }
@@ -316,7 +317,7 @@ test "semantic basic" {
     var analyzer = SemanticAnalyzer.init(std.testing.allocator);
     analyzer.setup();
     defer analyzer.deinit();
-    
+
     // Built-ins should be defined
     try std.testing.expect(analyzer.global_scope.lookup("phi") != null);
     try std.testing.expect(analyzer.global_scope.lookup("trinity") != null);
@@ -326,7 +327,7 @@ test "semantic scope" {
     var analyzer = SemanticAnalyzer.init(std.testing.allocator);
     analyzer.setup();
     defer analyzer.deinit();
-    
+
     try analyzer.global_scope.define("x", .{
         .name = "x",
         .type_ = .int_,
@@ -336,7 +337,7 @@ test "semantic scope" {
         .line = 1,
         .column = 1,
     });
-    
+
     try std.testing.expect(analyzer.global_scope.lookup("x") != null);
     try std.testing.expect(analyzer.global_scope.lookup("y") == null);
 }
