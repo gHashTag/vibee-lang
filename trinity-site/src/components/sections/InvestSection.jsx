@@ -10,38 +10,16 @@ export default function InvestSection() {
     <Section id="invest">
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: inv.title }} />
       
-      <div className="invest-grid fade">
-        <div className="glass use-funds">
-          <h3>{inv.useTitle}</h3>
-          <ul>
-            {inv?.uses?.map((use, i) => <li key={i}>{use}</li>)}
-          </ul>
-        </div>
-        
-        <div className="invest-cards">
-          {inv?.cards?.map((card, i) => (
-            <MetricCard key={i} value={card.value} label={card.label} color={i === 0 ? 'green' : 'blue'} />
-          ))}
-        </div>
+      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '3rem', margin: '4rem 0' }}>
+        {inv?.cards?.map((card, i) => (
+          <div key={i} className="premium-card">
+            <h3 style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>{card.value}</h3>
+            <p style={{ fontSize: '1.2rem' }}>{card.label}</p>
+          </div>
+        ))}
       </div>
       
-      <div className="milestones-grid fade">
-        <div className="glass">
-          <h3>{inv.milestonesTitle}</h3>
-          <ul>
-            {inv?.milestones?.map((m, i) => <li key={i}>{m}</li>)}
-          </ul>
-        </div>
-        
-        <div className="glass">
-          <h3>{inv.whyTitle}</h3>
-          <ul>
-            {inv?.why?.map((w, i) => <li key={i}>{w}</li>)}
-          </ul>
-        </div>
-      </div>
-      
-      <p className="closing fade">{inv?.closing}</p>
+      <p className="closing fade" style={{ fontSize: '1.5rem', fontWeight: 500, color: 'var(--text)' }}>{inv?.closing}</p>
       
       <div className="cta-grid fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem', marginTop: '3rem' }}>
         <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>

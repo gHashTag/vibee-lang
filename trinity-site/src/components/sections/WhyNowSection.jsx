@@ -22,7 +22,7 @@ export default function WhyNowSection() {
   return (
     <Section id="whynow">
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: wn?.title }} />
-      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '2rem' }}>
+      <div className="why-now-grid fade">
         {wn?.cards?.map((card, i) => (
           <div key={i} className="premium-card fade" style={{ transitionDelay: `${i * 100}ms` }}>
             <div className="icon-box">{icons[i]}</div>
