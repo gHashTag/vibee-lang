@@ -7,7 +7,7 @@ export const translations = {
     langSwitch: 'RU',
     langHref: '?lang=ru',
     
-    nav: ['TRINITY', 'Problem', 'Solution', 'Why Now', 'Technology', 'Traction', 'Market', 'GTM', 'Roadmap', 'Team', 'Invest'],
+    nav: ['TRINITY', 'Problem', 'Solution', 'Why Now', 'Calculator', 'Traction', 'Market', 'GTM', 'Competition', 'Roadmap', 'Team', 'Ecosystem', 'Invest'],
     
     hero: {
       tag: 'Native Ternary Hardware for AI',
@@ -140,6 +140,21 @@ export const translations = {
       hiring: 'Hiring: FPGA Engineer, AI Researcher, Business Development'
     },
     
+    ecosystem: {
+      title: 'The <span class="grad">Ecosystem</span>',
+      sub: 'Ternary is not science fiction. It is a working ecosystem of technologies already built and performing.',
+      quote: 'This is not just an article about math. It is a story of how I, a vibe-coder, discovered the φ² + 1/φ² = 3 link and built an entire ecosystem on it.',
+      formula: 'Sacred Formula: V = n × 3^k × π^m × φ^p × e^q',
+      items: [
+        { title: 'VIBEE Compiler', desc: 'Spec-first (Zig) • given/when/then logic' },
+        { title: 'LLM Inference', desc: 'llama.cpp integration • 10x-50x boost' },
+        { title: 'GEN-MULTI', desc: '42-language Gen • 350+ components' },
+        { title: '999 OS', desc: 'Ternary OS core • 999 = 37 × 3³' },
+        { title: 'Trinity B-Tree', desc: 'Optimal radix (b=3) • Economic storage' },
+        { title: 'Trinity Sort', desc: '3-way QuickSort • Up to 3x faster' }
+      ]
+    },
+    
     competition: {
       title: '<span class="grad">Competition</span> Matrix',
       headers: ['Company', 'Architecture', 'Valuation', 'Ternary?', 'Open?'],
@@ -205,7 +220,7 @@ export const translations = {
     langSwitch: 'EN',
     langHref: '?lang=en',
     
-    nav: ['TRINITY', 'Проблема', 'Решение', 'Почему сейчас', 'Калькулятор', 'Технология', 'Трекшн', 'Рынок', 'GTM', 'Roadmap', 'Команда', 'Инвестиции'],
+    nav: ['TRINITY', 'Проблема', 'Решение', 'Почему сейчас', 'Калькулятор', 'Технология', 'Рынок', 'GTM', 'Матрица', 'Roadmap', 'Команда', 'Экосистема', 'Инвестиции'],
     
     hero: {
       tag: 'Нативное троичное железо для AI',
@@ -336,6 +351,21 @@ export const translations = {
         '88 тестов, 120+ Zig модулей'
       ],
       hiring: 'Нанимаем: FPGA инженер, AI исследователь, развитие бизнеса'
+    },
+    
+    ecosystem: {
+      title: 'Троичная <span class="grad">Экосистема</span>',
+      sub: 'Троичная логика — это не сказки, а работающая экосистема технологий, которые уже созданы и приносят результат.',
+      quote: 'Это не просто статья о математике. Это история о том, как я, программист-вайбкодер, открыл связь φ² + 1/φ² = 3 и создал на её основе целую экосистему технологий.',
+      formula: 'Священная Формула: V = n × 3^k × π^m × φ^p × e^q',
+      items: [
+        { title: 'VIBEE Compiler', desc: 'Spec-first (Zig) • given/when/then = 3 элемента' },
+        { title: 'LLM Inference', desc: 'llama.cpp интеграция • ускорение 10x-50x' },
+        { title: 'GEN-MULTI', desc: 'Генерация для 42 языков • 350+ компонентов' },
+        { title: '999 OS', desc: 'Троичная ОС • 999 = 37 × 3³' },
+        { title: 'Trinity B-Tree', desc: 'Оптимальное B-дерево • b = 3' },
+        { title: 'Trinity Sort', desc: '3-way QuickSort • До 3× быстрее' }
+      ]
     },
     
     competition: {

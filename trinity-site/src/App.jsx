@@ -13,6 +13,7 @@ import {
   CompetitionSection,
   RoadmapSection,
   TeamSection,
+  EcosystemSection,
   InvestSection
 } from './components/sections'
 
@@ -33,6 +34,7 @@ export default function App() {
         <CompetitionSection />
         <RoadmapSection />
         <TeamSection />
+        <EcosystemSection />
         <InvestSection />
       </main>
       <footer>
