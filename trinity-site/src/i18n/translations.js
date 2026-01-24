@@ -125,7 +125,39 @@ export const translations = {
         { date: 'Q1 2027', title: 'ASIC Tape-out', desc: 'First native ternary chip production' }
       ]
     },
-    
+
+    product: {
+      title: '<span class="grad">Product</span> Roadmap',
+      phases: [
+        { phase: 'TRINITY-FPGA', year: '2025-2026', desc: 'FPGA-based ternary accelerator • PCIe card for data centers • Target: AI inference workloads' },
+        { phase: 'TRINITY-1 ASIC', year: '2027', desc: 'First native ternary chip • 180nm process (low risk) • Target: Edge AI devices' },
+        { phase: 'TRINITY-X', year: '2029', desc: 'Advanced node (28nm) • Full SoC with ternary CPU • Target: Data center scale' }
+      ]
+    },
+
+    financials: {
+      title: 'Path to <span class="grad">$10B+</span>',
+      headers: ['Year', 'Revenue', 'Gross Margin', 'Valuation', 'Headcount'],
+      rows: [
+        ['2026', '$2M', '50%', '$200M', '15'],
+        ['2027', '$15M', '55%', '$500M', '50'],
+        ['2028', '$80M', '60%', '$2B', '150'],
+        ['2029', '$300M', '65%', '$5B', '400'],
+        ['2030', '$1B', '70%', '$10B+', '1,000']
+      ],
+      note: 'Revenue multiple comparable to Cerebras (40×), Groq (56×), SambaNova (33×)'
+    },
+
+    businessModel: {
+      title: 'Business <span class="grad">Model</span>',
+      streams: [
+        { percent: '60%', title: 'Hardware Sales', desc: 'TRINITY-FPGA: $15K ASP, 55% margin • TRINITY-ASIC: $3K ASP, 65% margin' },
+        { percent: '30%', title: 'IP Licensing', desc: 'License ternary IP to chip makers • $2-5 royalty per chip • 90%+ margin' },
+        { percent: '10%', title: 'Software & Services', desc: 'TRINITY SDK: $100K/year enterprise • Integration services • 80% margin' }
+      ],
+      unitEcon: 'LTV/CAC: 15× | Target Year 1: 1,000 units = $7.5M revenue'
+    },
+
     team: {
       title: 'The <span class="grad">Team</span>',
       name: 'Dmitrii Vasilev',
@@ -328,7 +360,39 @@ export const translations = {
         { date: 'Q1 2027', title: 'ASIC Tape-out', desc: 'Первое производство нативных троичных чипов' }
       ]
     },
-    
+
+    product: {
+      title: '<span class="grad">Продукт</span>',
+      phases: [
+        { phase: 'TRINITY-FPGA', year: '2025-2026', desc: 'FPGA ускоритель • PCIe карта для дата-центров • Цель: AI инференс' },
+        { phase: 'TRINITY-1 ASIC', year: '2027', desc: 'Первый нативный троичный чип • 180нм (низкий риск) • Цель: Edge AI' },
+        { phase: 'TRINITY-X', year: '2029', desc: 'Продвинутый узел (28нм) • Полный SoC с троичным CPU • Цель: Дата-центры' }
+      ]
+    },
+
+    financials: {
+      title: 'Путь к <span class="grad">$10B+</span>',
+      headers: ['Год', 'Выручка', 'Маржа', 'Оценка', 'Штат'],
+      rows: [
+        ['2026', '$2M', '50%', '$200M', '15'],
+        ['2027', '$15M', '55%', '$500M', '50'],
+        ['2028', '$80M', '60%', '$2B', '150'],
+        ['2029', '$300M', '65%', '$5B', '400'],
+        ['2030', '$1B', '70%', '$10B+', '1,000']
+      ],
+      note: 'Мультипликатор сравним с Cerebras (40×), Groq (56×), SambaNova (33×)'
+    },
+
+    businessModel: {
+      title: 'Бизнес <span class="grad">модель</span>',
+      streams: [
+        { percent: '60%', title: 'Продажи железа', desc: 'TRINITY-FPGA: $15K ASP, 55% маржа • TRINITY-ASIC: $3K ASP, 65% маржа' },
+        { percent: '30%', title: 'IP лицензирование', desc: 'Лицензия троичного IP чипмейкерам • $2-5 роялти за чип • 90%+ маржа' },
+        { percent: '10%', title: 'ПО и сервисы', desc: 'TRINITY SDK: $100K/год энтерпрайз • Интеграция • 80% маржа' }
+      ],
+      unitEcon: 'LTV/CAC: 15× | Цель Год 1: 1,000 юнитов = $7.5M выручки'
+    },
+
     gtm: {
       title: 'Выход на <span class="grad">рынок</span>',
       phases: [

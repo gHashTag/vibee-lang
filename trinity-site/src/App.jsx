@@ -9,6 +9,9 @@ import {
   CalculatorSection,
   TractionSection,
   MarketSection,
+  ProductSection,
+  FinancialsSection,
+  BusinessModelSection,
   GTMSection,
   CompetitionSection,
   RoadmapSection,
@@ -30,6 +33,9 @@ export default function App() {
         <CalculatorSection />
         <TractionSection />
         <MarketSection />
+        <ProductSection />
+        <FinancialsSection />
+        <BusinessModelSection />
         <GTMSection />
         <CompetitionSection />
         <RoadmapSection />
