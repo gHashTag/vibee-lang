@@ -287,7 +287,7 @@ export const translations = {
         { value: '5×', label: 'Быстрее инференс', color: 'green' },
         { value: '40%', label: 'Экономия энергии', color: 'purple' },
         { value: '60%', label: 'Снижение затрат', color: 'yellow' },
-        { value: 'База 3', label: 'Оптимальная логика', color: 'cyan' },
+        { value: 'База 3', label: 'Оптимум', color: 'cyan' },
         { value: 'φ²', label: 'Золотое сечение', color: 'green' }
       ]
     },
