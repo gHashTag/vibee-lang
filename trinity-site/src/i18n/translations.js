@@ -39,7 +39,9 @@ export const translations = {
         { value: '1.585×', label: 'Information Density', color: 'blue' },
         { value: '5×', label: 'Faster Inference', color: 'green' },
         { value: '40%', label: 'Less Power', color: 'purple' },
-        { value: '60%', label: 'Cost Reduction', color: 'yellow' }
+        { value: '60%', label: 'Cost Reduction', color: 'yellow' },
+        { value: 'Base 3', label: 'Optimal Logic', color: 'cyan' },
+        { value: 'φ²', label: 'Golden Math', color: 'green' }
       ]
     },
 
@@ -252,7 +254,9 @@ export const translations = {
         { value: '1.585×', label: 'Плотность данных', color: 'blue' },
         { value: '5×', label: 'Быстрее инференс', color: 'green' },
         { value: '40%', label: 'Экономия энергии', color: 'purple' },
-        { value: '60%', label: 'Снижение затрат', color: 'yellow' }
+        { value: '60%', label: 'Снижение затрат', color: 'yellow' },
+        { value: 'База 3', label: 'Оптимальная логика', color: 'cyan' },
+        { value: 'φ²', label: 'Золотое сечение', color: 'green' }
       ]
     },
 
