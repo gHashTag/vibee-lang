@@ -191,6 +191,11 @@ export const translations = {
         investor: 'Schedule Pitch Deck Review',
         partner: 'Discuss Integration',
         talent: 'Join the Team'
+      },
+      contact: {
+        email: 'raoffonom@icloud.com',
+        website: 'https://trinity-site-one.vercel.app',
+        github: 'https://github.com/gHashTag/vibee-lang'
       }
     }
   },
@@ -384,6 +389,11 @@ export const translations = {
         investor: 'Обсудить Pitch Deck',
         partner: 'Предложить интеграцию',
         talent: 'Присоединиться к команде'
+      },
+      contact: {
+        email: 'raoffonom@icloud.com',
+        website: 'https://trinity-site-one.vercel.app',
+        github: 'https://github.com/gHashTag/vibee-lang'
       }
     }
   }

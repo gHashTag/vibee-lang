@@ -24,13 +24,13 @@ export default function InvestSection() {
       <div className="cta-grid fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem', marginTop: '3rem' }}>
         <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
           <h4>Investors</h4>
-          <a href="mailto:raoffonom@icloud.com?subject=Pitch Deck Request" className="btn" style={{ width: '100%', marginTop: '1rem' }}>
+          <a href={`mailto:${inv?.contact?.email}?subject=Pitch Deck Request`} className="btn" style={{ width: '100%', marginTop: '1rem' }}>
             {inv?.ctas?.investor}
           </a>
         </div>
         <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
           <h4>Partners</h4>
-          <a href="mailto:raoffonom@icloud.com?subject=Integration Inquiry" className="btn secondary" style={{ width: '100%', marginTop: '1rem' }}>
+          <a href={`mailto:${inv?.contact?.email}?subject=Integration Inquiry`} className="btn secondary" style={{ width: '100%', marginTop: '1rem' }}>
             {inv?.ctas?.partner}
           </a>
         </div>
@@ -43,7 +43,7 @@ export default function InvestSection() {
       </div>
 
       <div className="cta-buttons fade" style={{ marginTop: '3rem', justifyContent: 'center' }}>
-        <a href="https://github.com/gHashTag/vibee-lang" className="btn secondary" target="_blank" rel="noopener">GitHub</a>
+        <a href={inv?.contact?.github} className="btn secondary" target="_blank" rel="noopener">GitHub</a>
       </div>
     </Section>
   )
