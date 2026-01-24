@@ -7,54 +7,32 @@ export default function ProblemSection() {
   
   return (
     <Section id="problem">
+      <div className="radial-glow" style={{ opacity: 0.5 }} />
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: p.title }} />
-      <p className="sub fade">{p.sub}</p>
+      <p className="fade" style={{ marginBottom: '4rem' }}>{p.sub}</p>
       
-      <div className="glass fade bitnet-box">
-        <h3>{p.bitnetTitle}</h3>
-        <p dangerouslySetInnerHTML={{ __html: p.bitnetDesc }} />
-      </div>
-      
-      <div className="vs fade">
-        <div className="vs-side binary">
-          <h4 className="vs-title">{p.binaryTitle}</h4>
-          <div className="vs-flow">
-            {p?.binaryFlow?.map((step, i) => (
-              <span key={i}>{step}</span>
-            ))}
+      <div className="grid fade" style={{ textAlign: 'left' }}>
+        <div className="premium-card">
+          <h4 style={{ color: '#ff453a', marginBottom: '1rem' }}>{p.binaryTitle}</h4>
+          <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>{p.bitnetDesc.replace(/<[^>]*>?/gm, '')}</p>
+          <div style={{ fontSize: '0.85rem', color: 'var(--muted)', fontFamily: 'monospace' }}>
+            {p.binaryFlow?.join(' → ')}
           </div>
-          <ul className="vs-stats">
-            {p?.binaryStats?.map((stat, i) => (
-              <li key={i} className="red">{stat}</li>
-            ))}
-          </ul>
         </div>
-        
-        <div className="vs-circle">→</div>
-        
-        <div className="vs-side trinity">
-          <h4 className="vs-title">{p.trinityTitle}</h4>
-          <div className="vs-flow">
-            {p?.trinityFlow?.map((step, i) => (
-              <span key={i}>{step}</span>
-            ))}
+
+        <div className="premium-card" style={{ borderLeft: '4px solid var(--accent)' }}>
+          <h4 style={{ color: 'var(--accent)', marginBottom: '1rem' }}>{p.trinityTitle}</h4>
+          <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>Native ternary execution removes 50% waste and provides 5x faster inference.</p>
+          <div style={{ fontSize: '0.85rem', color: 'var(--accent)', fontFamily: 'monospace' }}>
+            {p.trinityFlow?.join(' → ')}
           </div>
-          <ul className="vs-stats">
-            {p?.trinityStats?.map((stat, i) => (
-              <li key={i} className="green">{stat}</li>
-            ))}
-          </ul>
         </div>
       </div>
       
-      <blockquote className="quote-block fade">
-        <p dangerouslySetInnerHTML={{ __html: p.quote }} />
-        <cite>
-          <a href="https://arxiv.org/abs/2402.17764" target="_blank" rel="noopener">
-            {p.quoteSrc}
-          </a>
-        </cite>
-      </blockquote>
+      <p className="fade" style={{ marginTop: '4rem', fontSize: '1.2rem', fontStyle: 'italic', maxWidth: '800px' }}>
+        "{p.quote.replace(/<[^>]*>?/gm, '')}"
+        <span style={{ display: 'block', fontSize: '0.9rem', marginTop: '1rem', color: 'var(--accent)' }}>{p.quoteSrc}</span>
+      </p>
     </Section>
   )
 }

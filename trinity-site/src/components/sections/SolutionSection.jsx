@@ -8,23 +8,24 @@ export default function SolutionSection() {
   
   return (
     <Section id="solution">
+      <div className="radial-glow" style={{ opacity: 0.3 }} />
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: s.title }} />
       
-      <div className="info fade">
-        <div className="info-chart">
+      <div className="fade" style={{ display: 'flex', alignItems: 'center', gap: '4rem', margin: '4rem 0', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <div style={{ width: '180px', height: '180px' }}>
           <svg viewBox="0 0 100 100">
-            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="2" />
-            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--accent)" strokeWidth="4" 
+            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--border)" strokeWidth="1" />
+            <circle cx="50" cy="50" r="45" fill="none" stroke="var(--accent)" strokeWidth="3" 
               strokeDasharray="188 95" strokeLinecap="round" transform="rotate(-90 50 50)" />
-            <text x="50" y="45" textAnchor="middle" fill="var(--text)" fontSize="14" fontWeight="600">log₂(3)</text>
-            <text x="50" y="62" textAnchor="middle" fill="var(--accent)" fontSize="12">1.585</text>
+            <text x="50" y="48" textAnchor="middle" fill="var(--text)" fontSize="12">log₂(3)</text>
+            <text x="50" y="62" textAnchor="middle" fill="var(--accent)" fontSize="14" fontWeight="500">1.585</text>
           </svg>
         </div>
-        <div className="info-text">
+        <div style={{ textAlign: 'left' }}>
           {s?.legend?.map((item, i) => (
-            <div key={i} className="info-item">
-              <div className="info-dot" style={{ background: i === 0 ? 'var(--accent)' : i === 1 ? 'var(--green)' : '#bf5af2' }} />
-              <span>{item}</span>
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: i === 0 ? 'var(--accent)' : 'var(--border)' }} />
+              <span style={{ fontSize: '1rem', color: i === 0 ? 'var(--text)' : 'var(--muted)' }}>{item}</span>
             </div>
           ))}
         </div>
