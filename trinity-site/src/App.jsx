@@ -1,6 +1,6 @@
 import { I18nProvider } from './i18n/context.jsx'
-import QuantumBackground from './components/QuantumBackground'
-import Navigation from './components/Navigation'
+import QuantumBackground from './components/QuantumBackground.jsx'
+import Navigation from './components/Navigation.jsx'
 import {
   HeroSection,
   ProblemSection,
@@ -26,7 +26,7 @@ import {
   TeamSection,
   EcosystemSection,
   InvestSection
-} from './components/sections'
+} from './components/sections/index.js'
 
 export default function App() {
   return (

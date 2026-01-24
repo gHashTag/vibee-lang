@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useI18n } from '../i18n/context'
+import { useI18n } from '../i18n/context.jsx'
 
 const sectionIds = ['hero', 'problem', 'solution', 'whynow', 'calculator', 'traction', 'market', 'gtm', 'competition', 'roadmap', 'team', 'ecosystem', 'invest']
 
