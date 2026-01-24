@@ -21,7 +21,7 @@ export default function SolutionSection() {
           </svg>
         </div>
         <div className="info-text">
-          {s.legend.map((item, i) => (
+          {s?.legend?.map((item, i) => (
             <div key={i} className="info-item">
               <div className="info-dot" style={{ background: i === 0 ? 'var(--accent)' : i === 1 ? 'var(--green)' : '#bf5af2' }} />
               <span>{item}</span>
@@ -31,7 +31,7 @@ export default function SolutionSection() {
       </div>
       
       <div className="grid fade">
-        {s.cards.map((card, i) => (
+        {s?.cards?.map((card, i) => (
           <MetricCard key={i} value={card.value} label={card.label} color={card.color} />
         ))}
       </div>

@@ -15,7 +15,7 @@ export default function TeamSection() {
           <h3>{tm.name}</h3>
           <p className="role">{tm.role}</p>
           <ul>
-            {tm.exp.map((item, i) => <li key={i}>{item}</li>)}
+            {tm?.exp?.map((item, i) => <li key={i}>{item}</li>)}
           </ul>
         </div>
       </div>

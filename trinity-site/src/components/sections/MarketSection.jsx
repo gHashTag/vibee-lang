@@ -10,7 +10,7 @@ export default function MarketSection() {
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: m.title }} />
       
       <div className="funnel fade">
-        {m.funnel.map((item, i) => (
+        {m?.funnel?.map((item, i) => (
           <div key={i} className={`funnel-item funnel-${i}`}>
             <div className="funnel-value">{item.value}</div>
             <div className="funnel-label">{item.label}</div>
@@ -23,13 +23,13 @@ export default function MarketSection() {
         <table>
           <thead>
             <tr>
-              {m.headers.map((h, i) => <th key={i}>{h}</th>)}
+              {m?.headers?.map((h, i) => <th key={i}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {m.rows.map((row, i) => (
+            {m?.rows?.map((row, i) => (
               <tr key={i} className={row[0] === 'TRINITY' ? 'highlight' : ''}>
-                {row.map((cell, j) => (
+                {row?.map((cell, j) => (
                   <td key={j} className={row[0] === 'TRINITY' ? 'hi' : ''}>{cell}</td>
                 ))}
               </tr>
@@ -41,7 +41,7 @@ export default function MarketSection() {
       <div className="gtm fade">
         <h3 dangerouslySetInnerHTML={{ __html: t.gtm.title }} />
         <div className="timeline">
-          {t.gtm.phases.map((phase, i) => (
+          {t?.gtm?.phases?.map((phase, i) => (
             <div key={i} className="tl-item glass">
               <div className="tl-phase">{phase.phase}</div>
               <div className="tl-content">

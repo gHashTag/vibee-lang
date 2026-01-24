@@ -14,12 +14,12 @@ export default function InvestSection() {
         <div className="glass use-funds">
           <h3>{inv.useTitle}</h3>
           <ul>
-            {inv.uses.map((use, i) => <li key={i}>{use}</li>)}
+            {inv?.uses?.map((use, i) => <li key={i}>{use}</li>)}
           </ul>
         </div>
         
         <div className="invest-cards">
-          {inv.cards.map((card, i) => (
+          {inv?.cards?.map((card, i) => (
             <MetricCard key={i} value={card.value} label={card.label} color={i === 0 ? 'green' : 'blue'} />
           ))}
         </div>
@@ -29,14 +29,14 @@ export default function InvestSection() {
         <div className="glass">
           <h3>{inv.milestonesTitle}</h3>
           <ul>
-            {inv.milestones.map((m, i) => <li key={i}>{m}</li>)}
+            {inv?.milestones?.map((m, i) => <li key={i}>{m}</li>)}
           </ul>
         </div>
         
         <div className="glass">
           <h3>{inv.whyTitle}</h3>
           <ul>
-            {inv.why.map((w, i) => <li key={i}>{w}</li>)}
+            {inv?.why?.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
         </div>
       </div>

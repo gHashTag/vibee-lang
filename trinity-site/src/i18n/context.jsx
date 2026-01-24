@@ -12,7 +12,7 @@ export function I18nProvider({ children }) {
     return browserLang === 'ru' ? 'ru' : 'en'
   })
 
-  const t = translations[lang]
+  const t = translations[lang] || translations['en'] || {}
 
   const switchLang = () => {
     const newLang = lang === 'en' ? 'ru' : 'en'

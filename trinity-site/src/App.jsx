@@ -28,7 +28,7 @@ export default function App() {
         <InvestSection />
       </main>
       <footer>
-        <p>TRINITY Computing © 2024 | φ² + 1/φ² = 3</p>
+        <p>TRINITY Computing © 2026 | φ² + 1/φ² = 3</p>
       </footer>
     </I18nProvider>
   )

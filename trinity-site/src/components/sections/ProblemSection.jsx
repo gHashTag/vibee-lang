@@ -19,12 +19,12 @@ export default function ProblemSection() {
         <div className="vs-side binary">
           <h4 className="vs-title">{p.binaryTitle}</h4>
           <div className="vs-flow">
-            {p.binaryFlow.map((step, i) => (
+            {p?.binaryFlow?.map((step, i) => (
               <span key={i}>{step}</span>
             ))}
           </div>
           <ul className="vs-stats">
-            {p.binaryStats.map((stat, i) => (
+            {p?.binaryStats?.map((stat, i) => (
               <li key={i} className="red">{stat}</li>
             ))}
           </ul>
@@ -35,12 +35,12 @@ export default function ProblemSection() {
         <div className="vs-side trinity">
           <h4 className="vs-title">{p.trinityTitle}</h4>
           <div className="vs-flow">
-            {p.trinityFlow.map((step, i) => (
+            {p?.trinityFlow?.map((step, i) => (
               <span key={i}>{step}</span>
             ))}
           </div>
           <ul className="vs-stats">
-            {p.trinityStats.map((stat, i) => (
+            {p?.trinityStats?.map((stat, i) => (
               <li key={i} className="green">{stat}</li>
             ))}
           </ul>

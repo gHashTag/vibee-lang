@@ -31,7 +31,7 @@ export default function Navigation() {
         {t.langSwitch}
       </button>
       <nav>
-        {t.nav.map((item, i) => (
+        {t.nav?.map((item, i) => (
           <a
             key={i}
             href={`#${sectionIds[i]}`}

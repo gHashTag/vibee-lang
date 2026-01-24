@@ -13,11 +13,11 @@ export default function CompetitionSection() {
         <table>
           <thead>
             <tr>
-              {c.headers.map((h, i) => <th key={i}>{h}</th>)}
+              {c?.headers?.map((h, i) => <th key={i}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {c.rows.map((row, i) => (
+            {c?.rows?.map((row, i) => (
               <tr key={i} className={row.company === 'TRINITY' ? 'highlight' : ''}>
                 <td className={row.company === 'TRINITY' ? 'hi' : ''}>{row.company}</td>
                 <td className={row.company === 'TRINITY' ? 'hi' : ''}>{row.arch}</td>

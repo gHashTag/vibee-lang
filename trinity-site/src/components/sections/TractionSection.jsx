@@ -14,7 +14,7 @@ export default function TractionSection() {
       <div className="glass fade tech-grid">
         <h3>{tr.techTitle}</h3>
         <div className="techs">
-          {tr.techs.map((tech, i) => (
+          {tr?.techs?.map((tech, i) => (
             <div key={i} className="tech-card">
               <h4>{tech.title}</h4>
               <p>{tech.desc}</p>
@@ -25,7 +25,7 @@ export default function TractionSection() {
       </div>
       
       <div className="glass fade progress-box">
-        {tr.progress.map((item, i) => (
+        {tr?.progress?.map((item, i) => (
           <div key={i} className="progress-item">
             <div className="progress-header">
               <span>{item.label}</span>
@@ -39,7 +39,7 @@ export default function TractionSection() {
       </div>
       
       <div className="metrics-grid fade">
-        {tr.metrics.map((m, i) => (
+        {tr?.metrics?.map((m, i) => (
           <MetricCard key={i} value={m.value} label={m.label} color={m.color} />
         ))}
       </div>
