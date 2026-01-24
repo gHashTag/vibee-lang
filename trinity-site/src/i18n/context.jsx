@@ -5,6 +5,7 @@ const I18nContext = createContext()
 
 export function I18nProvider({ children }) {
   const [lang, setLang] = useState(() => {
+    if (typeof window === 'undefined') return 'en'
     const params = new URLSearchParams(window.location.search)
     const urlLang = params.get('lang')
     if (urlLang && translations[urlLang]) return urlLang
