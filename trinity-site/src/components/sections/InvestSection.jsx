@@ -46,13 +46,13 @@ export default function InvestSection() {
       <div className="cta-grid fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem', marginTop: '3rem' }}>
         <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
           <h4>Investors</h4>
-          <a href="mailto:invest@trinity-computing.io?subject=Pitch Deck Request" className="btn" style={{ width: '100%', marginTop: '1rem' }}>
+          <a href="mailto:raoffonom@icloud.com?subject=Pitch Deck Request" className="btn" style={{ width: '100%', marginTop: '1rem' }}>
             {inv?.ctas?.investor}
           </a>
         </div>
         <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
           <h4>Partners</h4>
-          <a href="mailto:partners@trinity-computing.io?subject=Integration Inquiry" className="btn secondary" style={{ width: '100%', marginTop: '1rem' }}>
+          <a href="mailto:raoffonom@icloud.com?subject=Integration Inquiry" className="btn secondary" style={{ width: '100%', marginTop: '1rem' }}>
             {inv?.ctas?.partner}
           </a>
         </div>

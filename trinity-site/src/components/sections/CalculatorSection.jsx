@@ -14,9 +14,9 @@ export default function CalculatorSection() {
   return (
     <Section id="calculator">
       <div className="glass fade" style={{ padding: '3rem', maxWidth: '800px', margin: '0 auto' }}>
-        <h2 style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          {lang === 'ru' ? 'Калькулятор экономии' : 'Savings Calculator'}
-        </h2>
+        <h2 style={{ textAlign: 'center', marginBottom: '2rem' }} 
+            dangerouslySetInnerHTML={{ __html: lang === 'ru' ? 'Калькулятор <span class="grad">экономии</span>' : 'Savings <span class="grad">Calculator</span>' }} 
+        />
         
         <div style={{ marginBottom: '2rem' }}>
           <label style={{ display: 'block', marginBottom: '1rem' }}>

@@ -7,7 +7,7 @@ export const translations = {
     langSwitch: 'RU',
     langHref: '?lang=ru',
     
-    nav: ['TRINITY', 'Problem', 'Solution', 'Why Now', 'Technology', 'Traction', 'Market', 'Team', 'Invest'],
+    nav: ['TRINITY', 'Problem', 'Solution', 'Why Now', 'Technology', 'Traction', 'Market', 'GTM', 'Roadmap', 'Team', 'Invest'],
     
     hero: {
       tag: 'Native Ternary Hardware for AI',
@@ -106,21 +106,21 @@ export const translations = {
       ]
     },
 
+    gtm: {
+      title: '<span class="grad">Go-to-Market</span>',
+      phases: [
+        { phase: 'Phase 1', title: 'Research Labs', desc: 'Universities, AI labs • Free pilots • Case studies' },
+        { phase: 'Phase 2', title: 'AI Startups', desc: 'Inference savings • FPGA cards • $10K-50K deals' },
+        { phase: 'Phase 3', title: 'Enterprise', desc: 'Cloud providers • ASIC licensing • $1M+ deals' }
+      ]
+    },
+
     roadmap: {
       title: '<span class="grad">Roadmap</span>',
       milestones: [
         { date: 'Q1 2026', title: 'FPGA Prototype', desc: 'BitNet inference on real hardware' },
         { date: 'Q3 2026', title: 'Developer SDK', desc: 'Zig-based compilers for AI researchers' },
         { date: 'Q1 2027', title: 'ASIC Tape-out', desc: 'First native ternary chip production' }
-      ]
-    },
-    
-    gtm: {
-      title: 'Go-to-<span class="grad">Market</span>',
-      phases: [
-        { phase: 'Phase 1', title: 'Research Labs', desc: 'Universities, AI labs • Free pilots • Case studies' },
-        { phase: 'Phase 2', title: 'AI Startups', desc: 'Inference savings • FPGA cards • $10K-50K deals' },
-        { phase: 'Phase 3', title: 'Enterprise', desc: 'Cloud providers • ASIC licensing • $1M+ deals' }
       ]
     },
     
@@ -200,7 +200,7 @@ export const translations = {
     langSwitch: 'EN',
     langHref: '?lang=en',
     
-    nav: ['TRINITY', 'Проблема', 'Решение', 'Почему сейчас', 'Технология', 'Трекшн', 'Рынок', 'Команда', 'Инвестиции'],
+    nav: ['TRINITY', 'Проблема', 'Решение', 'Почему сейчас', 'Калькулятор', 'Технология', 'Трекшн', 'Рынок', 'GTM', 'Roadmap', 'Команда', 'Инвестиции'],
     
     hero: {
       tag: 'Нативное троичное железо для AI',

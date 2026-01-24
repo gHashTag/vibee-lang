@@ -37,21 +37,6 @@ export default function MarketSection() {
           </tbody>
         </table>
       </div>
-      
-      <div className="gtm fade">
-        <h3 dangerouslySetInnerHTML={{ __html: t.gtm.title }} />
-        <div className="timeline">
-          {t?.gtm?.phases?.map((phase, i) => (
-            <div key={i} className="tl-item glass">
-              <div className="tl-phase">{phase.phase}</div>
-              <div className="tl-content">
-                <h4>{phase.title}</h4>
-                <p>{phase.desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </Section>
   )
 }
