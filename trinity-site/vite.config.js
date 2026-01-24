@@ -1,5 +1,6 @@
-import react from '@vitejs/plugin-react'
-export default {
+const react = require('@vitejs/plugin-react')
+
+module.exports = {
   plugins: [react()],
   server: {
     host: '0.0.0.0',
