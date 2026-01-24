@@ -232,7 +232,7 @@ export const translations = {
         { title: 'Coldea et al. Science 327, 177 (2010)', desc: 'E8 spectrum golden ratio' },
         { title: 'Microsoft BitNet b1.58 (2024)', desc: 'Ternary weights proven' },
         { title: 'Koide Y. Phys. Lett. B (1983)', desc: '44 years unexplained' }
-      ]
+      ],
     
     techAssets: {
       title: 'Technical <span class="grad">Assets</span>',
