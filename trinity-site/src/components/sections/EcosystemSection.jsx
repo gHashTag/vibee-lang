@@ -10,20 +10,20 @@ export default function EcosystemSection() {
   return (
     <Section id="ecosystem">
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: eco.title }} />
-      <p className="fade" style={{ marginBottom: '4rem' }}>{eco.sub}</p>
+      <p className="fade" style={{ marginBottom: '3rem' }}>{eco.sub}</p>
       
-      <div className="grid fade">
+      <div className="grid-row fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '15px' }}>
         {eco.items?.map((item, i) => (
-          <div key={i} className="premium-card">
-            <div className="card-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent)', marginBottom: '1.5rem' }} />
-            <h3>{item.title}</h3>
-            <p style={{ textAlign: 'left', margin: 0, fontSize: '0.95rem' }}>{item.desc}</p>
+          <div key={i} className="premium-card compact" style={{ textAlign: 'left', border: 'none', borderLeft: '1px solid var(--border)', borderRadius: 0, background: 'transparent' }}>
+            <div className="card-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent)', marginBottom: '1rem' }} />
+            <h4 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>{item.title}</h4>
+            <p style={{ margin: 0, lineHeight: '1.4' }}>{item.desc}</p>
           </div>
         ))}
       </div>
 
-      <div className="fade" style={{ marginTop: '6rem', width: '100%', maxWidth: '800px' }}>
-        <p style={{ fontStyle: 'italic', marginBottom: '2rem', color: 'var(--text)' }}>"{eco.quote}"</p>
+      <div className="fade" style={{ marginTop: '5rem', width: '100%' }}>
+        <p style={{ fontStyle: 'italic', marginBottom: '2rem', color: 'var(--muted)', fontSize: '0.95rem' }}>"{eco.quote}"</p>
         <div className="formula-box">
           {eco.formula}
         </div>
