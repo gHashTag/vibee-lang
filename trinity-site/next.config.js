@@ -1,10 +1,5 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: 'standalone',
-  optimizeFonts: false,
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-}
-
-module.exports = nextConfig
+const withNextIntl = require('next-intl/plugin')(
+  './i18n.js'
+);
+ 
+module.exports = withNextIntl({});
