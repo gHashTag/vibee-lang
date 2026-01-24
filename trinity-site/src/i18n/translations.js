@@ -204,9 +204,9 @@ export const translations = {
     
     hero: {
       tag: 'Нативное троичное железо для AI',
-      headline: 'Инференс AI в 5× быстрее при на 40% меньше энергии',
+      headline: 'Инференс AI в 5 раз быстрее при экономии энергии на 40%',
       quote: '"Мы создаём чипы, которые говорят на родном языке AI"',
-      desc: 'Первый чип для троичных нейросетей: <strong>в 5× быстрее</strong> при <strong>на 40% меньше энергии</strong>',
+      desc: 'Первый чип для троичных нейросетей: <strong>в 5 раз быстрее</strong> при <strong>экономии энергии на 40%</strong>',
       cta: 'Получить Pitch Deck'
     },
     
@@ -226,12 +226,12 @@ export const translations = {
     },
     
     solution: {
-      title: 'Почему <span class="grad">троичное</span>?',
+      title: 'Почему <span class="grad">Троичное</span>?',
       legend: ['+58.5% плотность информации', 'База 3 оптимальна (Кнут)', 'φ² + 1/φ² = 3 (золотое сечение)'],
       cards: [
-        { value: '1.585×', label: 'Плотность информации', color: 'blue' },
+        { value: '1.585×', label: 'Плотность данных', color: 'blue' },
         { value: '5×', label: 'Быстрее инференс', color: 'green' },
-        { value: '40%', label: 'Меньше энергии', color: 'purple' },
+        { value: '40%', label: 'Экономия энергии', color: 'purple' },
         { value: '60%', label: 'Снижение затрат', color: 'yellow' }
       ]
     },
