@@ -17,6 +17,7 @@ import {
   TechAssetsSection,
   CalculatorLogicSection,
   BenchmarksSection,
+  ScientificFoundationSection,
   MilestonesSection,
   VisionSection,
   GTMSection,
@@ -48,6 +49,7 @@ export default function App() {
         <TechAssetsSection />
         <CalculatorLogicSection />
         <BenchmarksSection />
+        <ScientificFoundationSection />
         <MilestonesSection />
         <GTMSection />
         <CompetitionSection />
