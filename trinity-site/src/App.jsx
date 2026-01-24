@@ -43,7 +43,7 @@ export default function App() {
         <EcosystemSection />
         <InvestSection />
       </main>
-      <footer>
+      <footer style={{ textAlign: 'center', padding: '3rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
         <p>TRINITY Computing © 2026 | φ² + 1/φ² = 3</p>
       </footer>
     </I18nProvider>
