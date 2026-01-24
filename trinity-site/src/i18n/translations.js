@@ -233,7 +233,38 @@ export const translations = {
         { title: 'Microsoft BitNet b1.58 (2024)', desc: 'Ternary weights proven' },
         { title: 'Koide Y. Phys. Lett. B (1983)', desc: '44 years unexplained' }
       ]
+    
+    techAssets: {
+      title: 'Technical <span class="grad">Assets</span>',
+      sub: 'Not just an idea. A massive, working codebase.',
+      items: [
+        { value: '10,244', label: 'Specifications (.vibee)', desc: 'Formalized knowledge base' },
+        { value: '42', label: 'Languages', desc: 'Generated from one source' },
+        { value: '100+', label: 'Sacred Constants', desc: 'Implemented in sacred_constants.zig' },
+        { value: '88/88', label: 'Tests Passing', desc: 'Core VM & Trinity modules' },
+        { value: '115 KB', label: 'VM Runtime', desc: 'Lightweight stack-based VM' },
+        { value: '5.6x', label: 'Faster', desc: 'Fibonacci benchmark vs Binary' }
+      ]
     },
+
+    calculatorLogic: {
+      title: 'Calculator <span class="grad">Logic</span>',
+      sub: 'Why build a supercomputer when a calculator is enough?',
+      comparison: [
+        { 
+          title: 'Complex Binary Compute', 
+          desc: 'Requires billions of transistors, massive energy, and cooling to approximate answers.',
+          icon: '📉' 
+        },
+        { 
+          title: 'Ternary Calculator', 
+          desc: 'Solves the same tasks using native math (φ² + 1/φ² = 3) with a fraction of the energy.',
+          icon: '✨' 
+        }
+      ],
+      quote: '"We are trying to simulate intelligence with brute force, when the universe uses elegant math."'
+    },
+
 
     technology: {
       title: '<span class="grad">Technology</span> Architecture',

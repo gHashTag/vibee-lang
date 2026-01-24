@@ -14,6 +14,8 @@ import {
   BusinessModelSection,
   TechnologySection,
   ScienceProofSection,
+  TechAssetsSection,
+  CalculatorLogicSection,
   MilestonesSection,
   VisionSection,
   GTMSection,
@@ -42,6 +44,8 @@ export default function App() {
         <FinancialsSection />
         <BusinessModelSection />
         <TechnologySection />
+        <TechAssetsSection />
+        <CalculatorLogicSection />
         <MilestonesSection />
         <GTMSection />
         <CompetitionSection />
