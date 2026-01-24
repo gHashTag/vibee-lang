@@ -1,5 +1,5 @@
 import { useI18n } from '../../i18n/context'
-import Section from '../Section'
+import Section from '../Section.jsx'
 
 export default function BenchmarksSection() {
   const { t } = useI18n()

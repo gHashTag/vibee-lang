@@ -1,6 +1,5 @@
 import { useI18n } from '../../i18n/context'
-import Section from '../Section'
-import MetricCard from '../MetricCard'
+import Section from '../Section.jsx'
 
 export default function TechAssetsSection() {
   const { t } = useI18n()
