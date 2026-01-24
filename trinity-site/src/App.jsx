@@ -1,4 +1,4 @@
-import { I18nProvider } from './i18n/context'
+import { I18nProvider } from './i18n/context.jsx'
 import QuantumBackground from './components/QuantumBackground'
 import Navigation from './components/Navigation'
 import {

@@ -1,4 +1,4 @@
-import { useI18n } from '../../i18n/context'
+import { useI18n } from '../../i18n/context.jsx'
 import Section from '../Section.jsx'
 
 export default function TechAssetsSection() {
