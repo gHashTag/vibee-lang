@@ -8,7 +8,7 @@ export default function TractionSection() {
   
   if (!tr) return null
 
-  // Select first 6 metrics for symmetry
+  // Ensure 6 items for symmetry
   const displayMetrics = tr.metrics?.slice(0, 6)
 
   return (
@@ -28,7 +28,7 @@ export default function TractionSection() {
         ))}
       </div>
 
-      <div className="grid-row fade">
+      <div className="grid-row fade" style={{ gap: '10px' }}>
         {displayMetrics?.map((m, i) => (
           <MetricCard key={i} value={m.value} label={m.label} color={m.color} />
         ))}

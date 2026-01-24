@@ -299,10 +299,7 @@ export const translations = {
         { value: '80', label: 'Опкодов', color: 'purple' },
         { value: '3²⁷', label: 'Vec27 состояний', color: 'cyan' },
         { value: '120+', label: 'Zig модулей', color: 'yellow' },
-        { value: '1.585', label: 'Бит на трит', color: 'green' },
-        { value: 'φ²+1/φ²', label: '= 3 (Золотое)', color: 'purple' },
-        { value: '+34%', label: 'SIMD ускорение', color: 'blue' },
-        { value: '10K+', label: 'Строк спеков', color: 'cyan' }
+        { value: '1.585', label: 'Бит на трит', color: 'green' }
       ]
     },
     
