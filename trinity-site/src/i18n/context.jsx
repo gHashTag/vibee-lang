@@ -24,6 +24,8 @@ export function I18nProvider({ children }) {
     document.documentElement.lang = lang
   }, [lang])
 
+  console.log('I18n lang:', lang, 't keys:', Object.keys(t || {}))
+  
   return (
     <I18nContext.Provider value={{ t, lang, switchLang }}>
       {children}
