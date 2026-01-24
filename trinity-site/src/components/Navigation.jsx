@@ -26,22 +26,20 @@ export default function Navigation() {
   }
 
   return (
-    <>
-      <button className="lang-btn" onClick={switchLang}>
+    <nav>
+      {t.nav?.map((item, i) => (
+        <a
+          key={i}
+          href={`#${sectionIds[i]}`}
+          className={active === sectionIds[i] ? 'active' : ''}
+          onClick={(e) => { e.preventDefault(); scrollTo(sectionIds[i]) }}
+        >
+          {item}
+        </a>
+      ))}
+      <button className="lang-toggle" onClick={switchLang}>
         {t.langSwitch}
       </button>
-      <nav>
-        {t.nav?.map((item, i) => (
-          <a
-            key={i}
-            href={`#${sectionIds[i]}`}
-            className={active === sectionIds[i] ? 'active' : ''}
-            onClick={(e) => { e.preventDefault(); scrollTo(sectionIds[i]) }}
-          >
-            {item}
-          </a>
-        ))}
-      </nav>
-    </>
+    </nav>
   )
 }
