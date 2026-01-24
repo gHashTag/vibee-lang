@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useI18n } from '../i18n/context'
 
-const sectionIds = ['hero', 'problem', 'solution', 'traction', 'market', 'competition', 'team', 'invest']
+const sectionIds = ['hero', 'problem', 'solution', 'whynow', 'calculator', 'traction', 'market', 'competition', 'roadmap', 'team', 'invest']
 
 export default function Navigation() {
   const { t, switchLang } = useI18n()

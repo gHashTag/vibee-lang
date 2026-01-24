@@ -6,12 +6,15 @@ export default function HeroSection() {
   
   return (
     <Section id="hero">
-      <p className="tag fade">{t.hero.tag}</p>
-      <h1 className="fade">TRINITY</h1>
+      <p className="tag fade">{t.hero?.tag}</p>
+      <h1 className="fade" style={{ marginBottom: '0.5rem' }}>TRINITY</h1>
+      <h2 className="fade headline" style={{ fontSize: '1.8rem', color: 'var(--accent)', marginBottom: '1.5rem' }}>
+        {t.hero?.headline}
+      </h2>
       <p className="formula fade">φ² + 1/φ² = 3</p>
-      <p className="quote fade">{t.hero.quote}</p>
-      <p className="sub fade" dangerouslySetInnerHTML={{ __html: t.hero.desc }} />
-      <a href="#invest" className="btn fade">{t.hero.cta}</a>
+      <p className="quote fade">{t.hero?.quote}</p>
+      <p className="sub fade" dangerouslySetInnerHTML={{ __html: t.hero?.desc }} />
+      <a href="#invest" className="btn fade">{t.hero?.cta}</a>
     </Section>
   )
 }

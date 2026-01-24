@@ -41,12 +41,31 @@ export default function InvestSection() {
         </div>
       </div>
       
-      <p className="closing fade">{inv.closing}</p>
+      <p className="closing fade">{inv?.closing}</p>
       
-      <div className="cta-buttons fade">
-        <a href="mailto:invest@trinity-computing.io" className="btn">Email</a>
+      <div className="cta-grid fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem', marginTop: '3rem' }}>
+        <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
+          <h4>Investors</h4>
+          <a href="mailto:invest@trinity-computing.io?subject=Pitch Deck Request" className="btn" style={{ width: '100%', marginTop: '1rem' }}>
+            {inv?.ctas?.investor}
+          </a>
+        </div>
+        <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
+          <h4>Partners</h4>
+          <a href="mailto:partners@trinity-computing.io?subject=Integration Inquiry" className="btn secondary" style={{ width: '100%', marginTop: '1rem' }}>
+            {inv?.ctas?.partner}
+          </a>
+        </div>
+        <div className="glass" style={{ padding: '1.5rem', textAlign: 'center' }}>
+          <h4>Talents</h4>
+          <a href="https://t.me/vibee_dev" className="btn telegram" style={{ width: '100%', marginTop: '1rem' }}>
+            {inv?.ctas?.talent}
+          </a>
+        </div>
+      </div>
+
+      <div className="cta-buttons fade" style={{ marginTop: '3rem', justifyContent: 'center' }}>
         <a href="https://github.com/gHashTag/vibee-lang" className="btn secondary" target="_blank" rel="noopener">GitHub</a>
-        <a href="https://t.me/vibee_dev" className="btn telegram">Telegram</a>
       </div>
     </Section>
   )

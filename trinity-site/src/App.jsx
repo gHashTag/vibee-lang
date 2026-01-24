@@ -5,9 +5,12 @@ import {
   HeroSection,
   ProblemSection,
   SolutionSection,
+  WhyNowSection,
+  CalculatorSection,
   TractionSection,
   MarketSection,
   CompetitionSection,
+  RoadmapSection,
   TeamSection,
   InvestSection
 } from './components/sections'
@@ -21,9 +24,12 @@ export default function App() {
         <HeroSection />
         <ProblemSection />
         <SolutionSection />
+        <WhyNowSection />
+        <CalculatorSection />
         <TractionSection />
         <MarketSection />
         <CompetitionSection />
+        <RoadmapSection />
         <TeamSection />
         <InvestSection />
       </main>

@@ -7,13 +7,14 @@ export const translations = {
     langSwitch: 'RU',
     langHref: '?lang=ru',
     
-    nav: ['TRINITY', 'Problem', 'Solution', 'Traction', 'Market', 'Competition', 'Team', 'Invest'],
+    nav: ['TRINITY', 'Problem', 'Solution', 'Why Now', 'Technology', 'Traction', 'Market', 'Team', 'Invest'],
     
     hero: {
       tag: 'Native Ternary Hardware for AI',
+      headline: '5× Faster AI Inference at 40% Less Power',
       quote: '"We build chips that speak AI\'s native language"',
       desc: 'First chip for ternary neural networks: <strong>5× faster</strong> at <strong>40% less power</strong>',
-      cta: '$2M for 1%'
+      cta: 'Get Pitch Deck'
     },
     
     problem: {
@@ -39,6 +40,24 @@ export const translations = {
         { value: '5×', label: 'Faster Inference', color: 'green' },
         { value: '40%', label: 'Less Power', color: 'purple' },
         { value: '60%', label: 'Cost Reduction', color: 'yellow' }
+      ]
+    },
+
+    whynow: {
+      title: 'Why <span class="grad">Now</span>?',
+      cards: [
+        { title: 'The "1.58" Era', desc: 'Microsoft BitNet proved 1.58-bit models outperform binary.' },
+        { title: 'Energy Crisis', desc: 'AI data centers consume 4% of world electricity. We fix it.' },
+        { title: 'Edge AI Boom', desc: 'LLMs moving to phones/IoT need hardware that doesn\'t burn batteries.' }
+      ]
+    },
+
+    usecases: {
+      title: 'Specific <span class="grad">Applications</span>',
+      items: [
+        { title: 'LLM Inference', desc: 'Run Llama 3 on 1/5 of current hardware costs.' },
+        { title: 'Edge AI', desc: 'Real-time AI in cameras and robots with zero latency.' },
+        { title: 'Data Centers', desc: 'Double your compute without upgrading power grid.' }
       ]
     },
     
@@ -86,6 +105,15 @@ export const translations = {
         ['TRINITY', '$200M', 'Pre-rev', 'Seed']
       ]
     },
+
+    roadmap: {
+      title: '<span class="grad">Roadmap</span>',
+      milestones: [
+        { date: 'Q1 2026', title: 'FPGA Prototype', desc: 'BitNet inference on real hardware' },
+        { date: 'Q3 2026', title: 'Developer SDK', desc: 'Zig-based compilers for AI researchers' },
+        { date: 'Q1 2027', title: 'ASIC Tape-out', desc: 'First native ternary chip production' }
+      ]
+    },
     
     gtm: {
       title: 'Go-to-<span class="grad">Market</span>',
@@ -100,6 +128,8 @@ export const translations = {
       title: 'The <span class="grad">Team</span>',
       name: 'Dmitrii Vasilev',
       role: 'Founder & CEO',
+      photo: 'https://media.licdn.com/dms/image/v2/D4E03AQFiQ-Ov6dkEbg/profile-displayphoto-shrink_800_800/profile-displayphoto-shrink_800_800/0/1724820280182?e=1770854400&v=beta&t=Xq5vNL_NCNqIX8G22qy9PWeZygdXiquqU9zrb0EbL6s',
+      linkedin: 'https://www.linkedin.com/in/neurocoder/',
       exp: [
         '15+ years software engineering',
         'Ex-senior engineer at tech companies',
@@ -156,7 +186,12 @@ export const translations = {
         '18-month head start',
         '99% founder ownership = aligned'
       ],
-      closing: '"Binary was the 20th century. Ternary is the 21st. TRINITY makes it happen."'
+      closing: '"Binary was the 20th century. Ternary is the 21st. TRINITY makes it happen."',
+      ctas: {
+        investor: 'Schedule Pitch Deck Review',
+        partner: 'Discuss Integration',
+        talent: 'Join the Team'
+      }
     }
   },
   
@@ -165,13 +200,14 @@ export const translations = {
     langSwitch: 'EN',
     langHref: '?lang=en',
     
-    nav: ['TRINITY', 'Проблема', 'Решение', 'Трекшн', 'Рынок', 'Конкуренты', 'Команда', 'Инвестиции'],
+    nav: ['TRINITY', 'Проблема', 'Решение', 'Почему сейчас', 'Технология', 'Трекшн', 'Рынок', 'Команда', 'Инвестиции'],
     
     hero: {
       tag: 'Нативное троичное железо для AI',
+      headline: 'Инференс AI в 5× быстрее при на 40% меньше энергии',
       quote: '"Мы создаём чипы, которые говорят на родном языке AI"',
       desc: 'Первый чип для троичных нейросетей: <strong>в 5× быстрее</strong> при <strong>на 40% меньше энергии</strong>',
-      cta: '$2M за 1%'
+      cta: 'Получить Pitch Deck'
     },
     
     problem: {
@@ -197,6 +233,24 @@ export const translations = {
         { value: '5×', label: 'Быстрее инференс', color: 'green' },
         { value: '40%', label: 'Меньше энергии', color: 'purple' },
         { value: '60%', label: 'Снижение затрат', color: 'yellow' }
+      ]
+    },
+
+    whynow: {
+      title: 'Почему <span class="grad">сейчас</span>?',
+      cards: [
+        { title: 'Эра "1.58"', desc: 'Microsoft BitNet доказал: 1.58-битные модели обходят бинарные.' },
+        { title: 'Кризис энергии', desc: 'AI дата-центры потребляют 4% мирового электричества. Мы это исправим.' },
+        { title: 'Бум Edge AI', desc: 'LLM в телефонах и IoT требуют железа, которое не сжигает батарею.' }
+      ]
+    },
+
+    usecases: {
+      title: 'Сферы <span class="grad">применения</span>',
+      items: [
+        { title: 'Инференс LLM', desc: 'Запуск Llama 3 в 5 раз дешевле текущих затрат.' },
+        { title: 'Edge AI', desc: 'AI в реальном времени в камерах и роботах без задержек.' },
+        { title: 'Дата-центры', desc: 'Удвойте свои мощности без модернизации электросети.' }
       ]
     },
     
@@ -244,6 +298,15 @@ export const translations = {
         ['TRINITY', '$200M', 'До выручки', 'Посев']
       ]
     },
+
+    roadmap: {
+      title: '<span class="grad">Roadmap</span>',
+      milestones: [
+        { date: 'Q1 2026', title: 'FPGA Прототип', desc: 'Инференс BitNet на реальном железе' },
+        { date: 'Q3 2026', title: 'SDK для разработчиков', desc: 'Zig-компиляторы для AI исследователей' },
+        { date: 'Q1 2027', title: 'ASIC Tape-out', desc: 'Первое производство нативных троичных чипов' }
+      ]
+    },
     
     gtm: {
       title: 'Выход на <span class="grad">рынок</span>',
@@ -258,6 +321,8 @@ export const translations = {
       title: '<span class="grad">Команда</span>',
       name: 'Дмитрий Васильев',
       role: 'Основатель & CEO',
+      photo: 'https://media.licdn.com/dms/image/v2/D4E03AQFiQ-Ov6dkEbg/profile-displayphoto-shrink_800_800/profile-displayphoto-shrink_800_800/0/1724820280182?e=1770854400&v=beta&t=Xq5vNL_NCNqIX8G22qy9PWeZygdXiquqU9zrb0EbL6s',
+      linkedin: 'https://www.linkedin.com/in/neurocoder/',
       exp: [
         '15+ лет разработки ПО',
         'Опыт в крупных tech компаниях',
@@ -314,7 +379,12 @@ export const translations = {
         '18 месяцев форы',
         '99% у основателя = alignment'
       ],
-      closing: '"Бинарное — это 20 век. Троичное — 21 век. TRINITY делает это реальностью."'
+      closing: '"Бинарное — это 20 век. Троичное — 21 век. TRINITY делает это реальностью."',
+      ctas: {
+        investor: 'Обсудить Pitch Deck',
+        partner: 'Предложить интеграцию',
+        talent: 'Присоединиться к команде'
+      }
     }
   }
 }
