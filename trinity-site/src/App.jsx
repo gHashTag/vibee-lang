@@ -13,6 +13,7 @@ import {
   FinancialsSection,
   BusinessModelSection,
   TechnologySection,
+  ScienceProofSection,
   MilestonesSection,
   VisionSection,
   GTMSection,
@@ -33,6 +34,7 @@ export default function App() {
         <ProblemSection />
         <SolutionSection />
         <WhyNowSection />
+        <ScienceProofSection />
         <CalculatorSection />
         <TractionSection />
         <MarketSection />

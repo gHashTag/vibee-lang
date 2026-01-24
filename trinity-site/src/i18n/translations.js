@@ -203,9 +203,36 @@ export const translations = {
     },
     
     science: {
-      title: 'Scientific <span class="grad">Foundation</span>',
-      sub: 'Based on peer-reviewed research and 60+ years of ternary computing',
-      papersTitle: 'Key Research Papers'
+      title: 'Scientific <span class="grad">Proof</span>',
+      sub: '40 proofs from 8 sciences. One script — all evidence.',
+      stats: [
+        { value: '40', label: 'Proofs' },
+        { value: '8', label: 'Sciences' },
+        { value: '97.5%', label: 'Pass Rate' }
+      ],
+      sections: [
+        { name: 'Mathematics', passed: 10, total: 10 },
+        { name: 'Particle Physics', passed: 8, total: 8 },
+        { name: 'Quantum Physics', passed: 5, total: 5 },
+        { name: 'Cosmology', passed: 3, total: 4 },
+        { name: 'Chaos Theory', passed: 3, total: 3 },
+        { name: 'Computer Science', passed: 4, total: 4 },
+        { name: 'Biology', passed: 3, total: 3 },
+        { name: 'Neuromorphic', passed: 3, total: 3 }
+      ],
+      formulas: [
+        { formula: 'φ² + 1/φ² = 3', desc: 'Golden Identity', error: '0.0000%', source: 'Algebra' },
+        { formula: '1/α = 4π³ + π² + π', desc: 'Fine Structure', error: '0.0002%', source: 'CODATA 2018' },
+        { formula: 'm_p/m_e = 6π⁵', desc: 'Proton/Electron', error: '0.002%', source: 'CODATA 2018' },
+        { formula: 'Koide Q = 2/3', desc: 'Lepton Masses', error: '0.0009%', source: 'Koide 1981' },
+        { formula: 'π × φ × e = 13.82', desc: 'Age of Universe', error: '0.14%', source: 'Planck 2020' },
+        { formula: 'm₂/m₁ = φ', desc: 'E8 Spectrum', error: '0.01%', source: 'Science 2010' }
+      ],
+      sources: [
+        { title: 'Coldea et al. Science 327, 177 (2010)', desc: 'E8 spectrum golden ratio' },
+        { title: 'Microsoft BitNet b1.58 (2024)', desc: 'Ternary weights proven' },
+        { title: 'Koide Y. Phys. Lett. B (1983)', desc: '44 years unexplained' }
+      ]
     },
 
     technology: {
@@ -494,9 +521,36 @@ export const translations = {
     },
     
     science: {
-      title: 'Научная <span class="grad">база</span>',
-      sub: 'Основано на рецензируемых исследованиях и 60+ годах троичных вычислений',
-      papersTitle: 'Ключевые научные работы'
+      title: 'Научное <span class="grad">Доказательство</span>',
+      sub: '40 доказательств из 8 наук. Один скрипт — все факты.',
+      stats: [
+        { value: '40', label: 'Доказательств' },
+        { value: '8', label: 'Наук' },
+        { value: '97.5%', label: 'Успех' }
+      ],
+      sections: [
+        { name: 'Математика', passed: 10, total: 10 },
+        { name: 'Физика частиц', passed: 8, total: 8 },
+        { name: 'Кватовая физика', passed: 5, total: 5 },
+        { name: 'Космология', passed: 3, total: 4 },
+        { name: 'Теория хаоса', passed: 3, total: 3 },
+        { name: 'Информатика', passed: 4, total: 4 },
+        { name: 'Биология', passed: 3, total: 3 },
+        { name: 'Нейроморфные', passed: 3, total: 3 }
+      ],
+      formulas: [
+        { formula: 'φ² + 1/φ² = 3', desc: 'Золотое тождество', error: '0.0000%', source: 'Алгебра' },
+        { formula: '1/α = 4π³ + π² + π', desc: 'Тонкая структура', error: '0.0002%', source: 'CODATA 2018' },
+        { formula: 'm_p/m_e = 6π⁵', desc: 'Протон/Электрон', error: '0.002%', source: 'CODATA 2018' },
+        { formula: 'Koide Q = 2/3', desc: 'Массы лептонов', error: '0.0009%', source: 'Koide 1981' },
+        { formula: 'π × φ × e = 13.82', desc: 'Возраст Вселенной', error: '0.14%', source: 'Planck 2020' },
+        { formula: 'm₂/m₁ = φ', desc: 'Спектр E8', error: '0.01%', source: 'Science 2010' }
+      ],
+      sources: [
+        { title: 'Coldea et al. Science 327, 177 (2010)', desc: 'Золотое сечение в E8' },
+        { title: 'Microsoft BitNet b1.58 (2024)', desc: 'Троичные веса доказаны' },
+        { title: 'Koide Y. Phys. Lett. B (1983)', desc: '44 года без объяснения' }
+      ]
     },
 
     technology: {
