@@ -9,13 +9,15 @@ export default function GTMSection() {
 
   return (
     <Section id="gtm">
-      <h2 className="fade" dangerouslySetInnerHTML={{ __html: gtm.title }} style={{ marginBottom: '3rem' }} />
+      <div className="tight fade">
+        <h2 dangerouslySetInnerHTML={{ __html: gtm.title }} style={{ marginBottom: '3rem' }} />
+      </div>
       <div className="grid-row fade">
         {gtm.phases?.map((phase, i) => (
-          <div key={i} className="premium-card compact fade" style={{ transitionDelay: `${i * 100}ms`, textAlign: 'left', background: 'transparent', border: 'none', borderLeft: '1px solid var(--border)', borderRadius: 0 }}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--accent)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{phase.phase}</div>
-            <h4 style={{ marginBottom: '0.8rem' }}>{phase.title}</h4>
-            <p style={{ color: 'var(--muted)', lineHeight: '1.4' }}>{phase.desc}</p>
+          <div key={i} className="premium-card compact" style={{ textAlign: 'left', border: 'none', borderLeft: '1px solid var(--border)', borderRadius: 0, background: 'transparent' }}>
+            <div style={{ fontSize: '0.65rem', color: 'var(--accent)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{phase.phase}</div>
+            <h4 style={{ marginBottom: '0.6rem', fontSize: '1rem' }}>{phase.title}</h4>
+            <p style={{ color: 'var(--muted)', lineHeight: '1.4', fontSize: '0.8rem' }}>{phase.desc}</p>
           </div>
         ))}
       </div>

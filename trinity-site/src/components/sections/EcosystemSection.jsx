@@ -9,22 +9,24 @@ export default function EcosystemSection() {
 
   return (
     <Section id="ecosystem">
-      <h2 className="fade" dangerouslySetInnerHTML={{ __html: eco.title }} />
-      <p className="fade" style={{ marginBottom: '3rem' }}>{eco.sub}</p>
+      <div className="tight fade">
+        <h2 dangerouslySetInnerHTML={{ __html: eco.title }} />
+        <p style={{ marginBottom: '4rem' }}>{eco.sub}</p>
+      </div>
       
       <div className="grid-row fade" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '15px' }}>
         {eco.items?.map((item, i) => (
           <div key={i} className="premium-card compact" style={{ textAlign: 'left', border: 'none', borderLeft: '1px solid var(--border)', borderRadius: 0, background: 'transparent' }}>
-            <div className="card-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent)', marginBottom: '1rem' }} />
-            <h4 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>{item.title}</h4>
-            <p style={{ margin: 0, lineHeight: '1.4' }}>{item.desc}</p>
+            <div className="card-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent)', marginBottom: '0.8rem' }} />
+            <h4 style={{ fontSize: '1rem', marginBottom: '0.4rem' }}>{item.title}</h4>
+            <p style={{ margin: 0, lineHeight: '1.4', fontSize: '0.8rem' }}>{item.desc}</p>
           </div>
         ))}
       </div>
 
-      <div className="fade" style={{ marginTop: '5rem', width: '100%' }}>
-        <p style={{ fontStyle: 'italic', marginBottom: '2rem', color: 'var(--muted)', fontSize: '0.95rem' }}>"{eco.quote}"</p>
-        <div className="formula-box">
+      <div className="tight fade" style={{ marginTop: '6rem' }}>
+        <p style={{ fontStyle: 'italic', marginBottom: '2rem', color: 'var(--muted)', fontSize: '0.9rem' }}>"{eco.quote}"</p>
+        <div className="formula-box" style={{ fontSize: '1rem', padding: '1rem' }}>
           {eco.formula}
         </div>
       </div>
