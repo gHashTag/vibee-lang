@@ -407,14 +407,9 @@
 ║         "In 5 years, every AI data center will have              ║
 ║          TRINITY chips running ternary neural networks."         ║
 ║                                                                  ║
-║                                                                  ║
-║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   ║
-║                                                                  ║
-║  2032 TRINITY:                                                   ║
-║  • $500M+ revenue                                                ║
-║  • 1000+ employees                                               ║
-║  • Standard for ternary AI inference                             ║
-║  • IPO or strategic exit at $10B+                                ║
+║  CONTACT:                                                        ║
+║  • Website: https://trinity-site-one.vercel.app                  ║
+║  • Email:   raoffonom@icloud.com                                 ║
 ║                                                                  ║
 ║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   ║
 ║                                                                  ║

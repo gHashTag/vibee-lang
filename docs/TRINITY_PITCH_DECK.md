@@ -584,9 +584,9 @@
 ║                                                                  ║
 ║  ────────────────────────────────────────────────────────────    ║
 ║                                                                  ║
-║  Email:    founders@trinity-computing.com                        ║
-║  Website:  www.trinity-computing.com                             ║
-║  GitHub:   github.com/trinity-hardware                           ║
+║  Email:    raoffonom@icloud.com                                  ║
+║  Website:  https://trinity-site-one.vercel.app                   ║
+║  GitHub:   github.com/gHashTag/vibee-lang                         ║
 ║                                                                  ║
 ║  ────────────────────────────────────────────────────────────    ║
 ║                                                                  ║
