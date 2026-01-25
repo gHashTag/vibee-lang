@@ -1,0 +1,141 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# REPLICATE API - AI Generation Service
+# ═══════════════════════════════════════════════════════════════════════════════
+# Real AI generation via Replicate API
+# Models: Flux Schnell, SDXL, Stable Video, etc.
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: replicate_api
+version: "2.0.0"
+language: zig
+module: replicate_api
+
+description: |
+  Replicate API client for AI generation.
+  
+  Supported models:
+  - black-forest-labs/flux-schnell (fast image gen)
+  - stability-ai/sdxl (high quality image)
+  - stability-ai/stable-video-diffusion (image to video)
+  - cjwbw/rembg (background removal)
+  - nightmareai/real-esrgan (upscale)
+
+types:
+  ReplicateConfig:
+    fields:
+      api_token: String
+      base_url: String
+      timeout_seconds: Int
+
+  PredictionInput:
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      width: Int
+      height: Int
+      num_outputs: Int
+      guidance_scale: Float
+      num_inference_steps: Int
+
+  PredictionResponse:
+    fields:
+      id: String
+      status: String
+      output: Option<List<String>>
+      error: Option<String>
+      urls: Object
+
+  ModelVersion:
+    fields:
+      name: String
+      version: String
+      cost_per_run: Float
+
+constants:
+  FLUX_SCHNELL: "black-forest-labs/flux-schnell"
+  SDXL: "stability-ai/sdxl"
+  STABLE_VIDEO: "stability-ai/stable-video-diffusion"
+  REMBG: "cjwbw/rembg"
+  REAL_ESRGAN: "nightmareai/real-esrgan"
+  
+  API_BASE: "https://api.replicate.com/v1"
+  DEFAULT_TIMEOUT: 60
+
+behaviors:
+  - name: create_prediction
+    given: Model version and input parameters
+    when: AI generation requested
+    then: POST to /predictions with JSON body, return prediction ID
+
+  - name: get_prediction
+    given: Prediction ID
+    when: Checking generation status
+    then: GET /predictions/{id}, return status and output
+
+  - name: wait_for_completion
+    given: Prediction ID and timeout
+    when: Synchronous generation needed
+    then: Poll until status is succeeded/failed or timeout
+
+  - name: generate_image
+    given: Prompt and model
+    when: Image generation requested
+    then: |
+      1. Create prediction with prompt
+      2. Wait for completion (max 60s)
+      3. Return output URL or error
+
+  - name: generate_video
+    given: Image URL and model
+    when: Video generation requested
+    then: |
+      1. Create prediction with image input
+      2. Wait for completion (max 120s)
+      3. Return video URL or error
+
+  - name: remove_background
+    given: Image URL
+    when: Background removal requested
+    then: Use rembg model, return transparent PNG URL
+
+  - name: upscale_image
+    given: Image URL and scale factor
+    when: Upscale requested
+    then: Use real-esrgan model, return upscaled image URL
+
+  - name: build_auth_header
+    given: API token
+    when: Making API request
+    then: Return "Authorization: Bearer {token}"
+
+  - name: parse_response
+    given: JSON response body
+    when: API response received
+    then: Parse into PredictionResponse struct
+
+  - name: handle_error
+    given: Error response
+    when: API returns error
+    then: Extract error message, log, return user-friendly message
+
+test_cases:
+  - name: test_create_prediction
+    input: {model: "flux-schnell", prompt: "a cat"}
+    expected: {has_id: true}
+
+  - name: test_auth_header
+    input: {token: "r8_test"}
+    expected: {header: "Bearer r8_test"}
+
+  - name: test_parse_succeeded
+    input: {status: "succeeded", output: ["https://..."]}
+    expected: {success: true}
+
+  - name: test_parse_failed
+    input: {status: "failed", error: "Out of memory"}
+    expected: {success: false}
+
+  - name: test_timeout
+    input: {timeout: 60, elapsed: 70}
+    expected: {error: "timeout"}

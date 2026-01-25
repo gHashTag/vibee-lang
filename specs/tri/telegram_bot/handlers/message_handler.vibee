@@ -1,0 +1,170 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGE HANDLER - Main message routing
+# ═══════════════════════════════════════════════════════════════════════════════
+# Routes all incoming messages to appropriate handlers
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: message_handler
+version: "2.0.0"
+language: zig
+module: message_handler
+
+description: |
+  Main message handler for Telegram bot.
+  Routes messages based on:
+  - Commands (/start, /menu, /balance)
+  - Menu buttons (ReplyKeyboard)
+  - Scene input (prompts, photos)
+
+imports:
+  - ../navigation/unified_navigation
+  - ../menu/reply_keyboard
+  - ../services/replicate_api
+
+types:
+  UserState:
+    fields:
+      chat_id: Int
+      menu: String
+      scene: String
+      lang: String
+      balance: Int
+      prompt: Option<String>
+
+  MessageContext:
+    fields:
+      chat_id: Int
+      text: String
+      photo: Option<String>
+      voice: Option<String>
+      video: Option<String>
+
+  HandlerResult:
+    fields:
+      success: Bool
+      response_text: Option<String>
+      keyboard: Option<String>
+      photo_url: Option<String>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMMAND HANDLERS
+  # ═══════════════════════════════════════════════════════════════════════════
+  
+  - name: handle_start
+    given: /start command
+    when: User starts bot
+    then: |
+      1. Reset user state
+      2. Send welcome message
+      3. Show main menu (ReplyKeyboard)
+
+  - name: handle_menu
+    given: /menu command
+    when: User requests menu
+    then: Show main menu with categories
+
+  - name: handle_balance
+    given: /balance command
+    when: User checks balance
+    then: Return current star balance
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MENU BUTTON HANDLERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_category_button
+    given: Category button text (📸 Нейрофото, 🎥 Видео, etc.)
+    when: User selects category
+    then: |
+      1. Update user menu state
+      2. Show submenu with functions
+
+  - name: handle_function_button
+    given: Function button text (✨ Нейрофото, 🎥 Фото в видео, etc.)
+    when: User selects function
+    then: |
+      1. Check balance
+      2. Set scene
+      3. Request input (prompt/photo)
+
+  - name: handle_back_button
+    given: ◀️ Назад / ◀️ Back button
+    when: User goes back
+    then: Return to main menu
+
+  - name: handle_language_switch
+    given: 🌐 EN or 🌐 RU button
+    when: User switches language
+    then: |
+      1. Update user lang
+      2. Refresh current menu in new language
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCENE INPUT HANDLERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_prompt_input
+    given: Text message while in prompt scene
+    when: User sends prompt for generation
+    then: |
+      1. Validate prompt
+      2. Check balance
+      3. Call AI generation
+      4. Send result photo
+      5. Deduct balance
+
+  - name: handle_photo_input
+    given: Photo message while in photo scene
+    when: User sends photo for processing
+    then: |
+      1. Download photo
+      2. Check balance
+      3. Call appropriate AI service
+      4. Send result
+      5. Deduct balance
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ROUTING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: route_message
+    given: Incoming message
+    when: Message received
+    then: |
+      1. Check if command -> handle_command
+      2. Check if menu button -> handle_menu_button
+      3. Check if in scene -> handle_scene_input
+      4. Else -> show help
+
+  - name: get_user_state
+    given: Chat ID
+    when: Need user context
+    then: Return UserState from storage or create default
+
+  - name: update_user_state
+    given: Chat ID and new state
+    when: State changes
+    then: Save to storage
+
+test_cases:
+  - name: test_start_command
+    input: {text: "/start"}
+    expected: {menu: "main", keyboard: true}
+
+  - name: test_photo_category
+    input: {text: "📸 Нейрофото"}
+    expected: {menu: "photo"}
+
+  - name: test_back_to_main
+    input: {text: "◀️ Назад", current_menu: "photo"}
+    expected: {menu: "main"}
+
+  - name: test_prompt_in_scene
+    input: {text: "a cat in space", scene: "neuro_photo"}
+    expected: {generates: true}
+
+  - name: test_insufficient_balance
+    input: {balance: 5, cost: 50}
+    expected: {error: "insufficient_balance"}

@@ -323,4 +323,49 @@ EXIT_SIGNAL = (
 
 ---
 
+---
+
+## 🤖 TELEGRAM BOT RULES
+
+### КНОПКИ ТОЛЬКО ВНИЗУ!
+
+```
+⛔ ЗАПРЕЩЕНО: InlineKeyboardMarkup (кнопки в сообщении)
+✅ ТОЛЬКО: ReplyKeyboardMarkup (кнопки внизу экрана)
+```
+
+### Спецификации бота:
+
+```
+specs/tri/telegram_bot/
+├── navigation/unified_navigation.vibee  # Единый источник правды
+├── menu/reply_keyboard.vibee            # ReplyKeyboard генератор
+├── services/replicate_api.vibee         # AI генерация
+└── handlers/message_handler.vibee       # Роутинг сообщений
+```
+
+### Структура многоуровневого меню:
+
+```
+🏠 MAIN
+├── 📸 Нейрофото → ✨ Нейрофото, 🔍 Промпт из фото, 🎭 Замена лица, ⬆️ Апскейл
+├── 🎥 Видео → 🎥 Фото в видео, 🎬 Текст в видео, 👄 Lip Sync
+├── 🎤 Аудио → 🎤 Голос аватара, 🎙️ Текст в голос
+├── 🤖 Аватар → 🤖 Цифровое тело, 🧠 Мозг аватара, 💬 Чат
+├── 🛠 Инструменты
+├── 💰 Баланс | 💎 Пополнить
+└── 💬 Поддержка | 🌐 EN/RU
+```
+
+### Генерация кода:
+
+```bash
+./bin/vibee gen specs/tri/telegram_bot/navigation/unified_navigation.vibee
+./bin/vibee gen specs/tri/telegram_bot/menu/reply_keyboard.vibee
+./bin/vibee gen specs/tri/telegram_bot/services/replicate_api.vibee
+./bin/vibee gen specs/tri/telegram_bot/handlers/message_handler.vibee
+```
+
+---
+
 **KOSCHEI IS IMMORTAL | GOLDEN CHAIN IS CLOSED | φ² + 1/φ² = 3**
