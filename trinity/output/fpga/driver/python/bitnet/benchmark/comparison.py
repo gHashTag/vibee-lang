@@ -503,3 +503,371 @@ def compare_files(
         return 1
     
     return 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Visualization
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Цвета для визуализации
+COMPARISON_COLORS = {
+    "improved": "#10B981",
+    "regression": "#EF4444",
+    "unchanged": "#6B7280",
+    "baseline": "#3B82F6",
+    "current": "#8B5CF6",
+}
+
+
+class ComparisonVisualizer:
+    """
+    Визуализация результатов сравнения бенчмарков.
+    
+    Пример:
+        >>> viz = ComparisonVisualizer(report)
+        >>> viz.plot_diff_chart()
+        >>> viz.plot_comparison_bars()
+        >>> viz.save_all("plots/")
+    """
+    
+    def __init__(self, report: RegressionReport, config: dict = None):
+        """
+        Args:
+            report: RegressionReport для визуализации
+            config: Конфигурация (figsize, dpi, etc.)
+        """
+        self._report = report
+        self._config = config or {
+            "figsize": (10, 6),
+            "dpi": 150,
+            "font_size": 12,
+        }
+        self._figures = []
+        
+        # Проверка matplotlib
+        try:
+            import matplotlib.pyplot as plt
+            self._plt = plt
+        except ImportError:
+            raise ImportError("matplotlib не установлен. pip install matplotlib")
+    
+    def plot_diff_chart(self) -> "Figure":
+        """
+        Горизонтальный bar chart с процентными изменениями.
+        
+        Зелёный = улучшение, красный = регрессия, серый = без изменений.
+        
+        Returns:
+            matplotlib Figure
+        """
+        fig, ax = self._plt.subplots(figsize=self._config["figsize"], dpi=self._config["dpi"])
+        
+        # Собрать все метрики
+        metrics = []
+        values = []
+        colors = []
+        
+        for bc in self._report.benchmark_comparisons:
+            for c in bc.comparisons:
+                label = f"{bc.benchmark_name}.{c.metric_name}"
+                metrics.append(label)
+                values.append(c.percent_diff)
+                
+                if c.status == ComparisonStatus.IMPROVED:
+                    colors.append(COMPARISON_COLORS["improved"])
+                elif c.status == ComparisonStatus.REGRESSION:
+                    colors.append(COMPARISON_COLORS["regression"])
+                else:
+                    colors.append(COMPARISON_COLORS["unchanged"])
+        
+        # Горизонтальный bar chart
+        y_pos = range(len(metrics))
+        bars = ax.barh(y_pos, values, color=colors, edgecolor="white", linewidth=0.5)
+        
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(metrics, fontsize=self._config["font_size"] - 2)
+        ax.set_xlabel("Change (%)", fontsize=self._config["font_size"])
+        ax.set_title(
+            f"Benchmark Comparison: {self._report.baseline_model} → {self._report.current_model}",
+            fontsize=self._config["font_size"] + 2,
+            fontweight="bold"
+        )
+        
+        # Вертикальная линия на 0
+        ax.axvline(x=0, color="black", linewidth=0.8)
+        
+        # Добавить значения на барах
+        for bar, val in zip(bars, values):
+            x_pos = bar.get_width()
+            sign = "+" if val > 0 else ""
+            ax.text(
+                x_pos + (1 if val >= 0 else -1),
+                bar.get_y() + bar.get_height() / 2,
+                f"{sign}{val:.1f}%",
+                va="center",
+                ha="left" if val >= 0 else "right",
+                fontsize=9
+            )
+        
+        # Легенда
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=COMPARISON_COLORS["improved"], label="Improved"),
+            Patch(facecolor=COMPARISON_COLORS["regression"], label="Regression"),
+            Patch(facecolor=COMPARISON_COLORS["unchanged"], label="Unchanged"),
+        ]
+        ax.legend(handles=legend_elements, loc="lower right")
+        
+        self._plt.tight_layout()
+        self._figures.append(("diff_chart", fig))
+        return fig
+    
+    def plot_comparison_bars(self) -> "Figure":
+        """
+        Grouped bar chart: baseline vs current для каждой метрики.
+        
+        Returns:
+            matplotlib Figure
+        """
+        import numpy as np
+        
+        fig, ax = self._plt.subplots(figsize=self._config["figsize"], dpi=self._config["dpi"])
+        
+        # Собрать данные
+        metrics = []
+        baseline_values = []
+        current_values = []
+        
+        for bc in self._report.benchmark_comparisons:
+            for c in bc.comparisons:
+                label = f"{bc.benchmark_name}\n{c.metric_name}"
+                metrics.append(label)
+                baseline_values.append(c.baseline_value)
+                current_values.append(c.current_value)
+        
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        bars1 = ax.bar(x - width/2, baseline_values, width, 
+                       label="Baseline", color=COMPARISON_COLORS["baseline"],
+                       edgecolor="white", linewidth=0.5)
+        bars2 = ax.bar(x + width/2, current_values, width,
+                       label="Current", color=COMPARISON_COLORS["current"],
+                       edgecolor="white", linewidth=0.5)
+        
+        ax.set_ylabel("Value", fontsize=self._config["font_size"])
+        ax.set_title("Baseline vs Current", fontsize=self._config["font_size"] + 2, fontweight="bold")
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, fontsize=self._config["font_size"] - 2)
+        ax.legend()
+        
+        self._plt.tight_layout()
+        self._figures.append(("comparison_bars", fig))
+        return fig
+    
+    def plot_status_summary(self) -> "Figure":
+        """
+        Pie chart со статусами: improved, regression, unchanged.
+        
+        Returns:
+            matplotlib Figure
+        """
+        fig, ax = self._plt.subplots(figsize=(8, 8), dpi=self._config["dpi"])
+        
+        sizes = [
+            self._report.improved_count,
+            self._report.regression_count,
+            self._report.unchanged_count,
+        ]
+        labels = ["Improved", "Regression", "Unchanged"]
+        colors = [
+            COMPARISON_COLORS["improved"],
+            COMPARISON_COLORS["regression"],
+            COMPARISON_COLORS["unchanged"],
+        ]
+        
+        # Убрать нулевые значения
+        non_zero = [(s, l, c) for s, l, c in zip(sizes, labels, colors) if s > 0]
+        if non_zero:
+            sizes, labels, colors = zip(*non_zero)
+        
+        wedges, texts, autotexts = ax.pie(
+            sizes, labels=labels, colors=colors,
+            autopct=lambda pct: f"{pct:.1f}%\n({int(pct/100*sum(sizes))})",
+            startangle=90,
+            explode=[0.05] * len(sizes)
+        )
+        
+        ax.set_title(
+            f"Comparison Summary\n{self._report.total_metrics} metrics",
+            fontsize=self._config["font_size"] + 2,
+            fontweight="bold"
+        )
+        
+        self._figures.append(("status_summary", fig))
+        return fig
+    
+    def plot_comparison_dashboard(self) -> "Figure":
+        """
+        Dashboard со всеми графиками сравнения.
+        
+        Returns:
+            matplotlib Figure
+        """
+        fig = self._plt.figure(figsize=(14, 10), dpi=self._config["dpi"])
+        fig.suptitle(
+            f"Benchmark Comparison Dashboard\n{self._report.baseline_model} → {self._report.current_model}",
+            fontsize=14,
+            fontweight="bold"
+        )
+        
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+        
+        # 1. Diff chart (top-left)
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_diff_on_ax(ax1)
+        
+        # 2. Status summary (top-right)
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_status_on_ax(ax2)
+        
+        # 3. Comparison bars (bottom, full width)
+        ax3 = fig.add_subplot(gs[1, :])
+        self._plot_bars_on_ax(ax3)
+        
+        self._plt.tight_layout(rect=[0, 0, 1, 0.95])
+        self._figures.append(("comparison_dashboard", fig))
+        return fig
+    
+    def _plot_diff_on_ax(self, ax):
+        """Diff chart на заданном axes"""
+        metrics = []
+        values = []
+        colors = []
+        
+        for bc in self._report.benchmark_comparisons:
+            for c in bc.comparisons:
+                metrics.append(f"{bc.benchmark_name}.{c.metric_name}")
+                values.append(c.percent_diff)
+                if c.status == ComparisonStatus.IMPROVED:
+                    colors.append(COMPARISON_COLORS["improved"])
+                elif c.status == ComparisonStatus.REGRESSION:
+                    colors.append(COMPARISON_COLORS["regression"])
+                else:
+                    colors.append(COMPARISON_COLORS["unchanged"])
+        
+        y_pos = range(len(metrics))
+        ax.barh(y_pos, values, color=colors, edgecolor="white")
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(metrics, fontsize=9)
+        ax.axvline(x=0, color="black", linewidth=0.8)
+        ax.set_xlabel("Change (%)")
+        ax.set_title("Metric Changes", fontweight="bold")
+    
+    def _plot_status_on_ax(self, ax):
+        """Status pie на заданном axes"""
+        sizes = [
+            self._report.improved_count,
+            self._report.regression_count,
+            self._report.unchanged_count,
+        ]
+        labels = ["Improved", "Regression", "Unchanged"]
+        colors = [
+            COMPARISON_COLORS["improved"],
+            COMPARISON_COLORS["regression"],
+            COMPARISON_COLORS["unchanged"],
+        ]
+        
+        non_zero = [(s, l, c) for s, l, c in zip(sizes, labels, colors) if s > 0]
+        if non_zero:
+            sizes, labels, colors = zip(*non_zero)
+            ax.pie(sizes, labels=labels, colors=colors, autopct="%1.0f%%", startangle=90)
+        ax.set_title("Status Summary", fontweight="bold")
+    
+    def _plot_bars_on_ax(self, ax):
+        """Comparison bars на заданном axes"""
+        import numpy as np
+        
+        metrics = []
+        baseline_values = []
+        current_values = []
+        
+        for bc in self._report.benchmark_comparisons:
+            for c in bc.comparisons:
+                metrics.append(f"{bc.benchmark_name}.{c.metric_name}")
+                baseline_values.append(c.baseline_value)
+                current_values.append(c.current_value)
+        
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        ax.bar(x - width/2, baseline_values, width, label="Baseline",
+               color=COMPARISON_COLORS["baseline"], edgecolor="white")
+        ax.bar(x + width/2, current_values, width, label="Current",
+               color=COMPARISON_COLORS["current"], edgecolor="white")
+        
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel("Value")
+        ax.set_title("Baseline vs Current", fontweight="bold")
+        ax.legend()
+    
+    def save(self, name: str, fig, output_dir: Union[str, Path], formats: list = None) -> list:
+        """Сохранить фигуру"""
+        formats = formats or ["png"]
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        saved = []
+        for fmt in formats:
+            path = output_dir / f"{name}.{fmt}"
+            fig.savefig(path, format=fmt, bbox_inches="tight", facecolor="white")
+            saved.append(str(path))
+        
+        return saved
+    
+    def save_all(self, output_dir: Union[str, Path], formats: list = None) -> dict:
+        """Сохранить все фигуры"""
+        result = {}
+        for name, fig in self._figures:
+            paths = self.save(name, fig, output_dir, formats)
+            result[name] = paths
+        return result
+    
+    def close_all(self):
+        """Закрыть все фигуры"""
+        for _, fig in self._figures:
+            self._plt.close(fig)
+        self._figures.clear()
+
+
+def visualize_comparison(
+    report: RegressionReport,
+    output_dir: Union[str, Path] = None,
+    show: bool = False
+) -> ComparisonVisualizer:
+    """
+    Быстрая визуализация сравнения.
+    
+    Args:
+        report: RegressionReport
+        output_dir: Директория для сохранения
+        show: Показать графики
+    
+    Returns:
+        ComparisonVisualizer
+    """
+    viz = ComparisonVisualizer(report)
+    
+    viz.plot_diff_chart()
+    viz.plot_comparison_bars()
+    viz.plot_status_summary()
+    viz.plot_comparison_dashboard()
+    
+    if output_dir:
+        viz.save_all(output_dir)
+    
+    if show:
+        viz._plt.show()
+    
+    return viz

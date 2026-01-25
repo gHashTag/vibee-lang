@@ -19,6 +19,8 @@ from .comparison import (
     RegressionReport,
     compare_metric,
     compare_files,
+    ComparisonVisualizer,
+    visualize_comparison,
 )
 
 # Visualization (optional - requires matplotlib)
@@ -43,6 +45,8 @@ __all__ = [
     "RegressionReport",
     "compare_metric",
     "compare_files",
+    "ComparisonVisualizer",
+    "visualize_comparison",
     "BenchmarkVisualizer",
     "visualize_results",
     "HAS_VISUALIZATION",

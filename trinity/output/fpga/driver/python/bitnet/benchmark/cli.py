@@ -166,6 +166,19 @@ Examples:
     )
     
     parser.add_argument(
+        "--compare-plot",
+        action="store_true",
+        help="Generate comparison visualization plots"
+    )
+    
+    parser.add_argument(
+        "--compare-plot-dir",
+        type=str,
+        default="comparison_plots",
+        help="Directory for comparison plots (default: comparison_plots)"
+    )
+    
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version="BitNet Benchmark Suite 1.0.0"
@@ -272,7 +285,9 @@ def run_benchmarks(args):
                 runner.results,
                 args.compare,
                 args.format,
-                args.fail_on_regression
+                args.fail_on_regression,
+                args.compare_plot,
+                args.compare_plot_dir
             )
             if exit_code != 0:
                 sys.exit(exit_code)
@@ -310,7 +325,8 @@ def save_as_baseline(suite, path: str):
     print(f"Baseline saved to: {path}")
 
 
-def compare_with_baseline(suite, baseline_path: str, output_format: str, fail_on_regression: bool) -> int:
+def compare_with_baseline(suite, baseline_path: str, output_format: str, fail_on_regression: bool, 
+                          generate_plots: bool = False, plot_dir: str = "comparison_plots") -> int:
     """Сравнить текущие результаты с baseline"""
     from .comparison import BenchmarkComparator, generate_text_report, generate_markdown_report
     
@@ -332,10 +348,44 @@ def compare_with_baseline(suite, baseline_path: str, output_format: str, fail_on
     else:
         print(generate_text_report(report))
     
+    # Generate comparison plots if requested
+    if generate_plots:
+        generate_comparison_plots(report, plot_dir)
+    
     if fail_on_regression and report.has_regressions:
         return 1
     
     return 0
+
+
+def generate_comparison_plots(report, output_dir: str):
+    """Генерация графиков сравнения"""
+    try:
+        from .comparison import ComparisonVisualizer
+        
+        print()
+        print("=" * 60)
+        print("GENERATING COMPARISON PLOTS")
+        print("=" * 60)
+        
+        viz = ComparisonVisualizer(report)
+        
+        viz.plot_diff_chart()
+        viz.plot_comparison_bars()
+        viz.plot_status_summary()
+        viz.plot_comparison_dashboard()
+        
+        saved = viz.save_all(output_dir)
+        
+        print(f"Plots saved to: {output_dir}/")
+        for name in saved:
+            print(f"  - {name}.png")
+        
+        viz.close_all()
+        
+    except ImportError as e:
+        print(f"Warning: Could not generate plots - {e}")
+        print("Install matplotlib: pip install matplotlib")
 
 
 def generate_plots(suite, output_dir: str, format: str):
