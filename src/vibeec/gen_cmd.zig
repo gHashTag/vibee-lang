@@ -329,21 +329,22 @@ fn printMultiUsage() void {
         \\
         \\═══════════════════════════════════════════════════════════════════════════════
         \\                    VIBEEC GEN-MULTI - Multi-Language Generator
-        \\                    41 Languages | φ² + 1/φ² = 3
+        \\                    42 Languages | φ² + 1/φ² = 3
         \\═══════════════════════════════════════════════════════════════════════════════
         \\
         \\USAGE:
         \\  vibeec gen-multi <input.vibee> [language|all]
         \\
-        \\LANGUAGES (41):
+        \\LANGUAGES (42):
         \\  zig python rust go typescript wasm java kotlin swift c csharp
         \\  ruby php lua perl r haskell ocaml elixir erlang fsharp scala
         \\  clojure d nim crystal julia odin jai vlang ada fortran cobol
-        \\  pascal objc groovy dart racket scheme commonlisp prolog
+        \\  pascal objc groovy dart racket scheme commonlisp prolog sql
         \\
         \\EXAMPLES:
         \\  vibeec gen-multi spec.vibee python    # Generate Python
-        \\  vibeec gen-multi spec.vibee all       # Generate ALL 41 languages
+        \\  vibeec gen-multi spec.vibee sql       # Generate SQL (PostgreSQL)
+        \\  vibeec gen-multi spec.vibee all       # Generate ALL 42 languages
         \\
         \\
     , .{});

@@ -26,7 +26,7 @@ pub fn getAllLanguages() []const []const u8 {
         "ada", "fortran", "cobol", "pascal", "objc",
         "groovy", "dart",
         "racket", "scheme", "commonlisp",
-        "prolog", "gleam",
+        "prolog", "gleam", "sql",
     };
 }
 
@@ -74,6 +74,7 @@ pub fn getExtension(lang_name: []const u8) []const u8 {
         .{ "commonlisp", "lisp" },
         .{ "prolog", "pl" },
         .{ "gleam", "gleam" },
+        .{ "sql", "sql" },
     });
     return extensions.get(lang_name) orelse "txt";
 }
