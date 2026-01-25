@@ -144,6 +144,27 @@ Examples:
         help="Plot output format (default: png)"
     )
     
+    # Comparison arguments
+    parser.add_argument(
+        "--compare",
+        type=str,
+        metavar="BASELINE",
+        help="Compare with baseline JSON file"
+    )
+    
+    parser.add_argument(
+        "--save-baseline",
+        type=str,
+        metavar="PATH",
+        help="Save results as baseline for future comparisons"
+    )
+    
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Exit with code 1 if regressions detected"
+    )
+    
     parser.add_argument(
         "--version", "-v",
         action="version",
@@ -151,6 +172,11 @@ Examples:
     )
     
     args = parser.parse_args()
+    
+    # Handle comparison mode
+    if args.compare and args.output:
+        run_comparison(args)
+        return
     
     # Run benchmarks
     try:
@@ -235,6 +261,81 @@ def run_benchmarks(args):
         # Generate plots if requested
         if args.plot:
             generate_plots(runner.results, args.plot_dir, args.plot_format)
+        
+        # Save as baseline if requested
+        if args.save_baseline:
+            save_as_baseline(runner.results, args.save_baseline)
+        
+        # Compare with baseline if requested
+        if args.compare:
+            exit_code = compare_with_baseline(
+                runner.results,
+                args.compare,
+                args.format,
+                args.fail_on_regression
+            )
+            if exit_code != 0:
+                sys.exit(exit_code)
+
+
+def run_comparison(args):
+    """Запустить сравнение двух файлов результатов"""
+    from .comparison import compare_files
+    
+    if not args.output:
+        print("Error: --output required for comparison mode", file=sys.stderr)
+        sys.exit(1)
+    
+    exit_code = compare_files(
+        baseline_path=args.compare,
+        current_path=args.output,
+        output_format=args.format,
+        fail_on_regression=args.fail_on_regression
+    )
+    sys.exit(exit_code)
+
+
+def save_as_baseline(suite, path: str):
+    """Сохранить результаты как baseline"""
+    import json
+    
+    print()
+    print("=" * 60)
+    print("SAVING BASELINE")
+    print("=" * 60)
+    
+    with open(path, 'w') as f:
+        json.dump(suite.to_dict(), f, indent=2)
+    
+    print(f"Baseline saved to: {path}")
+
+
+def compare_with_baseline(suite, baseline_path: str, output_format: str, fail_on_regression: bool) -> int:
+    """Сравнить текущие результаты с baseline"""
+    from .comparison import BenchmarkComparator, generate_text_report, generate_markdown_report
+    
+    print()
+    print("=" * 60)
+    print("COMPARING WITH BASELINE")
+    print("=" * 60)
+    
+    comparator = BenchmarkComparator()
+    comparator.load_baseline(baseline_path)
+    comparator.set_current(suite.to_dict())
+    
+    report = comparator.compare()
+    
+    if output_format == "json":
+        print(report.to_json())
+    elif output_format == "markdown":
+        print(generate_markdown_report(report))
+    else:
+        print(generate_text_report(report))
+    
+    if fail_on_regression and report.has_regressions:
+        return 1
+    
+    return 0
 
 
 def generate_plots(suite, output_dir: str, format: str):

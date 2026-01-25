@@ -12,6 +12,14 @@ from .latency import LatencyBenchmark
 from .throughput import ThroughputBenchmark
 from .memory import MemoryBenchmark
 from .report import ReportGenerator
+from .comparison import (
+    BenchmarkComparator,
+    ComparisonResult,
+    ComparisonStatus,
+    RegressionReport,
+    compare_metric,
+    compare_files,
+)
 
 # Visualization (optional - requires matplotlib)
 try:
@@ -29,6 +37,12 @@ __all__ = [
     "ThroughputBenchmark",
     "MemoryBenchmark",
     "ReportGenerator",
+    "BenchmarkComparator",
+    "ComparisonResult",
+    "ComparisonStatus",
+    "RegressionReport",
+    "compare_metric",
+    "compare_files",
     "BenchmarkVisualizer",
     "visualize_results",
     "HAS_VISUALIZATION",
