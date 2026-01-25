@@ -1,0 +1,507 @@
+name: invoice
+version: "1.0.0"
+language: zig
+module: invoice
+
+description: |
+  Invoice management for VIBEE Telegram bot.
+  Creates, tracks, and manages payment invoices.
+  Supports multiple currencies and payment methods.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Invoice:
+    description: "Payment invoice"
+    fields:
+      invoice_id: String
+      invoice_number: String
+      telegram_id: Int
+      type: InvoiceType
+      status: InvoiceStatus
+      currency: String
+      amount: Int
+      amount_paid: Int
+      stars_amount: Int
+      description: String
+      items: List<InvoiceItem>
+      due_date: Option<Timestamp>
+      paid_at: Option<Timestamp>
+      created_at: Timestamp
+      updated_at: Timestamp
+      metadata: Object
+
+  InvoiceType:
+    description: "Invoice type"
+    values:
+      - one_time
+      - subscription
+      - top_up
+      - refund
+      - credit
+
+  InvoiceStatus:
+    description: "Invoice status"
+    values:
+      - draft
+      - pending
+      - paid
+      - partially_paid
+      - overdue
+      - cancelled
+      - refunded
+      - void
+
+  InvoiceItem:
+    description: "Invoice line item"
+    fields:
+      item_id: String
+      description: String
+      quantity: Int
+      unit_price: Int
+      total: Int
+      tax_rate: Option<Float>
+      tax_amount: Option<Int>
+      discount: Option<Int>
+      metadata: Object
+
+  InvoiceTemplate:
+    description: "Invoice template"
+    fields:
+      template_id: String
+      name: String
+      type: InvoiceType
+      default_items: List<InvoiceItem>
+      default_currency: String
+      auto_send: Bool
+
+  PaymentLink:
+    description: "Payment link"
+    fields:
+      link_id: String
+      invoice_id: String
+      url: String
+      provider: String
+      expires_at: Timestamp
+      is_active: Bool
+
+  InvoicePayment:
+    description: "Invoice payment record"
+    fields:
+      payment_id: String
+      invoice_id: String
+      amount: Int
+      currency: String
+      provider: String
+      provider_tx_id: String
+      paid_at: Timestamp
+      metadata: Object
+
+  InvoiceFilter:
+    description: "Invoice filter"
+    fields:
+      telegram_id: Option<Int>
+      type: Option<InvoiceType>
+      status: Option<InvoiceStatus>
+      currency: Option<String>
+      min_amount: Option<Int>
+      max_amount: Option<Int>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  InvoiceStats:
+    description: "Invoice statistics"
+    fields:
+      total_invoices: Int
+      paid_invoices: Int
+      pending_invoices: Int
+      overdue_invoices: Int
+      total_amount: Int
+      total_paid: Int
+      total_outstanding: Int
+      by_currency: Object
+      by_type: Object
+
+  InvoicePDF:
+    description: "Invoice PDF"
+    fields:
+      invoice_id: String
+      pdf_url: String
+      generated_at: Timestamp
+      file_size: Int
+
+  TopUpPackage:
+    description: "Stars top-up package"
+    fields:
+      package_id: String
+      name: String
+      stars_amount: Int
+      price_rub: Int
+      price_usd: Float
+      bonus_stars: Int
+      is_popular: Bool
+      is_active: Bool
+      sort_order: Int
+
+  TopUpRequest:
+    description: "Top-up request"
+    fields:
+      telegram_id: Int
+      chat_id: Int
+      package_id: Option<String>
+      custom_amount: Option<Int>
+      payment_method: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICE CRUD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_invoice
+    given: Invoice data
+    when: Creating invoice
+    then: Return Invoice
+
+  - name: get_invoice
+    given: Invoice ID
+    when: Getting invoice
+    then: Return Invoice or null
+
+  - name: get_invoice_by_number
+    given: Invoice number
+    when: Finding by number
+    then: Return Invoice or null
+
+  - name: update_invoice
+    given: Invoice ID and updates
+    when: Updating invoice
+    then: Return updated Invoice
+
+  - name: delete_invoice
+    given: Invoice ID
+    when: Deleting draft
+    then: Remove invoice
+
+  - name: void_invoice
+    given: Invoice ID
+    when: Voiding invoice
+    then: Mark as void
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICE ITEMS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_item
+    given: Invoice ID and InvoiceItem
+    when: Adding item
+    then: Add and recalculate
+
+  - name: update_item
+    given: Invoice ID, item ID, updates
+    when: Updating item
+    then: Update and recalculate
+
+  - name: remove_item
+    given: Invoice ID and item ID
+    when: Removing item
+    then: Remove and recalculate
+
+  - name: calculate_totals
+    given: Invoice ID
+    when: Calculating totals
+    then: Update amount fields
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICE STATUS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: finalize_invoice
+    given: Invoice ID
+    when: Finalizing draft
+    then: Set to pending
+
+  - name: mark_paid
+    given: Invoice ID and payment
+    when: Marking as paid
+    then: Update status
+
+  - name: mark_partially_paid
+    given: Invoice ID and amount
+    when: Partial payment
+    then: Update amount_paid
+
+  - name: mark_overdue
+    given: Invoice ID
+    when: Invoice overdue
+    then: Set status to overdue
+
+  - name: cancel_invoice
+    given: Invoice ID
+    when: Cancelling invoice
+    then: Set status to cancelled
+
+  - name: refund_invoice
+    given: Invoice ID
+    when: Refunding invoice
+    then: Set status to refunded
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT LINKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_payment_link
+    given: Invoice ID and provider
+    when: Creating payment link
+    then: Return PaymentLink
+
+  - name: get_payment_link
+    given: Invoice ID
+    when: Getting link
+    then: Return active PaymentLink
+
+  - name: expire_payment_link
+    given: Link ID
+    when: Expiring link
+    then: Mark as inactive
+
+  - name: refresh_payment_link
+    given: Invoice ID
+    when: Refreshing link
+    then: Create new link
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_invoices
+    given: Telegram ID and limit
+    when: Getting user invoices
+    then: Return list
+
+  - name: find_invoices
+    given: InvoiceFilter
+    when: Searching invoices
+    then: Return filtered list
+
+  - name: count_invoices
+    given: InvoiceFilter
+    when: Counting invoices
+    then: Return count
+
+  - name: get_pending_invoices
+    given: Telegram ID
+    when: Getting pending
+    then: Return unpaid invoices
+
+  - name: get_overdue_invoices
+    given: Days overdue
+    when: Getting overdue
+    then: Return overdue list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOP-UP PACKAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_package
+    given: TopUpPackage
+    when: Creating package
+    then: Store package
+
+  - name: get_package
+    given: Package ID
+    when: Getting package
+    then: Return TopUpPackage
+
+  - name: list_packages
+    given: No parameters
+    when: Listing packages
+    then: Return active packages
+
+  - name: update_package
+    given: Package ID and updates
+    when: Updating package
+    then: Update package
+
+  - name: deactivate_package
+    given: Package ID
+    when: Deactivating
+    then: Mark as inactive
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOP-UP FLOW
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_top_up_invoice
+    given: TopUpRequest
+    when: Creating top-up
+    then: Return Invoice
+
+  - name: process_top_up
+    given: Invoice ID
+    when: Processing top-up
+    then: Credit stars
+
+  - name: get_top_up_history
+    given: Telegram ID
+    when: Getting history
+    then: Return top-up invoices
+
+  - name: calculate_bonus
+    given: Stars amount
+    when: Calculating bonus
+    then: Return bonus stars
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TEMPLATES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_template
+    given: InvoiceTemplate
+    when: Creating template
+    then: Store template
+
+  - name: get_template
+    given: Template ID
+    when: Getting template
+    then: Return template
+
+  - name: list_templates
+    given: No parameters
+    when: Listing templates
+    then: Return templates
+
+  - name: create_from_template
+    given: Template ID and telegram ID
+    when: Creating from template
+    then: Return Invoice
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PDF GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_pdf
+    given: Invoice ID
+    when: Generating PDF
+    then: Return InvoicePDF
+
+  - name: get_pdf
+    given: Invoice ID
+    when: Getting PDF
+    then: Return PDF URL
+
+  - name: send_pdf
+    given: Invoice ID and chat ID
+    when: Sending PDF
+    then: Send document
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_invoice_stats
+    given: Date range
+    when: Getting stats
+    then: Return InvoiceStats
+
+  - name: get_user_invoice_stats
+    given: Telegram ID
+    when: Getting user stats
+    then: Return user stats
+
+  - name: get_revenue_report
+    given: Date range
+    when: Getting revenue
+    then: Return report
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_invoice_number
+    given: No parameters
+    when: Generating number
+    then: Return unique number
+
+  - name: validate_invoice
+    given: Invoice
+    when: Validating
+    then: Return errors or null
+
+  - name: duplicate_invoice
+    given: Invoice ID
+    when: Duplicating
+    then: Return new Invoice
+
+  - name: apply_discount
+    given: Invoice ID and discount
+    when: Applying discount
+    then: Update totals
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_overdue
+    given: No parameters
+    when: Checking overdue
+    then: Mark overdue invoices
+
+  - name: send_reminders
+    given: Days before due
+    when: Sending reminders
+    then: Notify users
+
+  - name: cleanup_drafts
+    given: Days old
+    when: Cleaning drafts
+    then: Remove old drafts
+
+  - name: archive_old
+    given: Days old
+    when: Archiving
+    then: Archive paid invoices
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  INVOICE_PREFIX: "INV"
+  INVOICE_NUMBER_LENGTH: 8
+
+  DEFAULT_DUE_DAYS: 7
+  REMINDER_DAYS_BEFORE: 3
+  OVERDUE_GRACE_DAYS: 3
+  DRAFT_CLEANUP_DAYS: 30
+  ARCHIVE_AFTER_DAYS: 365
+
+  PAYMENT_LINK_TTL_HOURS: 24
+
+  # Top-up packages
+  PACKAGE_SMALL_STARS: 100
+  PACKAGE_SMALL_RUB: 149
+  PACKAGE_MEDIUM_STARS: 500
+  PACKAGE_MEDIUM_RUB: 699
+  PACKAGE_LARGE_STARS: 1000
+  PACKAGE_LARGE_RUB: 1299
+  PACKAGE_XL_STARS: 5000
+  PACKAGE_XL_RUB: 5999
+
+  # Bonus tiers
+  BONUS_TIER_1_MIN: 500
+  BONUS_TIER_1_PERCENT: 5
+  BONUS_TIER_2_MIN: 1000
+  BONUS_TIER_2_PERCENT: 10
+  BONUS_TIER_3_MIN: 5000
+  BONUS_TIER_3_PERCENT: 20
+
+  TAX_RATE_RU: 0.0
+  TAX_RATE_EU: 0.20

@@ -1,0 +1,584 @@
+name: payment_processor
+version: "1.0.0"
+language: zig
+module: payment_processor
+
+description: |
+  Payment processor for VIBEE Telegram bot.
+  Handles Telegram Stars, Robokassa, CryptoBot payments.
+  Manages transactions, refunds, webhooks.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  PaymentProcessor:
+    description: "Payment processor instance"
+    fields:
+      config: ProcessorConfig
+      providers: List<PaymentProvider>
+      is_initialized: Bool
+
+  ProcessorConfig:
+    description: "Processor configuration"
+    fields:
+      bot_token: String
+      stars_enabled: Bool
+      robokassa_enabled: Bool
+      cryptobot_enabled: Bool
+      webhook_secret: String
+      default_currency: String
+
+  PaymentProvider:
+    description: "Payment provider"
+    values:
+      - telegram_stars
+      - robokassa
+      - yookassa
+      - cryptobot
+      - ton_connect
+
+  PaymentMethod:
+    description: "Payment method"
+    values:
+      - stars
+      - card
+      - sbp
+      - qiwi
+      - usdt
+      - ton
+
+  Transaction:
+    description: "Payment transaction"
+    fields:
+      transaction_id: String
+      telegram_id: Int
+      provider: PaymentProvider
+      method: PaymentMethod
+      amount: Int
+      currency: String
+      stars_amount: Int
+      status: TransactionStatus
+      description: String
+      invoice_id: Option<String>
+      provider_tx_id: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+      metadata: Object
+
+  TransactionStatus:
+    description: "Transaction status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+      - refunded
+      - cancelled
+      - expired
+
+  PaymentRequest:
+    description: "Payment request"
+    fields:
+      telegram_id: Int
+      chat_id: Int
+      amount_stars: Int
+      description: String
+      provider: PaymentProvider
+      payload: String
+      photo_url: Option<String>
+      metadata: Object
+
+  PaymentResult:
+    description: "Payment result"
+    fields:
+      success: Bool
+      transaction_id: Option<String>
+      stars_credited: Option<Int>
+      error: Option<PaymentError>
+
+  PaymentError:
+    description: "Payment error"
+    fields:
+      code: ErrorCode
+      message: String
+      provider_error: Option<String>
+      is_retryable: Bool
+
+  ErrorCode:
+    description: "Error codes"
+    values:
+      - invalid_amount
+      - insufficient_funds
+      - provider_error
+      - timeout
+      - cancelled
+      - duplicate
+      - invalid_payload
+      - rate_limited
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM STARS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StarInvoice:
+    description: "Telegram Stars invoice"
+    fields:
+      title: String
+      description: String
+      payload: String
+      prices: List<LabeledPrice>
+      photo_url: Option<String>
+      photo_width: Option<Int>
+      photo_height: Option<Int>
+      need_name: Bool
+      need_email: Bool
+      is_flexible: Bool
+
+  LabeledPrice:
+    description: "Price label"
+    fields:
+      label: String
+      amount: Int
+
+  PreCheckoutQuery:
+    description: "Pre-checkout query"
+    fields:
+      id: String
+      from_id: Int
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      shipping_option_id: Option<String>
+      order_info: Option<Object>
+
+  SuccessfulPayment:
+    description: "Successful payment"
+    fields:
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      telegram_payment_charge_id: String
+      provider_payment_charge_id: String
+      order_info: Option<Object>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROBOKASSA
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RobokassaConfig:
+    description: "Robokassa configuration"
+    fields:
+      merchant_login: String
+      password1: String
+      password2: String
+      test_mode: Bool
+      result_url: String
+      success_url: String
+      fail_url: String
+
+  RobokassaInvoice:
+    description: "Robokassa invoice"
+    fields:
+      inv_id: Int
+      out_sum: Float
+      description: String
+      receipt: Option<RobokassaReceipt>
+      user_ip: Option<String>
+      email: Option<String>
+
+  RobokassaReceipt:
+    description: "Robokassa receipt (54-FZ)"
+    fields:
+      items: List<ReceiptItem>
+      sno: String
+
+  ReceiptItem:
+    description: "Receipt item"
+    fields:
+      name: String
+      quantity: Int
+      sum: Float
+      tax: String
+      payment_method: String
+      payment_object: String
+
+  RobokassaCallback:
+    description: "Robokassa callback"
+    fields:
+      out_sum: Float
+      inv_id: Int
+      signature: String
+      is_test: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRYPTOBOT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CryptoBotConfig:
+    description: "CryptoBot configuration"
+    fields:
+      api_token: String
+      webhook_secret: String
+      test_mode: Bool
+
+  CryptoBotInvoice:
+    description: "CryptoBot invoice"
+    fields:
+      asset: String
+      amount: Float
+      description: String
+      hidden_message: Option<String>
+      paid_btn_name: Option<String>
+      paid_btn_url: Option<String>
+      payload: Option<String>
+      allow_comments: Bool
+      allow_anonymous: Bool
+      expires_in: Option<Int>
+
+  CryptoBotPayment:
+    description: "CryptoBot payment"
+    fields:
+      invoice_id: Int
+      status: String
+      hash: String
+      asset: String
+      amount: Float
+      pay_url: String
+      created_at: Timestamp
+      paid_at: Option<Timestamp>
+
+  CryptoBotWebhook:
+    description: "CryptoBot webhook"
+    fields:
+      update_id: Int
+      update_type: String
+      request_date: Timestamp
+      payload: CryptoBotPayment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RefundRequest:
+    description: "Refund request"
+    fields:
+      transaction_id: String
+      telegram_id: Int
+      amount: Option<Int>
+      reason: String
+      requested_by: String
+
+  RefundResult:
+    description: "Refund result"
+    fields:
+      success: Bool
+      refund_id: Option<String>
+      amount_refunded: Int
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PaymentStats:
+    description: "Payment statistics"
+    fields:
+      total_transactions: Int
+      successful_transactions: Int
+      failed_transactions: Int
+      total_revenue_stars: Int
+      total_revenue_usd: Float
+      avg_transaction_stars: Float
+      by_provider: Object
+      by_day: List<DailyStats>
+
+  DailyStats:
+    description: "Daily statistics"
+    fields:
+      date: String
+      transactions: Int
+      revenue_stars: Int
+      unique_users: Int
+
+  UserPaymentStats:
+    description: "User payment statistics"
+    fields:
+      telegram_id: Int
+      total_payments: Int
+      total_spent_stars: Int
+      total_spent_usd: Float
+      first_payment: Option<Timestamp>
+      last_payment: Option<Timestamp>
+      avg_payment_stars: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_processor
+    given: ProcessorConfig
+    when: Initializing processor
+    then: Return PaymentProcessor
+
+  - name: register_provider
+    given: Provider config
+    when: Adding payment provider
+    then: Enable provider
+
+  - name: is_provider_enabled
+    given: PaymentProvider
+    when: Checking provider
+    then: Return true if enabled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM STARS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_star_invoice
+    given: PaymentRequest
+    when: Creating Stars invoice
+    then: Return StarInvoice
+
+  - name: send_star_invoice
+    given: Chat ID and StarInvoice
+    when: Sending invoice message
+    then: Return message ID
+
+  - name: answer_pre_checkout
+    given: PreCheckoutQuery and ok flag
+    when: Answering pre-checkout
+    then: Approve or reject
+
+  - name: process_star_payment
+    given: SuccessfulPayment
+    when: Processing successful payment
+    then: Return PaymentResult
+
+  - name: refund_star_payment
+    given: Telegram ID and charge ID
+    when: Refunding Stars
+    then: Return RefundResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROBOKASSA
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_robokassa_invoice
+    given: PaymentRequest
+    when: Creating Robokassa invoice
+    then: Return payment URL
+
+  - name: verify_robokassa_signature
+    given: RobokassaCallback
+    when: Verifying callback
+    then: Return true if valid
+
+  - name: process_robokassa_callback
+    given: RobokassaCallback
+    when: Processing callback
+    then: Return PaymentResult
+
+  - name: get_robokassa_receipt
+    given: Transaction
+    when: Generating receipt
+    then: Return RobokassaReceipt
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRYPTOBOT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_cryptobot_invoice
+    given: PaymentRequest
+    when: Creating CryptoBot invoice
+    then: Return CryptoBotInvoice
+
+  - name: get_cryptobot_invoice_status
+    given: Invoice ID
+    when: Checking status
+    then: Return CryptoBotPayment
+
+  - name: verify_cryptobot_webhook
+    given: Webhook body and signature
+    when: Verifying webhook
+    then: Return true if valid
+
+  - name: process_cryptobot_webhook
+    given: CryptoBotWebhook
+    when: Processing webhook
+    then: Return PaymentResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_transaction
+    given: PaymentRequest
+    when: Creating transaction
+    then: Return Transaction
+
+  - name: get_transaction
+    given: Transaction ID
+    when: Getting transaction
+    then: Return Transaction or null
+
+  - name: update_transaction_status
+    given: Transaction ID and status
+    when: Updating status
+    then: Update and notify
+
+  - name: complete_transaction
+    given: Transaction ID and provider data
+    when: Completing transaction
+    then: Credit stars and update
+
+  - name: fail_transaction
+    given: Transaction ID and error
+    when: Failing transaction
+    then: Update status
+
+  - name: cancel_transaction
+    given: Transaction ID
+    when: Cancelling transaction
+    then: Update status
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: request_refund
+    given: RefundRequest
+    when: Requesting refund
+    then: Return RefundResult
+
+  - name: process_refund
+    given: Transaction ID
+    when: Processing refund
+    then: Debit stars and refund
+
+  - name: get_refund_status
+    given: Refund ID
+    when: Checking refund
+    then: Return status
+
+  - name: is_refundable
+    given: Transaction ID
+    when: Checking if refundable
+    then: Return true if can refund
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_transactions
+    given: Telegram ID and limit
+    when: Getting user transactions
+    then: Return list of transactions
+
+  - name: get_pending_transactions
+    given: Timeout threshold
+    when: Getting pending
+    then: Return stale transactions
+
+  - name: find_transactions
+    given: Filter criteria
+    when: Searching transactions
+    then: Return filtered list
+
+  - name: get_transaction_by_provider_id
+    given: Provider and provider TX ID
+    when: Finding by provider ID
+    then: Return Transaction or null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_payment_stats
+    given: Date range
+    when: Getting statistics
+    then: Return PaymentStats
+
+  - name: get_user_payment_stats
+    given: Telegram ID
+    when: Getting user stats
+    then: Return UserPaymentStats
+
+  - name: get_revenue_by_provider
+    given: Date range
+    when: Getting provider revenue
+    then: Return breakdown
+
+  - name: get_daily_revenue
+    given: Days count
+    when: Getting daily revenue
+    then: Return list of DailyStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: convert_to_stars
+    given: Amount and currency
+    when: Converting to stars
+    then: Return stars amount
+
+  - name: convert_from_stars
+    given: Stars and currency
+    when: Converting from stars
+    then: Return amount
+
+  - name: get_exchange_rate
+    given: Currency
+    when: Getting rate
+    then: Return stars per unit
+
+  - name: validate_payment_request
+    given: PaymentRequest
+    when: Validating request
+    then: Return errors or null
+
+  - name: generate_payload
+    given: Transaction data
+    when: Generating payload
+    then: Return encoded payload
+
+  - name: parse_payload
+    given: Payload string
+    when: Parsing payload
+    then: Return decoded data
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CURRENCY_XTR: "XTR"
+  CURRENCY_RUB: "RUB"
+  CURRENCY_USD: "USD"
+  CURRENCY_USDT: "USDT"
+
+  STAR_COST_USD: 0.016
+  STAR_COST_RUB: 1.5
+
+  MIN_PAYMENT_STARS: 1
+  MAX_PAYMENT_STARS: 100000
+  MIN_PAYMENT_RUB: 100
+  MAX_PAYMENT_RUB: 100000
+
+  TRANSACTION_TIMEOUT_MS: 900000
+  WEBHOOK_TIMEOUT_MS: 10000
+
+  ROBOKASSA_URL: "https://auth.robokassa.ru/Merchant/Index.aspx"
+  CRYPTOBOT_API_URL: "https://pay.crypt.bot/api"
+
+  ERROR_INVALID_AMOUNT: "INVALID_AMOUNT"
+  ERROR_PROVIDER_ERROR: "PROVIDER_ERROR"
+  ERROR_TIMEOUT: "TIMEOUT"
+  ERROR_CANCELLED: "CANCELLED"

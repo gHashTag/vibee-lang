@@ -1,0 +1,571 @@
+name: stars_wallet
+version: "1.0.0"
+language: zig
+module: stars_wallet
+
+description: |
+  Stars wallet for VIBEE Telegram bot.
+  Manages user star balances, transactions, bonuses.
+  Supports deposits, withdrawals, transfers.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Wallet:
+    description: "User wallet"
+    fields:
+      wallet_id: String
+      telegram_id: Int
+      balance: Int
+      pending_balance: Int
+      total_earned: Int
+      total_spent: Int
+      total_bonus: Int
+      currency: String
+      is_active: Bool
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  WalletTransaction:
+    description: "Wallet transaction"
+    fields:
+      transaction_id: String
+      wallet_id: String
+      telegram_id: Int
+      type: TransactionType
+      amount: Int
+      balance_before: Int
+      balance_after: Int
+      description: String
+      reference_id: Option<String>
+      reference_type: Option<String>
+      created_at: Timestamp
+      metadata: Object
+
+  TransactionType:
+    description: "Transaction type"
+    values:
+      - deposit
+      - withdrawal
+      - purchase
+      - refund
+      - bonus
+      - referral
+      - transfer_in
+      - transfer_out
+      - adjustment
+      - expiry
+
+  BalanceChange:
+    description: "Balance change request"
+    fields:
+      telegram_id: Int
+      amount: Int
+      type: TransactionType
+      description: String
+      reference_id: Option<String>
+      reference_type: Option<String>
+      idempotency_key: Option<String>
+
+  BalanceResult:
+    description: "Balance operation result"
+    fields:
+      success: Bool
+      transaction_id: Option<String>
+      new_balance: Option<Int>
+      error: Option<WalletError>
+
+  WalletError:
+    description: "Wallet error"
+    fields:
+      code: ErrorCode
+      message: String
+
+  ErrorCode:
+    description: "Error codes"
+    values:
+      - insufficient_balance
+      - wallet_not_found
+      - wallet_inactive
+      - invalid_amount
+      - duplicate_transaction
+      - rate_limited
+
+  TransactionFilter:
+    description: "Transaction filter"
+    fields:
+      telegram_id: Option<Int>
+      type: Option<TransactionType>
+      min_amount: Option<Int>
+      max_amount: Option<Int>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  WalletStats:
+    description: "Wallet statistics"
+    fields:
+      telegram_id: Int
+      balance: Int
+      total_deposits: Int
+      total_purchases: Int
+      total_bonuses: Int
+      total_referrals: Int
+      transaction_count: Int
+      avg_transaction: Float
+      first_transaction: Option<Timestamp>
+      last_transaction: Option<Timestamp>
+
+  DailyBalance:
+    description: "Daily balance snapshot"
+    fields:
+      date: String
+      opening_balance: Int
+      closing_balance: Int
+      deposits: Int
+      withdrawals: Int
+      purchases: Int
+      bonuses: Int
+
+  BonusConfig:
+    description: "Bonus configuration"
+    fields:
+      bonus_id: String
+      name: String
+      type: BonusType
+      amount: Int
+      percentage: Option<Int>
+      min_deposit: Option<Int>
+      max_bonus: Option<Int>
+      valid_from: Timestamp
+      valid_until: Option<Timestamp>
+      usage_limit: Option<Int>
+      per_user_limit: Option<Int>
+      is_active: Bool
+
+  BonusType:
+    description: "Bonus type"
+    values:
+      - welcome
+      - deposit
+      - referral
+      - promo
+      - loyalty
+      - compensation
+
+  BonusUsage:
+    description: "Bonus usage record"
+    fields:
+      usage_id: String
+      bonus_id: String
+      telegram_id: Int
+      amount: Int
+      transaction_id: String
+      used_at: Timestamp
+
+  ReferralBonus:
+    description: "Referral bonus"
+    fields:
+      referrer_id: Int
+      referred_id: Int
+      bonus_amount: Int
+      trigger: ReferralTrigger
+      transaction_id: Option<String>
+      created_at: Timestamp
+
+  ReferralTrigger:
+    description: "Referral trigger"
+    values:
+      - registration
+      - first_purchase
+      - first_deposit
+      - subscription
+
+  Transfer:
+    description: "Stars transfer"
+    fields:
+      transfer_id: String
+      from_telegram_id: Int
+      to_telegram_id: Int
+      amount: Int
+      fee: Int
+      description: String
+      status: TransferStatus
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  TransferStatus:
+    description: "Transfer status"
+    values:
+      - pending
+      - completed
+      - failed
+      - cancelled
+
+  SpendingLimit:
+    description: "Spending limit"
+    fields:
+      telegram_id: Int
+      daily_limit: Int
+      weekly_limit: Int
+      monthly_limit: Int
+      daily_spent: Int
+      weekly_spent: Int
+      monthly_spent: Int
+      reset_daily: Timestamp
+      reset_weekly: Timestamp
+      reset_monthly: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WALLET MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_wallet
+    given: Telegram ID
+    when: Creating wallet
+    then: Return Wallet
+
+  - name: get_wallet
+    given: Telegram ID
+    when: Getting wallet
+    then: Return Wallet or null
+
+  - name: get_or_create_wallet
+    given: Telegram ID
+    when: Ensuring wallet exists
+    then: Return Wallet
+
+  - name: deactivate_wallet
+    given: Telegram ID
+    when: Deactivating wallet
+    then: Mark as inactive
+
+  - name: reactivate_wallet
+    given: Telegram ID
+    when: Reactivating wallet
+    then: Mark as active
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_balance
+    given: Telegram ID
+    when: Getting balance
+    then: Return balance
+
+  - name: credit
+    given: BalanceChange
+    when: Adding stars
+    then: Return BalanceResult
+
+  - name: debit
+    given: BalanceChange
+    when: Removing stars
+    then: Return BalanceResult
+
+  - name: has_balance
+    given: Telegram ID and amount
+    when: Checking balance
+    then: Return true if sufficient
+
+  - name: reserve
+    given: Telegram ID and amount
+    when: Reserving balance
+    then: Move to pending
+
+  - name: release_reserve
+    given: Telegram ID and amount
+    when: Releasing reserve
+    then: Return to available
+
+  - name: confirm_reserve
+    given: Telegram ID and amount
+    when: Confirming reserve
+    then: Deduct from pending
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_transaction
+    given: Transaction ID
+    when: Getting transaction
+    then: Return WalletTransaction
+
+  - name: get_transactions
+    given: Telegram ID and limit
+    when: Getting transactions
+    then: Return list
+
+  - name: find_transactions
+    given: TransactionFilter
+    when: Searching transactions
+    then: Return filtered list
+
+  - name: count_transactions
+    given: TransactionFilter
+    when: Counting transactions
+    then: Return count
+
+  - name: get_transaction_by_reference
+    given: Reference ID and type
+    when: Finding by reference
+    then: Return transaction
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEPOSITS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: deposit
+    given: Telegram ID, amount, source
+    when: Depositing stars
+    then: Return BalanceResult
+
+  - name: deposit_with_bonus
+    given: Telegram ID, amount, bonus ID
+    when: Depositing with bonus
+    then: Credit deposit + bonus
+
+  - name: get_deposit_history
+    given: Telegram ID
+    when: Getting deposits
+    then: Return deposit transactions
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PURCHASES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: purchase
+    given: Telegram ID, amount, description
+    when: Making purchase
+    then: Return BalanceResult
+
+  - name: purchase_with_reference
+    given: Telegram ID, amount, ref ID, ref type
+    when: Purchase with reference
+    then: Return BalanceResult
+
+  - name: refund_purchase
+    given: Transaction ID
+    when: Refunding purchase
+    then: Return BalanceResult
+
+  - name: get_purchase_history
+    given: Telegram ID
+    when: Getting purchases
+    then: Return purchase transactions
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BONUSES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_bonus
+    given: BonusConfig
+    when: Creating bonus
+    then: Store bonus
+
+  - name: get_bonus
+    given: Bonus ID
+    when: Getting bonus
+    then: Return BonusConfig
+
+  - name: list_active_bonuses
+    given: No parameters
+    when: Listing bonuses
+    then: Return active bonuses
+
+  - name: apply_bonus
+    given: Telegram ID and bonus ID
+    when: Applying bonus
+    then: Credit bonus amount
+
+  - name: calculate_deposit_bonus
+    given: Amount
+    when: Calculating bonus
+    then: Return bonus amount
+
+  - name: is_bonus_eligible
+    given: Telegram ID and bonus ID
+    when: Checking eligibility
+    then: Return true if eligible
+
+  - name: get_bonus_usage
+    given: Telegram ID and bonus ID
+    when: Getting usage
+    then: Return usage count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: credit_referral_bonus
+    given: Referrer ID, referred ID, trigger
+    when: Crediting referral
+    then: Return BalanceResult
+
+  - name: get_referral_earnings
+    given: Telegram ID
+    when: Getting referral earnings
+    then: Return total earned
+
+  - name: get_referral_history
+    given: Telegram ID
+    when: Getting referral history
+    then: Return ReferralBonus list
+
+  - name: calculate_referral_bonus
+    given: Trigger type
+    when: Calculating bonus
+    then: Return bonus amount
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSFERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transfer
+    given: From ID, to ID, amount
+    when: Transferring stars
+    then: Return Transfer
+
+  - name: get_transfer
+    given: Transfer ID
+    when: Getting transfer
+    then: Return Transfer
+
+  - name: get_transfer_history
+    given: Telegram ID
+    when: Getting transfers
+    then: Return transfers
+
+  - name: calculate_transfer_fee
+    given: Amount
+    when: Calculating fee
+    then: Return fee amount
+
+  - name: can_transfer
+    given: From ID, amount
+    when: Checking transfer
+    then: Return true if can transfer
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SPENDING LIMITS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_spending_limit
+    given: Telegram ID
+    when: Getting limits
+    then: Return SpendingLimit
+
+  - name: set_spending_limit
+    given: Telegram ID and limits
+    when: Setting limits
+    then: Update limits
+
+  - name: check_spending_limit
+    given: Telegram ID and amount
+    when: Checking limit
+    then: Return true if within limit
+
+  - name: update_spending
+    given: Telegram ID and amount
+    when: Recording spending
+    then: Update spent amounts
+
+  - name: reset_spending_limits
+    given: No parameters
+    when: Resetting limits
+    then: Reset daily/weekly/monthly
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_wallet_stats
+    given: Telegram ID
+    when: Getting stats
+    then: Return WalletStats
+
+  - name: get_daily_balances
+    given: Telegram ID and days
+    when: Getting daily balances
+    then: Return DailyBalance list
+
+  - name: get_spending_summary
+    given: Telegram ID and period
+    when: Getting spending
+    then: Return summary
+
+  - name: get_top_spenders
+    given: Limit and period
+    when: Getting top spenders
+    then: Return ranked list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: expire_pending
+    given: Timeout seconds
+    when: Expiring pending
+    then: Release old reserves
+
+  - name: reconcile_balance
+    given: Telegram ID
+    when: Reconciling
+    then: Verify balance matches transactions
+
+  - name: snapshot_balances
+    given: No parameters
+    when: Taking snapshot
+    then: Record daily balances
+
+  - name: cleanup_old_transactions
+    given: Days old
+    when: Cleaning up
+    then: Archive old transactions
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CURRENCY_STARS: "STARS"
+  MIN_BALANCE: 0
+  MAX_BALANCE: 10000000
+
+  MIN_DEPOSIT: 1
+  MAX_DEPOSIT: 100000
+  MIN_PURCHASE: 1
+  MIN_TRANSFER: 10
+  MAX_TRANSFER: 10000
+
+  TRANSFER_FEE_PERCENT: 0
+  TRANSFER_MIN_FEE: 0
+
+  DEFAULT_DAILY_LIMIT: 10000
+  DEFAULT_WEEKLY_LIMIT: 50000
+  DEFAULT_MONTHLY_LIMIT: 200000
+
+  WELCOME_BONUS: 10
+  REFERRAL_BONUS_REGISTRATION: 50
+  REFERRAL_BONUS_FIRST_PURCHASE: 100
+  REFERRAL_BONUS_PERCENT: 10
+
+  DEPOSIT_BONUS_TIER_1_MIN: 500
+  DEPOSIT_BONUS_TIER_1_PERCENT: 5
+  DEPOSIT_BONUS_TIER_2_MIN: 1000
+  DEPOSIT_BONUS_TIER_2_PERCENT: 10
+  DEPOSIT_BONUS_TIER_3_MIN: 5000
+  DEPOSIT_BONUS_TIER_3_PERCENT: 20
+
+  PENDING_TIMEOUT_SECONDS: 900
+  TRANSACTION_RETENTION_DAYS: 365

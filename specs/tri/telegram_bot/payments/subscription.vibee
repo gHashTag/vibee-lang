@@ -1,0 +1,537 @@
+name: subscription
+version: "1.0.0"
+language: zig
+module: subscription
+
+description: |
+  Subscription management for VIBEE Telegram bot.
+  Handles subscription plans, billing cycles, trials, upgrades.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SubscriptionPlan:
+    description: "Subscription plan definition"
+    fields:
+      plan_id: String
+      name: String
+      display_name: String
+      description: String
+      tier: SubscriptionTier
+      billing_period: BillingPeriod
+      price_stars: Int
+      price_rub: Int
+      features: List<PlanFeature>
+      limits: PlanLimits
+      is_active: Bool
+      sort_order: Int
+
+  SubscriptionTier:
+    description: "Subscription tier"
+    values:
+      - free
+      - basic
+      - pro
+      - premium
+      - enterprise
+
+  BillingPeriod:
+    description: "Billing period"
+    values:
+      - daily
+      - weekly
+      - monthly
+      - quarterly
+      - yearly
+      - lifetime
+
+  PlanFeature:
+    description: "Plan feature"
+    fields:
+      feature_id: String
+      name: String
+      description: String
+      is_included: Bool
+      limit: Option<Int>
+
+  PlanLimits:
+    description: "Plan limits"
+    fields:
+      generations_per_day: Int
+      generations_per_month: Int
+      max_resolution: String
+      max_video_duration: Int
+      priority_queue: Bool
+      concurrent_generations: Int
+      storage_gb: Int
+      api_access: Bool
+      custom_models: Bool
+      support_level: SupportLevel
+
+  SupportLevel:
+    description: "Support level"
+    values:
+      - community
+      - email
+      - priority
+      - dedicated
+
+  Subscription:
+    description: "User subscription"
+    fields:
+      subscription_id: String
+      telegram_id: Int
+      plan_id: String
+      tier: SubscriptionTier
+      status: SubscriptionStatus
+      current_period_start: Timestamp
+      current_period_end: Timestamp
+      trial_end: Option<Timestamp>
+      cancel_at_period_end: Bool
+      cancelled_at: Option<Timestamp>
+      created_at: Timestamp
+      updated_at: Timestamp
+      metadata: Object
+
+  SubscriptionStatus:
+    description: "Subscription status"
+    values:
+      - active
+      - trialing
+      - past_due
+      - cancelled
+      - expired
+      - paused
+
+  SubscriptionEvent:
+    description: "Subscription event"
+    fields:
+      event_id: String
+      subscription_id: String
+      telegram_id: Int
+      event_type: EventType
+      old_plan: Option<String>
+      new_plan: Option<String>
+      timestamp: Timestamp
+      metadata: Object
+
+  EventType:
+    description: "Event type"
+    values:
+      - created
+      - activated
+      - renewed
+      - upgraded
+      - downgraded
+      - cancelled
+      - expired
+      - paused
+      - resumed
+      - trial_started
+      - trial_ended
+      - payment_failed
+      - payment_succeeded
+
+  BillingCycle:
+    description: "Billing cycle"
+    fields:
+      cycle_id: String
+      subscription_id: String
+      period_start: Timestamp
+      period_end: Timestamp
+      amount_stars: Int
+      status: CycleStatus
+      invoice_id: Option<String>
+      paid_at: Option<Timestamp>
+
+  CycleStatus:
+    description: "Cycle status"
+    values:
+      - pending
+      - paid
+      - failed
+      - refunded
+
+  UsageRecord:
+    description: "Usage record"
+    fields:
+      telegram_id: Int
+      subscription_id: String
+      date: String
+      generations_used: Int
+      storage_used_mb: Int
+      api_calls: Int
+
+  UsageSummary:
+    description: "Usage summary"
+    fields:
+      telegram_id: Int
+      period_start: Timestamp
+      period_end: Timestamp
+      total_generations: Int
+      generations_limit: Int
+      generations_remaining: Int
+      storage_used_mb: Int
+      storage_limit_mb: Int
+      api_calls: Int
+      api_limit: Int
+
+  UpgradePreview:
+    description: "Upgrade preview"
+    fields:
+      current_plan: String
+      new_plan: String
+      prorated_credit: Int
+      amount_due: Int
+      effective_date: Timestamp
+
+  DowngradePreview:
+    description: "Downgrade preview"
+    fields:
+      current_plan: String
+      new_plan: String
+      effective_date: Timestamp
+      features_lost: List<String>
+
+  TrialConfig:
+    description: "Trial configuration"
+    fields:
+      duration_days: Int
+      plan_id: String
+      requires_payment_method: Bool
+      auto_convert: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLAN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_plan
+    given: SubscriptionPlan
+    when: Creating new plan
+    then: Store plan
+
+  - name: update_plan
+    given: Plan ID and updates
+    when: Updating plan
+    then: Update plan
+
+  - name: get_plan
+    given: Plan ID
+    when: Getting plan
+    then: Return SubscriptionPlan or null
+
+  - name: list_plans
+    given: Optional filter
+    when: Listing plans
+    then: Return active plans
+
+  - name: get_plans_by_tier
+    given: SubscriptionTier
+    when: Getting tier plans
+    then: Return plans for tier
+
+  - name: deactivate_plan
+    given: Plan ID
+    when: Deactivating plan
+    then: Mark as inactive
+
+  - name: compare_plans
+    given: Two plan IDs
+    when: Comparing plans
+    then: Return comparison
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTION LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_subscription
+    given: Telegram ID and plan ID
+    when: Creating subscription
+    then: Return Subscription
+
+  - name: get_subscription
+    given: Subscription ID
+    when: Getting subscription
+    then: Return Subscription or null
+
+  - name: get_user_subscription
+    given: Telegram ID
+    when: Getting user's subscription
+    then: Return active Subscription or null
+
+  - name: activate_subscription
+    given: Subscription ID
+    when: Activating subscription
+    then: Set status to active
+
+  - name: cancel_subscription
+    given: Subscription ID and immediate flag
+    when: Cancelling subscription
+    then: Cancel at period end or immediately
+
+  - name: pause_subscription
+    given: Subscription ID
+    when: Pausing subscription
+    then: Set status to paused
+
+  - name: resume_subscription
+    given: Subscription ID
+    when: Resuming subscription
+    then: Set status to active
+
+  - name: expire_subscription
+    given: Subscription ID
+    when: Subscription expired
+    then: Set status to expired
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPGRADES/DOWNGRADES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: preview_upgrade
+    given: Subscription ID and new plan
+    when: Previewing upgrade
+    then: Return UpgradePreview
+
+  - name: upgrade_subscription
+    given: Subscription ID and new plan
+    when: Upgrading subscription
+    then: Process upgrade
+
+  - name: preview_downgrade
+    given: Subscription ID and new plan
+    when: Previewing downgrade
+    then: Return DowngradePreview
+
+  - name: downgrade_subscription
+    given: Subscription ID and new plan
+    when: Downgrading subscription
+    then: Schedule downgrade
+
+  - name: change_plan
+    given: Subscription ID and new plan
+    when: Changing plan
+    then: Process change
+
+  - name: calculate_proration
+    given: Subscription and new plan
+    when: Calculating proration
+    then: Return prorated amount
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRIALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_trial
+    given: Telegram ID and TrialConfig
+    when: Starting trial
+    then: Create trial subscription
+
+  - name: is_trial_eligible
+    given: Telegram ID
+    when: Checking trial eligibility
+    then: Return true if eligible
+
+  - name: get_trial_days_remaining
+    given: Subscription ID
+    when: Checking trial days
+    then: Return days remaining
+
+  - name: convert_trial
+    given: Subscription ID
+    when: Converting trial to paid
+    then: Activate paid subscription
+
+  - name: end_trial
+    given: Subscription ID
+    when: Trial ended
+    then: Convert or expire
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BILLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_billing_cycle
+    given: Subscription ID
+    when: Creating new cycle
+    then: Return BillingCycle
+
+  - name: get_current_cycle
+    given: Subscription ID
+    when: Getting current cycle
+    then: Return BillingCycle
+
+  - name: process_renewal
+    given: Subscription ID
+    when: Processing renewal
+    then: Charge and extend
+
+  - name: handle_payment_success
+    given: Subscription ID and payment
+    when: Payment succeeded
+    then: Update cycle and extend
+
+  - name: handle_payment_failure
+    given: Subscription ID and error
+    when: Payment failed
+    then: Update status and notify
+
+  - name: get_billing_history
+    given: Subscription ID
+    when: Getting history
+    then: Return list of cycles
+
+  - name: get_next_billing_date
+    given: Subscription ID
+    when: Getting next billing
+    then: Return date
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USAGE TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: record_usage
+    given: Telegram ID and usage type
+    when: Recording usage
+    then: Increment counter
+
+  - name: get_usage_summary
+    given: Telegram ID
+    when: Getting usage
+    then: Return UsageSummary
+
+  - name: check_limit
+    given: Telegram ID and limit type
+    when: Checking limit
+    then: Return true if within limit
+
+  - name: get_remaining_generations
+    given: Telegram ID
+    when: Checking generations
+    then: Return remaining count
+
+  - name: reset_daily_usage
+    given: Telegram ID
+    when: Resetting daily
+    then: Reset counters
+
+  - name: reset_monthly_usage
+    given: Telegram ID
+    when: Resetting monthly
+    then: Reset counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FEATURES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: has_feature
+    given: Telegram ID and feature ID
+    when: Checking feature
+    then: Return true if has feature
+
+  - name: get_feature_limit
+    given: Telegram ID and feature ID
+    when: Getting limit
+    then: Return limit value
+
+  - name: get_user_tier
+    given: Telegram ID
+    when: Getting tier
+    then: Return SubscriptionTier
+
+  - name: is_premium
+    given: Telegram ID
+    when: Checking premium
+    then: Return true if pro or higher
+
+  - name: get_user_limits
+    given: Telegram ID
+    when: Getting limits
+    then: Return PlanLimits
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_event
+    given: SubscriptionEvent
+    when: Logging event
+    then: Store event
+
+  - name: get_events
+    given: Subscription ID
+    when: Getting events
+    then: Return event history
+
+  - name: get_user_events
+    given: Telegram ID and limit
+    when: Getting user events
+    then: Return events
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_renewals
+    given: No parameters
+    when: Processing due renewals
+    then: Process all due
+
+  - name: expire_subscriptions
+    given: No parameters
+    when: Expiring overdue
+    then: Expire past due
+
+  - name: send_renewal_reminders
+    given: Days before
+    when: Sending reminders
+    then: Notify users
+
+  - name: cleanup_expired
+    given: Days old
+    when: Cleaning up
+    then: Archive old subscriptions
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PLAN_FREE: "free"
+  PLAN_BASIC: "basic"
+  PLAN_PRO: "pro"
+  PLAN_PREMIUM: "premium"
+
+  TRIAL_DURATION_DAYS: 7
+  GRACE_PERIOD_DAYS: 3
+  RENEWAL_REMINDER_DAYS: 3
+
+  FREE_GENERATIONS_DAY: 3
+  FREE_GENERATIONS_MONTH: 30
+  BASIC_GENERATIONS_DAY: 20
+  BASIC_GENERATIONS_MONTH: 300
+  PRO_GENERATIONS_DAY: 100
+  PRO_GENERATIONS_MONTH: 2000
+  PREMIUM_GENERATIONS_DAY: 500
+  PREMIUM_GENERATIONS_MONTH: 10000
+
+  BASIC_PRICE_STARS: 100
+  PRO_PRICE_STARS: 300
+  PREMIUM_PRICE_STARS: 1000
+
+  BASIC_PRICE_RUB: 299
+  PRO_PRICE_RUB: 799
+  PREMIUM_PRICE_RUB: 2499
+
+  FEATURE_PRIORITY_QUEUE: "priority_queue"
+  FEATURE_HD_GENERATION: "hd_generation"
+  FEATURE_API_ACCESS: "api_access"
+  FEATURE_CUSTOM_MODELS: "custom_models"
+  FEATURE_NO_WATERMARK: "no_watermark"
