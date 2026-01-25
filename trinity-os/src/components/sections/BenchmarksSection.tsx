@@ -1,5 +1,4 @@
 "use client";
-import { motion } from 'framer-motion'
 import { useI18n } from '../../i18n/context'
 import Section from '../Section'
 import ComparisonChart from '../charts/ComparisonChart'
@@ -19,19 +18,15 @@ export default function BenchmarksSection() {
       
       <div className="grid fade" style={{ marginTop: '3rem', marginBottom: '4rem' }}>
         {b.metrics?.map((item: { value: string; label: string; desc: string }, i: number) => (
-          <motion.div 
+          <div 
             key={i} 
-            className="premium-card" 
+            className={`premium-card anim-fade-in-scale anim-delay-${i + 1}`}
             style={{ textAlign: 'center' }}
-            initial={{ opacity: 0, scale: 0.9 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            transition={{ delay: i * 0.1, duration: 0.5 }}
-            viewport={{ once: true }}
           >
             <div style={{ fontSize: '2.5rem', fontWeight: 500, color: i === 0 ? 'var(--accent)' : 'var(--text)', marginBottom: '0.5rem' }}>{item.value}</div>
             <div style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text)', marginBottom: '0.3rem' }}>{item.label}</div>
             <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{item.desc}</div>
-          </motion.div>
+          </div>
         ))}
       </div>
 

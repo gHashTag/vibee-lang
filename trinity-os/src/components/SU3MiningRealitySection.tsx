@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/context';
 import Section from './Section';
 
@@ -176,9 +175,8 @@ export default function SU3MiningRealitySection() {
 
           {/* Large Central SU(3) Core Resonance */}
           <div style={{ position: 'relative', width: '180px', height: '180px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            <motion.div
-              animate={{ opacity: [0.1, 0.3, 0.1], scale: [1, 1.15, 1] }}
-              transition={{ duration: 4, repeat: Infinity }}
+            <div
+              className="anim-pulse"
               style={{
                 position: 'absolute',
                 inset: '-15px',
@@ -187,9 +185,8 @@ export default function SU3MiningRealitySection() {
               }}
             />
             
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ duration: 45, repeat: Infinity, ease: "linear" }}
+            <div
+              className="anim-spin-slow"
               style={{
                 width: '100%',
                 height: '100%',
@@ -208,7 +205,7 @@ export default function SU3MiningRealitySection() {
               <div style={{ fontSize: '0.5rem', fontWeight: '800', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.15em', marginBottom: '0.4rem' }}>{reality.coreLabel}</div>
               <div style={{ fontSize: '3rem', fontWeight: '900', color: '#00E599', lineHeight: 1, filter: 'drop-shadow(0 0 15px rgba(0, 229, 153, 0.5))' }}>SU(3)</div>
               <div style={{ fontSize: '0.45rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.7, letterSpacing: '0.05em' }}>{reality.phaseLocked}</div>
-            </motion.div>
+            </div>
           </div>
 
           {/* Network Target (REAL DATA) */}
