@@ -15,13 +15,26 @@ export default function ScientificFoundationSection() {
         <p>{sf.sub}</p>
       </div>
       
-      <div className="grid fade" style={{ marginTop: '3rem', marginBottom: '4rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(160px, 22vw, 250px), 1fr))' }}>
+      <div className="grid fade" style={{ 
+        marginTop: '3rem', 
+        marginBottom: '4rem', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(150px, 22vw, 240px), 1fr))',
+        gap: '20px'
+      }}>
         {sf.items?.map((item: { icon: string; value: string; label: string; desc: string }, i: number) => (
-          <div key={i} className="premium-card" style={{ textAlign: 'center', borderColor: i === 1 ? 'var(--accent)' : 'var(--border)', padding: '1.5rem 1rem' }}>
-            <div style={{ fontSize: 'clamp(2rem, 5vw, 2.5rem)', marginBottom: '0.5rem' }}>{item.icon}</div>
-            <div style={{ fontSize: 'clamp(1.5rem, 4vw, 2rem)', fontWeight: 700, color: 'var(--text)', marginBottom: '0.2rem' }}>{item.value}</div>
-            <div style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--accent)', marginBottom: '0.5rem' }}>{item.label}</div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--muted)', lineHeight: '1.4' }}>{item.desc}</div>
+          <div key={i} className="premium-card" style={{ 
+            textAlign: 'center', 
+            aspectRatio: '1/1', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            justifyContent: 'center', 
+            alignItems: 'center',
+            padding: '1.5rem 1rem' 
+          }}>
+            <div style={{ fontSize: 'clamp(1.50rem, 4vw, 2.2rem)', marginBottom: '0.4rem' }}>{item.icon}</div>
+            <div style={{ fontSize: 'clamp(1.2rem, 3.5vw, 1.8rem)', fontWeight: 700, color: 'var(--text)', marginBottom: '0.1rem', lineHeight: 1 }}>{item.value}</div>
+            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{item.label}</div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--muted)', lineHeight: '1.3', maxWidth: '100%' }}>{item.desc}</div>
           </div>
         ))}
       </div>

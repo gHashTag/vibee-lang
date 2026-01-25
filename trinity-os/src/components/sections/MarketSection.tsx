@@ -20,20 +20,26 @@ export default function MarketSection() {
       
       <div className="fade" style={{ marginTop: '4rem', width: '100%', maxWidth: '800px' }}>
         <h3 style={{ fontSize: 'clamp(1rem, 3vw, 1.2rem)', marginBottom: '1.5rem', fontWeight: 500, textAlign: 'center' }}>{m.compsTitle}</h3>
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', border: '1px solid var(--border)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.7rem, 2vw, 0.85rem)', minWidth: '600px' }}>
+        <div style={{ 
+          overflowX: 'auto', 
+          WebkitOverflowScrolling: 'touch', 
+          border: '1px solid var(--border)', 
+          borderRadius: '12px', 
+          background: 'rgba(255,255,255,0.02)',
+          margin: '0 -10px' // Slight negative margin to take more space on mobile
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.65rem, 2.5vw, 0.85rem)', minWidth: '450px' }}>
             <thead>
               <tr>
                 {m.headers?.map((h: string, i: number) => (
                   <th key={i} style={{ 
-                    padding: '1rem', 
+                    padding: '0.8rem 0.5rem', 
                     borderBottom: '1px solid var(--border)', 
                     color: 'var(--muted)', 
                     textAlign: 'center', 
-                    fontWeight: '500',
-                    fontSize: '0.7rem',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.1em'
+                    fontWeight: '600',
+                    fontSize: '0.65rem',
+                    whiteSpace: 'nowrap'
                   }}>{h}</th>
                 ))}
               </tr>
@@ -43,11 +49,11 @@ export default function MarketSection() {
                 <tr key={i} style={{ background: row[0] === 'TRINITY' ? 'rgba(0, 229, 153, 0.05)' : 'transparent' }}>
                   {row?.map((cell: string, j: number) => (
                     <td key={j} style={{ 
-                      padding: '1rem', 
+                      padding: '1rem 0.5rem', 
                       borderBottom: '1px solid var(--border)', 
                       textAlign: 'center',
                       color: row[0] === 'TRINITY' && j === 0 ? 'var(--accent)' : j === 0 ? 'var(--text)' : 'var(--muted)',
-                      fontWeight: j === 0 ? 500 : 400
+                      fontWeight: j === 0 ? 600 : 400
                     }}>{cell}</td>
                   ))}
                 </tr>

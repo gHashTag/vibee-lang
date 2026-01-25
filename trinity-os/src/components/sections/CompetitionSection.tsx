@@ -16,20 +16,26 @@ export default function CompetitionSection() {
       </div>
       
       <div className="fade" style={{ marginTop: '3rem', width: '100%', maxWidth: '900px' }}>
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', border: '1px solid var(--border)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.7rem, 2vw, 0.85rem)', minWidth: '600px' }}>
+        <div style={{ 
+          overflowX: 'auto', 
+          WebkitOverflowScrolling: 'touch', 
+          border: '1px solid var(--border)', 
+          borderRadius: '12px', 
+          background: 'rgba(255,255,255,0.02)',
+          margin: '0 -10px'
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.65rem, 2.5vw, 0.85rem)', minWidth: '550px' }}>
             <thead>
               <tr>
                 {c.headers?.map((h: string, i: number) => (
                   <th key={i} style={{ 
-                    padding: '1rem', 
+                    padding: '0.8rem 0.5rem', 
                     borderBottom: '1px solid var(--border)', 
                     color: 'var(--muted)', 
                     textAlign: 'center', 
-                    fontWeight: '500',
-                    fontSize: '0.7rem',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.1em'
+                    fontWeight: '600',
+                    fontSize: '0.65rem',
+                    whiteSpace: 'nowrap'
                   }}>{h}</th>
                 ))}
               </tr>
@@ -37,11 +43,11 @@ export default function CompetitionSection() {
             <tbody>
               {c.rows?.map((row: { company: string; arch: string; val: string; ternary: boolean; open: boolean }, i: number) => (
                 <tr key={i} style={{ background: row.company === 'TRINITY' ? 'rgba(0, 229, 153, 0.05)' : 'transparent' }}>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.company === 'TRINITY' ? 'var(--accent)' : 'var(--text)', fontWeight: 500, textAlign: 'center' }}>{row.company}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.arch}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.val}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.ternary ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.ternary ? '✓' : '✗'}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.open ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.open ? '✓' : '✗'}</td>
+                  <td style={{ padding: '1rem 0.5rem', borderBottom: '1px solid var(--border)', color: row.company === 'TRINITY' ? 'var(--accent)' : 'var(--text)', fontWeight: 600, textAlign: 'center' }}>{row.company}</td>
+                  <td style={{ padding: '1rem 0.5rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.arch}</td>
+                  <td style={{ padding: '1rem 0.5rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.val}</td>
+                  <td style={{ padding: '1rem 0.5rem', borderBottom: '1px solid var(--border)', color: row.ternary ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.ternary ? '✓' : '✗'}</td>
+                  <td style={{ padding: '1rem 0.5rem', borderBottom: '1px solid var(--border)', color: row.open ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.open ? '✓' : '✗'}</td>
                 </tr>
               ))}
             </tbody>

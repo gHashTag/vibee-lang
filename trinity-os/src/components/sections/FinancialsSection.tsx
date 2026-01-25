@@ -18,12 +18,27 @@ export default function FinancialsSection() {
       <GrowthChart />
 
       <div className="fade" style={{ marginTop: '3rem', width: '100%' }}>
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', border: '1px solid var(--border)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.7rem, 2vw, 0.85rem)', minWidth: '600px' }}>
+        <div style={{ 
+          overflowX: 'auto', 
+          WebkitOverflowScrolling: 'touch', 
+          border: '1px solid var(--border)', 
+          borderRadius: '12px', 
+          background: 'rgba(255,255,255,0.02)',
+          margin: '0 -10px'
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.65rem, 2.5vw, 0.85rem)', minWidth: '500px' }}>
             <thead>
               <tr>
                 {f.headers?.map((h: string, i: number) => (
-                  <th key={i} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center', fontWeight: '500' }}>{h}</th>
+                  <th key={i} style={{ 
+                    padding: '0.8rem 0.5rem', 
+                    borderBottom: '1px solid var(--border)', 
+                    color: 'var(--muted)', 
+                    textAlign: 'center', 
+                    fontWeight: '600',
+                    fontSize: '0.65rem',
+                    whiteSpace: 'nowrap'
+                  }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -31,7 +46,13 @@ export default function FinancialsSection() {
               {f.rows?.map((row: string[], i: number) => (
                 <tr key={i}>
                   {row.map((cell: string, j: number) => (
-                    <td key={j} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', textAlign: 'center', color: j === 0 ? 'var(--accent)' : 'var(--text)' }}>{cell}</td>
+                    <td key={j} style={{ 
+                      padding: '1rem 0.5rem', 
+                      borderBottom: '1px solid var(--border)', 
+                      textAlign: 'center', 
+                      color: j === 0 ? 'var(--accent)' : 'var(--text)',
+                      fontWeight: j === 0 ? 600 : 400
+                    }}>{cell}</td>
                   ))}
                 </tr>
               ))}
