@@ -39,7 +39,11 @@
 ### 🗄️ Archive
 | Directory | Description |
 |-----------|-------------|
-| [archive/](archive/) | Historical documentation |
+| [archive/](archive/) | **Historical Root** |
+| [archive/pitch_decks/](archive/pitch_decks/) | Old Investor Decks |
+| [archive/reports/](archive/reports/) | Legacy Toxicity Reports |
+| [archive/scientific/](archive/scientific/) | Specific Paper Versions |
+| [archive/roadmap/](archive/roadmap/) | MVP Roadmaps |
 
 ### 🔮 Sacred
 | Directory | Description |
@@ -58,6 +62,8 @@
 - [Tutorial](quickstart/TUTORIAL.md) - Step-by-step tutorial
 
 ### Key Features (January 2026)
+- [TRINITY OS (Singularity)](../trinity-os/) - **Native Ternary Operating System**
+- [Pitch Deck (V5.0)](TRINITY_PITCH_DECK.md) - **Investor Presentation**
 - [iGLA v6 IMMORTAL](igla/) - 15000× inference speedup
 - [KOSCHEI MODE](koschei/) - Autonomous self-evolution
 - [Agent Browser](browser/) - Chromium + Monaco + AI
@@ -67,6 +73,7 @@
 - [API Reference](core/API.md)
 - [PAS Predictions](pas/PAS_PREDICTIONS.md)
 - [Benchmarks](benchmarks/)
+- [Scientific Papers](scientific/)
 
 ---
 

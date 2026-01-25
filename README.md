@@ -11,6 +11,8 @@
 
 ## Overview
 
+**TRINITY OS is the native ternary operating system built on VIBEE.**
+
 VIBEE is a specification-first programming language that generates code from behavioral specifications. Built on the **Creation Pattern** and **Predictive Algorithmic Systematics (PAS)** methodology.
 
 ```
@@ -126,6 +128,7 @@ cd src/vibeec && zig build-exe demo_agent.zig && ./demo_agent
 
 ```
 vibee-lang/
+├── trinity-os/             # **Native Ternary OS (Web App)**
 ├── specs/tri/              # .vibee specifications (667+)
 ├── trinity/output/         # Generated Zig code (2000+)
 ├── src/vibeec/             # Compiler source
@@ -135,6 +138,7 @@ vibee-lang/
 │   └── vibee_parser.zig    # YAML parser
 ├── bin/vibee               # CLI binary
 ├── docs/                   # Documentation
+│   ├── TRINITY_PITCH_DECK.md # **Investor Deck**
 │   ├── habr/               # Habr articles
 │   ├── verdicts/           # TOXIC VERDICT reports
 │   └── academic/           # Research papers

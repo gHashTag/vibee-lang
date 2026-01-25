@@ -1,0 +1,115 @@
+"use client";
+import { motion } from "framer-motion";
+
+interface DataPoint {
+  year: string;
+  revenue: number; // in Millions
+  valuation: number; // in Millions
+}
+
+const data: DataPoint[] = [
+  { year: "2026", revenue: 2, valuation: 200 },
+  { year: "2027", revenue: 15, valuation: 500 },
+  { year: "2028", revenue: 80, valuation: 2000 },
+  { year: "2029", revenue: 300, valuation: 5000 },
+  { year: "2030", revenue: 1000, valuation: 10000 },
+];
+
+export default function GrowthChart() {
+  const maxVal = 10000;
+  const height = 300;
+  const width = 800; // viewbox width
+  const padding = 40;
+
+  // Calculate points for the SVG path
+  const points = data.map((d, i) => {
+    const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
+    const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
+    return `${x},${y}`;
+  }).join(" ");
+
+
+
+  return (
+    <div className="premium-card fade" style={{ width: '100%', maxWidth: '900px', margin: '3rem auto', padding: '2rem', overflow: 'hidden' }}>
+      <h3 style={{ textAlign: 'center', marginBottom: '2rem', fontSize: '1.2rem' }}>Valuation Growth Projection (LOG Scale)</h3>
+      <div style={{ width: '100%', overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', minWidth: '600px', height: 'auto' }}>
+          {/* Grid Lines */}
+          {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
+             <line 
+               key={tick} 
+               x1={padding} 
+               y1={height - padding - tick * (height - 2 * padding)} 
+               x2={width - padding} 
+               y2={height - padding - tick * (height - 2 * padding)} 
+               stroke="var(--border)" 
+               strokeDasharray="4 4" 
+             />
+          ))}
+
+          {/* Area */}
+          <motion.path
+            initial={{ d: `M ${padding},${height - padding} L ${padding},${height - padding} ${width - padding},${height - padding} ${width - padding},${height - padding} Z` }}
+            animate={{ d: points ? `M ${points} ${width - padding},${height - padding} ${padding},${height - padding} Z` : "" }}
+            transition={{ duration: 1.5, ease: "easeInOut" }}
+            fill="url(#grad1)"
+            opacity="0.3"
+          />
+
+          {/* Line */}
+          <motion.polyline
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth="3"
+            points={points || ""}
+            initial={{ pathLength: 0 }}
+            whileInView={{ pathLength: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 2, ease: "easeInOut" }}
+          />
+
+          {/* Points */}
+          {data.map((d, i) => {
+             const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
+             const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
+             return (
+               <g key={i}>
+                 <motion.circle 
+                   cy={y} 
+                   r="5" 
+                   fill="var(--bg)" 
+                   stroke="var(--accent)" 
+                   strokeWidth="2" 
+                   initial={{ opacity: 0, cx: x }}
+                   whileInView={{ opacity: 1 }}
+                   transition={{ delay: 1 + i * 0.2 }}
+                 />
+                 <motion.text
+                   x={x}
+                   y={y - 15}
+                   textAnchor="middle"
+                   fill="var(--text)"
+                   fontSize="12"
+                   initial={{ opacity: 0, y: y - 5 }}
+                   whileInView={{ opacity: 1, y: y - 15 }}
+                   transition={{ delay: 1.2 + i * 0.2 }}
+                 >
+                   ${d.valuation >= 1000 ? d.valuation / 1000 + 'B' : d.valuation + 'M'}
+                 </motion.text>
+                 <text x={x} y={height - 10} textAnchor="middle" fill="var(--muted)" fontSize="12">{d.year}</text>
+               </g>
+             )
+          })}
+
+          <defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+    </div>
+  );
+}
