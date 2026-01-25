@@ -39,10 +39,11 @@ export default function TechnologySection() {
         <div style={{ 
           border: '1px solid var(--border)', 
           borderRadius: '8px', 
-          padding: '1rem 2.5rem', 
-          background: 'rgba(255,255,255,0.02)'
+          padding: '1rem clamp(1rem, 5vw, 2.5rem)', 
+          background: 'rgba(255,255,255,0.02)',
+          maxWidth: '90vw'
         }}>
-          <div style={{ fontSize: '0.85rem', fontWeight: '500', color: 'var(--accent)' }}>{tech.softwareStack}</div>
+          <div style={{ fontSize: 'clamp(0.7rem, 2.5vw, 0.85rem)', fontWeight: '500', color: 'var(--accent)' }}>{tech.softwareStack}</div>
         </div>
       </div>
 

@@ -22,7 +22,7 @@ export default function ArchitectureDiagram({ labels }: { labels?: any }) {
            transition={{ duration: 1 }}
         >
           <rect x="300" y="150" width="200" height="200" rx="10" fill="rgba(0, 229, 153, 0.1)" stroke="var(--accent)" strokeWidth="2" />
-          <text x="400" y="255" textAnchor="middle" fill="var(--accent)" fontSize="24" fontWeight="bold">{l.core}</text>
+          <text x="400" y="255" textAnchor="middle" fill="var(--accent)" fontSize="20" fontWeight="bold">{l.core}</text>
         </motion.g>
 
         {/* Input Flow */}

@@ -31,10 +31,10 @@ export default function GrowthChart() {
 
 
   return (
-    <div className="premium-card fade" style={{ width: '100%', maxWidth: '900px', margin: '3rem auto', padding: '2rem', overflow: 'hidden' }}>
-      <h3 style={{ textAlign: 'center', marginBottom: '2rem', fontSize: '1.2rem' }}>Valuation Growth Projection (LOG Scale)</h3>
-      <div style={{ width: '100%', overflowX: 'auto' }}>
-        <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', minWidth: '600px', height: 'auto' }}>
+    <div className="premium-card fade" style={{ width: '100%', maxWidth: '900px', margin: '3rem auto', padding: 'clamp(1rem, 4vw, 2rem)', overflow: 'hidden' }}>
+      <h3 style={{ textAlign: 'center', marginBottom: '2rem', fontSize: 'clamp(1rem, 4vw, 1.2rem)' }}>Valuation Growth Projection (LOG Scale)</h3>
+      <div style={{ width: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', minWidth: '600px', height: 'auto', display: 'block' }}>
           {/* Grid Lines */}
           {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
              <line 

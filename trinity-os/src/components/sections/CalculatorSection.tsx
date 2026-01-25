@@ -17,9 +17,9 @@ export default function CalculatorSection() {
       <div className="radial-glow" style={{ opacity: 0.15 }} />
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: c?.title }} />
       
-      <div className="premium-card fade" style={{ width: '100%', maxWidth: '800px', margin: '4rem auto', padding: '3rem' }}>
-        <div style={{ marginBottom: '3rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', fontSize: '1rem', fontWeight: 500 }}>
+      <div className="premium-card fade" style={{ width: '100%', maxWidth: '800px', margin: '4rem auto', padding: 'clamp(1rem, 5vw, 3rem)' }}>
+        <div style={{ marginBottom: 'clamp(1.5rem, 4vw, 3rem)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', fontSize: 'clamp(0.8rem, 2.5vw, 1rem)', fontWeight: 500 }}>
             <span>{c?.nodes}</span>
             <span style={{ color: 'var(--accent)' }}>{nodes}</span>
           </div>
@@ -30,18 +30,18 @@ export default function CalculatorSection() {
           />
         </div>
 
-        <div className="grid" style={{ marginTop: 0, gap: '1.5rem' }}>
-          <div style={{ padding: '1.5rem', border: '1px solid var(--border)', borderRadius: '8px' }}>
-            <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>{c?.current}</div>
-            <div style={{ fontSize: '1.5rem', color: '#ff453a' }}>${binaryCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+        <div className="grid" style={{ marginTop: 0, gap: 'clamp(0.8rem, 2vw, 1.5rem)' }}>
+          <div style={{ padding: 'clamp(1rem, 3vw, 1.5rem)', border: '1px solid var(--border)', borderRadius: '8px' }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>{c?.current}</div>
+            <div style={{ fontSize: 'clamp(1.2rem, 4vw, 1.5rem)', color: '#ff453a' }}>${binaryCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
           </div>
-          <div style={{ padding: '1.5rem', border: '1px solid var(--border)', borderRadius: '8px' }}>
-            <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>{c?.withTrinity}</div>
-            <div style={{ fontSize: '1.5rem', color: 'var(--accent)' }}>${trinityCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+          <div style={{ padding: 'clamp(1rem, 3vw, 1.5rem)', border: '1px solid var(--border)', borderRadius: '8px' }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>{c?.withTrinity}</div>
+            <div style={{ fontSize: 'clamp(1.2rem, 4vw, 1.5rem)', color: 'var(--accent)' }}>${trinityCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
           </div>
-          <div style={{ gridColumn: '1 / -1', padding: '2rem', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--accent)', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '0.9rem', color: 'var(--accent)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{c?.savings}</div>
-            <div style={{ fontSize: '3rem', fontWeight: 500, color: 'var(--text)' }}>${savings.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+          <div style={{ gridColumn: '1 / -1', padding: 'clamp(1.5rem, 5vw, 2rem)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--accent)', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--accent)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{c?.savings}</div>
+            <div style={{ fontSize: 'clamp(2rem, 10vw, 3rem)', fontWeight: 500, color: 'var(--text)' }}>${savings.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
           </div>
         </div>
       </div>
