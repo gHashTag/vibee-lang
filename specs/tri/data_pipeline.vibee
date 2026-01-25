@@ -1,0 +1,402 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA PIPELINE - Streaming Data Flow for BitNet FPGA
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-throughput data pipeline with:
+# - Async FIFOs for clock domain crossing
+# - Double buffering for continuous processing
+# - Backpressure handling (AXI-Stream ready/valid)
+# - Data width conversion (64-bit to 54-bit trit vectors)
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: data_pipeline
+version: "1.0.0"
+language: varlog
+module: data_pipeline
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  Host Memory                    FPGA
+#  ┌─────────┐    DMA    ┌──────────────────────────────────────┐
+#  │ Weights │ ────────► │ Input    │ Width   │ Double  │ SIMD  │
+#  │ Inputs  │           │ FIFO     │ Convert │ Buffer  │ Core  │
+#  └─────────┘           └──────────────────────────────────────┘
+#                                                          │
+#  ┌─────────┐    DMA    ┌──────────────────────────────────┘
+#  │ Outputs │ ◄──────── │ Output   │ Width   │ Output  │
+#  └─────────┘           │ FIFO     │ Convert │ Buffer  │
+#                        └──────────────────────────────────────┘
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  fifo_depth: 512
+  trit_width: 54
+  axi_width: 64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # AXI-Stream interface signals
+  AxisSignals:
+    fields:
+      tdata: Int
+      tvalid: Bool
+      tready: Bool
+      tlast: Bool
+    width: 68
+
+  # FIFO status
+  FifoStatus:
+    fields:
+      empty: Bool
+      full: Bool
+      count: Int
+      almost_empty: Bool
+      almost_full: Bool
+    width: 16
+
+  # Double buffer state
+  BufferState:
+    fields:
+      active_buffer: Int
+      write_ptr: Int
+      read_ptr: Int
+      buffer_ready: Bool
+    width: 32
+
+  # Pipeline control
+  PipelineCtrl:
+    fields:
+      enable: Bool
+      flush: Bool
+      stall: Bool
+      error: Bool
+    width: 8
+
+  # Data packet header
+  PacketHeader:
+    fields:
+      packet_type: Int
+      length: Int
+      sequence: Int
+    width: 32
+    packet_types: "0=WEIGHTS, 1=INPUT, 2=OUTPUT, 3=CONFIG"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASYNC FIFO (Clock Domain Crossing)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # ASYNC FIFO TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: async_fifo
+    given: Write clock domain and read clock domain
+    when: Data transfer between clock domains
+    then: Safe CDC with gray code pointers
+    implementation: |
+      // Dual-port RAM with gray-coded pointers
+      // Write side: wr_clk, wr_en, wr_data
+      // Read side: rd_clk, rd_en, rd_data
+      // Status: empty, full, count
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # GRAY CODE ENCODER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: gray_encode
+    given: Binary pointer value
+    when: Pointer synchronization needed
+    then: Return gray-coded value
+    implementation: |
+      // gray = binary ^ (binary >> 1)
+      // Single bit change between adjacent values
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # GRAY CODE DECODER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: gray_decode
+    given: Gray-coded pointer value
+    when: Binary value needed
+    then: Return binary value
+    implementation: |
+      // Iterative XOR from MSB to LSB
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # POINTER SYNCHRONIZER (2-FF)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: sync_2ff
+    given: Async signal and target clock
+    when: CDC synchronization
+    then: Return synchronized signal
+    implementation: |
+      // Two flip-flop synchronizer
+      // Reduces metastability probability
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # FIFO WRITE LOGIC
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: fifo_write_ctrl
+    given: Write request and data
+    when: Write to FIFO
+    then: Update write pointer and store data
+    implementation: |
+      // Check not full
+      // Write to RAM at wr_ptr
+      // Increment wr_ptr (gray coded)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # FIFO READ LOGIC
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: fifo_read_ctrl
+    given: Read request
+    when: Read from FIFO
+    then: Return data and update read pointer
+    implementation: |
+      // Check not empty
+      // Read from RAM at rd_ptr
+      // Increment rd_ptr (gray coded)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WIDTH CONVERTER (64-bit to 54-bit)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WIDTH CONVERTER 64 TO 54
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: width_conv_64_to_54
+    given: 64-bit AXI stream input
+    when: Convert to 54-bit trit vectors
+    then: Pack/unpack with proper alignment
+    implementation: |
+      // Accumulate bits until 54 available
+      // Handle partial words at boundaries
+      // Maintain bit alignment
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WIDTH CONVERTER 54 TO 64
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: width_conv_54_to_64
+    given: 54-bit trit vector output
+    when: Convert to 64-bit AXI stream
+    then: Pack with proper alignment
+    implementation: |
+      // Accumulate 54-bit words
+      // Output 64-bit when ready
+      // Handle padding at end
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BIT ACCUMULATOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bit_accumulator
+    given: Input bits and target width
+    when: Width conversion
+    then: Accumulate and output when ready
+    implementation: |
+      // Shift register for bit accumulation
+      // Count valid bits
+      // Output when threshold reached
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DOUBLE BUFFER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DOUBLE BUFFER CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: double_buffer_ctrl
+    given: Write stream and read requests
+    when: Continuous processing needed
+    then: Ping-pong between two buffers
+    implementation: |
+      // Buffer A: write while B reads
+      // Buffer B: read while A writes
+      // Swap on completion
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BUFFER SWAP LOGIC
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: buffer_swap
+    given: Both buffers ready
+    when: Swap condition met
+    then: Atomically swap active buffer
+    implementation: |
+      // Wait for write complete AND read complete
+      // Toggle active_buffer
+      // Reset pointers
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # INPUT DOUBLE BUFFER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: input_double_buffer
+    given: DMA input stream
+    when: Input data arrives
+    then: Buffer for SIMD core consumption
+    implementation: |
+      // 2 × 27 trit vectors per buffer
+      // Allows DMA and compute overlap
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # OUTPUT DOUBLE BUFFER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: output_double_buffer
+    given: SIMD core output
+    when: Results ready
+    then: Buffer for DMA output
+    implementation: |
+      // Collect results while DMA sends previous
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI-STREAM INTERFACE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # AXI-STREAM SLAVE (Input)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: axis_slave
+    given: AXI-Stream input signals
+    when: Data from DMA
+    then: Accept data with backpressure
+    implementation: |
+      // Assert TREADY when FIFO not full
+      // Capture TDATA on TVALID && TREADY
+      // Handle TLAST for packet boundaries
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # AXI-STREAM MASTER (Output)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: axis_master
+    given: Data to send
+    when: Output ready
+    then: Drive AXI-Stream with flow control
+    implementation: |
+      // Assert TVALID when data available
+      // Hold TDATA until TREADY
+      // Assert TLAST on last word
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BACKPRESSURE HANDLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: backpressure_handler
+    given: TREADY signal
+    when: Downstream stall
+    then: Propagate backpressure upstream
+    implementation: |
+      // Stall pipeline when TREADY low
+      // Resume when TREADY asserts
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE TOP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DATA PIPELINE TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: data_pipeline_top
+    given: AXI-Stream input and SIMD interface
+    when: Data flow needed
+    then: Complete pipeline from DMA to SIMD
+    implementation: |
+      // Instantiate:
+      // - axis_slave (input)
+      // - async_fifo (CDC)
+      // - width_conv_64_to_54
+      // - input_double_buffer
+      // - output_double_buffer
+      // - width_conv_54_to_64
+      // - async_fifo (CDC)
+      // - axis_master (output)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PIPELINE FLUSH
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: pipeline_flush
+    given: Flush command
+    when: Pipeline reset needed
+    then: Drain all FIFOs and reset state
+    implementation: |
+      // Assert flush to all stages
+      // Wait for empty
+      // Reset pointers and state
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # FIFO tests
+  - name: test_fifo_write_read
+    input: {data: [1, 2, 3, 4, 5]}
+    expected: {output: [1, 2, 3, 4, 5], order: "FIFO"}
+
+  - name: test_fifo_full
+    input: {writes: 512, depth: 512}
+    expected: {full: true, overflow: false}
+
+  - name: test_fifo_empty
+    input: {reads: 512, writes: 512}
+    expected: {empty: true, underflow: false}
+
+  # Width converter tests
+  - name: test_width_64_to_54
+    input: {data_64: [0xFFFFFFFFFFFFFFFF]}
+    expected: {data_54: "proper alignment"}
+
+  - name: test_width_54_to_64
+    input: {data_54: [0x3FFFFFFFFFFFFF]}
+    expected: {data_64: "proper packing"}
+
+  # Double buffer tests
+  - name: test_double_buffer_swap
+    input: {write_complete: true, read_complete: true}
+    expected: {buffer_swapped: true}
+
+  - name: test_double_buffer_overlap
+    input: {continuous_stream: true}
+    expected: {no_stall: true}
+
+  # AXI-Stream tests
+  - name: test_axis_backpressure
+    input: {tready: false, tvalid: true}
+    expected: {data_held: true}
+
+  - name: test_axis_burst
+    input: {burst_length: 16}
+    expected: {all_transferred: true}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  async_fifo_512x64: "~1000 LUTs, ~2KB BRAM"
+  width_converter: "~200 LUTs, ~100 FFs"
+  double_buffer: "~500 LUTs, ~4KB BRAM"
+  axis_interface: "~100 LUTs, ~50 FFs"
+  total: "<2000 LUTs, <6KB BRAM"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  throughput: ">10 GB/s sustained"
+  latency: "<100 cycles end-to-end"
+  cdc_latency: "3 cycles (2-FF sync)"
+  fifo_latency: "2 cycles (read)"
+  backpressure_response: "1 cycle"

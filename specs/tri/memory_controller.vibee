@@ -1,0 +1,436 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY CONTROLLER - BRAM Arbiter and Cache for BitNet FPGA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Unified memory subsystem with:
+# - Multi-port BRAM arbiter (weights, inputs, outputs)
+# - LRU cache for frequently accessed weights
+# - Prefetch engine for sequential access patterns
+# - Bank interleaving for parallel access
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: memory_controller
+version: "1.0.0"
+language: varlog
+module: memory_controller
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  ┌─────────────────────────────────────────────────────────────────────────┐
+#  │                         MEMORY CONTROLLER                               │
+#  ├─────────────────────────────────────────────────────────────────────────┤
+#  │                                                                         │
+#  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐                    │
+#  │  │ Port 0  │  │ Port 1  │  │ Port 2  │  │ Port 3  │  ← Request Ports   │
+#  │  │ Weights │  │ Inputs  │  │ Outputs │  │ Config  │                    │
+#  │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘                    │
+#  │       │            │            │            │                          │
+#  │       └────────────┴─────┬──────┴────────────┘                          │
+#  │                          │                                              │
+#  │                    ┌─────▼─────┐                                        │
+#  │                    │  ARBITER  │  ← Round-robin with priority           │
+#  │                    └─────┬─────┘                                        │
+#  │                          │                                              │
+#  │            ┌─────────────┼─────────────┐                                │
+#  │            │             │             │                                │
+#  │       ┌────▼────┐  ┌─────▼─────┐  ┌────▼────┐                          │
+#  │       │ Cache   │  │ Prefetch  │  │ Bank    │                          │
+#  │       │ (LRU)   │  │ Engine    │  │ Select  │                          │
+#  │       └────┬────┘  └─────┬─────┘  └────┬────┘                          │
+#  │            │             │             │                                │
+#  │            └─────────────┴─────┬───────┘                                │
+#  │                                │                                        │
+#  │       ┌────────────────────────┼────────────────────────┐              │
+#  │       │                        │                        │              │
+#  │  ┌────▼────┐  ┌────────┐  ┌────▼────┐  ┌────────┐  ┌────▼────┐        │
+#  │  │ Bank 0  │  │ Bank 1 │  │ Bank 2  │  │ Bank 3 │  │ Bank 4  │        │
+#  │  │ 18Kb    │  │ 18Kb   │  │ 18Kb    │  │ 18Kb   │  │ 18Kb    │        │
+#  │  └─────────┘  └────────┘  └─────────┘  └────────┘  └─────────┘        │
+#  │                                                                         │
+#  └─────────────────────────────────────────────────────────────────────────┘
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  num_banks: 8
+  bank_depth: 1024
+  bank_width: 54
+  cache_lines: 64
+  cache_line_size: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Memory request
+  MemRequest:
+    fields:
+      addr: Int
+      data: Int
+      write_en: Bool
+      port_id: Int
+      burst_len: Int
+    width: 96
+
+  # Memory response
+  MemResponse:
+    fields:
+      data: Int
+      valid: Bool
+      port_id: Int
+      error: Bool
+    width: 64
+
+  # Arbiter state
+  ArbiterState:
+    fields:
+      current_grant: Int
+      pending_mask: Int
+      priority_ptr: Int
+    width: 16
+
+  # Cache line
+  CacheLine:
+    fields:
+      tag: Int
+      data: List<Int>
+      valid: Bool
+      dirty: Bool
+      lru_count: Int
+    width: 512
+
+  # Cache status
+  CacheStatus:
+    fields:
+      hits: Int
+      misses: Int
+      evictions: Int
+      hit_rate: Float
+    width: 64
+
+  # Prefetch state
+  PrefetchState:
+    fields:
+      base_addr: Int
+      stride: Int
+      count: Int
+      active: Bool
+    width: 64
+
+  # Bank status
+  BankStatus:
+    fields:
+      busy: Bool
+      last_addr: Int
+      conflict: Bool
+    width: 32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARBITER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # ROUND-ROBIN ARBITER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: round_robin_arbiter
+    given: Multiple port requests
+    when: Arbitration needed
+    then: Grant access in round-robin order
+    implementation: |
+      // Rotate priority pointer after each grant
+      // Ensures fairness across ports
+      // Single-cycle decision
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PRIORITY ARBITER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: priority_arbiter
+    given: Requests with priority levels
+    when: Priority arbitration needed
+    then: Grant to highest priority requester
+    implementation: |
+      // Port 0 (weights) highest priority
+      // Port 3 (config) lowest priority
+      // Starvation prevention with timeout
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ARBITER TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: arbiter_top
+    given: All port requests
+    when: Memory access needed
+    then: Select winner and route request
+    implementation: |
+      // Combine round-robin and priority
+      // Handle burst requests
+      // Track pending requests
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LRU CACHE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CACHE LOOKUP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: cache_lookup
+    given: Memory address
+    when: Cache access
+    then: Return hit/miss and data if hit
+    implementation: |
+      // Extract tag from address
+      // Compare with all cache line tags
+      // Return data on hit
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CACHE UPDATE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: cache_update
+    given: Address and data
+    when: Cache fill or write
+    then: Update cache line and LRU state
+    implementation: |
+      // On hit: update data, reset LRU
+      // On miss: evict LRU line, fill new
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LRU TRACKER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: lru_tracker
+    given: Cache access
+    when: LRU update needed
+    then: Update LRU counters
+    implementation: |
+      // Increment all counters
+      // Reset accessed line to 0
+      // Find max for eviction
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CACHE EVICT
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: cache_evict
+    given: LRU line index
+    when: Eviction needed
+    then: Write back if dirty, invalidate
+    implementation: |
+      // Check dirty bit
+      // Write back to BRAM if dirty
+      // Clear valid bit
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CACHE CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: cache_controller
+    given: Memory requests
+    when: Cache operation
+    then: Handle hit/miss/eviction
+    implementation: |
+      // State machine:
+      // IDLE -> LOOKUP -> HIT/MISS
+      // MISS -> EVICT -> FILL -> DONE
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PREFETCH ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # STRIDE DETECTOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: stride_detector
+    given: Sequence of addresses
+    when: Pattern detection
+    then: Detect stride pattern
+    implementation: |
+      // Track last N addresses
+      // Compute differences
+      // Detect constant stride
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PREFETCH GENERATOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: prefetch_generator
+    given: Detected stride pattern
+    when: Prefetch enabled
+    then: Generate prefetch requests
+    implementation: |
+      // Predict next addresses
+      // Issue low-priority requests
+      // Fill cache ahead of demand
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PREFETCH CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: prefetch_controller
+    given: Access pattern and cache state
+    when: Prefetch decision
+    then: Enable/disable prefetch
+    implementation: |
+      // Monitor hit rate
+      // Disable if thrashing
+      // Adjust prefetch distance
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BANK INTERLEAVING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BANK SELECT
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bank_select
+    given: Memory address
+    when: Bank routing
+    then: Select target bank
+    implementation: |
+      // bank_id = addr[2:0] (8 banks)
+      // Interleave for parallel access
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BANK CONFLICT DETECTOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bank_conflict_detector
+    given: Multiple requests
+    when: Parallel access
+    then: Detect bank conflicts
+    implementation: |
+      // Compare bank IDs
+      // Flag conflicts
+      // Serialize conflicting requests
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BANK INTERFACE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bank_interface
+    given: Request and bank ID
+    when: BRAM access
+    then: Read/write to specific bank
+    implementation: |
+      // Route to correct BRAM
+      // Handle read latency (1 cycle)
+      // Return data
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY CONTROLLER TOP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # MEMORY CONTROLLER TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: memory_controller_top
+    given: Port requests and BRAM interface
+    when: Memory access
+    then: Complete memory subsystem
+    implementation: |
+      // Instantiate:
+      // - arbiter_top (4 ports)
+      // - cache_controller (64 lines)
+      // - prefetch_controller
+      // - bank_interface (8 banks)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # REQUEST HANDLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: request_handler
+    given: Incoming request
+    when: New request arrives
+    then: Route through memory hierarchy
+    implementation: |
+      // 1. Check cache
+      // 2. On miss, arbitrate for BRAM
+      // 3. Fill cache on read
+      // 4. Return response
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # RESPONSE HANDLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: response_handler
+    given: BRAM data
+    when: Read complete
+    then: Route response to requester
+    implementation: |
+      // Match response to request
+      // Update cache
+      // Signal completion
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Arbiter tests
+  - name: test_round_robin
+    input: {requests: [1, 1, 1, 1]}
+    expected: {grants: [0, 1, 2, 3, 0, 1, 2, 3]}
+
+  - name: test_priority
+    input: {requests: [1, 0, 1, 0], priority: [3, 2, 1, 0]}
+    expected: {first_grant: 0}
+
+  # Cache tests
+  - name: test_cache_hit
+    input: {addr: 0x100, cached: true}
+    expected: {hit: true, latency: 1}
+
+  - name: test_cache_miss
+    input: {addr: 0x200, cached: false}
+    expected: {hit: false, fill: true}
+
+  - name: test_lru_eviction
+    input: {accesses: 65, cache_size: 64}
+    expected: {evictions: 1}
+
+  # Prefetch tests
+  - name: test_stride_detect
+    input: {addrs: [0, 54, 108, 162]}
+    expected: {stride: 54, detected: true}
+
+  - name: test_prefetch_hit
+    input: {pattern: "sequential", prefetch: true}
+    expected: {hit_rate: ">90%"}
+
+  # Bank tests
+  - name: test_bank_interleave
+    input: {addrs: [0, 1, 2, 3, 4, 5, 6, 7]}
+    expected: {banks: [0, 1, 2, 3, 4, 5, 6, 7]}
+
+  - name: test_bank_conflict
+    input: {addrs: [0, 8, 16]}
+    expected: {conflicts: 2, serialized: true}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  arbiter: "~200 LUTs, ~50 FFs"
+  cache_64_lines: "~1500 LUTs, ~32KB BRAM"
+  lru_tracker: "~400 LUTs, ~200 FFs"
+  prefetch_engine: "~300 LUTs, ~100 FFs"
+  bank_interface_8: "~400 LUTs, ~72KB BRAM"
+  total: "<3000 LUTs, <104KB BRAM"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  cache_hit_latency: "1 cycle"
+  cache_miss_latency: "3 cycles (BRAM read + fill)"
+  arbitration_latency: "1 cycle"
+  bank_access_latency: "1 cycle"
+  prefetch_lookahead: "4 cache lines"
+  target_hit_rate: ">85%"
+  peak_bandwidth: "8 × 54 bits @ 300MHz = 12.96 GB/s"
