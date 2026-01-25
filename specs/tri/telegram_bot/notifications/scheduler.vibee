@@ -1,0 +1,514 @@
+name: scheduler
+version: "1.0.0"
+language: zig
+module: scheduler
+
+description: |
+  Task scheduler for VIBEE Telegram bot.
+  Cron-like scheduling, one-time tasks, recurring jobs.
+  Supports distributed execution and failure handling.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Scheduler:
+    description: "Scheduler instance"
+    fields:
+      config: SchedulerConfig
+      is_running: Bool
+      active_jobs: Int
+      pending_tasks: Int
+
+  SchedulerConfig:
+    description: "Scheduler configuration"
+    fields:
+      tick_interval_ms: Int
+      max_concurrent_jobs: Int
+      default_timeout_ms: Int
+      retry_attempts: Int
+      retry_delay_ms: Int
+      enable_persistence: Bool
+
+  ScheduledTask:
+    description: "Scheduled task"
+    fields:
+      task_id: String
+      name: String
+      description: String
+      type: TaskType
+      handler: String
+      payload: Object
+      schedule: Schedule
+      status: TaskStatus
+      priority: TaskPriority
+      timeout_ms: Int
+      retry_config: RetryConfig
+      last_run: Option<TaskRun>
+      next_run: Option<Timestamp>
+      created_at: Timestamp
+      updated_at: Timestamp
+      metadata: Object
+
+  TaskType:
+    description: "Task type"
+    values:
+      - one_time
+      - recurring
+      - cron
+      - interval
+
+  TaskStatus:
+    description: "Task status"
+    values:
+      - active
+      - paused
+      - completed
+      - failed
+      - cancelled
+
+  TaskPriority:
+    description: "Task priority"
+    values:
+      - low
+      - normal
+      - high
+      - critical
+
+  Schedule:
+    description: "Task schedule"
+    fields:
+      type: ScheduleType
+      run_at: Option<Timestamp>
+      cron_expression: Option<String>
+      interval_ms: Option<Int>
+      timezone: String
+      max_runs: Option<Int>
+      end_at: Option<Timestamp>
+
+  ScheduleType:
+    description: "Schedule type"
+    values:
+      - once
+      - cron
+      - interval
+      - daily
+      - weekly
+      - monthly
+
+  RetryConfig:
+    description: "Retry configuration"
+    fields:
+      max_attempts: Int
+      delay_ms: Int
+      backoff_multiplier: Float
+      max_delay_ms: Int
+
+  TaskRun:
+    description: "Task execution record"
+    fields:
+      run_id: String
+      task_id: String
+      status: RunStatus
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+      duration_ms: Int
+      attempt: Int
+      result: Option<Object>
+      error: Option<TaskError>
+
+  RunStatus:
+    description: "Run status"
+    values:
+      - running
+      - completed
+      - failed
+      - timeout
+      - cancelled
+
+  TaskError:
+    description: "Task error"
+    fields:
+      code: String
+      message: String
+      stack: Option<String>
+      is_retryable: Bool
+
+  TaskFilter:
+    description: "Task filter"
+    fields:
+      type: Option<TaskType>
+      status: Option<TaskStatus>
+      handler: Option<String>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      next_run_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  TaskStats:
+    description: "Task statistics"
+    fields:
+      total_tasks: Int
+      active_tasks: Int
+      completed_tasks: Int
+      failed_tasks: Int
+      total_runs: Int
+      successful_runs: Int
+      failed_runs: Int
+      avg_duration_ms: Int
+      by_handler: Object
+      by_status: Object
+
+  CronExpression:
+    description: "Parsed cron expression"
+    fields:
+      minute: String
+      hour: String
+      day_of_month: String
+      month: String
+      day_of_week: String
+      is_valid: Bool
+
+  TaskQueue:
+    description: "Task queue"
+    fields:
+      queue_id: String
+      name: String
+      max_concurrent: Int
+      active_count: Int
+      pending_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREDEFINED TASKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SystemTask:
+    description: "System task types"
+    values:
+      - cleanup_expired_sessions
+      - cleanup_old_notifications
+      - cleanup_old_generations
+      - process_pending_payments
+      - send_subscription_reminders
+      - send_balance_alerts
+      - update_exchange_rates
+      - backup_database
+      - generate_daily_report
+      - sync_model_registry
+      - health_check
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCHEDULER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_scheduler
+    given: SchedulerConfig
+    when: Initializing scheduler
+    then: Return Scheduler
+
+  - name: start
+    given: No parameters
+    when: Starting scheduler
+    then: Begin processing
+
+  - name: stop
+    given: No parameters
+    when: Stopping scheduler
+    then: Stop processing
+
+  - name: pause
+    given: No parameters
+    when: Pausing scheduler
+    then: Pause all tasks
+
+  - name: resume
+    given: No parameters
+    when: Resuming scheduler
+    then: Resume all tasks
+
+  - name: get_status
+    given: No parameters
+    when: Getting status
+    then: Return scheduler status
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_task
+    given: ScheduledTask
+    when: Creating task
+    then: Return task
+
+  - name: get_task
+    given: Task ID
+    when: Getting task
+    then: Return task or null
+
+  - name: update_task
+    given: Task ID and updates
+    when: Updating task
+    then: Return updated task
+
+  - name: delete_task
+    given: Task ID
+    when: Deleting task
+    then: Remove task
+
+  - name: list_tasks
+    given: TaskFilter
+    when: Listing tasks
+    then: Return filtered list
+
+  - name: count_tasks
+    given: TaskFilter
+    when: Counting tasks
+    then: Return count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK SCHEDULING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: schedule_once
+    given: Handler, payload, run_at
+    when: Scheduling one-time
+    then: Return task
+
+  - name: schedule_cron
+    given: Handler, payload, cron expression
+    when: Scheduling cron
+    then: Return task
+
+  - name: schedule_interval
+    given: Handler, payload, interval_ms
+    when: Scheduling interval
+    then: Return task
+
+  - name: schedule_daily
+    given: Handler, payload, hour, minute
+    when: Scheduling daily
+    then: Return task
+
+  - name: schedule_weekly
+    given: Handler, payload, day, hour
+    when: Scheduling weekly
+    then: Return task
+
+  - name: reschedule
+    given: Task ID and new schedule
+    when: Rescheduling task
+    then: Update schedule
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: pause_task
+    given: Task ID
+    when: Pausing task
+    then: Set status to paused
+
+  - name: resume_task
+    given: Task ID
+    when: Resuming task
+    then: Set status to active
+
+  - name: cancel_task
+    given: Task ID
+    when: Cancelling task
+    then: Set status to cancelled
+
+  - name: run_now
+    given: Task ID
+    when: Running immediately
+    then: Execute task now
+
+  - name: skip_next
+    given: Task ID
+    when: Skipping next run
+    then: Skip to following run
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute_task
+    given: Task ID
+    when: Executing task
+    then: Run and record result
+
+  - name: get_pending_tasks
+    given: Limit
+    when: Getting pending
+    then: Return due tasks
+
+  - name: process_pending
+    given: No parameters
+    when: Processing pending
+    then: Execute due tasks
+
+  - name: retry_task
+    given: Task ID
+    when: Retrying failed
+    then: Requeue task
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK RUNS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_run
+    given: Run ID
+    when: Getting run
+    then: Return TaskRun
+
+  - name: get_task_runs
+    given: Task ID and limit
+    when: Getting runs
+    then: Return run history
+
+  - name: get_last_run
+    given: Task ID
+    when: Getting last run
+    then: Return last TaskRun
+
+  - name: get_failed_runs
+    given: Limit
+    when: Getting failed
+    then: Return failed runs
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRON
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: parse_cron
+    given: Cron expression
+    when: Parsing cron
+    then: Return CronExpression
+
+  - name: validate_cron
+    given: Cron expression
+    when: Validating cron
+    then: Return true if valid
+
+  - name: get_next_cron_time
+    given: Cron expression and from time
+    when: Getting next time
+    then: Return next run time
+
+  - name: get_cron_schedule
+    given: Cron expression and count
+    when: Getting schedule
+    then: Return next N run times
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUEUES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_queue
+    given: Queue name and config
+    when: Creating queue
+    then: Return TaskQueue
+
+  - name: get_queue
+    given: Queue ID
+    when: Getting queue
+    then: Return TaskQueue
+
+  - name: list_queues
+    given: No parameters
+    when: Listing queues
+    then: Return queues
+
+  - name: assign_to_queue
+    given: Task ID and queue ID
+    when: Assigning to queue
+    then: Update task queue
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Date range
+    when: Getting stats
+    then: Return TaskStats
+
+  - name: get_task_stats
+    given: Task ID
+    when: Getting task stats
+    then: Return task statistics
+
+  - name: get_handler_stats
+    given: Handler name
+    when: Getting handler stats
+    then: Return handler statistics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SYSTEM TASKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_system_tasks
+    given: No parameters
+    when: Registering system tasks
+    then: Create default tasks
+
+  - name: run_system_task
+    given: SystemTask
+    when: Running system task
+    then: Execute task
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_old_runs
+    given: Days old
+    when: Cleaning up
+    then: Delete old runs
+
+  - name: cleanup_completed_tasks
+    given: Days old
+    when: Cleaning completed
+    then: Delete old completed
+
+  - name: recover_stuck_tasks
+    given: Timeout threshold
+    when: Recovering stuck
+    then: Reset stuck tasks
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TICK_INTERVAL_MS: 1000
+  DEFAULT_MAX_CONCURRENT: 10
+  DEFAULT_TIMEOUT_MS: 60000
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 5000
+  DEFAULT_BACKOFF_MULTIPLIER: 2.0
+  MAX_RETRY_DELAY_MS: 3600000
+
+  CRON_EVERY_MINUTE: "* * * * *"
+  CRON_EVERY_HOUR: "0 * * * *"
+  CRON_EVERY_DAY: "0 0 * * *"
+  CRON_EVERY_WEEK: "0 0 * * 0"
+  CRON_EVERY_MONTH: "0 0 1 * *"
+
+  HANDLER_CLEANUP_SESSIONS: "cleanup_sessions"
+  HANDLER_CLEANUP_NOTIFICATIONS: "cleanup_notifications"
+  HANDLER_SUBSCRIPTION_REMINDERS: "subscription_reminders"
+  HANDLER_BALANCE_ALERTS: "balance_alerts"
+  HANDLER_DAILY_REPORT: "daily_report"
+  HANDLER_HEALTH_CHECK: "health_check"
+
+  CLEANUP_RUNS_AFTER_DAYS: 30
+  CLEANUP_TASKS_AFTER_DAYS: 90
+  STUCK_TASK_TIMEOUT_MS: 300000

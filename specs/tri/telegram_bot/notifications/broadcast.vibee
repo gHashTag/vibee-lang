@@ -1,0 +1,497 @@
+name: broadcast
+version: "1.0.0"
+language: zig
+module: broadcast
+
+description: |
+  Broadcast service for VIBEE Telegram bot.
+  Mass messaging, audience targeting, campaign management.
+  Supports A/B testing and analytics.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  BroadcastService:
+    description: "Broadcast service instance"
+    fields:
+      config: BroadcastConfig
+      is_running: Bool
+      active_campaigns: Int
+
+  BroadcastConfig:
+    description: "Service configuration"
+    fields:
+      bot_token: String
+      rate_limit_per_second: Int
+      max_concurrent_campaigns: Int
+      default_batch_size: Int
+      enable_analytics: Bool
+
+  Campaign:
+    description: "Broadcast campaign"
+    fields:
+      campaign_id: String
+      name: String
+      description: String
+      type: CampaignType
+      status: CampaignStatus
+      audience: Audience
+      content: CampaignContent
+      schedule: CampaignSchedule
+      settings: CampaignSettings
+      stats: CampaignStats
+      created_by: String
+      created_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+      metadata: Object
+
+  CampaignType:
+    description: "Campaign type"
+    values:
+      - announcement
+      - promotion
+      - feature_update
+      - maintenance
+      - survey
+      - reminder
+      - reengagement
+      - custom
+
+  CampaignStatus:
+    description: "Campaign status"
+    values:
+      - draft
+      - scheduled
+      - running
+      - paused
+      - completed
+      - cancelled
+      - failed
+
+  Audience:
+    description: "Target audience"
+    fields:
+      type: AudienceType
+      filters: List<AudienceFilter>
+      exclude_filters: List<AudienceFilter>
+      sample_size: Option<Int>
+      sample_percent: Option<Int>
+      estimated_size: Int
+
+  AudienceType:
+    description: "Audience type"
+    values:
+      - all_users
+      - active_users
+      - inactive_users
+      - premium_users
+      - free_users
+      - new_users
+      - custom
+
+  AudienceFilter:
+    description: "Audience filter"
+    fields:
+      field: String
+      operator: FilterOperator
+      value: String
+
+  FilterOperator:
+    description: "Filter operator"
+    values:
+      - equals
+      - not_equals
+      - greater_than
+      - less_than
+      - contains
+      - not_contains
+      - in_list
+      - not_in_list
+      - is_null
+      - is_not_null
+
+  CampaignContent:
+    description: "Campaign content"
+    fields:
+      message: String
+      parse_mode: ParseMode
+      photo_url: Option<String>
+      video_url: Option<String>
+      document_url: Option<String>
+      buttons: Option<List<Button>>
+      preview_disabled: Bool
+      variants: Option<List<ContentVariant>>
+
+  ParseMode:
+    description: "Message parse mode"
+    values:
+      - plain
+      - markdown
+      - markdown_v2
+      - html
+
+  Button:
+    description: "Inline button"
+    fields:
+      text: String
+      url: Option<String>
+      callback_data: Option<String>
+
+  ContentVariant:
+    description: "A/B test variant"
+    fields:
+      variant_id: String
+      name: String
+      message: String
+      weight: Int
+
+  CampaignSchedule:
+    description: "Campaign schedule"
+    fields:
+      type: ScheduleType
+      start_at: Option<Timestamp>
+      end_at: Option<Timestamp>
+      timezone: String
+      respect_quiet_hours: Bool
+
+  ScheduleType:
+    description: "Schedule type"
+    values:
+      - immediate
+      - scheduled
+      - recurring
+
+  CampaignSettings:
+    description: "Campaign settings"
+    fields:
+      batch_size: Int
+      delay_between_batches_ms: Int
+      max_retries: Int
+      stop_on_error_rate: Float
+      track_clicks: Bool
+      track_delivery: Bool
+
+  CampaignStats:
+    description: "Campaign statistics"
+    fields:
+      total_recipients: Int
+      sent_count: Int
+      delivered_count: Int
+      failed_count: Int
+      blocked_count: Int
+      clicked_count: Int
+      delivery_rate: Float
+      click_rate: Float
+      error_rate: Float
+      avg_send_time_ms: Int
+      by_variant: Option<Object>
+
+  BroadcastMessage:
+    description: "Individual broadcast message"
+    fields:
+      message_id: String
+      campaign_id: String
+      telegram_id: Int
+      variant_id: Option<String>
+      status: MessageStatus
+      sent_at: Option<Timestamp>
+      delivered_at: Option<Timestamp>
+      clicked_at: Option<Timestamp>
+      error: Option<String>
+
+  MessageStatus:
+    description: "Message status"
+    values:
+      - pending
+      - sent
+      - delivered
+      - clicked
+      - failed
+      - blocked
+
+  CampaignFilter:
+    description: "Campaign filter"
+    fields:
+      type: Option<CampaignType>
+      status: Option<CampaignStatus>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      created_by: Option<String>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  AudiencePreview:
+    description: "Audience preview"
+    fields:
+      total_count: Int
+      sample_users: List<Object>
+      by_language: Object
+      by_subscription: Object
+
+  SendProgress:
+    description: "Send progress"
+    fields:
+      campaign_id: String
+      total: Int
+      sent: Int
+      failed: Int
+      remaining: Int
+      percent_complete: Float
+      estimated_time_remaining_ms: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: BroadcastConfig
+    when: Initializing service
+    then: Return BroadcastService
+
+  - name: start_service
+    given: No parameters
+    when: Starting service
+    then: Begin processing
+
+  - name: stop_service
+    given: No parameters
+    when: Stopping service
+    then: Stop processing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_campaign
+    given: Campaign data
+    when: Creating campaign
+    then: Return Campaign
+
+  - name: get_campaign
+    given: Campaign ID
+    when: Getting campaign
+    then: Return Campaign or null
+
+  - name: update_campaign
+    given: Campaign ID and updates
+    when: Updating campaign
+    then: Return updated Campaign
+
+  - name: delete_campaign
+    given: Campaign ID
+    when: Deleting draft
+    then: Remove campaign
+
+  - name: duplicate_campaign
+    given: Campaign ID
+    when: Duplicating campaign
+    then: Return new Campaign
+
+  - name: list_campaigns
+    given: CampaignFilter
+    when: Listing campaigns
+    then: Return filtered list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGN EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_campaign
+    given: Campaign ID
+    when: Starting campaign
+    then: Begin sending
+
+  - name: pause_campaign
+    given: Campaign ID
+    when: Pausing campaign
+    then: Pause sending
+
+  - name: resume_campaign
+    given: Campaign ID
+    when: Resuming campaign
+    then: Continue sending
+
+  - name: cancel_campaign
+    given: Campaign ID
+    when: Cancelling campaign
+    then: Stop and mark cancelled
+
+  - name: schedule_campaign
+    given: Campaign ID and time
+    when: Scheduling campaign
+    then: Set scheduled start
+
+  - name: get_progress
+    given: Campaign ID
+    when: Getting progress
+    then: Return SendProgress
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIENCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: build_audience
+    given: Audience definition
+    when: Building audience
+    then: Return user IDs
+
+  - name: preview_audience
+    given: Audience definition
+    when: Previewing audience
+    then: Return AudiencePreview
+
+  - name: estimate_audience_size
+    given: Audience definition
+    when: Estimating size
+    then: Return count
+
+  - name: add_filter
+    given: Campaign ID and filter
+    when: Adding filter
+    then: Update audience
+
+  - name: remove_filter
+    given: Campaign ID and filter index
+    when: Removing filter
+    then: Update audience
+
+  - name: exclude_users
+    given: Campaign ID and user IDs
+    when: Excluding users
+    then: Add to exclusion list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_content
+    given: Campaign ID and content
+    when: Setting content
+    then: Update content
+
+  - name: preview_content
+    given: Campaign ID and telegram ID
+    when: Previewing content
+    then: Return rendered message
+
+  - name: send_test
+    given: Campaign ID and telegram IDs
+    when: Sending test
+    then: Send to test users
+
+  - name: add_variant
+    given: Campaign ID and variant
+    when: Adding A/B variant
+    then: Add variant
+
+  - name: remove_variant
+    given: Campaign ID and variant ID
+    when: Removing variant
+    then: Remove variant
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_campaign_stats
+    given: Campaign ID
+    when: Getting stats
+    then: Return CampaignStats
+
+  - name: get_variant_stats
+    given: Campaign ID
+    when: Getting variant stats
+    then: Return stats by variant
+
+  - name: get_message_status
+    given: Campaign ID and telegram ID
+    when: Getting message status
+    then: Return BroadcastMessage
+
+  - name: get_failed_messages
+    given: Campaign ID
+    when: Getting failed
+    then: Return failed messages
+
+  - name: get_blocked_users
+    given: Campaign ID
+    when: Getting blocked
+    then: Return blocked user IDs
+
+  - name: export_stats
+    given: Campaign ID and format
+    when: Exporting stats
+    then: Return export file
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLICK TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: track_click
+    given: Campaign ID, telegram ID, button
+    when: Tracking click
+    then: Record click
+
+  - name: get_click_stats
+    given: Campaign ID
+    when: Getting clicks
+    then: Return click stats
+
+  - name: get_clicks_by_button
+    given: Campaign ID
+    when: Getting by button
+    then: Return clicks per button
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RETRY AND CLEANUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: retry_failed
+    given: Campaign ID
+    when: Retrying failed
+    then: Requeue failed messages
+
+  - name: cleanup_old_campaigns
+    given: Days old
+    when: Cleaning up
+    then: Archive old campaigns
+
+  - name: get_blocked_users_all
+    given: No parameters
+    when: Getting all blocked
+    then: Return all blocked users
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_RATE_LIMIT: 25
+  DEFAULT_BATCH_SIZE: 100
+  DEFAULT_DELAY_MS: 50
+  MAX_CONCURRENT_CAMPAIGNS: 5
+
+  MAX_MESSAGE_LENGTH: 4096
+  MAX_BUTTONS_PER_ROW: 8
+  MAX_BUTTON_ROWS: 10
+
+  STOP_ERROR_RATE_THRESHOLD: 0.1
+  MAX_RETRIES: 3
+
+  AUDIENCE_ACTIVE_DAYS: 30
+  AUDIENCE_INACTIVE_DAYS: 90
+  AUDIENCE_NEW_DAYS: 7
+
+  CLEANUP_AFTER_DAYS: 90
+  STATS_RETENTION_DAYS: 365
+
+  VARIANT_MIN_SAMPLE: 100
+  VARIANT_CONFIDENCE_LEVEL: 0.95

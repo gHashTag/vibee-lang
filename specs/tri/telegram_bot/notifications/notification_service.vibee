@@ -1,0 +1,496 @@
+name: notification_service
+version: "1.0.0"
+language: zig
+module: notification_service
+
+description: |
+  Notification service for VIBEE Telegram bot.
+  Sends alerts, reminders, status updates to users.
+  Supports multiple channels and delivery tracking.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  NotificationService:
+    description: "Notification service instance"
+    fields:
+      config: ServiceConfig
+      is_running: Bool
+      queue_size: Int
+
+  ServiceConfig:
+    description: "Service configuration"
+    fields:
+      bot_token: String
+      rate_limit_per_second: Int
+      retry_attempts: Int
+      retry_delay_ms: Int
+      batch_size: Int
+      enable_tracking: Bool
+
+  Notification:
+    description: "Notification entity"
+    fields:
+      notification_id: String
+      telegram_id: Int
+      chat_id: Int
+      type: NotificationType
+      channel: NotificationChannel
+      priority: Priority
+      title: String
+      message: String
+      data: Object
+      status: NotificationStatus
+      scheduled_at: Option<Timestamp>
+      sent_at: Option<Timestamp>
+      delivered_at: Option<Timestamp>
+      read_at: Option<Timestamp>
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+      metadata: Object
+
+  NotificationType:
+    description: "Notification type"
+    values:
+      - generation_complete
+      - generation_failed
+      - payment_received
+      - payment_failed
+      - subscription_expiring
+      - subscription_expired
+      - subscription_renewed
+      - balance_low
+      - balance_credited
+      - referral_bonus
+      - welcome
+      - promo
+      - system_alert
+      - maintenance
+      - feature_update
+      - reminder
+      - custom
+
+  NotificationChannel:
+    description: "Delivery channel"
+    values:
+      - telegram_message
+      - telegram_notification
+      - telegram_alert
+      - email
+      - push
+      - webhook
+
+  Priority:
+    description: "Notification priority"
+    values:
+      - low
+      - normal
+      - high
+      - urgent
+      - critical
+
+  NotificationStatus:
+    description: "Notification status"
+    values:
+      - pending
+      - queued
+      - sending
+      - sent
+      - delivered
+      - read
+      - failed
+      - cancelled
+      - expired
+
+  SendRequest:
+    description: "Send notification request"
+    fields:
+      telegram_id: Int
+      type: NotificationType
+      title: String
+      message: String
+      priority: Priority
+      data: Option<Object>
+      schedule_at: Option<Timestamp>
+      expires_in: Option<Int>
+      template_id: Option<String>
+      template_params: Option<Object>
+
+  SendResult:
+    description: "Send result"
+    fields:
+      success: Bool
+      notification_id: Option<String>
+      message_id: Option<Int>
+      error: Option<NotificationError>
+
+  NotificationError:
+    description: "Notification error"
+    fields:
+      code: ErrorCode
+      message: String
+      is_retryable: Bool
+
+  ErrorCode:
+    description: "Error codes"
+    values:
+      - user_blocked_bot
+      - chat_not_found
+      - rate_limited
+      - message_too_long
+      - invalid_content
+      - network_error
+      - timeout
+      - unknown
+
+  DeliveryReport:
+    description: "Delivery report"
+    fields:
+      notification_id: String
+      status: NotificationStatus
+      attempts: Int
+      last_attempt: Option<Timestamp>
+      error: Option<String>
+      message_id: Option<Int>
+
+  NotificationFilter:
+    description: "Filter for queries"
+    fields:
+      telegram_id: Option<Int>
+      type: Option<NotificationType>
+      status: Option<NotificationStatus>
+      priority: Option<Priority>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  NotificationStats:
+    description: "Notification statistics"
+    fields:
+      total_sent: Int
+      total_delivered: Int
+      total_read: Int
+      total_failed: Int
+      delivery_rate: Float
+      read_rate: Float
+      avg_delivery_time_ms: Int
+      by_type: Object
+      by_status: Object
+
+  UserPreferences:
+    description: "User notification preferences"
+    fields:
+      telegram_id: Int
+      enabled: Bool
+      quiet_hours_start: Option<Int>
+      quiet_hours_end: Option<Int>
+      timezone: String
+      channels: List<NotificationChannel>
+      disabled_types: List<NotificationType>
+      language: String
+
+  QuietHours:
+    description: "Quiet hours config"
+    fields:
+      enabled: Bool
+      start_hour: Int
+      end_hour: Int
+      timezone: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: ServiceConfig
+    when: Initializing service
+    then: Return NotificationService
+
+  - name: start_service
+    given: No parameters
+    when: Starting service
+    then: Begin processing queue
+
+  - name: stop_service
+    given: No parameters
+    when: Stopping service
+    then: Stop processing
+
+  - name: get_service_status
+    given: No parameters
+    when: Checking status
+    then: Return service status
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SENDING NOTIFICATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send
+    given: SendRequest
+    when: Sending notification
+    then: Return SendResult
+
+  - name: send_immediate
+    given: SendRequest
+    when: Sending immediately
+    then: Bypass queue and send
+
+  - name: send_scheduled
+    given: SendRequest and schedule time
+    when: Scheduling notification
+    then: Queue for later
+
+  - name: send_to_many
+    given: List of telegram IDs and request
+    when: Sending to multiple users
+    then: Return list of results
+
+  - name: cancel_notification
+    given: Notification ID
+    when: Cancelling notification
+    then: Cancel if pending
+
+  - name: retry_notification
+    given: Notification ID
+    when: Retrying failed
+    then: Requeue notification
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TYPED NOTIFICATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: notify_generation_complete
+    given: Telegram ID, generation ID, result URL
+    when: Generation completed
+    then: Send completion notification
+
+  - name: notify_generation_failed
+    given: Telegram ID, generation ID, error
+    when: Generation failed
+    then: Send failure notification
+
+  - name: notify_payment_received
+    given: Telegram ID, amount, transaction ID
+    when: Payment received
+    then: Send payment notification
+
+  - name: notify_subscription_expiring
+    given: Telegram ID, days remaining
+    when: Subscription expiring
+    then: Send reminder
+
+  - name: notify_subscription_expired
+    given: Telegram ID
+    when: Subscription expired
+    then: Send expiry notification
+
+  - name: notify_balance_low
+    given: Telegram ID, balance
+    when: Balance below threshold
+    then: Send low balance alert
+
+  - name: notify_referral_bonus
+    given: Telegram ID, bonus amount, referred user
+    when: Referral bonus earned
+    then: Send bonus notification
+
+  - name: notify_welcome
+    given: Telegram ID
+    when: New user registered
+    then: Send welcome message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_notification
+    given: Notification ID
+    when: Getting notification
+    then: Return Notification or null
+
+  - name: get_user_notifications
+    given: Telegram ID and limit
+    when: Getting user notifications
+    then: Return list
+
+  - name: find_notifications
+    given: NotificationFilter
+    when: Searching notifications
+    then: Return filtered list
+
+  - name: count_notifications
+    given: NotificationFilter
+    when: Counting notifications
+    then: Return count
+
+  - name: get_pending_notifications
+    given: Limit
+    when: Getting pending
+    then: Return pending list
+
+  - name: get_failed_notifications
+    given: Limit
+    when: Getting failed
+    then: Return failed list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELIVERY TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: mark_sent
+    given: Notification ID and message ID
+    when: Marking as sent
+    then: Update status
+
+  - name: mark_delivered
+    given: Notification ID
+    when: Marking as delivered
+    then: Update status
+
+  - name: mark_read
+    given: Notification ID
+    when: Marking as read
+    then: Update status
+
+  - name: mark_failed
+    given: Notification ID and error
+    when: Marking as failed
+    then: Update status
+
+  - name: get_delivery_report
+    given: Notification ID
+    when: Getting report
+    then: Return DeliveryReport
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER PREFERENCES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_preferences
+    given: Telegram ID
+    when: Getting preferences
+    then: Return UserPreferences
+
+  - name: update_preferences
+    given: Telegram ID and preferences
+    when: Updating preferences
+    then: Save preferences
+
+  - name: disable_notifications
+    given: Telegram ID
+    when: Disabling all
+    then: Set enabled to false
+
+  - name: enable_notifications
+    given: Telegram ID
+    when: Enabling all
+    then: Set enabled to true
+
+  - name: disable_type
+    given: Telegram ID and type
+    when: Disabling type
+    then: Add to disabled list
+
+  - name: enable_type
+    given: Telegram ID and type
+    when: Enabling type
+    then: Remove from disabled
+
+  - name: set_quiet_hours
+    given: Telegram ID and QuietHours
+    when: Setting quiet hours
+    then: Update preferences
+
+  - name: is_notification_allowed
+    given: Telegram ID and type
+    when: Checking if allowed
+    then: Return true if allowed
+
+  - name: is_quiet_hours
+    given: Telegram ID
+    when: Checking quiet hours
+    then: Return true if in quiet hours
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Date range
+    when: Getting statistics
+    then: Return NotificationStats
+
+  - name: get_user_stats
+    given: Telegram ID
+    when: Getting user stats
+    then: Return user statistics
+
+  - name: get_delivery_rate
+    given: Date range
+    when: Getting delivery rate
+    then: Return percentage
+
+  - name: get_read_rate
+    given: Date range
+    when: Getting read rate
+    then: Return percentage
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_queue
+    given: Batch size
+    when: Processing queue
+    then: Send pending notifications
+
+  - name: retry_failed
+    given: Max age hours
+    when: Retrying failed
+    then: Requeue failed notifications
+
+  - name: expire_old
+    given: Days old
+    when: Expiring old
+    then: Mark as expired
+
+  - name: cleanup
+    given: Days old
+    when: Cleaning up
+    then: Delete old notifications
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_RATE_LIMIT: 30
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 5000
+  DEFAULT_BATCH_SIZE: 100
+  DEFAULT_EXPIRY_HOURS: 24
+
+  MAX_MESSAGE_LENGTH: 4096
+  MAX_CAPTION_LENGTH: 1024
+
+  PRIORITY_DELAY_LOW_MS: 5000
+  PRIORITY_DELAY_NORMAL_MS: 1000
+  PRIORITY_DELAY_HIGH_MS: 100
+  PRIORITY_DELAY_URGENT_MS: 0
+
+  QUIET_HOURS_DEFAULT_START: 22
+  QUIET_HOURS_DEFAULT_END: 8
+
+  CLEANUP_AFTER_DAYS: 30
+  RETRY_MAX_AGE_HOURS: 24
+
+  BALANCE_LOW_THRESHOLD: 10
+  SUBSCRIPTION_EXPIRY_DAYS: 3
