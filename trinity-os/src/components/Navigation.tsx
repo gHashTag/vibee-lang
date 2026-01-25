@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import { useI18n } from '../i18n/context'
 
 const sectionIds = ['hero', 'problem', 'solution', 'whynow', 'calculator', 'traction', 'market', 'gtm', 'competition', 'roadmap', 'team', 'ecosystem', 'invest']
 
-export default function Navigation() {
+export default memo(function Navigation() {
   const { t, switchLang } = useI18n()
   const [active, setActive] = useState('hero')
 
@@ -42,4 +42,4 @@ export default function Navigation() {
       </div>
     </nav>
   )
-}
+})

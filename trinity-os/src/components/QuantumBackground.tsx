@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, memo } from 'react'
 
 interface Particle {
   x: number;
@@ -8,7 +8,7 @@ interface Particle {
   radius: number;
 }
 
-export default function QuantumBackground() {
+export default memo(function QuantumBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -139,4 +139,4 @@ export default function QuantumBackground() {
       <canvas ref={canvasRef} className="quantum-canvas" />
     </div>
   )
-}
+})
