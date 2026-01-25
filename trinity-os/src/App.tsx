@@ -6,6 +6,7 @@ import {
 } from './components/sections'
 import Navigation from './components/Navigation'
 import QuantumBackground from './components/QuantumBackground'
+import Footer from './components/Footer'
 
 // Lazy load секции ниже fold
 const WhyNowSection = lazy(() => import('./components/sections/WhyNowSection'))
@@ -78,6 +79,8 @@ export default function App() {
         <EcosystemSection />
         <InvestSection />
       </Suspense>
+      
+      <Footer />
     </main>
   )
 }
