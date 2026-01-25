@@ -15,13 +15,13 @@ export default function ScientificFoundationSection() {
         <p>{sf.sub}</p>
       </div>
       
-      <div className="grid fade" style={{ marginTop: '3rem', marginBottom: '4rem' }}>
+      <div className="grid fade" style={{ marginTop: '3rem', marginBottom: '4rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(160px, 22vw, 250px), 1fr))' }}>
         {sf.items?.map((item: { icon: string; value: string; label: string; desc: string }, i: number) => (
-          <div key={i} className="premium-card" style={{ textAlign: 'center', borderColor: i === 1 ? 'var(--accent)' : 'var(--border)' }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>{item.icon}</div>
-            <div style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--text)', marginBottom: '0.2rem' }}>{item.value}</div>
-            <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--accent)', marginBottom: '0.5rem' }}>{item.label}</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--muted)', lineHeight: '1.4' }}>{item.desc}</div>
+          <div key={i} className="premium-card" style={{ textAlign: 'center', borderColor: i === 1 ? 'var(--accent)' : 'var(--border)', padding: '1.5rem 1rem' }}>
+            <div style={{ fontSize: 'clamp(2rem, 5vw, 2.5rem)', marginBottom: '0.5rem' }}>{item.icon}</div>
+            <div style={{ fontSize: 'clamp(1.5rem, 4vw, 2rem)', fontWeight: 700, color: 'var(--text)', marginBottom: '0.2rem' }}>{item.value}</div>
+            <div style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--accent)', marginBottom: '0.5rem' }}>{item.label}</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--muted)', lineHeight: '1.4' }}>{item.desc}</div>
           </div>
         ))}
       </div>

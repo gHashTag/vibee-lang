@@ -17,25 +17,27 @@ export default function FinancialsSection() {
       
       <GrowthChart />
 
-      <div className="fade" style={{ marginTop: '3rem', overflowX: 'auto', width: '100%' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-          <thead>
-            <tr>
-              {f.headers?.map((h: string, i: number) => (
-                <th key={i} style={{ padding: '0.8rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'left', fontWeight: '500' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {f.rows?.map((row: string[], i: number) => (
-              <tr key={i}>
-                {row.map((cell: string, j: number) => (
-                  <td key={j} style={{ padding: '0.8rem', borderBottom: '1px solid var(--border)', color: j === 0 ? 'var(--accent)' : 'var(--text)' }}>{cell}</td>
+      <div className="fade" style={{ marginTop: '3rem', width: '100%' }}>
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', border: '1px solid var(--border)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.7rem, 2vw, 0.85rem)', minWidth: '600px' }}>
+            <thead>
+              <tr>
+                {f.headers?.map((h: string, i: number) => (
+                  <th key={i} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'left', fontWeight: '500' }}>{h}</th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {f.rows?.map((row: string[], i: number) => (
+                <tr key={i}>
+                  {row.map((cell: string, j: number) => (
+                    <td key={j} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: j === 0 ? 'var(--accent)' : 'var(--text)' }}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <p style={{ marginTop: '1.5rem', fontSize: '0.75rem', color: 'var(--muted)', textAlign: 'center' }}>{f.note}</p>
       </div>
     </Section>

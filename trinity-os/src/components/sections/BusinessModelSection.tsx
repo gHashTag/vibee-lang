@@ -14,12 +14,12 @@ export default function BusinessModelSection() {
         <h2 dangerouslySetInnerHTML={{ __html: bm.title }} />
       </div>
       
-      <div className="grid-row fade" style={{ marginTop: '3rem' }}>
+      <div className="grid fade" style={{ marginTop: '3rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(180px, 20vw, 250px), 1fr))', gap: '1.5rem' }}>
         {bm.streams?.map((stream: { percent: string; title: string; desc: string }, i: number) => (
-          <div key={i} className="premium-card compact" style={{ textAlign: 'left', background: 'rgba(255,255,255,0.02)' }}>
+          <div key={i} className="premium-card compact" style={{ textAlign: 'left', border: 'none', borderLeft: '2px solid var(--border)', borderRadius: 0, background: 'transparent', padding: '1rem' }}>
             <div style={{ fontSize: '1.5rem', color: 'var(--accent)', marginBottom: '0.4rem', fontWeight: '600' }}>{stream.percent}</div>
             <h4 style={{ marginBottom: '0.6rem', fontSize: '1rem' }}>{stream.title}</h4>
-            <p style={{ color: 'var(--muted)', lineHeight: '1.4', fontSize: '0.75rem', margin: 0 }}>{stream.desc}</p>
+            <p style={{ color: 'var(--muted)', lineHeight: '1.4', fontSize: '0.8rem', margin: 0 }}>{stream.desc}</p>
           </div>
         ))}
       </div>

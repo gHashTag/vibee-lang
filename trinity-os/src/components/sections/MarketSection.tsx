@@ -18,41 +18,43 @@ export default function MarketSection() {
       
       <MarketFunnel items={m?.funnel || []} />
       
-      <div className="fade" style={{ marginTop: '4rem', width: '100%', maxWidth: '800px', overflowX: 'auto' }}>
-        <h3 style={{ fontSize: '1.2rem', marginBottom: '1.5rem', fontWeight: 500, textAlign: 'center' }}>{m.compsTitle}</h3>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-          <thead>
-            <tr>
-              {m.headers?.map((h: string, i: number) => (
-                <th key={i} style={{ 
-                  padding: '0.8rem', 
-                  borderBottom: '1px solid var(--border)', 
-                  color: 'var(--muted)', 
-                  textAlign: 'center', 
-                  fontWeight: '500',
-                  fontSize: '0.75rem',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.1em'
-                }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {m?.rows?.map((row: string[], i: number) => (
-              <tr key={i} style={{ background: row[0] === 'TRINITY' ? 'rgba(0, 229, 153, 0.05)' : 'transparent' }}>
-                {row?.map((cell: string, j: number) => (
-                  <td key={j} style={{ 
-                    padding: '0.8rem', 
+      <div className="fade" style={{ marginTop: '4rem', width: '100%', maxWidth: '800px' }}>
+        <h3 style={{ fontSize: 'clamp(1rem, 3vw, 1.2rem)', marginBottom: '1.5rem', fontWeight: 500, textAlign: 'center' }}>{m.compsTitle}</h3>
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', border: '1px solid var(--border)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'clamp(0.7rem, 2vw, 0.85rem)', minWidth: '600px' }}>
+            <thead>
+              <tr>
+                {m.headers?.map((h: string, i: number) => (
+                  <th key={i} style={{ 
+                    padding: '1rem', 
                     borderBottom: '1px solid var(--border)', 
-                    textAlign: 'center',
-                    color: row[0] === 'TRINITY' && j === 0 ? 'var(--accent)' : j === 0 ? 'var(--text)' : 'var(--muted)',
-                    fontWeight: j === 0 ? 500 : 400
-                  }}>{cell}</td>
+                    color: 'var(--muted)', 
+                    textAlign: 'center', 
+                    fontWeight: '500',
+                    fontSize: '0.7rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.1em'
+                  }}>{h}</th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {m?.rows?.map((row: string[], i: number) => (
+                <tr key={i} style={{ background: row[0] === 'TRINITY' ? 'rgba(0, 229, 153, 0.05)' : 'transparent' }}>
+                  {row?.map((cell: string, j: number) => (
+                    <td key={j} style={{ 
+                      padding: '1rem', 
+                      borderBottom: '1px solid var(--border)', 
+                      textAlign: 'center',
+                      color: row[0] === 'TRINITY' && j === 0 ? 'var(--accent)' : j === 0 ? 'var(--text)' : 'var(--muted)',
+                      fontWeight: j === 0 ? 500 : 400
+                    }}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </Section>
   )

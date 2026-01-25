@@ -8,7 +8,7 @@ interface FunnelItem {
 
 export default function MarketFunnel({ items }: { items: FunnelItem[] }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'stretch', justifyContent: 'center', gap: '1.5rem', width: '100%', maxWidth: '1000px', margin: '2rem auto', padding: '0 1rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', justifyContent: 'center', gap: '1.5rem', width: '100%', maxWidth: '1000px', margin: '2rem auto', padding: '0 1rem' }}>
       {items.map((item, i) => {
         return (
           <motion.div

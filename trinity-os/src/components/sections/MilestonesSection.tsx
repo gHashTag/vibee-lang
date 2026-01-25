@@ -15,13 +15,13 @@ export default function MilestonesSection() {
         <p>{m.sub}</p>
       </div>
       
-      <div className="grid-row fade" style={{ marginTop: '3rem' }}>
+      <div className="grid fade" style={{ marginTop: '3rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(200px, 25vw, 300px), 1fr))', gap: '1.5rem' }}>
         {m.quarters?.map((q: { q: string; title: string; items: string[] }, i: number) => (
-          <div key={i} className="premium-card compact" style={{ textAlign: 'left', background: 'rgba(255,255,255,0.02)' }}>
+          <div key={i} className="premium-card compact" style={{ textAlign: 'left', background: 'rgba(255,255,255,0.02)', padding: '1.5rem' }}>
             <div style={{ fontSize: '0.65rem', color: 'var(--accent)', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{q.q}</div>
             <h4 style={{ marginBottom: '0.8rem', fontSize: '1rem' }}>{q.title}</h4>
             {q.items?.map((item: string, j: number) => (
-              <div key={j} style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.3rem' }}>• {item}</div>
+              <div key={j} style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.4rem' }}>• {item}</div>
             ))}
           </div>
         ))}

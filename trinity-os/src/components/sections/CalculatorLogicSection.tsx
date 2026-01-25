@@ -17,10 +17,10 @@ export default function CalculatorLogicSection() {
       
       <div className="fade" style={{ marginTop: '3rem', display: 'flex', gap: '2rem', flexWrap: 'wrap', justifyContent: 'center' }}>
         {cl.comparison?.map((item: { icon: string; title: string; desc: string }, i: number) => (
-          <div key={i} className="premium-card" style={{ maxWidth: '400px', textAlign: 'center', borderColor: i === 1 ? 'var(--accent)' : 'var(--border)' }}>
-            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>{item.icon}</div>
-            <h3 style={{ marginBottom: '1rem', color: i === 1 ? 'var(--accent)' : 'var(--text)' }}>{item.title}</h3>
-            <p style={{ color: 'var(--muted)', fontSize: '0.95rem', lineHeight: '1.6' }}>{item.desc}</p>
+          <div key={i} className="premium-card" style={{ flex: '1 1 300px', maxWidth: '450px', textAlign: 'center', borderColor: i === 1 ? 'var(--accent)' : 'var(--border)', padding: 'clamp(1.5rem, 5vw, 2.5rem)' }}>
+            <div style={{ fontSize: 'clamp(2.5rem, 8vw, 3.5rem)', marginBottom: '1rem' }}>{item.icon}</div>
+            <h3 style={{ marginBottom: '1rem', color: i === 1 ? 'var(--accent)' : 'var(--text)', fontSize: 'clamp(1.2rem, 4vw, 1.5rem)' }}>{item.title}</h3>
+            <p style={{ color: 'var(--muted)', fontSize: 'clamp(0.85rem, 2.5vw, 0.95rem)', lineHeight: '1.6' }}>{item.desc}</p>
           </div>
         ))}
       </div>
