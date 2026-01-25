@@ -1,0 +1,235 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AWS F2 AUTODEPLOY v6.0 - АВТОМАТИЧЕСКИЙ ДЕПЛОЙ TRINITY НА FPGA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Цель: Полная автоматизация деплоя TRINITY V5.0 на AWS F2
+# Бюджет: $5-10 за полный тест
+# Время: 2-3 часа
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: aws_f2_autodeploy_v6
+version: "6.0.0"
+language: zig
+module: aws_f2_autodeploy_v6
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AWS F2 КОНФИГУРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+aws_config:
+  instance_type: "f2.6xlarge"
+  region: "us-east-1"
+  fpga_chip: "Xilinx Virtex UltraScale+ VU47P"
+  price_per_hour: 1.65
+  
+  resources:
+    luts: 2852000
+    flip_flops: 5704000
+    block_ram_mb: 94.5
+    ultra_ram_mb: 54
+    dsp_slices: 2880
+    hbm2_gb: 16
+    ddr4_gb: 64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEPLOY PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+deploy_pipeline:
+  step_1_launch:
+    script: "01_launch_f2.sh"
+    duration_min: 5
+    cost_usd: 0.14
+    actions:
+      - "Создать SSH ключ"
+      - "Создать Security Group"
+      - "Найти FPGA AMI"
+      - "Запустить f2.6xlarge"
+  
+  step_2_setup:
+    script: "02_setup_fpga.sh"
+    duration_min: 10
+    cost_usd: 0.28
+    actions:
+      - "Установить AWS FPGA SDK"
+      - "Клонировать TRINITY"
+      - "Проверить FPGA слот"
+      - "Скопировать Verilog"
+  
+  step_3_build:
+    script: "03_build_afi.sh"
+    duration_min: 90
+    cost_usd: 2.48
+    actions:
+      - "Создать S3 bucket"
+      - "Настроить HDK"
+      - "Синтез Verilog"
+      - "Place & Route"
+      - "Создать AFI"
+  
+  step_4_test:
+    script: "04_test_trinity.sh"
+    duration_min: 15
+    cost_usd: 0.41
+    actions:
+      - "Загрузить AFI"
+      - "Тест Golden Identity"
+      - "Тест PAS Daemons"
+      - "Тест Berry Phase"
+  
+  step_5_stop:
+    script: "05_stop_instance.sh"
+    duration_min: 1
+    cost_usd: 0.00
+    actions:
+      - "Остановить инстанс"
+      - "Очистить временные файлы"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  DeployStep:
+    description: "Шаг деплоя"
+    fields:
+      name: String
+      script: String
+      duration_min: Int
+      cost_usd: Float
+      status: String
+
+  AWSInstance:
+    description: "AWS EC2 инстанс"
+    fields:
+      instance_id: String
+      public_ip: String
+      status: String
+      instance_type: String
+
+  AFIBuild:
+    description: "Сборка AFI"
+    fields:
+      afi_id: String
+      agfi_id: String
+      state: String
+      build_time_min: Int
+
+  TestResult:
+    description: "Результат теста"
+    fields:
+      test_name: String
+      expected: Float
+      actual: Float
+      passed: Bool
+
+  DeployCost:
+    description: "Стоимость деплоя"
+    fields:
+      compute_usd: Float
+      storage_usd: Float
+      transfer_usd: Float
+      total_usd: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: launch_instance
+    given: "AWS credentials настроены"
+    when: "Запуск инстанса"
+    then: "Вернуть instance_id и public_ip"
+    test_cases:
+      - name: test_launch
+        input: { instance_type: "f2.6xlarge" }
+        expected: { status: "running" }
+
+  - name: setup_environment
+    given: "Инстанс запущен"
+    when: "Настройка окружения"
+    then: "SDK установлен, TRINITY склонирован"
+    test_cases:
+      - name: test_setup
+        input: { public_ip: "1.2.3.4" }
+        expected: { sdk_installed: true, trinity_cloned: true }
+
+  - name: build_afi
+    given: "Окружение настроено"
+    when: "Сборка AFI"
+    then: "AFI создан и доступен"
+    test_cases:
+      - name: test_build
+        input: { verilog: "trinity_v5_top.v" }
+        expected: { state: "available", build_time: 90 }
+
+  - name: run_golden_identity_test
+    given: "AFI загружен"
+    when: "Тест Golden Identity"
+    then: "φ² + 1/φ² = 3.0"
+    test_cases:
+      - name: test_golden
+        input: { fpga_slot: 0 }
+        expected: { result: 3.0, passed: true }
+
+  - name: run_pas_test
+    given: "AFI загружен"
+    when: "Тест PAS Daemons"
+    then: "Эффективность 578.8x"
+    test_cases:
+      - name: test_pas
+        input: { fpga_slot: 0 }
+        expected: { efficiency: 578.8, passed: true }
+
+  - name: stop_instance
+    given: "Тесты завершены"
+    when: "Остановка инстанса"
+    then: "Инстанс остановлен, тарификация прекращена"
+    test_cases:
+      - name: test_stop
+        input: { instance_id: "i-xxx" }
+        expected: { status: "stopped" }
+
+  - name: calculate_total_cost
+    given: "Все шаги выполнены"
+    when: "Расчёт стоимости"
+    then: "Вернуть общую стоимость"
+    test_cases:
+      - name: test_cost
+        input: { duration_min: 120 }
+        expected: { total_usd: 4.50 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COST BREAKDOWN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cost_breakdown:
+  compute:
+    f2_6xlarge_per_hour: 1.65
+    estimated_hours: 2.5
+    subtotal: 4.13
+  
+  storage:
+    s3_per_gb: 0.023
+    estimated_gb: 10
+    subtotal: 0.23
+  
+  transfer:
+    per_gb: 0.09
+    estimated_gb: 1
+    subtotal: 0.09
+  
+  total_estimated: 4.45
+  buffer_20_percent: 0.89
+  total_with_buffer: 5.34
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED FORMULAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_formulas:
+  golden_identity: "φ² + 1/φ² = 3"
+  pas_efficiency: "578.8x vs Binary"
+  berry_phase: "0.11423 mod 2π"
+  lucas_sync: "L(10) = 123"
+  cost_formula: "C = hours × $1.65 + storage + transfer"
