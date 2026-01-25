@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// generation_repository v1.0.0 - Generated from .vibee specification
+// generation_repository v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -16,6 +16,34 @@ const math = std.math;
 // ═══════════════════════════════════════════════════════════════════════════════
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TABLE_NAME: f64 = 0;
+
+pub const SAVED_PROMPTS_TABLE: f64 = 0;
+
+pub const STATUS_PENDING: f64 = 0;
+
+pub const STATUS_COMPLETED: f64 = 0;
+
+pub const STATUS_FAILED: f64 = 0;
+
+pub const STATUS_EXPIRED: f64 = 0;
+
+pub const SERVICE_NEURO_PHOTO: f64 = 0;
+
+pub const SERVICE_TEXT_TO_VIDEO: f64 = 0;
+
+pub const SERVICE_IMAGE_TO_VIDEO: f64 = 0;
+
+pub const SERVICE_VOICE_CLONE: f64 = 0;
+
+pub const SERVICE_TEXT_TO_SPEECH: f64 = 0;
+
+pub const SERVICE_LIP_SYNC: f64 = 0;
+
+pub const PENDING_EXPIRY_MINUTES: f64 = 30;
+
+pub const OLD_RECORDS_RETENTION_DAYS: f64 = 90;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -34,47 +62,82 @@ pub const PHOENIX: i64 = 999;
 
 /// Input for creating generation record
 pub const CreateGenerationInput = struct {
-    user_id: []const u8,
-    telegram_id: []const u8,
-    generation_type: []const u8,
+    telegram_id: i64,
     prompt: ?[]const u8,
-    model_url: ?[]const u8,
-    input_url: ?[]const u8,
+    model: []const u8,
+    service: []const u8,
     cost_stars: i64,
+    input_url: ?[]const u8,
+    metadata: ?[]const u8,
 };
 
-/// Generation record in database
-pub const GenerationRecord = struct {
-    id: []const u8,
-    user_id: []const u8,
-    telegram_id: []const u8,
-    generation_type: []const u8,
-    prompt: ?[]const u8,
-    model_url: ?[]const u8,
-    input_url: ?[]const u8,
-    output_urls: ?[]const u8,
-    status: []const u8,
-    cost_stars: i64,
-    created_at: i64,
-    completed_at: ?[]const u8,
+/// Input for updating generation
+pub const UpdateGenerationInput = struct {
+    status: ?[]const u8,
+    result_url: ?[]const u8,
+    @"error": ?[]const u8,
+    metadata: ?[]const u8,
 };
 
 /// Filter for querying generations
 pub const GenerationFilter = struct {
-    user_id: ?[]const u8,
     telegram_id: ?[]const u8,
-    generation_type: ?[]const u8,
+    service: ?[]const u8,
+    model: ?[]const u8,
     status: ?[]const u8,
+    cost_min: ?[]const u8,
+    cost_max: ?[]const u8,
     created_after: ?[]const u8,
     created_before: ?[]const u8,
+    limit: ?[]const u8,
+    offset: ?[]const u8,
+};
+
+/// Generation record from database
+pub const GenerationRecord = struct {
+    id: i64,
+    telegram_id: i64,
+    prompt: ?[]const u8,
+    model: []const u8,
+    service: []const u8,
+    result_url: ?[]const u8,
+    cost_stars: i64,
+    status: []const u8,
+    @"error": ?[]const u8,
+    input_url: ?[]const u8,
+    metadata: ?[]const u8,
+    created_at: i64,
 };
 
 /// Generation statistics
 pub const GenerationStats = struct {
     total_count: i64,
-    by_type: []const u8,
+    completed_count: i64,
+    failed_count: i64,
     total_cost: i64,
     success_rate: f64,
+    by_service: []const u8,
+    by_model: []const u8,
+};
+
+/// Service usage statistics
+pub const ServiceUsage = struct {
+    service: []const u8,
+    total_count: i64,
+    total_cost: i64,
+    unique_users: i64,
+    avg_cost: f64,
+};
+
+/// Saved prompt for reuse
+pub const SavedPrompt = struct {
+    id: i64,
+    telegram_id: i64,
+    prompt: []const u8,
+    service: []const u8,
+    use_count: i64,
+    created_at: i64,
+    last_used_at: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -154,79 +217,184 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_generation" {
-// Given: CreateGenerationInput
-// When: Creating generation record
-// Then: Returns GenerationRecord
+// Given: CreateGenerationInput with telegram_id, prompt, model, service
+// When: Creating new generation record
+// Then: Returns GenerationRecord with pending status
     // TODO: Add test assertions
 }
 
 test "get_generation_by_id" {
-// Given: Generation ID
-// When: Fetching generation
+// Given: Generation ID (Int)
+// When: Fetching generation by ID
 // Then: Returns GenerationRecord or null
     // TODO: Add test assertions
 }
 
 test "update_generation_status" {
-// Given: Generation ID and status
-// When: Updating status
+// Given: Generation ID and new status
+// When: Updating generation status
 // Then: Returns updated GenerationRecord
     // TODO: Add test assertions
 }
 
-test "set_generation_output" {
-// Given: Generation ID and output URLs
-// When: Setting output
+test "complete_generation" {
+// Given: Generation ID and result_url
+// When: Marking generation as completed
+// Then: Returns updated GenerationRecord
+    // TODO: Add test assertions
+}
+
+test "fail_generation" {
+// Given: Generation ID and error message
+// When: Marking generation as failed
 // Then: Returns updated GenerationRecord
     // TODO: Add test assertions
 }
 
 test "get_user_generations" {
-// Given: User ID and pagination
-// When: Fetching history
+// Given: Telegram ID and pagination
+// When: Fetching user generation history
+// Then: Returns list of GenerationRecord
+    // TODO: Add test assertions
+}
+
+test "get_user_generations_by_service" {
+// Given: Telegram ID, service, and pagination
+// When: Fetching user generations for specific service
 // Then: Returns list of GenerationRecord
     // TODO: Add test assertions
 }
 
 test "find_generations" {
-// Given: GenerationFilter
+// Given: GenerationFilter with optional criteria
 // When: Searching generations
 // Then: Returns list of GenerationRecord
     // TODO: Add test assertions
 }
 
+test "count_generations" {
+// Given: GenerationFilter
+// When: Counting matching generations
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
 test "get_generation_stats" {
-// Given: User ID and date range
-// When: Getting statistics
+// Given: Telegram ID and date range
+// When: Getting user generation statistics
 // Then: Returns GenerationStats
     // TODO: Add test assertions
 }
 
-test "increment_generated_images" {
-// Given: User ID
-// When: Incrementing count
-// Then: Returns new count
+test "get_stats_by_service" {
+// Given: Date range (optional)
+// When: Getting global stats per service
+// Then: Returns list of ServiceUsage
     // TODO: Add test assertions
 }
 
-test "get_generated_images_count" {
-// Given: User ID
-// When: Getting count
-// Then: Returns count
+test "get_stats_by_model" {
+// Given: Date range (optional)
+// When: Getting global stats per model
+// Then: Returns model usage breakdown
+    // TODO: Add test assertions
+}
+
+test "get_daily_generation_stats" {
+// Given: Days Int
+// When: Fetching daily generation breakdown
+// Then: Returns daily stats list
+    // TODO: Add test assertions
+}
+
+test "get_user_total_count" {
+// Given: Telegram ID
+// When: Getting total completed generations
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
+test "get_user_total_spent" {
+// Given: Telegram ID
+// When: Getting total stars spent on generations
+// Then: Returns total_spent Int
+    // TODO: Add test assertions
+}
+
+test "get_last_generation" {
+// Given: Telegram ID
+// When: Fetching most recent generation
+// Then: Returns GenerationRecord or null
+    // TODO: Add test assertions
+}
+
+test "get_last_successful_generation" {
+// Given: Telegram ID
+// When: Fetching most recent successful generation
+// Then: Returns GenerationRecord or null
+    // TODO: Add test assertions
+}
+
+test "search_prompts" {
+// Given: Telegram ID and search query
+// When: Searching user prompts
+// Then: Returns list of GenerationRecord
+    // TODO: Add test assertions
+}
+
+test "get_popular_prompts" {
+// Given: Limit Int
+// When: Fetching globally popular prompts
+// Then: Returns popular prompts list
     // TODO: Add test assertions
 }
 
 test "save_prompt" {
-// Given: User ID and prompt
-// When: Saving prompt
-// Then: Returns success status
+// Given: Telegram ID, prompt, service
+// When: Saving prompt to favorites
+// Then: Returns SavedPrompt
     // TODO: Add test assertions
 }
 
 test "get_saved_prompts" {
-// Given: User ID
-// When: Fetching prompts
-// Then: Returns list of prompts
+// Given: Telegram ID and limit
+// When: Fetching saved prompts
+// Then: Returns list of SavedPrompt
+    // TODO: Add test assertions
+}
+
+test "delete_saved_prompt" {
+// Given: Telegram ID and prompt ID
+// When: Deleting saved prompt
+// Then: Returns deleted prompt ID
+    // TODO: Add test assertions
+}
+
+test "get_pending_generations" {
+// Given: Minutes threshold and limit
+// When: Fetching stale pending generations
+// Then: Returns list of GenerationRecord
+    // TODO: Add test assertions
+}
+
+test "expire_pending_generations" {
+// Given: Minutes threshold
+// When: Expiring old pending generations
+// Then: Returns count of expired generations
+    // TODO: Add test assertions
+}
+
+test "get_top_users_by_generations" {
+// Given: Limit Int
+// When: Fetching leaderboard by generations
+// Then: Returns top users list
+    // TODO: Add test assertions
+}
+
+test "delete_old_generations" {
+// Given: Days threshold
+// When: Cleaning up old failed generations
+// Then: Returns count of deleted records
     // TODO: Add test assertions
 }
 

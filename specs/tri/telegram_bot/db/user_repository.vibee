@@ -1,28 +1,33 @@
 name: user_repository
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: user_repository
 
 description: |
   User repository for VIBEE Telegram bot.
-  Handles all user-related database operations.
+  Complete SQL queries for Supabase PostgreSQL.
+  Handles user CRUD, balance, levels, referrals.
 
 imports:
   - supabase_client
   - user
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 types:
   CreateUserInput:
     description: "Input for creating user"
     fields:
-      telegram_id: String
+      telegram_id: Int
       username: Option<String>
       first_name: Option<String>
       last_name: Option<String>
       language_code: String
       is_bot: Bool
       is_premium: Bool
-      inviter_id: Option<String>
+      referred_by: Option<Int>
 
   UpdateUserInput:
     description: "Input for updating user"
@@ -36,105 +41,546 @@ types:
   UserFilter:
     description: "Filter for querying users"
     fields:
-      telegram_id: Option<String>
+      telegram_id: Option<Int>
       username: Option<String>
       is_premium: Option<Bool>
+      is_banned: Option<Bool>
       level_min: Option<Int>
       level_max: Option<Int>
+      balance_min: Option<Int>
+      balance_max: Option<Int>
       created_after: Option<Timestamp>
       created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  UserRecord:
+    description: "User record from database"
+    fields:
+      id: String
+      telegram_id: Int
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+      language_code: String
+      balance: Int
+      level: Int
+      is_premium: Bool
+      is_banned: Bool
+      referral_code: Option<String>
+      referred_by: Option<Int>
+      created_at: Timestamp
+      updated_at: Timestamp
 
   UserStats:
     description: "User statistics"
     fields:
       total_generations: Int
       total_spent_stars: Int
-      total_spent_rubles: Float
+      total_payments: Int
       referral_count: Int
       days_active: Int
+      last_activity: Option<Timestamp>
+
+  UserBalance:
+    description: "User balance info"
+    fields:
+      telegram_id: Int
+      balance: Int
+      total_earned: Int
+      total_spent: Int
+
+  ReferralInfo:
+    description: "Referral information"
+    fields:
+      referral_code: String
+      referral_count: Int
+      total_bonus: Int
+      referrals: List<Object>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQL QUERIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sql:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CREATE USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  create_user: |
+    INSERT INTO users (
+      telegram_id,
+      username,
+      first_name,
+      last_name,
+      language_code,
+      is_premium,
+      referred_by,
+      referral_code,
+      balance,
+      level,
+      is_banned,
+      created_at,
+      updated_at
+    ) VALUES (
+      $1,  -- telegram_id
+      $2,  -- username
+      $3,  -- first_name
+      $4,  -- last_name
+      $5,  -- language_code
+      $6,  -- is_premium
+      $7,  -- referred_by
+      encode(gen_random_bytes(6), 'hex'),  -- referral_code
+      0,   -- balance
+      1,   -- level
+      false,  -- is_banned
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (telegram_id) DO UPDATE SET
+      username = EXCLUDED.username,
+      first_name = EXCLUDED.first_name,
+      last_name = EXCLUDED.last_name,
+      is_premium = EXCLUDED.is_premium,
+      updated_at = NOW()
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER BY TELEGRAM ID
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_by_telegram_id: |
+    SELECT *
+    FROM users
+    WHERE telegram_id = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER BY ID
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_by_id: |
+    SELECT *
+    FROM users
+    WHERE id = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_user: |
+    UPDATE users
+    SET
+      username = COALESCE($2, username),
+      first_name = COALESCE($3, first_name),
+      last_name = COALESCE($4, last_name),
+      language_code = COALESCE($5, language_code),
+      is_premium = COALESCE($6, is_premium),
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELETE USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  delete_user: |
+    DELETE FROM users
+    WHERE telegram_id = $1
+    RETURNING id;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER BALANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_balance: |
+    SELECT
+      telegram_id,
+      balance,
+      COALESCE(
+        (SELECT SUM(amount_stars) FROM payments_v2
+         WHERE payments_v2.telegram_id = users.telegram_id
+         AND status = 'completed'
+         AND payment_type = 'top_up'),
+        0
+      ) as total_earned,
+      COALESCE(
+        (SELECT SUM(cost_stars) FROM prompts_history
+         WHERE prompts_history.telegram_id = users.telegram_id
+         AND status = 'completed'),
+        0
+      ) as total_spent
+    FROM users
+    WHERE telegram_id = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE USER BALANCE (atomic)
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_user_balance: |
+    UPDATE users
+    SET
+      balance = balance + $2,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    AND balance + $2 >= 0  -- Prevent negative balance
+    RETURNING balance;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SET USER BALANCE (absolute)
+  # ─────────────────────────────────────────────────────────────────────────────
+  set_user_balance: |
+    UPDATE users
+    SET
+      balance = $2,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING balance;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER LEVEL
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_level: |
+    SELECT telegram_id, level
+    FROM users
+    WHERE telegram_id = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE USER LEVEL
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_user_level: |
+    UPDATE users
+    SET
+      level = $2,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING level;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INCREMENT USER LEVEL
+  # ─────────────────────────────────────────────────────────────────────────────
+  increment_user_level: |
+    UPDATE users
+    SET
+      level = level + 1,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING level;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER LANGUAGE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_language: |
+    SELECT language_code
+    FROM users
+    WHERE telegram_id = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE USER LANGUAGE
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_user_language: |
+    UPDATE users
+    SET
+      language_code = $2,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING language_code;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER STATS
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_stats: |
+    SELECT
+      u.telegram_id,
+      COALESCE(
+        (SELECT COUNT(*) FROM prompts_history
+         WHERE telegram_id = u.telegram_id),
+        0
+      ) as total_generations,
+      COALESCE(
+        (SELECT SUM(cost_stars) FROM prompts_history
+         WHERE telegram_id = u.telegram_id AND status = 'completed'),
+        0
+      ) as total_spent_stars,
+      COALESCE(
+        (SELECT COUNT(*) FROM payments_v2
+         WHERE telegram_id = u.telegram_id AND status = 'completed'),
+        0
+      ) as total_payments,
+      COALESCE(
+        (SELECT COUNT(*) FROM users
+         WHERE referred_by = u.telegram_id),
+        0
+      ) as referral_count,
+      EXTRACT(DAY FROM NOW() - u.created_at)::INT as days_active,
+      (SELECT MAX(created_at) FROM prompts_history
+       WHERE telegram_id = u.telegram_id) as last_activity
+    FROM users u
+    WHERE u.telegram_id = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET REFERRALS COUNT
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_referrals_count: |
+    SELECT COUNT(*) as count
+    FROM users
+    WHERE referred_by = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET REFERRAL INFO
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_referral_info: |
+    SELECT
+      u.referral_code,
+      (SELECT COUNT(*) FROM users WHERE referred_by = u.telegram_id) as referral_count,
+      COALESCE(
+        (SELECT SUM(amount_stars) FROM payments_v2
+         WHERE telegram_id = u.telegram_id
+         AND payment_type = 'referral_bonus'
+         AND status = 'completed'),
+        0
+      ) as total_bonus
+    FROM users u
+    WHERE u.telegram_id = $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER BY REFERRAL CODE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_by_referral_code: |
+    SELECT *
+    FROM users
+    WHERE referral_code = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FIND USERS (with filters)
+  # ─────────────────────────────────────────────────────────────────────────────
+  find_users: |
+    SELECT *
+    FROM users
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR username ILIKE '%' || $2 || '%')
+      AND ($3::BOOLEAN IS NULL OR is_premium = $3)
+      AND ($4::BOOLEAN IS NULL OR is_banned = $4)
+      AND ($5::INT IS NULL OR level >= $5)
+      AND ($6::INT IS NULL OR level <= $6)
+      AND ($7::INT IS NULL OR balance >= $7)
+      AND ($8::INT IS NULL OR balance <= $8)
+      AND ($9::TIMESTAMP IS NULL OR created_at >= $9)
+      AND ($10::TIMESTAMP IS NULL OR created_at <= $10)
+    ORDER BY created_at DESC
+    LIMIT COALESCE($11, 100)
+    OFFSET COALESCE($12, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COUNT USERS
+  # ─────────────────────────────────────────────────────────────────────────────
+  count_users: |
+    SELECT COUNT(*) as count
+    FROM users
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR username ILIKE '%' || $2 || '%')
+      AND ($3::BOOLEAN IS NULL OR is_premium = $3)
+      AND ($4::BOOLEAN IS NULL OR is_banned = $4);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BAN USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  ban_user: |
+    UPDATE users
+    SET
+      is_banned = true,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UNBAN USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  unban_user: |
+    UPDATE users
+    SET
+      is_banned = false,
+      updated_at = NOW()
+    WHERE telegram_id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEDUPLICATE USERS (keep oldest)
+  # ─────────────────────────────────────────────────────────────────────────────
+  deduplicate_users: |
+    DELETE FROM users
+    WHERE id NOT IN (
+      SELECT MIN(id)
+      FROM users
+      GROUP BY telegram_id
+    )
+    RETURNING id;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET TOP USERS BY BALANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_top_users_by_balance: |
+    SELECT *
+    FROM users
+    WHERE is_banned = false
+    ORDER BY balance DESC
+    LIMIT $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET TOP USERS BY LEVEL
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_top_users_by_level: |
+    SELECT *
+    FROM users
+    WHERE is_banned = false
+    ORDER BY level DESC, created_at ASC
+    LIMIT $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET ACTIVE USERS (last N days)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_active_users: |
+    SELECT DISTINCT u.*
+    FROM users u
+    INNER JOIN prompts_history ph ON u.telegram_id = ph.telegram_id
+    WHERE ph.created_at >= NOW() - INTERVAL '1 day' * $1
+    ORDER BY u.updated_at DESC;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
   - name: create_user
-    given: CreateUserInput
-    when: Creating new user
-    then: Returns User
+    given: CreateUserInput with telegram_id, username, language_code
+    when: Creating new user or updating existing
+    then: Returns UserRecord with generated referral_code
 
   - name: get_user_by_telegram_id
-    given: Telegram ID
-    when: Fetching user
-    then: Returns User or null
+    given: Telegram ID (Int)
+    when: Fetching user by telegram ID
+    then: Returns UserRecord or null
 
   - name: get_user_by_id
-    given: User ID
-    when: Fetching user
-    then: Returns User or null
+    given: User ID (UUID String)
+    when: Fetching user by internal ID
+    then: Returns UserRecord or null
 
   - name: update_user
-    given: User ID and UpdateUserInput
-    when: Updating user
-    then: Returns updated User
+    given: Telegram ID and UpdateUserInput
+    when: Updating user profile
+    then: Returns updated UserRecord
 
   - name: delete_user
-    given: User ID
+    given: Telegram ID
     when: Deleting user
-    then: Returns success status
+    then: Returns deleted user ID
 
   - name: get_user_balance
     given: Telegram ID
-    when: Fetching balance
-    then: Returns UserBalance
+    when: Fetching balance with totals
+    then: Returns UserBalance with earned/spent
 
   - name: update_user_balance
-    given: Telegram ID and amount
-    when: Updating balance
+    given: Telegram ID and delta (positive or negative)
+    when: Atomically updating balance
+    then: Returns new balance or error if insufficient
+
+  - name: set_user_balance
+    given: Telegram ID and absolute value
+    when: Setting balance directly
     then: Returns new balance
 
   - name: get_user_level
     given: Telegram ID
-    when: Fetching level
-    then: Returns UserLevel
+    when: Fetching user level
+    then: Returns level Int
 
   - name: update_user_level
-    given: Telegram ID and level
-    when: Updating level
-    then: Returns success status
+    given: Telegram ID and new level
+    when: Setting user level
+    then: Returns new level
 
   - name: increment_user_level
     given: Telegram ID
-    when: Incrementing level
+    when: Incrementing level by 1
     then: Returns new level
 
   - name: get_user_language
     given: Telegram ID
-    when: Fetching language
-    then: Returns language code
+    when: Fetching language preference
+    then: Returns language_code String
 
   - name: update_user_language
-    given: Telegram ID and language
-    when: Updating language
-    then: Returns success status
+    given: Telegram ID and language_code
+    when: Updating language preference
+    then: Returns new language_code
 
   - name: get_user_stats
-    given: User ID
-    when: Fetching statistics
+    given: Telegram ID
+    when: Fetching comprehensive statistics
     then: Returns UserStats
 
   - name: get_referrals_count
-    given: User ID
-    when: Counting referrals
-    then: Returns count
+    given: Telegram ID
+    when: Counting referred users
+    then: Returns count Int
+
+  - name: get_referral_info
+    given: Telegram ID
+    when: Fetching referral details
+    then: Returns ReferralInfo
+
+  - name: get_user_by_referral_code
+    given: Referral code String
+    when: Looking up referrer
+    then: Returns UserRecord or null
 
   - name: find_users
-    given: UserFilter
+    given: UserFilter with optional criteria
     when: Searching users
-    then: Returns list of User
+    then: Returns list of UserRecord
 
   - name: count_users
     given: UserFilter
-    when: Counting users
-    then: Returns count
+    when: Counting matching users
+    then: Returns count Int
+
+  - name: ban_user
+    given: Telegram ID
+    when: Banning user
+    then: Returns updated UserRecord
+
+  - name: unban_user
+    given: Telegram ID
+    when: Unbanning user
+    then: Returns updated UserRecord
 
   - name: deduplicate_users
     given: No parameters
-    when: Removing duplicates
-    then: Returns removed count
+    when: Removing duplicate telegram_id entries
+    then: Returns count of removed duplicates
+
+  - name: get_top_users_by_balance
+    given: Limit Int
+    when: Fetching leaderboard by balance
+    then: Returns list of UserRecord
+
+  - name: get_top_users_by_level
+    given: Limit Int
+    when: Fetching leaderboard by level
+    then: Returns list of UserRecord
+
+  - name: get_active_users
+    given: Days Int
+    when: Fetching users active in last N days
+    then: Returns list of UserRecord
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  TABLE_NAME: "users"
+  DEFAULT_BALANCE: 0
+  DEFAULT_LEVEL: 1
+  DEFAULT_LANGUAGE: "ru"
+  MAX_LEVEL: 100
+  REFERRAL_BONUS_STARS: 10

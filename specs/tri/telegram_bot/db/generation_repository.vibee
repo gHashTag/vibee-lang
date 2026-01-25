@@ -1,114 +1,600 @@
 name: generation_repository
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: generation_repository
 
 description: |
   Generation repository for VIBEE Telegram bot.
-  Handles AI generation history and statistics.
+  Complete SQL queries for Supabase PostgreSQL.
+  Handles AI generation history, prompts, statistics.
 
 imports:
   - supabase_client
   - user
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 types:
   CreateGenerationInput:
     description: "Input for creating generation record"
     fields:
-      user_id: String
-      telegram_id: String
-      generation_type: String
+      telegram_id: Int
       prompt: Option<String>
-      model_url: Option<String>
-      input_url: Option<String>
+      model: String
+      service: String
       cost_stars: Int
+      input_url: Option<String>
+      metadata: Option<Object>
 
-  GenerationRecord:
-    description: "Generation record in database"
+  UpdateGenerationInput:
+    description: "Input for updating generation"
     fields:
-      id: String
-      user_id: String
-      telegram_id: String
-      generation_type: String
-      prompt: Option<String>
-      model_url: Option<String>
-      input_url: Option<String>
-      output_urls: Option<List<String>>
-      status: String
-      cost_stars: Int
-      created_at: Timestamp
-      completed_at: Option<Timestamp>
+      status: Option<String>
+      result_url: Option<String>
+      error: Option<String>
+      metadata: Option<Object>
 
   GenerationFilter:
     description: "Filter for querying generations"
     fields:
-      user_id: Option<String>
-      telegram_id: Option<String>
-      generation_type: Option<String>
+      telegram_id: Option<Int>
+      service: Option<String>
+      model: Option<String>
       status: Option<String>
+      cost_min: Option<Int>
+      cost_max: Option<Int>
       created_after: Option<Timestamp>
       created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  GenerationRecord:
+    description: "Generation record from database"
+    fields:
+      id: Int
+      telegram_id: Int
+      prompt: Option<String>
+      model: String
+      service: String
+      result_url: Option<String>
+      cost_stars: Int
+      status: String
+      error: Option<String>
+      input_url: Option<String>
+      metadata: Option<Object>
+      created_at: Timestamp
 
   GenerationStats:
     description: "Generation statistics"
     fields:
       total_count: Int
-      by_type: Object
+      completed_count: Int
+      failed_count: Int
       total_cost: Int
       success_rate: Float
+      by_service: Object
+      by_model: Object
+
+  ServiceUsage:
+    description: "Service usage statistics"
+    fields:
+      service: String
+      total_count: Int
+      total_cost: Int
+      unique_users: Int
+      avg_cost: Float
+
+  SavedPrompt:
+    description: "Saved prompt for reuse"
+    fields:
+      id: Int
+      telegram_id: Int
+      prompt: String
+      service: String
+      use_count: Int
+      created_at: Timestamp
+      last_used_at: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQL QUERIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sql:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CREATE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  create_generation: |
+    INSERT INTO prompts_history (
+      telegram_id,
+      prompt,
+      model,
+      service,
+      cost_stars,
+      status,
+      created_at
+    ) VALUES (
+      $1,   -- telegram_id
+      $2,   -- prompt
+      $3,   -- model
+      $4,   -- service
+      $5,   -- cost_stars
+      'pending',
+      NOW()
+    )
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET GENERATION BY ID
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_generation_by_id: |
+    SELECT *
+    FROM prompts_history
+    WHERE id = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE GENERATION STATUS
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_generation_status: |
+    UPDATE prompts_history
+    SET status = $2
+    WHERE id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COMPLETE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  complete_generation: |
+    UPDATE prompts_history
+    SET
+      status = 'completed',
+      result_url = $2
+    WHERE id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FAIL GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  fail_generation: |
+    UPDATE prompts_history
+    SET
+      status = 'failed',
+      error = $2
+    WHERE id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER GENERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_generations: |
+    SELECT *
+    FROM prompts_history
+    WHERE telegram_id = $1
+    ORDER BY created_at DESC
+    LIMIT COALESCE($2, 50)
+    OFFSET COALESCE($3, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER GENERATIONS BY SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_generations_by_service: |
+    SELECT *
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND service = $2
+    ORDER BY created_at DESC
+    LIMIT COALESCE($3, 50)
+    OFFSET COALESCE($4, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FIND GENERATIONS (with filters)
+  # ─────────────────────────────────────────────────────────────────────────────
+  find_generations: |
+    SELECT *
+    FROM prompts_history
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR service = $2)
+      AND ($3::TEXT IS NULL OR model = $3)
+      AND ($4::TEXT IS NULL OR status = $4)
+      AND ($5::INT IS NULL OR cost_stars >= $5)
+      AND ($6::INT IS NULL OR cost_stars <= $6)
+      AND ($7::TIMESTAMP IS NULL OR created_at >= $7)
+      AND ($8::TIMESTAMP IS NULL OR created_at <= $8)
+    ORDER BY created_at DESC
+    LIMIT COALESCE($9, 100)
+    OFFSET COALESCE($10, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COUNT GENERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+  count_generations: |
+    SELECT COUNT(*) as count
+    FROM prompts_history
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR service = $2)
+      AND ($3::TEXT IS NULL OR status = $3);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET GENERATION STATS (for user)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_generation_stats: |
+    SELECT
+      COUNT(*) as total_count,
+      COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
+      COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+      COALESCE(SUM(cost_stars), 0) as total_cost,
+      CASE
+        WHEN COUNT(*) > 0
+        THEN ROUND(COUNT(*) FILTER (WHERE status = 'completed')::NUMERIC / COUNT(*) * 100, 2)
+        ELSE 0
+      END as success_rate
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND ($2::TIMESTAMP IS NULL OR created_at >= $2)
+    AND ($3::TIMESTAMP IS NULL OR created_at <= $3);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET STATS BY SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_stats_by_service: |
+    SELECT
+      service,
+      COUNT(*) as total_count,
+      COALESCE(SUM(cost_stars), 0) as total_cost,
+      COUNT(DISTINCT telegram_id) as unique_users,
+      ROUND(AVG(cost_stars)::NUMERIC, 2) as avg_cost
+    FROM prompts_history
+    WHERE status = 'completed'
+    AND ($1::TIMESTAMP IS NULL OR created_at >= $1)
+    AND ($2::TIMESTAMP IS NULL OR created_at <= $2)
+    GROUP BY service
+    ORDER BY total_count DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET STATS BY MODEL
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_stats_by_model: |
+    SELECT
+      model,
+      service,
+      COUNT(*) as total_count,
+      COALESCE(SUM(cost_stars), 0) as total_cost,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM prompts_history
+    WHERE status = 'completed'
+    AND ($1::TIMESTAMP IS NULL OR created_at >= $1)
+    AND ($2::TIMESTAMP IS NULL OR created_at <= $2)
+    GROUP BY model, service
+    ORDER BY total_count DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET DAILY GENERATION STATS
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_daily_generation_stats: |
+    SELECT
+      DATE(created_at) as date,
+      COUNT(*) as total_count,
+      COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
+      COALESCE(SUM(cost_stars), 0) as total_cost,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM prompts_history
+    WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+    GROUP BY DATE(created_at)
+    ORDER BY date DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER TOTAL GENERATIONS COUNT
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_total_count: |
+    SELECT COUNT(*) as count
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND status = 'completed';
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER TOTAL SPENT
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_total_spent: |
+    SELECT COALESCE(SUM(cost_stars), 0) as total_spent
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND status = 'completed';
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET LAST GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_last_generation: |
+    SELECT *
+    FROM prompts_history
+    WHERE telegram_id = $1
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET LAST SUCCESSFUL GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_last_successful_generation: |
+    SELECT *
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND status = 'completed'
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SEARCH PROMPTS
+  # ─────────────────────────────────────────────────────────────────────────────
+  search_prompts: |
+    SELECT *
+    FROM prompts_history
+    WHERE telegram_id = $1
+    AND prompt ILIKE '%' || $2 || '%'
+    AND status = 'completed'
+    ORDER BY created_at DESC
+    LIMIT COALESCE($3, 20);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET POPULAR PROMPTS (global)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_popular_prompts: |
+    SELECT
+      prompt,
+      service,
+      COUNT(*) as use_count,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM prompts_history
+    WHERE status = 'completed'
+    AND prompt IS NOT NULL
+    AND LENGTH(prompt) > 10
+    GROUP BY prompt, service
+    HAVING COUNT(*) >= 3
+    ORDER BY use_count DESC
+    LIMIT $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SAVE PROMPT (for favorites)
+  # ─────────────────────────────────────────────────────────────────────────────
+  save_prompt: |
+    INSERT INTO saved_prompts (
+      telegram_id,
+      prompt,
+      service,
+      use_count,
+      created_at,
+      last_used_at
+    ) VALUES (
+      $1,
+      $2,
+      $3,
+      1,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (telegram_id, prompt) DO UPDATE SET
+      use_count = saved_prompts.use_count + 1,
+      last_used_at = NOW()
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET SAVED PROMPTS
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_saved_prompts: |
+    SELECT *
+    FROM saved_prompts
+    WHERE telegram_id = $1
+    ORDER BY last_used_at DESC
+    LIMIT COALESCE($2, 20);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELETE SAVED PROMPT
+  # ─────────────────────────────────────────────────────────────────────────────
+  delete_saved_prompt: |
+    DELETE FROM saved_prompts
+    WHERE telegram_id = $1
+    AND id = $2
+    RETURNING id;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PENDING GENERATIONS (for cleanup)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_pending_generations: |
+    SELECT *
+    FROM prompts_history
+    WHERE status = 'pending'
+    AND created_at < NOW() - INTERVAL '1 minute' * $1
+    ORDER BY created_at ASC
+    LIMIT $2;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPIRE PENDING GENERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+  expire_pending_generations: |
+    UPDATE prompts_history
+    SET
+      status = 'expired',
+      error = 'Generation timed out'
+    WHERE status = 'pending'
+    AND created_at < NOW() - INTERVAL '1 minute' * $1
+    RETURNING id;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET TOP USERS BY GENERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_top_users_by_generations: |
+    SELECT
+      telegram_id,
+      COUNT(*) as total_generations,
+      COALESCE(SUM(cost_stars), 0) as total_spent
+    FROM prompts_history
+    WHERE status = 'completed'
+    GROUP BY telegram_id
+    ORDER BY total_generations DESC
+    LIMIT $1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELETE OLD GENERATIONS (cleanup)
+  # ─────────────────────────────────────────────────────────────────────────────
+  delete_old_generations: |
+    DELETE FROM prompts_history
+    WHERE created_at < NOW() - INTERVAL '1 day' * $1
+    AND status IN ('failed', 'expired')
+    RETURNING id;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
   - name: create_generation
-    given: CreateGenerationInput
-    when: Creating generation record
-    then: Returns GenerationRecord
+    given: CreateGenerationInput with telegram_id, prompt, model, service
+    when: Creating new generation record
+    then: Returns GenerationRecord with pending status
 
   - name: get_generation_by_id
-    given: Generation ID
-    when: Fetching generation
+    given: Generation ID (Int)
+    when: Fetching generation by ID
     then: Returns GenerationRecord or null
 
   - name: update_generation_status
-    given: Generation ID and status
-    when: Updating status
+    given: Generation ID and new status
+    when: Updating generation status
     then: Returns updated GenerationRecord
 
-  - name: set_generation_output
-    given: Generation ID and output URLs
-    when: Setting output
+  - name: complete_generation
+    given: Generation ID and result_url
+    when: Marking generation as completed
+    then: Returns updated GenerationRecord
+
+  - name: fail_generation
+    given: Generation ID and error message
+    when: Marking generation as failed
     then: Returns updated GenerationRecord
 
   - name: get_user_generations
-    given: User ID and pagination
-    when: Fetching history
+    given: Telegram ID and pagination
+    when: Fetching user generation history
+    then: Returns list of GenerationRecord
+
+  - name: get_user_generations_by_service
+    given: Telegram ID, service, and pagination
+    when: Fetching user generations for specific service
     then: Returns list of GenerationRecord
 
   - name: find_generations
-    given: GenerationFilter
+    given: GenerationFilter with optional criteria
     when: Searching generations
     then: Returns list of GenerationRecord
 
+  - name: count_generations
+    given: GenerationFilter
+    when: Counting matching generations
+    then: Returns count Int
+
   - name: get_generation_stats
-    given: User ID and date range
-    when: Getting statistics
+    given: Telegram ID and date range
+    when: Getting user generation statistics
     then: Returns GenerationStats
 
-  - name: increment_generated_images
-    given: User ID
-    when: Incrementing count
-    then: Returns new count
+  - name: get_stats_by_service
+    given: Date range (optional)
+    when: Getting global stats per service
+    then: Returns list of ServiceUsage
 
-  - name: get_generated_images_count
-    given: User ID
-    when: Getting count
-    then: Returns count
+  - name: get_stats_by_model
+    given: Date range (optional)
+    when: Getting global stats per model
+    then: Returns model usage breakdown
+
+  - name: get_daily_generation_stats
+    given: Days Int
+    when: Fetching daily generation breakdown
+    then: Returns daily stats list
+
+  - name: get_user_total_count
+    given: Telegram ID
+    when: Getting total completed generations
+    then: Returns count Int
+
+  - name: get_user_total_spent
+    given: Telegram ID
+    when: Getting total stars spent on generations
+    then: Returns total_spent Int
+
+  - name: get_last_generation
+    given: Telegram ID
+    when: Fetching most recent generation
+    then: Returns GenerationRecord or null
+
+  - name: get_last_successful_generation
+    given: Telegram ID
+    when: Fetching most recent successful generation
+    then: Returns GenerationRecord or null
+
+  - name: search_prompts
+    given: Telegram ID and search query
+    when: Searching user prompts
+    then: Returns list of GenerationRecord
+
+  - name: get_popular_prompts
+    given: Limit Int
+    when: Fetching globally popular prompts
+    then: Returns popular prompts list
 
   - name: save_prompt
-    given: User ID and prompt
-    when: Saving prompt
-    then: Returns success status
+    given: Telegram ID, prompt, service
+    when: Saving prompt to favorites
+    then: Returns SavedPrompt
 
   - name: get_saved_prompts
-    given: User ID
-    when: Fetching prompts
-    then: Returns list of prompts
+    given: Telegram ID and limit
+    when: Fetching saved prompts
+    then: Returns list of SavedPrompt
+
+  - name: delete_saved_prompt
+    given: Telegram ID and prompt ID
+    when: Deleting saved prompt
+    then: Returns deleted prompt ID
+
+  - name: get_pending_generations
+    given: Minutes threshold and limit
+    when: Fetching stale pending generations
+    then: Returns list of GenerationRecord
+
+  - name: expire_pending_generations
+    given: Minutes threshold
+    when: Expiring old pending generations
+    then: Returns count of expired generations
+
+  - name: get_top_users_by_generations
+    given: Limit Int
+    when: Fetching leaderboard by generations
+    then: Returns top users list
+
+  - name: delete_old_generations
+    given: Days threshold
+    when: Cleaning up old failed generations
+    then: Returns count of deleted records
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  TABLE_NAME: "prompts_history"
+  SAVED_PROMPTS_TABLE: "saved_prompts"
+  STATUS_PENDING: "pending"
+  STATUS_COMPLETED: "completed"
+  STATUS_FAILED: "failed"
+  STATUS_EXPIRED: "expired"
+  SERVICE_NEURO_PHOTO: "neuro_photo"
+  SERVICE_TEXT_TO_VIDEO: "text_to_video"
+  SERVICE_IMAGE_TO_VIDEO: "image_to_video"
+  SERVICE_VOICE_CLONE: "voice_clone"
+  SERVICE_TEXT_TO_SPEECH: "text_to_speech"
+  SERVICE_LIP_SYNC: "lip_sync"
+  PENDING_EXPIRY_MINUTES: 30
+  OLD_RECORDS_RETENTION_DAYS: 90

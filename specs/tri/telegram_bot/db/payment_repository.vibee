@@ -1,99 +1,603 @@
 name: payment_repository
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: payment_repository
 
 description: |
   Payment repository for VIBEE Telegram bot.
-  Handles all payment-related database operations.
+  Complete SQL queries for Supabase PostgreSQL.
+  Handles payments, transactions, revenue tracking.
 
 imports:
   - supabase_client
   - payment_handler
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 types:
   CreatePaymentInput:
     description: "Input for creating payment"
     fields:
-      user_id: String
-      telegram_id: String
-      amount: Int
+      telegram_id: Int
+      amount_stars: Int
+      amount_usd: Option<Float>
+      amount_rubles: Option<Float>
+      payment_method: String
       payment_type: String
       service: Option<String>
       description: String
       external_id: Option<String>
+      metadata: Option<Object>
+
+  UpdatePaymentInput:
+    description: "Input for updating payment"
+    fields:
+      status: Option<String>
+      external_id: Option<String>
+      metadata: Option<Object>
 
   PaymentFilter:
     description: "Filter for querying payments"
     fields:
-      user_id: Option<String>
-      telegram_id: Option<String>
+      telegram_id: Option<Int>
+      payment_method: Option<String>
       payment_type: Option<String>
       status: Option<String>
       service: Option<String>
+      amount_min: Option<Int>
+      amount_max: Option<Int>
       created_after: Option<Timestamp>
       created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  PaymentRecord:
+    description: "Payment record from database"
+    fields:
+      id: String
+      telegram_id: Int
+      amount_stars: Int
+      amount_usd: Option<Float>
+      amount_rubles: Option<Float>
+      payment_method: String
+      payment_type: String
+      service: Option<String>
+      description: String
+      status: String
+      external_id: Option<String>
+      metadata: Option<Object>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
 
   PaymentSummary:
     description: "Payment summary statistics"
     fields:
-      total_amount: Int
+      total_amount_stars: Int
+      total_amount_usd: Float
+      total_amount_rubles: Float
       total_count: Int
+      by_method: Object
       by_type: Object
       by_service: Object
 
+  DailyRevenue:
+    description: "Daily revenue record"
+    fields:
+      date: String
+      total_stars: Int
+      total_usd: Float
+      total_rubles: Float
+      payment_count: Int
+      unique_users: Int
+
+  RefundResult:
+    description: "Refund operation result"
+    fields:
+      payment_id: String
+      refund_amount: Int
+      new_balance: Int
+      success: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQL QUERIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sql:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CREATE PAYMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+  create_payment: |
+    INSERT INTO payments_v2 (
+      telegram_id,
+      amount_stars,
+      amount_usd,
+      amount_rubles,
+      payment_method,
+      payment_type,
+      service,
+      description,
+      status,
+      external_id,
+      metadata,
+      created_at
+    ) VALUES (
+      $1,   -- telegram_id
+      $2,   -- amount_stars
+      $3,   -- amount_usd
+      $4,   -- amount_rubles
+      $5,   -- payment_method
+      $6,   -- payment_type
+      $7,   -- service
+      $8,   -- description
+      'pending',
+      $9,   -- external_id
+      $10,  -- metadata (JSONB)
+      NOW()
+    )
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PAYMENT BY ID
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_payment_by_id: |
+    SELECT *
+    FROM payments_v2
+    WHERE id = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PAYMENT BY EXTERNAL ID
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_payment_by_external_id: |
+    SELECT *
+    FROM payments_v2
+    WHERE external_id = $1
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE PAYMENT STATUS
+  # ─────────────────────────────────────────────────────────────────────────────
+  update_payment_status: |
+    UPDATE payments_v2
+    SET
+      status = $2,
+      completed_at = CASE WHEN $2 IN ('completed', 'failed', 'refunded') THEN NOW() ELSE completed_at END
+    WHERE id = $1
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COMPLETE PAYMENT (atomic with balance update)
+  # ─────────────────────────────────────────────────────────────────────────────
+  complete_payment: |
+    WITH updated_payment AS (
+      UPDATE payments_v2
+      SET
+        status = 'completed',
+        completed_at = NOW()
+      WHERE id = $1
+      AND status = 'pending'
+      RETURNING *
+    ),
+    updated_balance AS (
+      UPDATE users
+      SET
+        balance = balance + (SELECT amount_stars FROM updated_payment),
+        updated_at = NOW()
+      WHERE telegram_id = (SELECT telegram_id FROM updated_payment)
+      RETURNING balance
+    )
+    SELECT
+      p.*,
+      b.balance as new_balance
+    FROM updated_payment p
+    CROSS JOIN updated_balance b;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FAIL PAYMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+  fail_payment: |
+    UPDATE payments_v2
+    SET
+      status = 'failed',
+      completed_at = NOW(),
+      metadata = metadata || jsonb_build_object('error', $2)
+    WHERE id = $1
+    AND status = 'pending'
+    RETURNING *;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUND PAYMENT (atomic with balance deduction)
+  # ─────────────────────────────────────────────────────────────────────────────
+  refund_payment: |
+    WITH updated_payment AS (
+      UPDATE payments_v2
+      SET
+        status = 'refunded',
+        completed_at = NOW()
+      WHERE id = $1
+      AND status = 'completed'
+      RETURNING *
+    ),
+    updated_balance AS (
+      UPDATE users
+      SET
+        balance = balance - (SELECT amount_stars FROM updated_payment),
+        updated_at = NOW()
+      WHERE telegram_id = (SELECT telegram_id FROM updated_payment)
+      AND balance >= (SELECT amount_stars FROM updated_payment)
+      RETURNING balance
+    )
+    SELECT
+      p.id as payment_id,
+      p.amount_stars as refund_amount,
+      COALESCE(b.balance, -1) as new_balance,
+      CASE WHEN b.balance IS NOT NULL THEN true ELSE false END as success
+    FROM updated_payment p
+    LEFT JOIN updated_balance b ON true;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PAYMENTS BY USER
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_payments_by_user: |
+    SELECT *
+    FROM payments_v2
+    WHERE telegram_id = $1
+    ORDER BY created_at DESC
+    LIMIT COALESCE($2, 50)
+    OFFSET COALESCE($3, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FIND PAYMENTS (with filters)
+  # ─────────────────────────────────────────────────────────────────────────────
+  find_payments: |
+    SELECT *
+    FROM payments_v2
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR payment_method = $2)
+      AND ($3::TEXT IS NULL OR payment_type = $3)
+      AND ($4::TEXT IS NULL OR status = $4)
+      AND ($5::TEXT IS NULL OR service = $5)
+      AND ($6::INT IS NULL OR amount_stars >= $6)
+      AND ($7::INT IS NULL OR amount_stars <= $7)
+      AND ($8::TIMESTAMP IS NULL OR created_at >= $8)
+      AND ($9::TIMESTAMP IS NULL OR created_at <= $9)
+    ORDER BY created_at DESC
+    LIMIT COALESCE($10, 100)
+    OFFSET COALESCE($11, 0);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COUNT PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+  count_payments: |
+    SELECT COUNT(*) as count
+    FROM payments_v2
+    WHERE
+      ($1::BIGINT IS NULL OR telegram_id = $1)
+      AND ($2::TEXT IS NULL OR payment_method = $2)
+      AND ($3::TEXT IS NULL OR payment_type = $3)
+      AND ($4::TEXT IS NULL OR status = $4);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PAYMENT SUMMARY (for user)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_payment_summary: |
+    SELECT
+      COALESCE(SUM(amount_stars), 0) as total_amount_stars,
+      COALESCE(SUM(amount_usd), 0) as total_amount_usd,
+      COALESCE(SUM(amount_rubles), 0) as total_amount_rubles,
+      COUNT(*) as total_count,
+      jsonb_object_agg(
+        COALESCE(payment_method, 'unknown'),
+        method_count
+      ) as by_method,
+      jsonb_object_agg(
+        COALESCE(payment_type, 'unknown'),
+        type_count
+      ) as by_type
+    FROM (
+      SELECT
+        payment_method,
+        payment_type,
+        amount_stars,
+        amount_usd,
+        amount_rubles,
+        COUNT(*) OVER (PARTITION BY payment_method) as method_count,
+        COUNT(*) OVER (PARTITION BY payment_type) as type_count
+      FROM payments_v2
+      WHERE telegram_id = $1
+      AND status = 'completed'
+      AND ($2::TIMESTAMP IS NULL OR created_at >= $2)
+      AND ($3::TIMESTAMP IS NULL OR created_at <= $3)
+    ) sub;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET TOTAL REVENUE (global)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_total_revenue: |
+    SELECT
+      COALESCE(SUM(amount_stars), 0) as total_stars,
+      COALESCE(SUM(amount_usd), 0) as total_usd,
+      COALESCE(SUM(amount_rubles), 0) as total_rubles,
+      COUNT(*) as payment_count,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM payments_v2
+    WHERE status = 'completed'
+    AND payment_type = 'top_up'
+    AND ($1::TIMESTAMP IS NULL OR created_at >= $1)
+    AND ($2::TIMESTAMP IS NULL OR created_at <= $2);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET DAILY REVENUE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_daily_revenue: |
+    SELECT
+      DATE(created_at) as date,
+      COALESCE(SUM(amount_stars), 0) as total_stars,
+      COALESCE(SUM(amount_usd), 0) as total_usd,
+      COALESCE(SUM(amount_rubles), 0) as total_rubles,
+      COUNT(*) as payment_count,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM payments_v2
+    WHERE status = 'completed'
+    AND payment_type = 'top_up'
+    AND created_at >= NOW() - INTERVAL '1 day' * $1
+    GROUP BY DATE(created_at)
+    ORDER BY date DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET REVENUE BY SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_revenue_by_service: |
+    SELECT
+      COALESCE(service, 'unknown') as service,
+      COALESCE(SUM(amount_stars), 0) as total_stars,
+      COUNT(*) as usage_count,
+      COUNT(DISTINCT telegram_id) as unique_users
+    FROM payments_v2
+    WHERE status = 'completed'
+    AND payment_type = 'service_payment'
+    AND ($1::TIMESTAMP IS NULL OR created_at >= $1)
+    AND ($2::TIMESTAMP IS NULL OR created_at <= $2)
+    GROUP BY service
+    ORDER BY total_stars DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET PENDING PAYMENTS (for cleanup)
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_pending_payments: |
+    SELECT *
+    FROM payments_v2
+    WHERE status = 'pending'
+    AND created_at < NOW() - INTERVAL '1 hour' * $1
+    ORDER BY created_at ASC
+    LIMIT $2;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPIRE PENDING PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+  expire_pending_payments: |
+    UPDATE payments_v2
+    SET
+      status = 'expired',
+      completed_at = NOW()
+    WHERE status = 'pending'
+    AND created_at < NOW() - INTERVAL '1 hour' * $1
+    RETURNING id;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CREATE SERVICE PAYMENT (deduct from balance)
+  # ─────────────────────────────────────────────────────────────────────────────
+  create_service_payment: |
+    WITH balance_check AS (
+      SELECT balance
+      FROM users
+      WHERE telegram_id = $1
+      AND balance >= $2
+    ),
+    updated_balance AS (
+      UPDATE users
+      SET
+        balance = balance - $2,
+        updated_at = NOW()
+      WHERE telegram_id = $1
+      AND EXISTS (SELECT 1 FROM balance_check)
+      RETURNING balance
+    ),
+    new_payment AS (
+      INSERT INTO payments_v2 (
+        telegram_id,
+        amount_stars,
+        payment_method,
+        payment_type,
+        service,
+        description,
+        status,
+        created_at,
+        completed_at
+      )
+      SELECT
+        $1,
+        $2,
+        'balance',
+        'service_payment',
+        $3,
+        $4,
+        'completed',
+        NOW(),
+        NOW()
+      WHERE EXISTS (SELECT 1 FROM balance_check)
+      RETURNING *
+    )
+    SELECT
+      p.*,
+      b.balance as new_balance
+    FROM new_payment p
+    CROSS JOIN updated_balance b;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET USER SPENDING BY SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_user_spending_by_service: |
+    SELECT
+      COALESCE(service, 'unknown') as service,
+      COALESCE(SUM(amount_stars), 0) as total_spent,
+      COUNT(*) as usage_count
+    FROM payments_v2
+    WHERE telegram_id = $1
+    AND status = 'completed'
+    AND payment_type = 'service_payment'
+    GROUP BY service
+    ORDER BY total_spent DESC;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GET LAST PAYMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+  get_last_payment: |
+    SELECT *
+    FROM payments_v2
+    WHERE telegram_id = $1
+    AND status = 'completed'
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHECK DUPLICATE PAYMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+  check_duplicate_payment: |
+    SELECT EXISTS (
+      SELECT 1
+      FROM payments_v2
+      WHERE telegram_id = $1
+      AND amount_stars = $2
+      AND payment_method = $3
+      AND status IN ('pending', 'completed')
+      AND created_at > NOW() - INTERVAL '5 minutes'
+    ) as is_duplicate;
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 behaviors:
   - name: create_payment
-    given: CreatePaymentInput
-    when: Creating payment record
-    then: Returns PaymentRecord
+    given: CreatePaymentInput with telegram_id, amount, method
+    when: Creating new payment record
+    then: Returns PaymentRecord with pending status
 
   - name: get_payment_by_id
-    given: Payment ID
-    when: Fetching payment
+    given: Payment ID (UUID String)
+    when: Fetching payment by ID
+    then: Returns PaymentRecord or null
+
+  - name: get_payment_by_external_id
+    given: External ID (String)
+    when: Fetching payment by external provider ID
     then: Returns PaymentRecord or null
 
   - name: update_payment_status
-    given: Payment ID and status
-    when: Updating status
+    given: Payment ID and new status
+    when: Updating payment status
     then: Returns updated PaymentRecord
 
-  - name: get_payments_by_user
-    given: User ID and pagination
-    when: Fetching user payments
-    then: Returns list of PaymentRecord
+  - name: complete_payment
+    given: Payment ID
+    when: Completing payment and updating user balance
+    then: Returns PaymentRecord with new_balance
 
-  - name: get_payments_by_telegram_id
+  - name: fail_payment
+    given: Payment ID and error message
+    when: Marking payment as failed
+    then: Returns updated PaymentRecord
+
+  - name: refund_payment
+    given: Payment ID
+    when: Refunding completed payment
+    then: Returns RefundResult with success status
+
+  - name: get_payments_by_user
     given: Telegram ID and pagination
-    when: Fetching payments
+    when: Fetching user payment history
     then: Returns list of PaymentRecord
 
   - name: find_payments
-    given: PaymentFilter
+    given: PaymentFilter with optional criteria
     when: Searching payments
     then: Returns list of PaymentRecord
 
+  - name: count_payments
+    given: PaymentFilter
+    when: Counting matching payments
+    then: Returns count Int
+
   - name: get_payment_summary
-    given: User ID and date range
-    when: Getting summary
+    given: Telegram ID and date range
+    when: Getting user payment summary
     then: Returns PaymentSummary
 
-  - name: check_payment_status
-    given: External ID
-    when: Checking external payment
-    then: Returns payment status
-
-  - name: create_successful_payment
-    given: Payment data
-    when: Recording successful payment
-    then: Returns PaymentRecord
-
   - name: get_total_revenue
-    given: Date range
-    when: Calculating revenue
-    then: Returns total amount
+    given: Date range (optional)
+    when: Calculating total revenue
+    then: Returns revenue totals
 
-  - name: get_payments_count
-    given: PaymentFilter
-    when: Counting payments
-    then: Returns count
+  - name: get_daily_revenue
+    given: Days Int
+    when: Fetching daily revenue breakdown
+    then: Returns list of DailyRevenue
+
+  - name: get_revenue_by_service
+    given: Date range (optional)
+    when: Getting revenue per service
+    then: Returns service revenue breakdown
+
+  - name: get_pending_payments
+    given: Hours threshold and limit
+    when: Fetching stale pending payments
+    then: Returns list of PaymentRecord
+
+  - name: expire_pending_payments
+    given: Hours threshold
+    when: Expiring old pending payments
+    then: Returns count of expired payments
+
+  - name: create_service_payment
+    given: Telegram ID, amount, service, description
+    when: Deducting balance for service usage
+    then: Returns PaymentRecord with new_balance or error
+
+  - name: get_user_spending_by_service
+    given: Telegram ID
+    when: Getting spending breakdown by service
+    then: Returns service spending list
+
+  - name: get_last_payment
+    given: Telegram ID
+    when: Fetching most recent payment
+    then: Returns PaymentRecord or null
+
+  - name: check_duplicate_payment
+    given: Telegram ID, amount, method
+    when: Checking for duplicate payment
+    then: Returns is_duplicate Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  TABLE_NAME: "payments_v2"
+  STATUS_PENDING: "pending"
+  STATUS_COMPLETED: "completed"
+  STATUS_FAILED: "failed"
+  STATUS_REFUNDED: "refunded"
+  STATUS_EXPIRED: "expired"
+  TYPE_TOP_UP: "top_up"
+  TYPE_SERVICE_PAYMENT: "service_payment"
+  TYPE_REFERRAL_BONUS: "referral_bonus"
+  METHOD_STARS: "stars"
+  METHOD_ROBOKASSA: "robokassa"
+  METHOD_CRYPTOBOT: "cryptobot"
+  METHOD_BALANCE: "balance"
+  PENDING_EXPIRY_HOURS: 24

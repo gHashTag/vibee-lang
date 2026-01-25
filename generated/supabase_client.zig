@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// supabase_client v1.0.0 - Generated from .vibee specification
+// supabase_client v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -21,6 +21,32 @@ pub const DEFAULT_TIMEOUT_MS: f64 = 30000;
 
 pub const MAX_RETRIES: f64 = 3;
 
+pub const RETRY_DELAY_MS: f64 = 1000;
+
+pub const MAX_BATCH_SIZE: f64 = 1000;
+
+pub const DEFAULT_PAGE_SIZE: f64 = 100;
+
+pub const MAX_PAGE_SIZE: f64 = 1000;
+
+pub const BUCKET_AVATARS: f64 = 0;
+
+pub const BUCKET_GENERATIONS: f64 = 0;
+
+pub const BUCKET_TRAINING: f64 = 0;
+
+pub const BUCKET_TEMP: f64 = 0;
+
+pub const CONTENT_TYPE_JSON: f64 = 0;
+
+pub const CONTENT_TYPE_IMAGE_PNG: f64 = 0;
+
+pub const CONTENT_TYPE_IMAGE_JPEG: f64 = 0;
+
+pub const CONTENT_TYPE_VIDEO_MP4: f64 = 0;
+
+pub const CONTENT_TYPE_AUDIO_MP3: f64 = 0;
+
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
@@ -41,12 +67,51 @@ pub const SupabaseConfig = struct {
     url: []const u8,
     anon_key: []const u8,
     service_key: []const u8,
+    timeout_ms: i64,
+    max_retries: i64,
 };
 
 /// Supabase client instance
 pub const SupabaseClient = struct {
     config: SupabaseConfig,
     is_connected: bool,
+    last_error: ?[]const u8,
+};
+
+/// Query builder for SELECT operations
+pub const QueryBuilder = struct {
+    table: []const u8,
+    select_columns: []const u8,
+    filters: []const u8,
+    order_by: ?[]const u8,
+    order_desc: bool,
+    limit_count: ?[]const u8,
+    offset_count: ?[]const u8,
+    single: bool,
+};
+
+/// Builder for INSERT operations
+pub const InsertBuilder = struct {
+    table: []const u8,
+    data: []const u8,
+    upsert: bool,
+    on_conflict: ?[]const u8,
+    returning: []const u8,
+};
+
+/// Builder for UPDATE operations
+pub const UpdateBuilder = struct {
+    table: []const u8,
+    data: []const u8,
+    filters: []const u8,
+    returning: []const u8,
+};
+
+/// Builder for DELETE operations
+pub const DeleteBuilder = struct {
+    table: []const u8,
+    filters: []const u8,
+    returning: []const u8,
 };
 
 /// Database query result
@@ -54,37 +119,50 @@ pub const QueryResult = struct {
     data: ?[]const u8,
     @"error": ?[]const u8,
     count: ?[]const u8,
+    status: i64,
 };
 
-/// Insert operation result
-pub const InsertResult = struct {
-    data: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Update operation result
-pub const UpdateResult = struct {
+/// Database mutation result
+pub const MutationResult = struct {
     data: ?[]const u8,
     @"error": ?[]const u8,
     count: i64,
+    status: i64,
 };
 
-/// Delete operation result
-pub const DeleteResult = struct {
-    @"error": ?[]const u8,
-    count: i64,
+/// Supabase error details
+pub const SupabaseError = struct {
+    message: []const u8,
+    code: ?[]const u8,
+    details: ?[]const u8,
+    hint: ?[]const u8,
 };
 
-/// Storage upload result
-pub const StorageUploadResult = struct {
-    path: ?[]const u8,
-    @"error": ?[]const u8,
+/// RPC function parameters
+pub const RpcParams = struct {
+    function_name: []const u8,
+    params: []const u8,
 };
 
-/// Storage download result
-pub const StorageDownloadResult = struct {
-    data: ?[]const u8,
-    @"error": ?[]const u8,
+/// Storage file metadata
+pub const StorageFile = struct {
+    name: []const u8,
+    bucket: []const u8,
+    path: []const u8,
+    size: i64,
+    content_type: []const u8,
+    created_at: i64,
+};
+
+/// File upload options
+pub const UploadOptions = struct {
+    content_type: ?[]const u8,
+    cache_control: ?[]const u8,
+    upsert: bool,
+};
+
+/// Filter operator enum
+pub const FilterOperator = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -164,79 +242,261 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_client" {
-// Given: Supabase configuration
-// When: Initializing client
-// Then: Returns SupabaseClient
+// Given: SupabaseConfig with url, anon_key, service_key
+// When: Initializing Supabase client
+// Then: Returns SupabaseClient instance
+    // TODO: Add test assertions
+}
+
+test "test_connection" {
+// Given: SupabaseClient
+// When: Testing database connectivity
+// Then: Returns Bool success status
+    // TODO: Add test assertions
+}
+
+test "close_client" {
+// Given: SupabaseClient
+// When: Closing client connection
+// Then: Cleans up resources
+    // TODO: Add test assertions
+}
+
+test "from" {
+// Given: Table name
+// When: Starting query builder
+// Then: Returns QueryBuilder
     // TODO: Add test assertions
 }
 
 test "select" {
-// Given: Table name and query options
-// When: Fetching data
+// Given: QueryBuilder and columns (or * for all)
+// When: Specifying columns to select
+// Then: Returns QueryBuilder with select
+    // TODO: Add test assertions
+}
+
+test "eq" {
+// Given: QueryBuilder, column, value
+// When: Adding equality filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "neq" {
+// Given: QueryBuilder, column, value
+// When: Adding not-equal filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "gt" {
+// Given: QueryBuilder, column, value
+// When: Adding greater-than filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "gte" {
+// Given: QueryBuilder, column, value
+// When: Adding greater-than-or-equal filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "lt" {
+// Given: QueryBuilder, column, value
+// When: Adding less-than filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "lte" {
+// Given: QueryBuilder, column, value
+// When: Adding less-than-or-equal filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "like" {
+// Given: QueryBuilder, column, pattern
+// When: Adding LIKE filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "ilike" {
+// Given: QueryBuilder, column, pattern
+// When: Adding case-insensitive LIKE filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "is_null" {
+// Given: QueryBuilder, column
+// When: Adding IS NULL filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "is_not_null" {
+// Given: QueryBuilder, column
+// When: Adding IS NOT NULL filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "in_list" {
+// Given: QueryBuilder, column, values list
+// When: Adding IN filter
+// Then: Returns QueryBuilder with filter
+    // TODO: Add test assertions
+}
+
+test "order" {
+// Given: QueryBuilder, column, ascending Bool
+// When: Adding ORDER BY clause
+// Then: Returns QueryBuilder with order
+    // TODO: Add test assertions
+}
+
+test "limit" {
+// Given: QueryBuilder, count
+// When: Adding LIMIT clause
+// Then: Returns QueryBuilder with limit
+    // TODO: Add test assertions
+}
+
+test "offset" {
+// Given: QueryBuilder, count
+// When: Adding OFFSET clause
+// Then: Returns QueryBuilder with offset
+    // TODO: Add test assertions
+}
+
+test "single" {
+// Given: QueryBuilder
+// When: Expecting single result
+// Then: Returns QueryBuilder with single flag
+    // TODO: Add test assertions
+}
+
+test "execute_query" {
+// Given: QueryBuilder
+// When: Executing SELECT query
 // Then: Returns QueryResult
     // TODO: Add test assertions
 }
 
 test "insert" {
-// Given: Table name and data
-// When: Inserting record
-// Then: Returns InsertResult
+// Given: Table name and data Object
+// When: Inserting new record
+// Then: Returns MutationResult
     // TODO: Add test assertions
 }
 
-test "update" {
-// Given: Table name, data, and filter
-// When: Updating records
-// Then: Returns UpdateResult
-    // TODO: Add test assertions
-}
-
-test "delete" {
-// Given: Table name and filter
-// When: Deleting records
-// Then: Returns DeleteResult
+test "insert_many" {
+// Given: Table name and data List<Object>
+// When: Inserting multiple records
+// Then: Returns MutationResult with count
     // TODO: Add test assertions
 }
 
 test "upsert" {
-// Given: Table name and data
+// Given: Table name, data, and conflict columns
 // When: Upserting record
-// Then: Returns InsertResult
+// Then: Returns MutationResult
+    // TODO: Add test assertions
+}
+
+test "update" {
+// Given: Table name, data, and filters
+// When: Updating records
+// Then: Returns MutationResult
+    // TODO: Add test assertions
+}
+
+test "delete" {
+// Given: Table name and filters
+// When: Deleting records
+// Then: Returns MutationResult
     // TODO: Add test assertions
 }
 
 test "rpc" {
-// Given: Function name and parameters
+// Given: Function name and params Object
 // When: Calling stored procedure
 // Then: Returns QueryResult
     // TODO: Add test assertions
 }
 
 test "upload_file" {
-// Given: Bucket name, path, and file data
-// When: Uploading to storage
-// Then: Returns StorageUploadResult
+// Given: Bucket, path, file data, and options
+// When: Uploading file to storage
+// Then: Returns StorageFile or error
     // TODO: Add test assertions
 }
 
 test "download_file" {
-// Given: Bucket name and path
-// When: Downloading from storage
-// Then: Returns StorageDownloadResult
+// Given: Bucket and path
+// When: Downloading file from storage
+// Then: Returns file data or error
     // TODO: Add test assertions
 }
 
 test "delete_file" {
-// Given: Bucket name and path
-// When: Deleting from storage
-// Then: Returns success status
+// Given: Bucket and path
+// When: Deleting file from storage
+// Then: Returns success Bool
     // TODO: Add test assertions
 }
 
 test "get_public_url" {
-// Given: Bucket name and path
-// When: Getting public URL
-// Then: Returns URL string
+// Given: Bucket and path
+// When: Getting public URL for file
+// Then: Returns URL String
+    // TODO: Add test assertions
+}
+
+test "list_files" {
+// Given: Bucket and prefix
+// When: Listing files in bucket
+// Then: Returns List<StorageFile>
+    // TODO: Add test assertions
+}
+
+test "move_file" {
+// Given: Bucket, from_path, to_path
+// When: Moving file within bucket
+// Then: Returns success Bool
+    // TODO: Add test assertions
+}
+
+test "copy_file" {
+// Given: Bucket, from_path, to_path
+// When: Copying file within bucket
+// Then: Returns success Bool
+    // TODO: Add test assertions
+}
+
+test "raw_query" {
+// Given: SQL query string and params
+// When: Executing raw SQL via RPC
+// Then: Returns QueryResult
+    // TODO: Add test assertions
+}
+
+test "count" {
+// Given: Table name and filters
+// When: Counting records
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
+test "exists" {
+// Given: Table name and filters
+// When: Checking if records exist
+// Then: Returns Bool
     // TODO: Add test assertions
 }
 

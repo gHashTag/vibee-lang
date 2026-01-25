@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// user_repository v1.0.0 - Generated from .vibee specification
+// user_repository v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -16,6 +16,18 @@ const math = std.math;
 // ═══════════════════════════════════════════════════════════════════════════════
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TABLE_NAME: f64 = 0;
+
+pub const DEFAULT_BALANCE: f64 = 0;
+
+pub const DEFAULT_LEVEL: f64 = 1;
+
+pub const DEFAULT_LANGUAGE: f64 = 0;
+
+pub const MAX_LEVEL: f64 = 100;
+
+pub const REFERRAL_BONUS_STARS: f64 = 10;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -34,14 +46,14 @@ pub const PHOENIX: i64 = 999;
 
 /// Input for creating user
 pub const CreateUserInput = struct {
-    telegram_id: []const u8,
+    telegram_id: i64,
     username: ?[]const u8,
     first_name: ?[]const u8,
     last_name: ?[]const u8,
     language_code: []const u8,
     is_bot: bool,
     is_premium: bool,
-    inviter_id: ?[]const u8,
+    referred_by: ?[]const u8,
 };
 
 /// Input for updating user
@@ -58,19 +70,59 @@ pub const UserFilter = struct {
     telegram_id: ?[]const u8,
     username: ?[]const u8,
     is_premium: ?[]const u8,
+    is_banned: ?[]const u8,
     level_min: ?[]const u8,
     level_max: ?[]const u8,
+    balance_min: ?[]const u8,
+    balance_max: ?[]const u8,
     created_after: ?[]const u8,
     created_before: ?[]const u8,
+    limit: ?[]const u8,
+    offset: ?[]const u8,
+};
+
+/// User record from database
+pub const UserRecord = struct {
+    id: []const u8,
+    telegram_id: i64,
+    username: ?[]const u8,
+    first_name: ?[]const u8,
+    last_name: ?[]const u8,
+    language_code: []const u8,
+    balance: i64,
+    level: i64,
+    is_premium: bool,
+    is_banned: bool,
+    referral_code: ?[]const u8,
+    referred_by: ?[]const u8,
+    created_at: i64,
+    updated_at: i64,
 };
 
 /// User statistics
 pub const UserStats = struct {
     total_generations: i64,
     total_spent_stars: i64,
-    total_spent_rubles: f64,
+    total_payments: i64,
     referral_count: i64,
     days_active: i64,
+    last_activity: ?[]const u8,
+};
+
+/// User balance info
+pub const UserBalance = struct {
+    telegram_id: i64,
+    balance: i64,
+    total_earned: i64,
+    total_spent: i64,
+};
+
+/// Referral information
+pub const ReferralInfo = struct {
+    referral_code: []const u8,
+    referral_count: i64,
+    total_bonus: i64,
+    referrals: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -150,121 +202,177 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_user" {
-// Given: CreateUserInput
-// When: Creating new user
-// Then: Returns User
+// Given: CreateUserInput with telegram_id, username, language_code
+// When: Creating new user or updating existing
+// Then: Returns UserRecord with generated referral_code
     // TODO: Add test assertions
 }
 
 test "get_user_by_telegram_id" {
-// Given: Telegram ID
-// When: Fetching user
-// Then: Returns User or null
+// Given: Telegram ID (Int)
+// When: Fetching user by telegram ID
+// Then: Returns UserRecord or null
     // TODO: Add test assertions
 }
 
 test "get_user_by_id" {
-// Given: User ID
-// When: Fetching user
-// Then: Returns User or null
+// Given: User ID (UUID String)
+// When: Fetching user by internal ID
+// Then: Returns UserRecord or null
     // TODO: Add test assertions
 }
 
 test "update_user" {
-// Given: User ID and UpdateUserInput
-// When: Updating user
-// Then: Returns updated User
+// Given: Telegram ID and UpdateUserInput
+// When: Updating user profile
+// Then: Returns updated UserRecord
     // TODO: Add test assertions
 }
 
 test "delete_user" {
-// Given: User ID
+// Given: Telegram ID
 // When: Deleting user
-// Then: Returns success status
+// Then: Returns deleted user ID
     // TODO: Add test assertions
 }
 
 test "get_user_balance" {
 // Given: Telegram ID
-// When: Fetching balance
-// Then: Returns UserBalance
+// When: Fetching balance with totals
+// Then: Returns UserBalance with earned/spent
     // TODO: Add test assertions
 }
 
 test "update_user_balance" {
-// Given: Telegram ID and amount
-// When: Updating balance
+// Given: Telegram ID and delta (positive or negative)
+// When: Atomically updating balance
+// Then: Returns new balance or error if insufficient
+    // TODO: Add test assertions
+}
+
+test "set_user_balance" {
+// Given: Telegram ID and absolute value
+// When: Setting balance directly
 // Then: Returns new balance
     // TODO: Add test assertions
 }
 
 test "get_user_level" {
 // Given: Telegram ID
-// When: Fetching level
-// Then: Returns UserLevel
+// When: Fetching user level
+// Then: Returns level Int
     // TODO: Add test assertions
 }
 
 test "update_user_level" {
-// Given: Telegram ID and level
-// When: Updating level
-// Then: Returns success status
+// Given: Telegram ID and new level
+// When: Setting user level
+// Then: Returns new level
     // TODO: Add test assertions
 }
 
 test "increment_user_level" {
 // Given: Telegram ID
-// When: Incrementing level
+// When: Incrementing level by 1
 // Then: Returns new level
     // TODO: Add test assertions
 }
 
 test "get_user_language" {
 // Given: Telegram ID
-// When: Fetching language
-// Then: Returns language code
+// When: Fetching language preference
+// Then: Returns language_code String
     // TODO: Add test assertions
 }
 
 test "update_user_language" {
-// Given: Telegram ID and language
-// When: Updating language
-// Then: Returns success status
+// Given: Telegram ID and language_code
+// When: Updating language preference
+// Then: Returns new language_code
     // TODO: Add test assertions
 }
 
 test "get_user_stats" {
-// Given: User ID
-// When: Fetching statistics
+// Given: Telegram ID
+// When: Fetching comprehensive statistics
 // Then: Returns UserStats
     // TODO: Add test assertions
 }
 
 test "get_referrals_count" {
-// Given: User ID
-// When: Counting referrals
-// Then: Returns count
+// Given: Telegram ID
+// When: Counting referred users
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
+test "get_referral_info" {
+// Given: Telegram ID
+// When: Fetching referral details
+// Then: Returns ReferralInfo
+    // TODO: Add test assertions
+}
+
+test "get_user_by_referral_code" {
+// Given: Referral code String
+// When: Looking up referrer
+// Then: Returns UserRecord or null
     // TODO: Add test assertions
 }
 
 test "find_users" {
-// Given: UserFilter
+// Given: UserFilter with optional criteria
 // When: Searching users
-// Then: Returns list of User
+// Then: Returns list of UserRecord
     // TODO: Add test assertions
 }
 
 test "count_users" {
 // Given: UserFilter
-// When: Counting users
-// Then: Returns count
+// When: Counting matching users
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
+test "ban_user" {
+// Given: Telegram ID
+// When: Banning user
+// Then: Returns updated UserRecord
+    // TODO: Add test assertions
+}
+
+test "unban_user" {
+// Given: Telegram ID
+// When: Unbanning user
+// Then: Returns updated UserRecord
     // TODO: Add test assertions
 }
 
 test "deduplicate_users" {
 // Given: No parameters
-// When: Removing duplicates
-// Then: Returns removed count
+// When: Removing duplicate telegram_id entries
+// Then: Returns count of removed duplicates
+    // TODO: Add test assertions
+}
+
+test "get_top_users_by_balance" {
+// Given: Limit Int
+// When: Fetching leaderboard by balance
+// Then: Returns list of UserRecord
+    // TODO: Add test assertions
+}
+
+test "get_top_users_by_level" {
+// Given: Limit Int
+// When: Fetching leaderboard by level
+// Then: Returns list of UserRecord
+    // TODO: Add test assertions
+}
+
+test "get_active_users" {
+// Given: Days Int
+// When: Fetching users active in last N days
+// Then: Returns list of UserRecord
     // TODO: Add test assertions
 }
 

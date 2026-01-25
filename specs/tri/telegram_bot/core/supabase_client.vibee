@@ -1,11 +1,16 @@
 name: supabase_client
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: supabase_client
 
 description: |
-  Supabase client module for VIBEE Telegram bot.
-  Handles database operations, authentication, and storage.
+  Supabase client for VIBEE Telegram bot.
+  Complete HTTP client for PostgreSQL REST API.
+  Handles queries, mutations, storage, and RPC calls.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
   SupabaseConfig:
@@ -14,107 +19,463 @@ types:
       url: String
       anon_key: String
       service_key: String
+      timeout_ms: Int
+      max_retries: Int
 
   SupabaseClient:
     description: "Supabase client instance"
     fields:
       config: SupabaseConfig
       is_connected: Bool
+      last_error: Option<String>
+
+  QueryBuilder:
+    description: "Query builder for SELECT operations"
+    fields:
+      table: String
+      select_columns: List<String>
+      filters: List<Object>
+      order_by: Option<String>
+      order_desc: Bool
+      limit_count: Option<Int>
+      offset_count: Option<Int>
+      single: Bool
+
+  InsertBuilder:
+    description: "Builder for INSERT operations"
+    fields:
+      table: String
+      data: Object
+      upsert: Bool
+      on_conflict: Option<String>
+      returning: List<String>
+
+  UpdateBuilder:
+    description: "Builder for UPDATE operations"
+    fields:
+      table: String
+      data: Object
+      filters: List<Object>
+      returning: List<String>
+
+  DeleteBuilder:
+    description: "Builder for DELETE operations"
+    fields:
+      table: String
+      filters: List<Object>
+      returning: List<String>
 
   QueryResult:
     description: "Database query result"
     fields:
-      data: Option<Object>
-      error: Option<String>
+      data: Option<List<Object>>
+      error: Option<SupabaseError>
       count: Option<Int>
+      status: Int
 
-  InsertResult:
-    description: "Insert operation result"
+  MutationResult:
+    description: "Database mutation result"
     fields:
       data: Option<Object>
-      error: Option<String>
-
-  UpdateResult:
-    description: "Update operation result"
-    fields:
-      data: Option<Object>
-      error: Option<String>
+      error: Option<SupabaseError>
       count: Int
+      status: Int
 
-  DeleteResult:
-    description: "Delete operation result"
+  SupabaseError:
+    description: "Supabase error details"
     fields:
-      error: Option<String>
-      count: Int
+      message: String
+      code: Option<String>
+      details: Option<String>
+      hint: Option<String>
 
-  StorageUploadResult:
-    description: "Storage upload result"
+  RpcParams:
+    description: "RPC function parameters"
     fields:
-      path: Option<String>
-      error: Option<String>
+      function_name: String
+      params: Object
 
-  StorageDownloadResult:
-    description: "Storage download result"
+  StorageFile:
+    description: "Storage file metadata"
     fields:
-      data: Option<Object>
-      error: Option<String>
+      name: String
+      bucket: String
+      path: String
+      size: Int
+      content_type: String
+      created_at: Timestamp
+
+  UploadOptions:
+    description: "File upload options"
+    fields:
+      content_type: Option<String>
+      cache_control: Option<String>
+      upsert: Bool
+
+  FilterOperator:
+    description: "Filter operator enum"
+    values:
+      - eq
+      - neq
+      - gt
+      - gte
+      - lt
+      - lte
+      - like
+      - ilike
+      - is
+      - in
+      - contains
+      - contained_by
+      - overlaps
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTTP ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+endpoints:
+  # REST API
+  rest_base: "{url}/rest/v1"
+  table: "{url}/rest/v1/{table}"
+  rpc: "{url}/rest/v1/rpc/{function}"
+  
+  # Storage API
+  storage_base: "{url}/storage/v1"
+  storage_object: "{url}/storage/v1/object/{bucket}/{path}"
+  storage_public: "{url}/storage/v1/object/public/{bucket}/{path}"
+  
+  # Auth API (if needed)
+  auth_base: "{url}/auth/v1"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTTP HEADERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+headers:
+  default:
+    apikey: "{anon_key}"
+    Authorization: "Bearer {service_key}"
+    Content-Type: "application/json"
+    Prefer: "return=representation"
+  
+  count:
+    Prefer: "count=exact"
+  
+  single:
+    Accept: "application/vnd.pgrst.object+json"
+  
+  upsert:
+    Prefer: "resolution=merge-duplicates"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# QUERY BUILDING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+query_syntax:
+  # Select columns
+  select: "select={columns}"
+  
+  # Filters (PostgREST syntax)
+  eq: "{column}=eq.{value}"
+  neq: "{column}=neq.{value}"
+  gt: "{column}=gt.{value}"
+  gte: "{column}=gte.{value}"
+  lt: "{column}=lt.{value}"
+  lte: "{column}=lte.{value}"
+  like: "{column}=like.{pattern}"
+  ilike: "{column}=ilike.{pattern}"
+  is: "{column}=is.{value}"
+  in: "{column}=in.({values})"
+  contains: "{column}=cs.{value}"
+  contained_by: "{column}=cd.{value}"
+  overlaps: "{column}=ov.{value}"
+  
+  # Ordering
+  order: "order={column}.{direction}"
+  
+  # Pagination
+  limit: "limit={count}"
+  offset: "offset={count}"
+  
+  # Range (alternative pagination)
+  range: "Range: {start}-{end}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+  
   - name: create_client
-    given: Supabase configuration
-    when: Initializing client
-    then: Returns SupabaseClient
+    given: SupabaseConfig with url, anon_key, service_key
+    when: Initializing Supabase client
+    then: Returns SupabaseClient instance
+
+  - name: test_connection
+    given: SupabaseClient
+    when: Testing database connectivity
+    then: Returns Bool success status
+
+  - name: close_client
+    given: SupabaseClient
+    when: Closing client connection
+    then: Cleans up resources
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERY OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: from
+    given: Table name
+    when: Starting query builder
+    then: Returns QueryBuilder
 
   - name: select
-    given: Table name and query options
-    when: Fetching data
+    given: QueryBuilder and columns (or * for all)
+    when: Specifying columns to select
+    then: Returns QueryBuilder with select
+
+  - name: eq
+    given: QueryBuilder, column, value
+    when: Adding equality filter
+    then: Returns QueryBuilder with filter
+
+  - name: neq
+    given: QueryBuilder, column, value
+    when: Adding not-equal filter
+    then: Returns QueryBuilder with filter
+
+  - name: gt
+    given: QueryBuilder, column, value
+    when: Adding greater-than filter
+    then: Returns QueryBuilder with filter
+
+  - name: gte
+    given: QueryBuilder, column, value
+    when: Adding greater-than-or-equal filter
+    then: Returns QueryBuilder with filter
+
+  - name: lt
+    given: QueryBuilder, column, value
+    when: Adding less-than filter
+    then: Returns QueryBuilder with filter
+
+  - name: lte
+    given: QueryBuilder, column, value
+    when: Adding less-than-or-equal filter
+    then: Returns QueryBuilder with filter
+
+  - name: like
+    given: QueryBuilder, column, pattern
+    when: Adding LIKE filter
+    then: Returns QueryBuilder with filter
+
+  - name: ilike
+    given: QueryBuilder, column, pattern
+    when: Adding case-insensitive LIKE filter
+    then: Returns QueryBuilder with filter
+
+  - name: is_null
+    given: QueryBuilder, column
+    when: Adding IS NULL filter
+    then: Returns QueryBuilder with filter
+
+  - name: is_not_null
+    given: QueryBuilder, column
+    when: Adding IS NOT NULL filter
+    then: Returns QueryBuilder with filter
+
+  - name: in_list
+    given: QueryBuilder, column, values list
+    when: Adding IN filter
+    then: Returns QueryBuilder with filter
+
+  - name: order
+    given: QueryBuilder, column, ascending Bool
+    when: Adding ORDER BY clause
+    then: Returns QueryBuilder with order
+
+  - name: limit
+    given: QueryBuilder, count
+    when: Adding LIMIT clause
+    then: Returns QueryBuilder with limit
+
+  - name: offset
+    given: QueryBuilder, count
+    when: Adding OFFSET clause
+    then: Returns QueryBuilder with offset
+
+  - name: single
+    given: QueryBuilder
+    when: Expecting single result
+    then: Returns QueryBuilder with single flag
+
+  - name: execute_query
+    given: QueryBuilder
+    when: Executing SELECT query
     then: Returns QueryResult
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MUTATION OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
   - name: insert
-    given: Table name and data
-    when: Inserting record
-    then: Returns InsertResult
+    given: Table name and data Object
+    when: Inserting new record
+    then: Returns MutationResult
 
-  - name: update
-    given: Table name, data, and filter
-    when: Updating records
-    then: Returns UpdateResult
-
-  - name: delete
-    given: Table name and filter
-    when: Deleting records
-    then: Returns DeleteResult
+  - name: insert_many
+    given: Table name and data List<Object>
+    when: Inserting multiple records
+    then: Returns MutationResult with count
 
   - name: upsert
-    given: Table name and data
+    given: Table name, data, and conflict columns
     when: Upserting record
-    then: Returns InsertResult
+    then: Returns MutationResult
+
+  - name: update
+    given: Table name, data, and filters
+    when: Updating records
+    then: Returns MutationResult
+
+  - name: delete
+    given: Table name and filters
+    when: Deleting records
+    then: Returns MutationResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RPC OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: rpc
-    given: Function name and parameters
+    given: Function name and params Object
     when: Calling stored procedure
     then: Returns QueryResult
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STORAGE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
   - name: upload_file
-    given: Bucket name, path, and file data
-    when: Uploading to storage
-    then: Returns StorageUploadResult
+    given: Bucket, path, file data, and options
+    when: Uploading file to storage
+    then: Returns StorageFile or error
 
   - name: download_file
-    given: Bucket name and path
-    when: Downloading from storage
-    then: Returns StorageDownloadResult
+    given: Bucket and path
+    when: Downloading file from storage
+    then: Returns file data or error
 
   - name: delete_file
-    given: Bucket name and path
-    when: Deleting from storage
-    then: Returns success status
+    given: Bucket and path
+    when: Deleting file from storage
+    then: Returns success Bool
 
   - name: get_public_url
-    given: Bucket name and path
-    when: Getting public URL
-    then: Returns URL string
+    given: Bucket and path
+    when: Getting public URL for file
+    then: Returns URL String
+
+  - name: list_files
+    given: Bucket and prefix
+    when: Listing files in bucket
+    then: Returns List<StorageFile>
+
+  - name: move_file
+    given: Bucket, from_path, to_path
+    when: Moving file within bucket
+    then: Returns success Bool
+
+  - name: copy_file
+    given: Bucket, from_path, to_path
+    when: Copying file within bucket
+    then: Returns success Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: raw_query
+    given: SQL query string and params
+    when: Executing raw SQL via RPC
+    then: Returns QueryResult
+
+  - name: count
+    given: Table name and filters
+    when: Counting records
+    then: Returns count Int
+
+  - name: exists
+    given: Table name and filters
+    when: Checking if records exist
+    then: Returns Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ERROR HANDLING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+errors:
+  connection_failed:
+    code: "CONN_FAILED"
+    message: "Failed to connect to Supabase"
+  
+  query_failed:
+    code: "QUERY_FAILED"
+    message: "Database query failed"
+  
+  not_found:
+    code: "NOT_FOUND"
+    message: "Record not found"
+  
+  conflict:
+    code: "CONFLICT"
+    message: "Record already exists"
+  
+  validation_error:
+    code: "VALIDATION"
+    message: "Data validation failed"
+  
+  permission_denied:
+    code: "PERMISSION"
+    message: "Permission denied"
+  
+  rate_limited:
+    code: "RATE_LIMIT"
+    message: "Rate limit exceeded"
+  
+  storage_error:
+    code: "STORAGE"
+    message: "Storage operation failed"
+  
+  timeout:
+    code: "TIMEOUT"
+    message: "Request timed out"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 constants:
   DEFAULT_TIMEOUT_MS: 30000
   MAX_RETRIES: 3
+  RETRY_DELAY_MS: 1000
+  MAX_BATCH_SIZE: 1000
+  DEFAULT_PAGE_SIZE: 100
+  MAX_PAGE_SIZE: 1000
+  
+  # Storage buckets
+  BUCKET_AVATARS: "avatars"
+  BUCKET_GENERATIONS: "generations"
+  BUCKET_TRAINING: "training"
+  BUCKET_TEMP: "temp"
+  
+  # Content types
+  CONTENT_TYPE_JSON: "application/json"
+  CONTENT_TYPE_IMAGE_PNG: "image/png"
+  CONTENT_TYPE_IMAGE_JPEG: "image/jpeg"
+  CONTENT_TYPE_VIDEO_MP4: "video/mp4"
+  CONTENT_TYPE_AUDIO_MP3: "audio/mpeg"

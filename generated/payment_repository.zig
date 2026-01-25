@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// payment_repository v1.0.0 - Generated from .vibee specification
+// payment_repository v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -16,6 +16,34 @@ const math = std.math;
 // ═══════════════════════════════════════════════════════════════════════════════
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
+
+pub const TABLE_NAME: f64 = 0;
+
+pub const STATUS_PENDING: f64 = 0;
+
+pub const STATUS_COMPLETED: f64 = 0;
+
+pub const STATUS_FAILED: f64 = 0;
+
+pub const STATUS_REFUNDED: f64 = 0;
+
+pub const STATUS_EXPIRED: f64 = 0;
+
+pub const TYPE_TOP_UP: f64 = 0;
+
+pub const TYPE_SERVICE_PAYMENT: f64 = 0;
+
+pub const TYPE_REFERRAL_BONUS: f64 = 0;
+
+pub const METHOD_STARS: f64 = 0;
+
+pub const METHOD_ROBOKASSA: f64 = 0;
+
+pub const METHOD_CRYPTOBOT: f64 = 0;
+
+pub const METHOD_BALANCE: f64 = 0;
+
+pub const PENDING_EXPIRY_HOURS: f64 = 24;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -34,32 +62,85 @@ pub const PHOENIX: i64 = 999;
 
 /// Input for creating payment
 pub const CreatePaymentInput = struct {
-    user_id: []const u8,
-    telegram_id: []const u8,
-    amount: i64,
+    telegram_id: i64,
+    amount_stars: i64,
+    amount_usd: ?[]const u8,
+    amount_rubles: ?[]const u8,
+    payment_method: []const u8,
     payment_type: []const u8,
     service: ?[]const u8,
     description: []const u8,
     external_id: ?[]const u8,
+    metadata: ?[]const u8,
+};
+
+/// Input for updating payment
+pub const UpdatePaymentInput = struct {
+    status: ?[]const u8,
+    external_id: ?[]const u8,
+    metadata: ?[]const u8,
 };
 
 /// Filter for querying payments
 pub const PaymentFilter = struct {
-    user_id: ?[]const u8,
     telegram_id: ?[]const u8,
+    payment_method: ?[]const u8,
     payment_type: ?[]const u8,
     status: ?[]const u8,
     service: ?[]const u8,
+    amount_min: ?[]const u8,
+    amount_max: ?[]const u8,
     created_after: ?[]const u8,
     created_before: ?[]const u8,
+    limit: ?[]const u8,
+    offset: ?[]const u8,
+};
+
+/// Payment record from database
+pub const PaymentRecord = struct {
+    id: []const u8,
+    telegram_id: i64,
+    amount_stars: i64,
+    amount_usd: ?[]const u8,
+    amount_rubles: ?[]const u8,
+    payment_method: []const u8,
+    payment_type: []const u8,
+    service: ?[]const u8,
+    description: []const u8,
+    status: []const u8,
+    external_id: ?[]const u8,
+    metadata: ?[]const u8,
+    created_at: i64,
+    completed_at: ?[]const u8,
 };
 
 /// Payment summary statistics
 pub const PaymentSummary = struct {
-    total_amount: i64,
+    total_amount_stars: i64,
+    total_amount_usd: f64,
+    total_amount_rubles: f64,
     total_count: i64,
+    by_method: []const u8,
     by_type: []const u8,
     by_service: []const u8,
+};
+
+/// Daily revenue record
+pub const DailyRevenue = struct {
+    date: []const u8,
+    total_stars: i64,
+    total_usd: f64,
+    total_rubles: f64,
+    payment_count: i64,
+    unique_users: i64,
+};
+
+/// Refund operation result
+pub const RefundResult = struct {
+    payment_id: []const u8,
+    refund_amount: i64,
+    new_balance: i64,
+    success: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -139,79 +220,142 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_payment" {
-// Given: CreatePaymentInput
-// When: Creating payment record
-// Then: Returns PaymentRecord
+// Given: CreatePaymentInput with telegram_id, amount, method
+// When: Creating new payment record
+// Then: Returns PaymentRecord with pending status
     // TODO: Add test assertions
 }
 
 test "get_payment_by_id" {
-// Given: Payment ID
-// When: Fetching payment
+// Given: Payment ID (UUID String)
+// When: Fetching payment by ID
+// Then: Returns PaymentRecord or null
+    // TODO: Add test assertions
+}
+
+test "get_payment_by_external_id" {
+// Given: External ID (String)
+// When: Fetching payment by external provider ID
 // Then: Returns PaymentRecord or null
     // TODO: Add test assertions
 }
 
 test "update_payment_status" {
-// Given: Payment ID and status
-// When: Updating status
+// Given: Payment ID and new status
+// When: Updating payment status
 // Then: Returns updated PaymentRecord
     // TODO: Add test assertions
 }
 
-test "get_payments_by_user" {
-// Given: User ID and pagination
-// When: Fetching user payments
-// Then: Returns list of PaymentRecord
+test "complete_payment" {
+// Given: Payment ID
+// When: Completing payment and updating user balance
+// Then: Returns PaymentRecord with new_balance
     // TODO: Add test assertions
 }
 
-test "get_payments_by_telegram_id" {
+test "fail_payment" {
+// Given: Payment ID and error message
+// When: Marking payment as failed
+// Then: Returns updated PaymentRecord
+    // TODO: Add test assertions
+}
+
+test "refund_payment" {
+// Given: Payment ID
+// When: Refunding completed payment
+// Then: Returns RefundResult with success status
+    // TODO: Add test assertions
+}
+
+test "get_payments_by_user" {
 // Given: Telegram ID and pagination
-// When: Fetching payments
+// When: Fetching user payment history
 // Then: Returns list of PaymentRecord
     // TODO: Add test assertions
 }
 
 test "find_payments" {
-// Given: PaymentFilter
+// Given: PaymentFilter with optional criteria
 // When: Searching payments
 // Then: Returns list of PaymentRecord
     // TODO: Add test assertions
 }
 
+test "count_payments" {
+// Given: PaymentFilter
+// When: Counting matching payments
+// Then: Returns count Int
+    // TODO: Add test assertions
+}
+
 test "get_payment_summary" {
-// Given: User ID and date range
-// When: Getting summary
+// Given: Telegram ID and date range
+// When: Getting user payment summary
 // Then: Returns PaymentSummary
     // TODO: Add test assertions
 }
 
-test "check_payment_status" {
-// Given: External ID
-// When: Checking external payment
-// Then: Returns payment status
-    // TODO: Add test assertions
-}
-
-test "create_successful_payment" {
-// Given: Payment data
-// When: Recording successful payment
-// Then: Returns PaymentRecord
-    // TODO: Add test assertions
-}
-
 test "get_total_revenue" {
-// Given: Date range
-// When: Calculating revenue
-// Then: Returns total amount
+// Given: Date range (optional)
+// When: Calculating total revenue
+// Then: Returns revenue totals
     // TODO: Add test assertions
 }
 
-test "get_payments_count" {
-// Given: PaymentFilter
-// When: Counting payments
-// Then: Returns count
+test "get_daily_revenue" {
+// Given: Days Int
+// When: Fetching daily revenue breakdown
+// Then: Returns list of DailyRevenue
+    // TODO: Add test assertions
+}
+
+test "get_revenue_by_service" {
+// Given: Date range (optional)
+// When: Getting revenue per service
+// Then: Returns service revenue breakdown
+    // TODO: Add test assertions
+}
+
+test "get_pending_payments" {
+// Given: Hours threshold and limit
+// When: Fetching stale pending payments
+// Then: Returns list of PaymentRecord
+    // TODO: Add test assertions
+}
+
+test "expire_pending_payments" {
+// Given: Hours threshold
+// When: Expiring old pending payments
+// Then: Returns count of expired payments
+    // TODO: Add test assertions
+}
+
+test "create_service_payment" {
+// Given: Telegram ID, amount, service, description
+// When: Deducting balance for service usage
+// Then: Returns PaymentRecord with new_balance or error
+    // TODO: Add test assertions
+}
+
+test "get_user_spending_by_service" {
+// Given: Telegram ID
+// When: Getting spending breakdown by service
+// Then: Returns service spending list
+    // TODO: Add test assertions
+}
+
+test "get_last_payment" {
+// Given: Telegram ID
+// When: Fetching most recent payment
+// Then: Returns PaymentRecord or null
+    // TODO: Add test assertions
+}
+
+test "check_duplicate_payment" {
+// Given: Telegram ID, amount, method
+// When: Checking for duplicate payment
+// Then: Returns is_duplicate Bool
     // TODO: Add test assertions
 }
 
