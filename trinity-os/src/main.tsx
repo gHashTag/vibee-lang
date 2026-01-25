@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import QuantumLab from './pages/QuantumLab.tsx'
@@ -21,6 +21,8 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<App />} />
           <Route path="/quantum" element={<QuantumLab />} />
           <Route path="/lab" element={<QuantumLab />} />
+          {/* Redirect old /viz/* routes to /quantum */}
+          <Route path="/viz/*" element={<Navigate to="/quantum" replace />} />
         </Routes>
       </BrowserRouter>
     </I18nProvider>
