@@ -1,0 +1,210 @@
+# VIBEE BitNet Benchmark Tests Specification
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: benchmark_tests
+version: "1.0.0"
+language: python
+module: tests
+
+description: |
+  Unit тесты для BitNet Benchmark Suite.
+  Используют mock FPGA драйвер для изолированного тестирования.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Типы данных
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MockBitNet:
+    description: "Mock объект для имитации BitNet драйвера"
+    fields:
+      device: String
+      model_path: Option<String>
+      is_open: Bool
+      latency_ms: Float
+      throughput_tps: Float
+      bandwidth_gbps: Float
+
+  TestResult:
+    description: "Результат теста"
+    fields:
+      name: String
+      passed: Bool
+      message: String
+      duration_ms: Float
+
+  TestSuite:
+    description: "Набор тестов"
+    fields:
+      name: String
+      tests: List<TestResult>
+      passed_count: Int
+      failed_count: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Поведения - Mock Driver
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # --- Mock BitNet Driver ---
+  - name: mock_bitnet_init
+    given: Параметры устройства и модели
+    when: Создание mock драйвера
+    then: Возвращает настроенный mock объект
+
+  - name: mock_bitnet_inference
+    given: Mock драйвер и входные данные
+    when: Вызов inference
+    then: Возвращает фиктивный результат с заданной задержкой
+
+  - name: mock_bitnet_get_status
+    given: Mock драйвер
+    when: Запрос статуса
+    then: Возвращает фиктивный статус IDLE
+
+  - name: mock_bitnet_get_performance
+    given: Mock драйвер
+    when: Запрос метрик производительности
+    then: Возвращает заданные метрики
+
+  # --- Latency Tests ---
+  - name: test_latency_benchmark_init
+    given: Mock драйвер
+    when: Создание LatencyBenchmark
+    then: Объект создан без ошибок
+
+  - name: test_latency_benchmark_run
+    given: LatencyBenchmark с mock драйвером
+    when: Запуск бенчмарка с 10 итерациями
+    then: Результат содержит mean, p50, p95, p99
+
+  - name: test_latency_statistics
+    given: Список измерений latency
+    when: Вычисление статистик
+    then: Все percentiles корректны
+
+  # --- Throughput Tests ---
+  - name: test_throughput_benchmark_init
+    given: Mock драйвер
+    when: Создание ThroughputBenchmark
+    then: Объект создан без ошибок
+
+  - name: test_throughput_benchmark_run
+    given: ThroughputBenchmark с mock драйвером
+    when: Запуск с input_length=128, output_length=64
+    then: Результат содержит tokens_per_second
+
+  - name: test_throughput_calculation
+    given: Время генерации и количество токенов
+    when: Вычисление throughput
+    then: tokens/sec = tokens / time
+
+  # --- Memory Tests ---
+  - name: test_memory_benchmark_init
+    given: Mock драйвер
+    when: Создание MemoryBenchmark
+    then: Объект создан без ошибок
+
+  - name: test_memory_benchmark_run
+    given: MemoryBenchmark с mock драйвером
+    when: Запуск с transfer_size=65536
+    then: Результат содержит bandwidth_gbps
+
+  - name: test_bandwidth_calculation
+    given: Размер данных и время передачи
+    when: Вычисление bandwidth
+    then: GB/s = bytes / time / 1e9
+
+  # --- Report Tests ---
+  - name: test_report_generator_init
+    given: BenchmarkSuite с результатами
+    when: Создание ReportGenerator
+    then: Объект создан без ошибок
+
+  - name: test_report_to_json
+    given: ReportGenerator с данными
+    when: Генерация JSON
+    then: Валидный JSON с полями name, results, metrics
+
+  - name: test_report_to_csv
+    given: ReportGenerator с данными
+    when: Генерация CSV
+    then: CSV с заголовками и данными
+
+  - name: test_report_to_markdown
+    given: ReportGenerator с данными
+    when: Генерация Markdown
+    then: Markdown таблица с результатами
+
+  # --- CLI Tests ---
+  - name: test_cli_parse_args
+    given: Аргументы командной строки
+    when: Парсинг --model model.bin --iterations 50
+    then: args.model == "model.bin", args.iterations == 50
+
+  - name: test_cli_help
+    given: Аргумент --help
+    when: Вызов CLI
+    then: Выводит справку без ошибок
+
+  - name: test_cli_invalid_model
+    given: Несуществующий файл модели
+    when: Запуск CLI
+    then: Ошибка с понятным сообщением
+
+  # --- Runner Tests ---
+  - name: test_runner_setup
+    given: Mock драйвер
+    when: runner.setup()
+    then: Драйвер инициализирован
+
+  - name: test_runner_run_all
+    given: BenchmarkRunner с mock драйвером
+    when: runner.run_all()
+    then: Все бенчмарки выполнены, suite содержит результаты
+
+  - name: test_runner_context_manager
+    given: BenchmarkRunner
+    when: Использование with runner
+    then: setup() и teardown() вызваны автоматически
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Тестовые данные
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_data:
+  mock_latencies:
+    - 10.5
+    - 11.2
+    - 10.8
+    - 12.1
+    - 10.3
+    - 11.0
+    - 10.9
+    - 11.5
+    - 10.7
+    - 11.1
+
+  expected_statistics:
+    min: 10.3
+    max: 12.1
+    mean: 11.01
+    p50: 10.95
+    p95: 12.1
+    p99: 12.1
+
+  mock_config:
+    latency_ms: 10.0
+    throughput_tps: 1000.0
+    bandwidth_gbps: 50.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Метаданные
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "VIBEE Project"
+  created: "2025-01-25"
+  test_framework: "pytest"
+  coverage_target: 80
