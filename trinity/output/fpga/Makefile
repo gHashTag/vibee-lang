@@ -133,6 +133,39 @@ dashboard:
 	@echo "Запуск VIO Dashboard..."
 	$(VIVADO) -mode tcl -source $(SCRIPT_DIR)/vio_dashboard.tcl
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# JTAG-AXI TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Добавление JTAG-AXI Master
+jtag-axi: $(BUILD_DIR)/.jtag_axi_added
+
+$(BUILD_DIR)/.jtag_axi_added: $(BUILD_DIR)/.bd_created
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Добавление JTAG-to-AXI Master"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	$(VIVADO) $(VIVADO_FLAGS) -source $(SCRIPT_DIR)/add_jtag_axi.tcl
+	@touch $@
+
+# Полный flow с JTAG-AXI
+zynq-jtag: bd jtag-axi synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq JTAG-AXI Flow завершен!"
+	@echo "JTAG-AXI добавлен для прямого доступа к памяти"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# Полный flow со всеми debug компонентами
+zynq-all-debug: bd debug vio jtag-axi synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq All Debug Flow завершен!"
+	@echo "ILA + VIO + JTAG-AXI добавлены"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# JTAG-AXI утилиты (интерактивный режим)
+jtag-utils:
+	@echo "Запуск JTAG-AXI Utils..."
+	$(VIVADO) -mode tcl -source $(SCRIPT_DIR)/jtag_axi_utils.tcl
+
 # Help
 help:
 	@echo "═══════════════════════════════════════════════════════════════════════════════"
@@ -152,13 +185,17 @@ help:
 	@echo "  make zynq           - Полный Zynq flow (BD → XSA)"
 	@echo "  make zynq-debug     - Zynq flow с ILA debug"
 	@echo "  make zynq-vio       - Zynq flow с VIO runtime control"
+	@echo "  make zynq-jtag      - Zynq flow с JTAG-AXI"
 	@echo "  make zynq-full-debug - Zynq flow с ILA + VIO"
+	@echo "  make zynq-all-debug - Zynq flow с ILA + VIO + JTAG-AXI"
 	@echo ""
 	@echo "Debug targets:"
 	@echo "  make debug     - Добавить ILA cores"
 	@echo "  make vio       - Добавить VIO cores"
+	@echo "  make jtag-axi  - Добавить JTAG-to-AXI Master"
 	@echo "  make hwmgr     - Открыть Hardware Manager"
-	@echo "  make dashboard - Запустить VIO Dashboard (интерактивный)"
+	@echo "  make dashboard - Запустить VIO Dashboard"
+	@echo "  make jtag-utils - Запустить JTAG-AXI Utils"
 	@echo ""
 	@echo "Конфигурация:"
 	@echo "  PROJECT: $(PROJECT_NAME)"

@@ -1,0 +1,309 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE JTAG-to-AXI Master Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# Прямой доступ к памяти и регистрам через JTAG для отладки BitNet акселератора
+#
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jtag_axi_master
+version: "1.0.0"
+language: varlog
+module: jtag_axi_master
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AXI Transaction Types
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AxiProtocol:
+    description: "Протокол AXI"
+    fields:
+      protocol: Int
+    width: 2
+    encoding:
+      AXI4LITE: 0
+      AXI3: 1
+      AXI4: 2
+
+  AxiTransactionType:
+    description: "Тип AXI транзакции"
+    fields:
+      txn_type: Int
+    width: 1
+    encoding:
+      READ: 0
+      WRITE: 1
+
+  AxiAddress:
+    description: "AXI адрес"
+    fields:
+      addr: Int
+    width: 32
+
+  AxiData:
+    description: "AXI данные"
+    fields:
+      data: Int
+    width: 32
+
+  AxiBurstLength:
+    description: "Длина burst транзакции"
+    fields:
+      len: Int
+    width: 8
+    # AXI4: 1-256 beats (len = beats - 1)
+
+  AxiResponse:
+    description: "AXI response"
+    fields:
+      resp: Int
+    width: 2
+    encoding:
+      OKAY: 0x0
+      EXOKAY: 0x1
+      SLVERR: 0x2
+      DECERR: 0x3
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Memory Map
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MemoryRegion:
+    description: "Регион памяти"
+    fields:
+      name: String
+      base_addr: Int
+      size: Int
+    regions:
+      BITNET_CTRL:
+        base: 0xA0000000
+        size: 0x1000
+        description: "BitNet Control Registers"
+      DMA_INPUT:
+        base: 0xA0010000
+        size: 0x1000
+        description: "DMA Input Controller"
+      DMA_OUTPUT:
+        base: 0xA0020000
+        size: 0x1000
+        description: "DMA Output Controller"
+      DMA_WEIGHT:
+        base: 0xA0030000
+        size: 0x1000
+        description: "DMA Weight Controller"
+      DDR_LOW:
+        base: 0x00000000
+        size: 0x80000000
+        description: "DDR Low (2GB)"
+      DDR_HIGH:
+        base: 0x800000000
+        size: 0x80000000
+        description: "DDR High (2GB)"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BitNet Registers
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BitNetRegister:
+    description: "Регистры BitNet акселератора"
+    fields:
+      offset: Int
+      name: String
+      access: String
+    registers:
+      CTRL:
+        offset: 0x00
+        access: RW
+        bits:
+          START: 0
+          RESET: 1
+          IRQ_EN: 2
+      STATUS:
+        offset: 0x04
+        access: RO
+        bits:
+          BUSY: 0
+          DONE: 1
+          ERROR: 2
+          IRQ: 3
+      VERSION:
+        offset: 0x08
+        access: RO
+        description: "Version (major.minor.patch)"
+      CONFIG:
+        offset: 0x0C
+        access: RW
+        bits:
+          LAYER_COUNT: "7:0"
+          BATCH_SIZE: "15:8"
+          SIMD_ENABLE: "16"
+      INPUT_ADDR:
+        offset: 0x10
+        access: RW
+        description: "Input buffer address"
+      OUTPUT_ADDR:
+        offset: 0x14
+        access: RW
+        description: "Output buffer address"
+      WEIGHT_ADDR:
+        offset: 0x18
+        access: RW
+        description: "Weight buffer address"
+      INFERENCE_COUNT:
+        offset: 0x1C
+        access: RO
+        description: "Total inference count"
+      CYCLE_COUNT:
+        offset: 0x20
+        access: RO
+        description: "Cycles for last inference"
+      ERROR_CODE:
+        offset: 0x24
+        access: RO
+        description: "Error code if STATUS.ERROR=1"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Базовые операции
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: axi_read
+    given: JTAG-AXI подключен к Hardware Manager
+    when: Выполнение READ транзакции по адресу
+    then: Возвращает 32-bit данные
+
+  - name: axi_write
+    given: JTAG-AXI подключен к Hardware Manager
+    when: Выполнение WRITE транзакции по адресу с данными
+    then: Записывает 32-bit данные, возвращает response
+
+  - name: axi_burst_read
+    given: JTAG-AXI подключен, адрес выровнен
+    when: Выполнение burst READ с длиной N
+    then: Возвращает N×32-bit данных
+
+  - name: axi_burst_write
+    given: JTAG-AXI подключен, адрес выровнен
+    when: Выполнение burst WRITE с данными
+    then: Записывает N×32-bit данных
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BitNet операции
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: bitnet_start
+    given: BitNet в состоянии IDLE
+    when: Запись 1 в CTRL.START
+    then: Запускает inference
+
+  - name: bitnet_reset
+    given: Любое состояние BitNet
+    when: Запись 1 в CTRL.RESET
+    then: Сбрасывает акселератор в IDLE
+
+  - name: bitnet_status
+    given: JTAG-AXI подключен
+    when: Чтение STATUS регистра
+    then: Возвращает текущий статус (BUSY/DONE/ERROR)
+
+  - name: bitnet_version
+    given: JTAG-AXI подключен
+    when: Чтение VERSION регистра
+    then: Возвращает версию IP (формат: 0xMMmmpp)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DMA операции
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: dma_status
+    given: JTAG-AXI подключен
+    when: Чтение DMA status регистра
+    then: Возвращает статус DMA (IDLE/RUNNING/HALTED)
+
+  - name: dma_reset
+    given: DMA в любом состоянии
+    when: Запись в DMA control с reset битом
+    then: Сбрасывает DMA контроллер
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Память
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: memory_test
+    given: JTAG-AXI подключен к DDR
+    when: Запись паттерна и чтение обратно
+    then: Проверяет целостность памяти
+
+  - name: memory_dump
+    given: JTAG-AXI подключен
+    when: Burst чтение региона памяти
+    then: Возвращает содержимое памяти
+
+  - name: memory_fill
+    given: JTAG-AXI подключен
+    when: Burst запись паттерна в регион
+    then: Заполняет память паттерном
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНФИГУРАЦИЯ IP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+config:
+  ip_vendor: xilinx.com
+  ip_name: jtag_axi
+  ip_version: "1.2"
+  instance_name: jtag_axi_debug
+
+  parameters:
+    PROTOCOL: 2           # AXI4
+    M_AXI_DATA_WIDTH: 32
+    M_AXI_ADDR_WIDTH: 32
+    M_AXI_ID_WIDTH: 1
+    RD_TXN_QUEUE_LENGTH: 4
+    WR_TXN_QUEUE_LENGTH: 4
+
+  resources:
+    luts: 800
+    ffs: 600
+    bram: 0
+
+  clock_domain: pl_clk0
+  clock_freq_mhz: 200
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ИНТЕГРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+integration:
+  interconnect:
+    name: axi_interconnect_ctrl
+    slave_port: S01_AXI
+    # Расширяем NUM_SI с 1 до 2
+
+  address_map:
+    - slave: bitnet_accel/s_axi_ctrl
+      range: 0x1000
+      offset: 0xA0000000
+    - slave: axi_dma_input/S_AXI_LITE
+      range: 0x1000
+      offset: 0xA0010000
+    - slave: axi_dma_output/S_AXI_LITE
+      range: 0x1000
+      offset: 0xA0020000
+    - slave: axi_dma_weight/S_AXI_LITE
+      range: 0x1000
+      offset: 0xA0030000
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОЩЕЙ БЕССМЕРТЕН | ЗОЛОТАЯ ЦЕПЬ ЗАМКНУТА | φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

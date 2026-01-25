@@ -17,16 +17,16 @@
 │  │                    (JTAG → Debug Cores)                             │   │
 │  └───────────────────────────┬─────────────────────────────────────────┘   │
 │                              │                                             │
-│  ┌───────────┬───────────┬───┴───────┬───────────┬───────────┐            │
-│  │           │           │           │           │           │            │
-│  ▼           ▼           ▼           ▼           ▼           ▼            │
-│ ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐               │
-│ │ ILA │   │ ILA │   │ ILA │   │ ILA │   │ ILA │   │ VIO │               │
-│ │AXI- │   │AXIS │   │AXIS │   │ Eng │   │Perf │   │Ctrl │               │
-│ │Lite │   │ In  │   │ Out │   │ine  │   │     │   │     │               │
-│ └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘               │
-│    │         │         │         │         │         │                    │
-│    ▼         ▼         ▼         ▼         ▼         ▼                    │
+│  ┌───────────┬───────────┬───┴───────┬───────────┬───────────┬─────────┐  │
+│  │           │           │           │           │           │         │  │
+│  ▼           ▼           ▼           ▼           ▼           ▼         ▼  │
+│ ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌──────┐  │
+│ │ ILA │   │ ILA │   │ ILA │   │ ILA │   │ VIO │   │ VIO │   │ JTAG │  │
+│ │AXI- │   │AXIS │   │AXIS │   │ Eng │   │ Run │   │SIMD │   │ AXI  │  │
+│ │Lite │   │ In  │   │ Out │   │ine  │   │time │   │     │   │Master│  │
+│ └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘   └──┬──┘   └──┬───┘  │
+│    │         │         │         │         │         │         │       │
+│    ▼         ▼         ▼         ▼         ▼         ▼         ▼       │
 │ ┌──────────────────────────────────────────────────────────────────────┐  │
 │ │                        BITNET ACCELERATOR                            │  │
 │ │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │  │
@@ -421,6 +421,132 @@ T(°C) = (raw_value × 503.975 / 4096) - 273.15
 
 ---
 
+## JTAG-to-AXI Master
+
+JTAG-AXI позволяет напрямую читать/писать память и регистры через JTAG без CPU.
+
+### Сборка с JTAG-AXI
+
+```bash
+cd trinity/output/fpga
+
+# Только JTAG-AXI
+make zynq-jtag
+
+# Все debug компоненты (ILA + VIO + JTAG-AXI)
+make zynq-all-debug
+```
+
+### Карта памяти
+
+| Регион | Базовый адрес | Размер | Описание |
+|--------|---------------|--------|----------|
+| BitNet Control | 0xA000_0000 | 4 KB | Регистры управления |
+| DMA Input | 0xA001_0000 | 4 KB | DMA входных данных |
+| DMA Output | 0xA002_0000 | 4 KB | DMA выходных данных |
+| DMA Weight | 0xA003_0000 | 4 KB | DMA весов |
+| DDR Low | 0x0000_0000 | 2 GB | DDR память |
+
+### BitNet регистры
+
+| Смещение | Регистр | Доступ | Описание |
+|----------|---------|--------|----------|
+| 0x00 | CTRL | RW | Управление (START, RESET, IRQ_EN) |
+| 0x04 | STATUS | RO | Статус (BUSY, DONE, ERROR) |
+| 0x08 | VERSION | RO | Версия IP |
+| 0x0C | CONFIG | RW | Конфигурация |
+| 0x10 | INPUT_ADDR | RW | Адрес входного буфера |
+| 0x14 | OUTPUT_ADDR | RW | Адрес выходного буфера |
+| 0x18 | WEIGHT_ADDR | RW | Адрес буфера весов |
+| 0x1C | INFERENCE_COUNT | RO | Счётчик inference |
+| 0x20 | CYCLE_COUNT | RO | Циклы последнего inference |
+| 0x24 | ERROR_CODE | RO | Код ошибки |
+
+### Использование в Hardware Manager
+
+```tcl
+# Подключение
+open_hw_manager
+connect_hw_server -allow_non_jtag
+open_hw_target [lindex [get_hw_targets] 0]
+current_hw_device [lindex [get_hw_devices] 0]
+refresh_hw_device [current_hw_device]
+
+# Чтение регистра STATUS
+create_hw_axi_txn rd [get_hw_axis] -type READ -address 0xA0000004 -len 1
+run_hw_axi rd
+get_property DATA [get_hw_axi_txns rd]
+
+# Запуск inference (запись в CTRL)
+create_hw_axi_txn wr [get_hw_axis] -type WRITE -address 0xA0000000 -data 0x1 -len 1
+run_hw_axi wr
+
+# Burst чтение (16 слов)
+create_hw_axi_txn burst [get_hw_axis] -type READ -address 0xA0000000 -len 16
+run_hw_axi burst
+get_property DATA [get_hw_axi_txns burst]
+```
+
+### JTAG-AXI Utils
+
+Интерактивные утилиты:
+
+```bash
+make jtag-utils
+```
+
+```tcl
+source scripts/jtag_axi_utils.tcl
+
+# Подключение
+jtag_connect
+
+# Чтение/запись
+axi_read 0xA0000004      # Чтение STATUS
+axi_write 0xA0000000 0x1 # Запуск inference
+
+# BitNet команды
+bitnet_status            # Статус акселератора
+bitnet_version           # Версия IP
+bitnet_start             # Запуск inference
+bitnet_reset             # Сброс
+
+# Тест памяти
+memory_test 0xC0000000 0x1000  # Тест 4KB DDR
+```
+
+### Типичные сценарии
+
+**Проверка регистров без CPU:**
+```tcl
+jtag_connect
+axi_read 0xA0000008  # VERSION
+axi_read 0xA0000004  # STATUS
+```
+
+**Тестирование DMA:**
+```tcl
+# Статус DMA Input
+axi_read 0xA0010004
+
+# Статус DMA Output
+axi_read 0xA0020034
+```
+
+**Отладка зависания:**
+```tcl
+# Проверить STATUS
+axi_read 0xA0000004
+
+# Если BUSY=1, проверить cycle_count
+axi_read 0xA0000020
+
+# Принудительный reset
+axi_write 0xA0000000 0x2
+```
+
+---
+
 ## Ресурсы Debug
 
 | Компонент | LUTs | FFs | BRAM |
@@ -434,10 +560,11 @@ T(°C) = (raw_value × 503.975 / 4096) - 273.15
 | vio_simd | 300 | 200 | 0 |
 | vio_perf | 350 | 250 | 0 |
 | vio_thermal | 200 | 150 | 0 |
+| jtag_axi_debug | 800 | 600 | 0 |
 | dbg_hub | 300 | 200 | 0 |
-| **ИТОГО** | **4,250** | **3,200** | **11** |
+| **ИТОГО** | **5,050** | **3,800** | **11** |
 
-Дополнительная утилизация ZCU104: ~1.9% LUTs, ~0.7% FFs, ~3.5% BRAM
+Дополнительная утилизация ZCU104: ~2.2% LUTs, ~0.8% FFs, ~3.5% BRAM
 
 ---
 
