@@ -27,6 +27,7 @@ const MilestonesSection = lazy(() => import('./components/sections/MilestonesSec
 const VisionSection = lazy(() => import('./components/sections/VisionSection'))
 const GTMSection = lazy(() => import('./components/sections/GTMSection'))
 const CompetitionSection = lazy(() => import('./components/sections/CompetitionSection'))
+const HLSCompetitionSection = lazy(() => import('./components/sections/HLSCompetitionSection'))
 const RoadmapSection = lazy(() => import('./components/sections/RoadmapSection'))
 const TeamSection = lazy(() => import('./components/sections/TeamSection'))
 const EcosystemSection = lazy(() => import('./components/sections/EcosystemSection'))
@@ -71,6 +72,7 @@ export default function App() {
         <VisionSection />
         <GTMSection />
         <CompetitionSection />
+        <HLSCompetitionSection />
         <RoadmapSection />
         <TeamSection />
         <EcosystemSection />
