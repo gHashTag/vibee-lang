@@ -137,16 +137,20 @@ export default function SU3MiningRealitySection() {
 
         <div style={{ 
           display: 'grid', 
-          gridTemplateColumns: 'minmax(200px, 1.2fr) auto minmax(200px, 1fr)', 
-          gap: '1.5rem', 
+          gridTemplateColumns: '1fr auto 1fr', 
+          gap: '2rem', 
           alignItems: 'center'
         }}>
           {/* Wallet Info (REAL DATA) */}
           <div style={{
             background: 'rgba(255,255,255,0.01)',
             borderLeft: '2px solid var(--accent)',
-            padding: '1rem',
-            textAlign: 'left'
+            padding: '1.2rem',
+            textAlign: 'left',
+            minHeight: '100px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center'
           }}>
             <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.4rem' }}>
               {reality.wallet}
@@ -159,45 +163,53 @@ export default function SU3MiningRealitySection() {
             </div>
           </div>
 
-          {/* Central SU(3) Core Resonance */}
-          <div style={{ position: 'relative', width: '100px', height: '100px' }}>
+          {/* Large Central SU(3) Core Resonance */}
+          <div style={{ position: 'relative', width: '180px', height: '180px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             <motion.div
-              animate={{ opacity: [0.1, 0.2, 0.1], scale: [1, 1.05, 1] }}
-              transition={{ duration: 3, repeat: Infinity }}
+              animate={{ opacity: [0.1, 0.3, 0.1], scale: [1, 1.15, 1] }}
+              transition={{ duration: 4, repeat: Infinity }}
               style={{
                 position: 'absolute',
-                top: '-10px', left: '-10px', right: '-10px', bottom: '-10px',
-                background: 'radial-gradient(circle, rgba(0, 229, 153, 0.15) 0%, transparent 75%)',
+                inset: '-15px',
+                background: 'radial-gradient(circle, rgba(0, 229, 153, 0.25) 0%, transparent 75%)',
                 zIndex: 0
               }}
             />
             
             <motion.div
               animate={{ rotate: 360 }}
-              transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
+              transition={{ duration: 45, repeat: Infinity, ease: "linear" }}
               style={{
                 width: '100%',
                 height: '100%',
                 borderRadius: '50%',
-                border: '1.5px double rgba(0, 229, 153, 0.3)',
+                border: '2px double rgba(0, 229, 153, 0.4)',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
                 alignItems: 'center',
-                background: 'rgba(0,0,0,0.98)',
+                background: 'rgba(0,0,0,0.95)',
                 zIndex: 1,
                 position: 'relative',
-                boxShadow: '0 0 10px rgba(0, 229, 153, 0.05)'
+                boxShadow: '0 0 30px rgba(0, 229, 153, 0.15)'
               }}
             >
-              <div style={{ fontSize: '0.4rem', fontWeight: '800', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', marginBottom: '0.1rem' }}>{reality.coreLabel}</div>
-              <div style={{ fontSize: '1.6rem', fontWeight: '900', color: '#00E599', lineHeight: 1 }}>SU(3)</div>
-              <div style={{ fontSize: '0.35rem', color: 'var(--accent)', marginTop: '0.2rem', opacity: 0.6 }}>{reality.phaseLocked}</div>
+              <div style={{ fontSize: '0.5rem', fontWeight: '800', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.15em', marginBottom: '0.4rem' }}>{reality.coreLabel}</div>
+              <div style={{ fontSize: '3rem', fontWeight: '900', color: '#00E599', lineHeight: 1, filter: 'drop-shadow(0 0 15px rgba(0, 229, 153, 0.5))' }}>SU(3)</div>
+              <div style={{ fontSize: '0.45rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.7, letterSpacing: '0.05em' }}>{reality.phaseLocked}</div>
             </motion.div>
           </div>
 
           {/* Network Target (REAL DATA) */}
-          <div style={{ textAlign: 'right', background: 'rgba(255,255,255,0.01)', padding: '1rem' }}>
+          <div style={{ 
+            textAlign: 'right', 
+            background: 'rgba(255,255,255,0.01)', 
+            padding: '1.2rem',
+            minHeight: '100px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center'
+          }}>
             <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.4rem' }}>
               {reality.target}
             </div>
