@@ -42,6 +42,38 @@ XDC_SRCS := $(wildcard $(CONSTRAINT_DIR)/*.xdc)
 # Default target
 all: bitstream
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZYNQ BLOCK DESIGN TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Создание Zynq Block Design (для ZCU104)
+bd: $(BUILD_DIR)/.bd_created
+
+$(BUILD_DIR)/.bd_created:
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Создание Zynq Block Design для ZCU104"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@mkdir -p $(BUILD_DIR)
+	$(VIVADO) $(VIVADO_FLAGS) -source $(SCRIPT_DIR)/create_block_design.tcl
+	@touch $@
+
+# Экспорт XSA для Vitis/PetaLinux
+xsa: $(BUILD_DIR)/.xsa_exported
+
+$(BUILD_DIR)/.xsa_exported: $(BUILD_DIR)/.impl_done
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Экспорт Hardware Platform (XSA)"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	$(VIVADO) $(VIVADO_FLAGS) -source $(SCRIPT_DIR)/export_hardware.tcl
+	@touch $@
+
+# Полный flow для Zynq
+zynq: bd synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq Flow завершен!"
+	@echo "XSA файл: output/bitnet_zcu104_hw.xsa"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
 # Help
 help:
 	@echo "═══════════════════════════════════════════════════════════════════════════════"

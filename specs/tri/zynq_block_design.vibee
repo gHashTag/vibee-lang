@@ -1,0 +1,257 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ZYNQ BLOCK DESIGN - PS-PL Интеграция для BitNet
+# ═══════════════════════════════════════════════════════════════════════════════
+# Полная конфигурация Zynq UltraScale+ для BitNet акселератора:
+# - Настройка Processing System (PS)
+# - Подключение Programmable Logic (PL)
+# - AXI Interconnect маршрутизация
+# - DMA контроллеры для потоковой передачи
+#
+# Целевая платформа: ZCU104 (xczu7ev-ffvc1156-2-e)
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: zynq_block_design
+version: "1.0.0"
+language: tcl_generator
+module: bitnet_zynq_system
+author: "VIBEE Team"
+target_board: zcu104
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНФИГУРАЦИЯ ПЛАТЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+board_config:
+  part: "xczu7ev-ffvc1156-2-e"
+  board_part: "xilinx.com:zcu104:part0:1.1"
+  pl_clock_freq_mhz: 200
+  ps_clock_freq_mhz: 1200
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROCESSING SYSTEM (PS) КОНФИГУРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ps_config:
+  # Ядра ARM Cortex-A53
+  apu:
+    enabled: true
+    cores: 4
+    frequency_mhz: 1200
+  
+  # Память DDR4
+  ddr:
+    enabled: true
+    type: DDR4
+    size_gb: 2
+    frequency_mhz: 1066
+  
+  # Периферия
+  peripherals:
+    uart0: enabled
+    uart1: disabled
+    gpio: enabled
+    sd0: enabled
+    usb0: enabled
+  
+  # PL интерфейсы
+  pl_interfaces:
+    # High Performance порты для PL
+    hp0:
+      enabled: true
+      data_width: 64
+      type: axi_slave
+      description: "AXI-Lite Control"
+    hp1:
+      enabled: true
+      data_width: 64
+      type: axi_slave
+      description: "AXI-Stream Input DMA"
+    hp2:
+      enabled: true
+      data_width: 64
+      type: axi_slave
+      description: "AXI-Stream Output DMA"
+    hp3:
+      enabled: true
+      data_width: 64
+      type: axi_slave
+      description: "AXI-Stream Weight DMA"
+    
+    # PL тактовые сигналы
+    pl_clk0:
+      enabled: true
+      frequency_mhz: 200
+    pl_clk1:
+      enabled: false
+    
+    # PL сброс
+    pl_resetn0:
+      enabled: true
+      polarity: active_low
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROGRAMMABLE LOGIC (PL) КОМПОНЕНТЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pl_components:
+  # AXI Interconnect для управления
+  axi_interconnect_ctrl:
+    type: axi_interconnect
+    num_masters: 1
+    num_slaves: 1
+    data_width: 32
+    addr_width: 32
+    
+  # AXI DMA для входных данных
+  axi_dma_input:
+    type: axi_dma
+    mode: scatter_gather
+    data_width: 64
+    burst_size: 16
+    mm2s_enabled: true
+    s2mm_enabled: false
+    
+  # AXI DMA для выходных данных
+  axi_dma_output:
+    type: axi_dma
+    mode: scatter_gather
+    data_width: 64
+    burst_size: 16
+    mm2s_enabled: false
+    s2mm_enabled: true
+    
+  # AXI DMA для весов
+  axi_dma_weight:
+    type: axi_dma
+    mode: simple
+    data_width: 64
+    burst_size: 256
+    mm2s_enabled: true
+    s2mm_enabled: false
+    
+  # BitNet акселератор
+  bitnet_accelerator:
+    type: custom_ip
+    module: bitnet_synth_wrapper_top
+    interfaces:
+      s_axi_lite: axi_lite_slave
+      s_axis_input: axis_slave
+      m_axis_output: axis_master
+      s_axis_weight: axis_slave
+      irq: interrupt
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АДРЕСНОЕ ПРОСТРАНСТВО
+# ═══════════════════════════════════════════════════════════════════════════════
+
+address_map:
+  # BitNet регистры управления
+  bitnet_ctrl:
+    base_addr: 0xA0000000
+    range: 0x1000
+    slave: bitnet_accelerator/s_axi_lite
+    
+  # DMA регистры
+  dma_input:
+    base_addr: 0xA0010000
+    range: 0x1000
+    slave: axi_dma_input/S_AXI_LITE
+    
+  dma_output:
+    base_addr: 0xA0020000
+    range: 0x1000
+    slave: axi_dma_output/S_AXI_LITE
+    
+  dma_weight:
+    base_addr: 0xA0030000
+    range: 0x1000
+    slave: axi_dma_weight/S_AXI_LITE
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# СОЕДИНЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+connections:
+  # Тактовые сигналы
+  clocks:
+    - source: zynq_ps/pl_clk0
+      targets:
+        - axi_interconnect_ctrl/ACLK
+        - axi_dma_input/s_axi_lite_aclk
+        - axi_dma_output/s_axi_lite_aclk
+        - axi_dma_weight/s_axi_lite_aclk
+        - bitnet_accelerator/aclk
+        
+  # Сигналы сброса
+  resets:
+    - source: zynq_ps/pl_resetn0
+      targets:
+        - axi_interconnect_ctrl/ARESETN
+        - axi_dma_input/axi_resetn
+        - axi_dma_output/axi_resetn
+        - axi_dma_weight/axi_resetn
+        - bitnet_accelerator/aresetn
+        
+  # AXI соединения
+  axi:
+    # PS -> AXI Interconnect
+    - master: zynq_ps/M_AXI_HPM0_FPD
+      slave: axi_interconnect_ctrl/S00_AXI
+      
+    # AXI Interconnect -> BitNet
+    - master: axi_interconnect_ctrl/M00_AXI
+      slave: bitnet_accelerator/s_axi_lite
+      
+    # DMA -> PS Memory
+    - master: axi_dma_input/M_AXI_MM2S
+      slave: zynq_ps/S_AXI_HP0_FPD
+      
+    - master: axi_dma_output/M_AXI_S2MM
+      slave: zynq_ps/S_AXI_HP1_FPD
+      
+    - master: axi_dma_weight/M_AXI_MM2S
+      slave: zynq_ps/S_AXI_HP2_FPD
+      
+  # AXI-Stream соединения
+  axis:
+    # DMA -> BitNet Input
+    - master: axi_dma_input/M_AXIS_MM2S
+      slave: bitnet_accelerator/s_axis_input
+      
+    # BitNet Output -> DMA
+    - master: bitnet_accelerator/m_axis_output
+      slave: axi_dma_output/S_AXIS_S2MM
+      
+    # DMA -> BitNet Weights
+    - master: axi_dma_weight/M_AXIS_MM2S
+      slave: bitnet_accelerator/s_axis_weight
+      
+  # Прерывания
+  interrupts:
+    - source: bitnet_accelerator/irq
+      target: zynq_ps/pl_ps_irq0[0]
+      
+    - source: axi_dma_input/mm2s_introut
+      target: zynq_ps/pl_ps_irq0[1]
+      
+    - source: axi_dma_output/s2mm_introut
+      target: zynq_ps/pl_ps_irq0[2]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# РЕСУРСЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Компонент              | LUTs   | FFs    | BRAM | DSP
+# -----------------------|--------|--------|------|-----
+# Zynq PS                | 0      | 0      | 0    | 0
+# AXI Interconnect       | 2,000  | 1,500  | 0    | 0
+# AXI DMA (x3)           | 3,000  | 2,000  | 3    | 0
+# BitNet Accelerator     | 15,300 | 11,600 | 18   | 1
+# -----------------------|--------|--------|------|-----
+# ИТОГО                  | 20,300 | 15,100 | 21   | 1
+#
+# ZCU104 Утилизация: ~8.8% LUTs, ~3.3% FFs, ~6.7% BRAM
+#
+# ═══════════════════════════════════════════════════════════════════════════════
