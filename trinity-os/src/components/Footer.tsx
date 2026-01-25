@@ -56,43 +56,53 @@ export default function Footer() {
             </ul>
           </div>
 
-          {/* Visualizations */}
+          {/* Quantum Lab */}
           <div>
             <h4 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '1rem', color: 'var(--muted)' }}>
-              {t.footer?.vizTitle || 'Quantum Visualizations'}
+              {t.footer?.vizTitle || 'Quantum Lab'}
             </h4>
-            <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/visualizations" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🔮</span> All Visualizations
+            <motion.a 
+              href="/quantum"
+              whileHover={{ scale: 1.02 }}
+              style={{ 
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                padding: '1rem',
+                background: 'rgba(0, 229, 153, 0.1)',
+                border: '1px solid rgba(0, 229, 153, 0.2)',
+                borderRadius: '12px',
+                textDecoration: 'none',
+                marginBottom: '1rem'
+              }}
+            >
+              <span style={{ fontSize: '2rem' }}>🔮</span>
+              <div>
+                <div style={{ color: 'var(--accent)', fontWeight: 600, fontSize: '1rem' }}>
+                  Launch Quantum Lab
+                </div>
+                <div style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>
+                  29 interactive visualizations
+                </div>
+              </div>
+            </motion.a>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {['⚛️', '🧠', '🌊', '🔗', '🌀', '👁️', '🔺', '🔥'].map((icon, i) => (
+                <a 
+                  key={i}
+                  href="/quantum" 
+                  style={{ 
+                    padding: '0.5rem',
+                    background: 'rgba(255,255,255,0.05)',
+                    borderRadius: '8px',
+                    textDecoration: 'none',
+                    fontSize: '1.2rem'
+                  }}
+                >
+                  {icon}
                 </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/viz/quantum-field" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>⚛️</span> Quantum Field
-                </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/viz/neural-network" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🧠</span> Neural Network
-                </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/viz/wave-interference" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🌊</span> Wave Interference
-                </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/viz/entanglement" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🔗</span> Entanglement
-                </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/viz/vortex" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🌀</span> Vortex Field
-                </a>
-              </motion.li>
-            </ul>
+              ))}
+            </div>
           </div>
 
           {/* Contact */}
