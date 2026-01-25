@@ -1,0 +1,408 @@
+name: update_processor
+version: "1.0.0"
+language: zig
+module: update_processor
+
+description: |
+  Update processor for VIBEE Telegram Bot.
+  Routes incoming updates to appropriate handlers.
+  Applies middleware chain before handler execution.
+
+imports:
+  - ../handlers/message_handler
+  - ../handlers/callback_handler
+  - ../handlers/payment_handler
+  - ../handlers/media_handler
+  - ../middleware/middleware_chain
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  UpdateProcessor:
+    description: "Main update processor"
+    fields:
+      handlers: HandlerRegistry
+      middleware: Object
+      config: ProcessorConfig
+      metrics: ProcessorMetrics
+
+  HandlerRegistry:
+    description: "Registered handlers"
+    fields:
+      message_handler: Object
+      callback_handler: Object
+      payment_handler: Object
+      media_handler: Object
+
+  ProcessorConfig:
+    description: "Processor configuration"
+    fields:
+      timeout_ms: Int
+      max_concurrent: Int
+      log_updates: Bool
+      log_responses: Bool
+
+  ProcessorMetrics:
+    description: "Processing metrics"
+    fields:
+      updates_total: Int
+      updates_by_type: Map<String, Int>
+      handlers_called: Map<String, Int>
+      errors_total: Int
+      avg_processing_ms: Float
+
+  Update:
+    description: "Telegram update"
+    fields:
+      update_id: Int
+      message: Option<Message>
+      edited_message: Option<Message>
+      callback_query: Option<CallbackQuery>
+      inline_query: Option<InlineQuery>
+      chosen_inline_result: Option<ChosenInlineResult>
+      pre_checkout_query: Option<PreCheckoutQuery>
+      successful_payment: Option<SuccessfulPayment>
+      poll: Option<Poll>
+      poll_answer: Option<PollAnswer>
+
+  UpdateType:
+    description: "Type of update"
+    values:
+      - message
+      - edited_message
+      - callback_query
+      - inline_query
+      - chosen_inline_result
+      - pre_checkout_query
+      - successful_payment
+      - poll
+      - poll_answer
+      - unknown
+
+  ProcessResult:
+    description: "Update processing result"
+    fields:
+      update_id: Int
+      update_type: UpdateType
+      handler_name: String
+      success: Bool
+      duration_ms: Int
+      error: Option<ProcessError>
+      response_sent: Bool
+
+  ProcessError:
+    description: "Processing error"
+    fields:
+      code: ProcessErrorCode
+      message: String
+      handler: Option<String>
+      recoverable: Bool
+
+  ProcessErrorCode:
+    description: "Error codes"
+    values:
+      - handler_not_found
+      - handler_error
+      - middleware_error
+      - timeout_error
+      - validation_error
+      - unknown_error
+
+  Message:
+    description: "Telegram message"
+    fields:
+      message_id: Int
+      from: Option<Object>
+      chat: Object
+      date: Int
+      text: Option<String>
+      entities: Option<List<Object>>
+      photo: Option<List<Object>>
+      video: Option<Object>
+      audio: Option<Object>
+      voice: Option<Object>
+      document: Option<Object>
+      successful_payment: Option<Object>
+
+  CallbackQuery:
+    description: "Callback query"
+    fields:
+      id: String
+      from: Object
+      message: Option<Object>
+      inline_message_id: Option<String>
+      chat_instance: String
+      data: Option<String>
+
+  PreCheckoutQuery:
+    description: "Pre-checkout query"
+    fields:
+      id: String
+      from: Object
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+
+  SuccessfulPayment:
+    description: "Successful payment"
+    fields:
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      telegram_payment_charge_id: String
+      provider_payment_charge_id: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_processor
+    given: HandlerRegistry and MiddlewareChain
+    when: Creating processor
+    then: |
+      1. Create default config
+      2. Initialize metrics
+      3. Return UpdateProcessor
+
+  - name: create_with_config
+    given: HandlerRegistry, MiddlewareChain, ProcessorConfig
+    when: Creating with custom config
+    then: |
+      1. Validate config
+      2. Initialize metrics
+      3. Return UpdateProcessor
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_update
+    given: UpdateProcessor and Update
+    when: Processing any update
+    then: |
+      1. Record start time
+      2. Detect update type
+      3. Log update if configured
+      4. Execute middleware chain
+      5. If middleware passes -> route to handler
+      6. Record result
+      7. Update metrics
+      8. Return ProcessResult
+
+  - name: detect_update_type
+    given: Update
+    when: Determining type
+    then: |
+      1. Check message field
+      2. Check edited_message field
+      3. Check callback_query field
+      4. Check pre_checkout_query field
+      5. Check successful_payment in message
+      6. Return UpdateType
+
+  - name: route_to_handler
+    given: Update and UpdateType
+    when: Routing to handler
+    then: |
+      match update_type:
+        message -> route_message
+        edited_message -> route_edited_message
+        callback_query -> route_callback
+        pre_checkout_query -> route_pre_checkout
+        successful_payment -> route_payment
+        _ -> handle_unknown
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGE ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: route_message
+    given: Message
+    when: Routing message update
+    then: |
+      1. Check for successful_payment -> route_payment
+      2. Check for command -> route_command
+      3. Check for media -> route_media
+      4. Else -> route_text_message
+
+  - name: route_command
+    given: Message with command
+    when: Routing command
+    then: |
+      1. Extract command name
+      2. Call message_handler.handle_command
+      3. Return result
+
+  - name: route_text_message
+    given: Message with text
+    when: Routing text
+    then: |
+      1. Call message_handler.handle_message
+      2. Return result
+
+  - name: route_media
+    given: Message with media
+    when: Routing media message
+    then: |
+      1. Detect media type (photo/video/audio/voice/document)
+      2. Call media_handler.handle_media
+      3. Return result
+
+  - name: route_edited_message
+    given: Edited message
+    when: Routing edited message
+    then: |
+      1. Log edit (optional)
+      2. Ignore or process based on config
+      3. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CALLBACK ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: route_callback
+    given: CallbackQuery
+    when: Routing callback
+    then: |
+      1. Call callback_handler.handle_callback
+      2. Answer callback query
+      3. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: route_pre_checkout
+    given: PreCheckoutQuery
+    when: Routing pre-checkout
+    then: |
+      1. Call payment_handler.handle_pre_checkout
+      2. Answer pre-checkout query
+      3. Return result
+
+  - name: route_payment
+    given: SuccessfulPayment
+    when: Routing successful payment
+    then: |
+      1. Call payment_handler.handle_successful_payment
+      2. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_unknown
+    given: Update with unknown type
+    when: Unknown update type
+    then: |
+      1. Log warning
+      2. Return success (don't fail)
+
+  - name: handle_handler_error
+    given: Update and error
+    when: Handler threw error
+    then: |
+      1. Log error with context
+      2. Create ProcessError
+      3. Increment error counter
+      4. Return error result
+
+  - name: handle_timeout
+    given: Update
+    when: Processing timed out
+    then: |
+      1. Log timeout
+      2. Create timeout error
+      3. Return error result
+
+  - name: recover_from_error
+    given: ProcessError
+    when: Attempting recovery
+    then: |
+      1. If recoverable, retry once
+      2. Else, return error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: update_metrics
+    given: ProcessResult
+    when: Recording metrics
+    then: |
+      1. Increment updates_total
+      2. Increment updates_by_type[type]
+      3. Increment handlers_called[handler]
+      4. If error, increment errors_total
+      5. Update avg_processing_ms
+
+  - name: get_metrics
+    given: UpdateProcessor
+    when: Getting metrics
+    then: Return ProcessorMetrics
+
+  - name: reset_metrics
+    given: UpdateProcessor
+    when: Resetting metrics
+    then: Reset all counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: is_command
+    given: Message
+    when: Checking for command
+    then: |
+      1. Check text starts with "/"
+      2. Check first entity is bot_command
+      3. Return true/false
+
+  - name: extract_command
+    given: Message
+    when: Extracting command
+    then: |
+      1. Get text before space or @
+      2. Remove leading /
+      3. Return command name
+
+  - name: has_media
+    given: Message
+    when: Checking for media
+    then: |
+      Return true if any of:
+        photo, video, audio, voice, document
+
+  - name: get_media_type
+    given: Message
+    when: Detecting media type
+    then: |
+      Return first non-null of:
+        photo, video, audio, voice, document
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_CONCURRENT: 100
+  MAX_RETRIES: 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  processing: "Processing update {id} ({type})"
+  processed: "Update {id} processed in {ms}ms"
+  error: "Error processing update {id}: {error}"
+  timeout: "Timeout processing update {id}"
+  unknown_type: "Unknown update type for {id}"

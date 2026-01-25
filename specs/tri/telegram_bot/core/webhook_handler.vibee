@@ -1,0 +1,354 @@
+name: webhook_handler
+version: "1.0.0"
+language: zig
+module: webhook_handler
+
+description: |
+  Webhook handler for VIBEE Telegram Bot.
+  Receives updates via HTTP POST from Telegram.
+  Handles webhook setup, verification, and update processing.
+
+imports:
+  - ./telegram_client
+  - ./update_processor
+  - ../middleware/middleware_chain
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  WebhookConfig:
+    description: "Webhook configuration"
+    fields:
+      url: String
+      port: Int
+      path: String
+      secret_token: Option<String>
+      certificate: Option<String>
+      ip_address: Option<String>
+      max_connections: Int
+      allowed_updates: List<String>
+      drop_pending_updates: Bool
+
+  WebhookServer:
+    description: "Webhook HTTP server"
+    fields:
+      config: WebhookConfig
+      processor: Object
+      state: WebhookState
+      metrics: WebhookMetrics
+
+  WebhookState:
+    description: "Webhook server state"
+    fields:
+      is_running: Bool
+      is_healthy: Bool
+      started_at: Option<Timestamp>
+      last_update_at: Option<Timestamp>
+      pending_updates: Int
+
+  WebhookMetrics:
+    description: "Webhook metrics"
+    fields:
+      requests_total: Int
+      requests_valid: Int
+      requests_invalid: Int
+      updates_processed: Int
+      updates_failed: Int
+      avg_processing_time_ms: Float
+
+  WebhookInfo:
+    description: "Telegram webhook info"
+    fields:
+      url: String
+      has_custom_certificate: Bool
+      pending_update_count: Int
+      ip_address: Option<String>
+      last_error_date: Option<Int>
+      last_error_message: Option<String>
+      last_synchronization_error_date: Option<Int>
+      max_connections: Int
+      allowed_updates: List<String>
+
+  WebhookRequest:
+    description: "Incoming webhook request"
+    fields:
+      method: String
+      path: String
+      headers: Map<String, String>
+      body: String
+      remote_ip: String
+
+  WebhookResponse:
+    description: "Webhook response"
+    fields:
+      status_code: Int
+      body: Option<String>
+      headers: Map<String, String>
+
+  SetupResult:
+    description: "Webhook setup result"
+    fields:
+      success: Bool
+      webhook_info: Option<WebhookInfo>
+      error: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_webhook_server
+    given: WebhookConfig and UpdateProcessor
+    when: Creating webhook server
+    then: |
+      1. Validate config
+      2. Initialize state
+      3. Initialize metrics
+      4. Return WebhookServer
+
+  - name: start
+    given: WebhookServer
+    when: Starting webhook server
+    then: |
+      1. Setup webhook with Telegram
+      2. Start HTTP server
+      3. Set is_running = true
+      4. Log startup
+      5. Return when stopped
+
+  - name: stop
+    given: WebhookServer
+    when: Stopping webhook server
+    then: |
+      1. Set is_running = false
+      2. Stop HTTP server
+      3. Delete webhook from Telegram
+      4. Log shutdown
+      5. Return metrics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOK SETUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: setup_webhook
+    given: TelegramClient and WebhookConfig
+    when: Registering webhook with Telegram
+    then: |
+      1. Build setWebhook params
+      2. Call setWebhook API
+      3. Verify with getWebhookInfo
+      4. Return SetupResult
+
+  - name: delete_webhook
+    given: TelegramClient
+    when: Removing webhook
+    then: |
+      1. Call deleteWebhook API
+      2. Verify removed
+      3. Return success
+
+  - name: get_webhook_info
+    given: TelegramClient
+    when: Getting webhook status
+    then: |
+      1. Call getWebhookInfo API
+      2. Parse response
+      3. Return WebhookInfo
+
+  - name: verify_webhook_setup
+    given: WebhookInfo and expected URL
+    when: Verifying setup
+    then: |
+      1. Check URL matches
+      2. Check no errors
+      3. Return verification result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HTTP SERVER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_http_server
+    given: WebhookServer
+    when: Starting HTTP listener
+    then: |
+      1. Bind to port
+      2. Start accepting connections
+      3. Return when stopped
+
+  - name: handle_request
+    given: WebhookServer and WebhookRequest
+    when: HTTP request received
+    then: |
+      1. Validate request
+      2. If valid -> process_update
+      3. If invalid -> return error response
+      4. Return WebhookResponse
+
+  - name: validate_request
+    given: WebhookRequest and WebhookConfig
+    when: Validating incoming request
+    then: |
+      1. Check method is POST
+      2. Check path matches
+      3. Check secret token if configured
+      4. Check content type
+      5. Return validation result
+
+  - name: verify_secret_token
+    given: Request headers and expected token
+    when: Verifying secret
+    then: |
+      1. Get X-Telegram-Bot-Api-Secret-Token header
+      2. Compare with expected
+      3. Return match result
+
+  - name: parse_update
+    given: Request body
+    when: Parsing update JSON
+    then: |
+      1. Parse JSON
+      2. Validate structure
+      3. Return Update or error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_update
+    given: WebhookServer and Update
+    when: Processing webhook update
+    then: |
+      1. Record start time
+      2. Call processor.process_update
+      3. Record duration
+      4. Update metrics
+      5. Return success
+
+  - name: handle_processing_error
+    given: Update and error
+    when: Processing failed
+    then: |
+      1. Log error
+      2. Increment failed counter
+      3. Return error response (still 200 OK)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESPONSES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: ok_response
+    given: No parameters
+    when: Successful processing
+    then: Return 200 OK with empty body
+
+  - name: error_response
+    given: Error message
+    when: Request error
+    then: Return 400/401/500 with error
+
+  - name: method_not_allowed
+    given: No parameters
+    when: Non-POST request
+    then: Return 405 Method Not Allowed
+
+  - name: unauthorized_response
+    given: No parameters
+    when: Invalid secret token
+    then: Return 401 Unauthorized
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH & METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: health_check
+    given: WebhookServer
+    when: Health check requested
+    then: |
+      1. Check server is running
+      2. Check recent updates received
+      3. Check Telegram webhook status
+      4. Return health status
+
+  - name: get_metrics
+    given: WebhookServer
+    when: Metrics requested
+    then: Return WebhookMetrics
+
+  - name: update_metrics
+    given: WebhookServer and processing result
+    when: Recording metrics
+    then: |
+      1. Increment appropriate counters
+      2. Update averages
+
+  - name: handle_health_endpoint
+    given: WebhookRequest
+    when: Health endpoint hit
+    then: |
+      1. Run health check
+      2. Return JSON status
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SECURITY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_telegram_ip
+    given: Remote IP
+    when: Checking IP whitelist
+    then: |
+      1. Check against Telegram IP ranges
+      2. Return valid/invalid
+
+  - name: rate_limit_check
+    given: Remote IP
+    when: Checking rate limit
+    then: |
+      1. Check requests per IP
+      2. Return allowed/blocked
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_PORT: 8443
+  DEFAULT_PATH: "/webhook"
+  DEFAULT_MAX_CONNECTIONS: 40
+  HEALTH_PATH: "/health"
+  METRICS_PATH: "/metrics"
+
+  TELEGRAM_IP_RANGES:
+    - "149.154.160.0/20"
+    - "91.108.4.0/22"
+
+  ALLOWED_UPDATES:
+    - message
+    - edited_message
+    - callback_query
+    - inline_query
+    - pre_checkout_query
+    - successful_payment
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  started: "Webhook server started on port {port}"
+  stopped: "Webhook server stopped"
+  
+  setup_success: "Webhook set to {url}"
+  setup_failed: "Failed to set webhook: {error}"
+  
+  request_received: "Webhook request from {ip}"
+  request_invalid: "Invalid request: {reason}"
+  request_unauthorized: "Unauthorized request from {ip}"
+  
+  update_processed: "Update {id} processed in {ms}ms"
+  update_failed: "Failed to process update {id}: {error}"

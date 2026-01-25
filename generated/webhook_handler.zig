@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot_main v2.0.0 - Generated from .vibee specification
+// webhook_handler v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,25 +17,19 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const EXIT_SUCCESS: f64 = 0;
+pub const DEFAULT_PORT: f64 = 8443;
 
-pub const EXIT_CONFIG_ERROR: f64 = 1;
+pub const DEFAULT_PATH: f64 = 0;
 
-pub const EXIT_INIT_ERROR: f64 = 2;
+pub const DEFAULT_MAX_CONNECTIONS: f64 = 40;
 
-pub const EXIT_RUNTIME_ERROR: f64 = 3;
+pub const HEALTH_PATH: f64 = 0;
 
-pub const EXIT_SIGNAL: f64 = 128;
+pub const METRICS_PATH: f64 = 0;
 
-pub const DEFAULT_MODE: f64 = 0;
+pub const TELEGRAM_IP_RANGES: f64 = 0;
 
-pub const DEFAULT_LOG_LEVEL: f64 = 0;
-
-pub const DEFAULT_WEBHOOK_PORT: f64 = 8443;
-
-pub const SHUTDOWN_TIMEOUT_MS: f64 = 10000;
-
-pub const HEALTH_CHECK_INTERVAL_MS: f64 = 30000;
+pub const ALLOWED_UPDATES: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -52,107 +46,80 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Application configuration from environment
-pub const AppConfig = struct {
-    bot_token: []const u8,
-    bot_name: []const u8,
-    supabase_url: []const u8,
-    supabase_key: []const u8,
-    supabase_service_key: []const u8,
-    openai_key: ?[]const u8,
-    replicate_token: ?[]const u8,
-    elevenlabs_key: ?[]const u8,
-    webhook_url: ?[]const u8,
-    webhook_port: ?[]const u8,
-    webhook_secret: ?[]const u8,
-    mode: BotMode,
-    log_level: LogLevel,
-    admin_ids: []const u8,
-    is_dev: bool,
+/// Webhook configuration
+pub const WebhookConfig = struct {
+    url: []const u8,
+    port: i64,
+    path: []const u8,
+    secret_token: ?[]const u8,
+    certificate: ?[]const u8,
+    ip_address: ?[]const u8,
+    max_connections: i64,
+    allowed_updates: []const u8,
+    drop_pending_updates: bool,
 };
 
-/// Bot operation mode
-pub const BotMode = struct {
+/// Webhook HTTP server
+pub const WebhookServer = struct {
+    config: WebhookConfig,
+    processor: []const u8,
+    state: WebhookState,
+    metrics: WebhookMetrics,
 };
 
-/// Logging level
-pub const LogLevel = struct {
-};
-
-/// Initialized service clients
-pub const AppServices = struct {
-    telegram: []const u8,
-    supabase: []const u8,
-    replicate: ?[]const u8,
-    openai: ?[]const u8,
-    elevenlabs: ?[]const u8,
-};
-
-/// Main application instance
-pub const Application = struct {
-    config: AppConfig,
-    services: AppServices,
-    handlers: HandlerRegistry,
-    middleware: []const u8,
-    state: AppState,
-    metrics: AppMetrics,
-};
-
-/// Application runtime state
-pub const AppState = struct {
+/// Webhook server state
+pub const WebhookState = struct {
     is_running: bool,
+    is_healthy: bool,
     started_at: ?[]const u8,
-    shutdown_requested: bool,
-    shutdown_reason: ?[]const u8,
-    last_update_id: i64,
-};
-
-/// Application metrics
-pub const AppMetrics = struct {
-    updates_processed: i64,
-    messages_handled: i64,
-    callbacks_handled: i64,
-    payments_processed: i64,
-    errors_count: i64,
-    uptime_seconds: i64,
-};
-
-/// Registered handlers
-pub const HandlerRegistry = struct {
-    message_handler: []const u8,
-    callback_handler: []const u8,
-    payment_handler: []const u8,
-    command_handlers: []const u8,
-};
-
-/// Application startup result
-pub const StartupResult = struct {
-    success: bool,
-    app: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Startup error details
-pub const StartupError = struct {
-    phase: StartupPhase,
-    message: []const u8,
-    cause: ?[]const u8,
-};
-
-/// Startup phase enum
-pub const StartupPhase = struct {
-};
-
-/// Shutdown reason
-pub const ShutdownReason = struct {
-};
-
-/// Health check status
-pub const HealthStatus = struct {
-    healthy: bool,
-    services: std.StringHashMap([]const u8),
-    uptime_seconds: i64,
     last_update_at: ?[]const u8,
+    pending_updates: i64,
+};
+
+/// Webhook metrics
+pub const WebhookMetrics = struct {
+    requests_total: i64,
+    requests_valid: i64,
+    requests_invalid: i64,
+    updates_processed: i64,
+    updates_failed: i64,
+    avg_processing_time_ms: f64,
+};
+
+/// Telegram webhook info
+pub const WebhookInfo = struct {
+    url: []const u8,
+    has_custom_certificate: bool,
+    pending_update_count: i64,
+    ip_address: ?[]const u8,
+    last_error_date: ?[]const u8,
+    last_error_message: ?[]const u8,
+    last_synchronization_error_date: ?[]const u8,
+    max_connections: i64,
+    allowed_updates: []const u8,
+};
+
+/// Incoming webhook request
+pub const WebhookRequest = struct {
+    method: []const u8,
+    path: []const u8,
+    headers: std.StringHashMap([]const u8),
+    body: []const u8,
+    remote_ip: []const u8,
+};
+
+/// Webhook response
+pub const WebhookResponse = struct {
+    status_code: i64,
+    body: ?[]const u8,
+    headers: std.StringHashMap([]const u8),
+};
+
+/// Webhook setup result
+pub const SetupResult = struct {
+    success: bool,
+    webhook_info: ?[]const u8,
+    @"error": ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -231,198 +198,170 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "load_config" {
-// Given: Environment variables
-// When: Application starts
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "load_config_from_file" {
-// Given: Config file path
-// When: Loading from file
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "validate_config" {
-// Given: AppConfig
-// When: Validating configuration
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_env_var" {
-// Given: Variable name and default
-// When: Reading environment
-// Then: Return value or default
-    // TODO: Add test assertions
-}
-
-test "parse_admin_ids" {
-// Given: Comma-separated string
-// When: Parsing admin IDs
-// Then: Return List<Int>
-    // TODO: Add test assertions
-}
-
-test "init_services" {
-// Given: AppConfig
-// When: Initializing services
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "init_telegram_client" {
-// Given: Bot token
-// When: Creating Telegram client
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "init_supabase_client" {
-// Given: URL and keys
-// When: Creating Supabase client
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "init_handlers" {
-// Given: AppServices
-// When: Creating handlers
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "init_middleware" {
-// Given: AppServices
-// When: Creating middleware chain
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "create_application" {
-// Given: Config, services, handlers, middleware
-// When: Assembling application
+test "create_webhook_server" {
+// Given: WebhookConfig and UpdateProcessor
+// When: Creating webhook server
 // Then: |
     // TODO: Add test assertions
 }
 
 test "start" {
+// Given: WebhookServer
+// When: Starting webhook server
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "stop" {
+// Given: WebhookServer
+// When: Stopping webhook server
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "setup_webhook" {
+// Given: TelegramClient and WebhookConfig
+// When: Registering webhook with Telegram
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "delete_webhook" {
+// Given: TelegramClient
+// When: Removing webhook
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_webhook_info" {
+// Given: TelegramClient
+// When: Getting webhook status
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "verify_webhook_setup" {
+// Given: WebhookInfo and expected URL
+// When: Verifying setup
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "start_http_server" {
+// Given: WebhookServer
+// When: Starting HTTP listener
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_request" {
+// Given: WebhookServer and WebhookRequest
+// When: HTTP request received
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "validate_request" {
+// Given: WebhookRequest and WebhookConfig
+// When: Validating incoming request
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "verify_secret_token" {
+// Given: Request headers and expected token
+// When: Verifying secret
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "parse_update" {
+// Given: Request body
+// When: Parsing update JSON
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "process_update" {
+// Given: WebhookServer and Update
+// When: Processing webhook update
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_processing_error" {
+// Given: Update and error
+// When: Processing failed
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "ok_response" {
 // Given: No parameters
-// When: main() called
-// Then: |
+// When: Successful processing
+// Then: Return 200 OK with empty body
     // TODO: Add test assertions
 }
 
-test "run" {
-// Given: Application
-// When: Bot is running
-// Then: |
+test "error_response" {
+// Given: Error message
+// When: Request error
+// Then: Return 400/401/500 with error
     // TODO: Add test assertions
 }
 
-test "start_polling" {
-// Given: Application
-// When: Starting polling mode
-// Then: |
+test "method_not_allowed" {
+// Given: No parameters
+// When: Non-POST request
+// Then: Return 405 Method Not Allowed
     // TODO: Add test assertions
 }
 
-test "start_webhook" {
-// Given: Application
-// When: Starting webhook mode
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "shutdown" {
-// Given: Application and ShutdownReason
-// When: Shutdown requested
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "graceful_shutdown" {
-// Given: Application and timeout
-// When: Graceful shutdown
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "setup_signal_handlers" {
-// Given: Application
-// When: Setting up signals
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_sigint" {
-// Given: Application
-// When: SIGINT received
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_sigterm" {
-// Given: Application
-// When: SIGTERM received
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_sighup" {
-// Given: Application
-// When: SIGHUP received
-// Then: |
+test "unauthorized_response" {
+// Given: No parameters
+// When: Invalid secret token
+// Then: Return 401 Unauthorized
     // TODO: Add test assertions
 }
 
 test "health_check" {
-// Given: Application
+// Given: WebhookServer
 // When: Health check requested
 // Then: |
     // TODO: Add test assertions
 }
 
 test "get_metrics" {
-// Given: Application
+// Given: WebhookServer
 // When: Metrics requested
-// Then: Return AppMetrics
+// Then: Return WebhookMetrics
     // TODO: Add test assertions
 }
 
 test "update_metrics" {
-// Given: Application and metric update
-// When: Recording metric
-// Then: Update AppMetrics
-    // TODO: Add test assertions
-}
-
-test "log_startup" {
-// Given: Application
-// When: Bot started
+// Given: WebhookServer and processing result
+// When: Recording metrics
 // Then: |
     // TODO: Add test assertions
 }
 
-test "log_shutdown" {
-// Given: Application and reason
-// When: Bot stopping
+test "handle_health_endpoint" {
+// Given: WebhookRequest
+// When: Health endpoint hit
 // Then: |
     // TODO: Add test assertions
 }
 
-test "main" {
-// Given: Command line arguments
-// When: Program executed
+test "validate_telegram_ip" {
+// Given: Remote IP
+// When: Checking IP whitelist
 // Then: |
     // TODO: Add test assertions
 }
 
-test "parse_args" {
-// Given: Command line arguments
-// When: Parsing arguments
+test "rate_limit_check" {
+// Given: Remote IP
+// When: Checking rate limit
 // Then: |
     // TODO: Add test assertions
 }

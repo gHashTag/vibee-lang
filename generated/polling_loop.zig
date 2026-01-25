@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// polling_loop v1.0.0 - Generated from .vibee specification
+// polling_loop v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,15 +17,19 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const DEFAULT_TIMEOUT: f64 = 60;
+pub const DEFAULT_TIMEOUT_SECONDS: f64 = 60;
 
 pub const DEFAULT_LIMIT: f64 = 100;
 
-pub const DEFAULT_ERROR_RETRY_MS: f64 = 1000;
+pub const DEFAULT_RETRY_DELAY_MS: f64 = 1000;
 
-pub const MAX_CONSECUTIVE_ERRORS: f64 = 10;
+pub const DEFAULT_MAX_RETRIES: f64 = 10;
 
-pub const MAX_BACKOFF_MS: f64 = 60000;
+pub const DEFAULT_BACKOFF_MULTIPLIER: f64 = 2;
+
+pub const DEFAULT_MAX_BACKOFF_MS: f64 = 60000;
+
+pub const JITTER_PERCENT: f64 = 10;
 
 pub const ALLOWED_UPDATES: f64 = 0;
 
@@ -46,48 +50,119 @@ pub const PHOENIX: i64 = 999;
 
 /// Polling configuration
 pub const PollingConfig = struct {
-    timeout: i64,
+    timeout_seconds: i64,
     limit: i64,
     allowed_updates: []const u8,
-    error_retry_delay_ms: i64,
-    max_consecutive_errors: i64,
+    retry_delay_ms: i64,
+    max_retries: i64,
+    backoff_multiplier: f64,
+    max_backoff_ms: i64,
 };
 
 /// Current polling state
 pub const PollingState = struct {
     offset: i64,
     is_running: bool,
+    is_paused: bool,
     consecutive_errors: i64,
-    total_updates_processed: i64,
-    last_update_time: ?[]const u8,
+    total_updates: i64,
+    total_errors: i64,
+    last_poll_at: ?[]const u8,
+    last_error_at: ?[]const u8,
+    last_error: ?[]const u8,
 };
 
-/// Main polling loop instance
+/// Polling loop instance
 pub const PollingLoop = struct {
-    client: TelegramClient,
+    client: []const u8,
+    processor: []const u8,
     config: PollingConfig,
     state: PollingState,
-    message_handler: MessageHandler,
-    callback_handler: CallbackHandler,
+    metrics: PollingMetrics,
 };
 
-/// Batch of updates from getUpdates
-pub const UpdateBatch = struct {
-    updates: []const u8,
-    new_offset: i64,
+/// Polling metrics
+pub const PollingMetrics = struct {
+    polls_total: i64,
+    polls_empty: i64,
+    polls_with_updates: i64,
+    updates_received: i64,
+    updates_processed: i64,
+    updates_failed: i64,
+    avg_poll_duration_ms: f64,
+    avg_updates_per_poll: f64,
 };
 
-/// Result of processing an update
-pub const ProcessResult = struct {
-    update_id: i64,
+/// Result of single poll
+pub const PollResult = struct {
     success: bool,
-    handler_type: []const u8,
-    @"error": ?[]const u8,
+    updates_count: i64,
+    new_offset: i64,
     duration_ms: i64,
+    @"error": ?[]const u8,
 };
 
-/// Polling error types
-pub const PollingError = struct {
+/// Poll error details
+pub const PollError = struct {
+    code: PollErrorCode,
+    message: []const u8,
+    retry_after: ?[]const u8,
+    is_recoverable: bool,
+};
+
+/// Poll error codes
+pub const PollErrorCode = struct {
+};
+
+/// Telegram update
+pub const Update = struct {
+    update_id: i64,
+    message: ?[]const u8,
+    edited_message: ?[]const u8,
+    callback_query: ?[]const u8,
+    inline_query: ?[]const u8,
+    pre_checkout_query: ?[]const u8,
+    successful_payment: ?[]const u8,
+};
+
+/// Telegram message
+pub const Message = struct {
+    message_id: i64,
+    from: ?[]const u8,
+    chat: Chat,
+    date: i64,
+    text: ?[]const u8,
+    photo: ?[]const u8,
+    video: ?[]const u8,
+    audio: ?[]const u8,
+    voice: ?[]const u8,
+    document: ?[]const u8,
+};
+
+/// Callback query
+pub const CallbackQuery = struct {
+    id: []const u8,
+    from: User,
+    message: ?[]const u8,
+    data: ?[]const u8,
+};
+
+/// Telegram user
+pub const User = struct {
+    id: i64,
+    is_bot: bool,
+    first_name: []const u8,
+    last_name: ?[]const u8,
+    username: ?[]const u8,
+    language_code: ?[]const u8,
+};
+
+/// Telegram chat
+pub const Chat = struct {
+    id: i64,
+    @"type": []const u8,
+    title: ?[]const u8,
+    username: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -167,8 +242,15 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_polling_loop" {
-// Given: TelegramClient and handlers
-// When: Initializing polling
+// Given: TelegramClient and UpdateProcessor
+// When: Creating polling loop
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "create_with_config" {
+// Given: TelegramClient, UpdateProcessor, PollingConfig
+// When: Creating with custom config
 // Then: |
     // TODO: Add test assertions
 }
@@ -187,9 +269,16 @@ test "stop" {
     // TODO: Add test assertions
 }
 
-test "poll_once" {
+test "pause" {
 // Given: PollingLoop
-// When: Fetching updates
+// When: Pausing polling
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "resume" {
+// Given: PollingLoop
+// When: Resuming polling
 // Then: |
     // TODO: Add test assertions
 }
@@ -201,58 +290,142 @@ test "run_loop" {
     // TODO: Add test assertions
 }
 
-test "process_batch" {
-// Given: PollingLoop and UpdateBatch
-// When: Processing updates
+test "poll_once" {
+// Given: PollingLoop
+// When: Single poll iteration
 // Then: |
     // TODO: Add test assertions
 }
 
-test "dispatch_update" {
-// Given: PollingLoop and Update
-// When: Routing update to handler
+test "get_updates" {
+// Given: PollingLoop
+// When: Calling Telegram API
 // Then: |
     // TODO: Add test assertions
 }
 
-test "dispatch_message" {
-// Given: PollingLoop and Message
-// When: Handling message update
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "dispatch_callback" {
-// Given: PollingLoop and CallbackQuery
-// When: Handling callback update
+test "process_updates" {
+// Given: PollingLoop and List<Update>
+// When: Processing update batch
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_poll_error" {
-// Given: PollingLoop and error
-// When: getUpdates failed
+// Given: PollingLoop and PollError
+// When: Poll failed
 // Then: |
     // TODO: Add test assertions
 }
 
 test "calculate_backoff" {
-// Given: consecutive_errors count
+// Given: Consecutive errors count
 // When: Calculating retry delay
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_handler_error" {
-// Given: Update and handler error
-// When: Handler threw exception
+test "is_fatal_error" {
+// Given: PollError
+// When: Checking if fatal
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_stats" {
+test "reset_error_state" {
 // Given: PollingLoop
-// When: Requesting statistics
+// When: Successful poll after errors
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_update_error" {
+// Given: Update and error
+// When: Update processing failed
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_offset" {
+// Given: PollingLoop
+// When: Getting current offset
+// Then: Return state.offset
+    // TODO: Add test assertions
+}
+
+test "set_offset" {
+// Given: PollingLoop and new offset
+// When: Setting offset
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "calculate_new_offset" {
+// Given: List<Update>
+// When: Calculating next offset
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "persist_offset" {
+// Given: PollingLoop
+// When: Saving offset to storage
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "load_offset" {
+// Given: PollingLoop
+// When: Loading saved offset
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "update_metrics" {
+// Given: PollingLoop and PollResult
+// When: Recording poll result
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_metrics" {
+// Given: PollingLoop
+// When: Getting metrics
+// Then: Return PollingMetrics
+    // TODO: Add test assertions
+}
+
+test "reset_metrics" {
+// Given: PollingLoop
+// When: Resetting metrics
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "log_metrics" {
+// Given: PollingLoop
+// When: Logging current metrics
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "delete_webhook" {
+// Given: PollingLoop
+// When: Ensuring no webhook
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_state" {
+// Given: PollingLoop
+// When: Getting current state
+// Then: Return PollingState
+    // TODO: Add test assertions
+}
+
+test "is_healthy" {
+// Given: PollingLoop
+// When: Health check
 // Then: |
     // TODO: Add test assertions
 }

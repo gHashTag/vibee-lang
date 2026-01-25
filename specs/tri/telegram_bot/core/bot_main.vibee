@@ -1,86 +1,156 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# BOT MAIN - Entry Point for VIBEE Telegram Bot
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main entry point that initializes and runs the bot
-# φ² + 1/φ² = 3 | PHOENIX = 999
-# ═══════════════════════════════════════════════════════════════════════════════
-
 name: bot_main
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: bot_main
 
 description: |
   Main entry point for VIBEE Telegram Bot.
-  Responsibilities:
-  - Load configuration from environment
-  - Initialize all services (DB, AI clients)
-  - Register handlers and middleware
-  - Start polling loop
-  - Handle graceful shutdown
+  Initializes all services, registers handlers, and starts the bot.
+  Handles graceful shutdown and signal handling.
 
 imports:
-  - bot
-  - supabase_client
-  - openai_client
-  - replicate_client
-  - elevenlabs_client
+  - ./telegram_client
+  - ./supabase_client
+  - ./replicate_client
+  - ./polling_loop
   - ../handlers/message_handler
   - ../handlers/callback_handler
-  - ../middleware/auth_middleware
-  - ../middleware/balance_middleware
+  - ../handlers/payment_handler
+  - ../middleware/middleware_chain
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
   AppConfig:
-    description: "Application configuration loaded from environment"
+    description: "Application configuration from environment"
     fields:
       bot_token: String
       bot_name: String
       supabase_url: String
       supabase_key: String
+      supabase_service_key: String
       openai_key: Option<String>
       replicate_token: Option<String>
       elevenlabs_key: Option<String>
+      webhook_url: Option<String>
+      webhook_port: Option<Int>
+      webhook_secret: Option<String>
+      mode: BotMode
+      log_level: LogLevel
+      admin_ids: List<Int>
       is_dev: Bool
-      log_level: String
+
+  BotMode:
+    description: "Bot operation mode"
+    values:
+      - polling
+      - webhook
+
+  LogLevel:
+    description: "Logging level"
+    values:
+      - debug
+      - info
+      - warn
+      - error
 
   AppServices:
     description: "Initialized service clients"
     fields:
-      db: SupabaseClient
-      openai: Option<OpenAIClient>
-      replicate: Option<ReplicateClient>
-      elevenlabs: Option<ElevenLabsClient>
+      telegram: Object
+      supabase: Object
+      replicate: Option<Object>
+      openai: Option<Object>
+      elevenlabs: Option<Object>
 
   Application:
     description: "Main application instance"
     fields:
       config: AppConfig
       services: AppServices
-      bot: BotInstance
+      handlers: HandlerRegistry
+      middleware: Object
+      state: AppState
+      metrics: AppMetrics
+
+  AppState:
+    description: "Application runtime state"
+    fields:
       is_running: Bool
       started_at: Option<Timestamp>
       shutdown_requested: Bool
+      shutdown_reason: Option<ShutdownReason>
+      last_update_id: Int
+
+  AppMetrics:
+    description: "Application metrics"
+    fields:
+      updates_processed: Int
+      messages_handled: Int
+      callbacks_handled: Int
+      payments_processed: Int
+      errors_count: Int
+      uptime_seconds: Int
+
+  HandlerRegistry:
+    description: "Registered handlers"
+    fields:
+      message_handler: Object
+      callback_handler: Object
+      payment_handler: Object
+      command_handlers: Object
 
   StartupResult:
-    description: "Result of application startup"
+    description: "Application startup result"
     fields:
       success: Bool
       app: Option<Application>
-      error: Option<String>
+      error: Option<StartupError>
+
+  StartupError:
+    description: "Startup error details"
+    fields:
+      phase: StartupPhase
+      message: String
+      cause: Option<String>
+
+  StartupPhase:
+    description: "Startup phase enum"
+    values:
+      - config_load
+      - config_validate
+      - services_init
+      - handlers_init
+      - middleware_init
+      - bot_start
 
   ShutdownReason:
-    description: "Reason for shutdown"
-    variants:
-      - UserRequested
-      - SignalReceived
-      - FatalError
-      - Timeout
+    description: "Shutdown reason"
+    values:
+      - user_requested
+      - signal_received
+      - fatal_error
+      - config_reload
+      - maintenance
+
+  HealthStatus:
+    description: "Health check status"
+    fields:
+      healthy: Bool
+      services: Map<String, Bool>
+      uptime_seconds: Int
+      last_update_at: Option<Timestamp>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
   # CONFIGURATION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: load_config
     given: Environment variables
@@ -90,107 +160,246 @@ behaviors:
       2. Read BOT_NAME (required)
       3. Read SUPABASE_URL (required)
       4. Read SUPABASE_SERVICE_KEY (required)
-      5. Read optional AI keys
-      6. Return AppConfig or error
+      5. Read optional AI service keys
+      6. Read webhook config if present
+      7. Determine mode (polling/webhook)
+      8. Parse admin IDs
+      9. Return AppConfig
+
+  - name: load_config_from_file
+    given: Config file path
+    when: Loading from file
+    then: |
+      1. Read JSON/YAML file
+      2. Parse configuration
+      3. Merge with env vars (env takes precedence)
+      4. Return AppConfig
 
   - name: validate_config
     given: AppConfig
     when: Validating configuration
     then: |
-      1. Check all required fields present
-      2. Validate token format
+      1. Check required fields present
+      2. Validate bot token format
       3. Validate URLs
-      4. Return validation result
+      4. Validate webhook config if webhook mode
+      5. Return validation result
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  - name: get_env_var
+    given: Variable name and default
+    when: Reading environment
+    then: Return value or default
+
+  - name: parse_admin_ids
+    given: Comma-separated string
+    when: Parsing admin IDs
+    then: Return List<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # INITIALIZATION
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: init_services
     given: AppConfig
     when: Initializing services
     then: |
-      1. Connect to Supabase
-      2. Initialize OpenAI client (if key present)
-      3. Initialize Replicate client (if token present)
-      4. Initialize ElevenLabs client (if key present)
-      5. Return AppServices
+      1. Create TelegramClient
+      2. Create SupabaseClient and test connection
+      3. Create ReplicateClient if token present
+      4. Create OpenAIClient if key present
+      5. Create ElevenLabsClient if key present
+      6. Return AppServices
 
-  - name: init_bot
-    given: AppConfig
-    when: Creating bot instance
+  - name: init_telegram_client
+    given: Bot token
+    when: Creating Telegram client
     then: |
-      1. Create BotConfig from AppConfig
-      2. Create BotInstance
-      3. Return bot
+      1. Create client with token
+      2. Call getMe to verify token
+      3. Return client or error
 
-  - name: register_handlers
-    given: Application
-    when: Setting up message handlers
+  - name: init_supabase_client
+    given: URL and keys
+    when: Creating Supabase client
     then: |
-      1. Register /start command
-      2. Register /menu command
-      3. Register /balance command
-      4. Register /help command
-      5. Register text message handler
-      6. Register photo handler
-      7. Register callback query handler
+      1. Create client
+      2. Test connection
+      3. Return client or error
 
-  - name: register_middleware
-    given: Application
-    when: Setting up middleware
+  - name: init_handlers
+    given: AppServices
+    when: Creating handlers
     then: |
-      1. Register auth middleware (first)
-      2. Register balance middleware
-      3. Register logging middleware
+      1. Create MessageHandler
+      2. Create CallbackHandler
+      3. Create PaymentHandler
+      4. Return HandlerRegistry
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  - name: init_middleware
+    given: AppServices
+    when: Creating middleware chain
+    then: |
+      1. Create AuthMiddleware
+      2. Create BalanceMiddleware
+      3. Create RateLimitMiddleware
+      4. Create LoggingMiddleware
+      5. Build MiddlewareChain
+      6. Return chain
+
+  - name: create_application
+    given: Config, services, handlers, middleware
+    when: Assembling application
+    then: |
+      1. Create AppState
+      2. Create AppMetrics
+      3. Assemble Application
+      4. Return Application
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # LIFECYCLE
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: start
-    given: Nothing
+    given: No parameters
     when: main() called
     then: |
       1. Load config
       2. Validate config
       3. Init services
-      4. Init bot
-      5. Register handlers
-      6. Register middleware
-      7. Start polling loop
-      8. Return StartupResult
+      4. Init handlers
+      5. Init middleware
+      6. Create application
+      7. Setup signal handlers
+      8. Start bot (polling or webhook)
+      9. Return StartupResult
 
   - name: run
     given: Application
     when: Bot is running
     then: |
-      1. Log startup message
-      2. Enter polling loop
-      3. Process updates until shutdown
-      4. Return exit code
+      1. Set is_running = true
+      2. Set started_at = now
+      3. Log startup message
+      4. If polling mode -> start_polling
+      5. If webhook mode -> start_webhook
+      6. Wait for shutdown
+      7. Return exit code
+
+  - name: start_polling
+    given: Application
+    when: Starting polling mode
+    then: |
+      1. Delete any existing webhook
+      2. Create PollingLoop
+      3. Start polling loop
+      4. Return when stopped
+
+  - name: start_webhook
+    given: Application
+    when: Starting webhook mode
+    then: |
+      1. Setup webhook with Telegram
+      2. Start HTTP server
+      3. Listen for updates
+      4. Return when stopped
 
   - name: shutdown
     given: Application and ShutdownReason
     when: Shutdown requested
     then: |
       1. Set shutdown_requested = true
-      2. Stop polling loop
-      3. Close DB connections
-      4. Log shutdown reason
-      5. Exit cleanly
+      2. Set shutdown_reason
+      3. Stop polling/webhook
+      4. Close service connections
+      5. Log shutdown
+      6. Return final metrics
 
-  - name: handle_signal
-    given: OS signal (SIGINT, SIGTERM)
-    when: Signal received
+  - name: graceful_shutdown
+    given: Application and timeout
+    when: Graceful shutdown
     then: |
-      1. Log signal received
-      2. Call shutdown with SignalReceived
-      3. Wait for graceful shutdown
+      1. Stop accepting new updates
+      2. Wait for in-flight requests (up to timeout)
+      3. Close connections
+      4. Return success
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SIGNAL HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: setup_signal_handlers
+    given: Application
+    when: Setting up signals
+    then: |
+      1. Register SIGINT handler
+      2. Register SIGTERM handler
+      3. Register SIGHUP handler (config reload)
+
+  - name: handle_sigint
+    given: Application
+    when: SIGINT received
+    then: |
+      1. Log "SIGINT received"
+      2. Call shutdown(signal_received)
+
+  - name: handle_sigterm
+    given: Application
+    when: SIGTERM received
+    then: |
+      1. Log "SIGTERM received"
+      2. Call shutdown(signal_received)
+
+  - name: handle_sighup
+    given: Application
+    when: SIGHUP received
+    then: |
+      1. Log "SIGHUP received"
+      2. Reload configuration
+      3. Continue running
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH & METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: health_check
+    given: Application
+    when: Health check requested
+    then: |
+      1. Check Telegram API connectivity
+      2. Check Supabase connectivity
+      3. Check AI services if configured
+      4. Return HealthStatus
+
+  - name: get_metrics
+    given: Application
+    when: Metrics requested
+    then: Return AppMetrics
+
+  - name: update_metrics
+    given: Application and metric update
+    when: Recording metric
+    then: Update AppMetrics
+
+  - name: log_startup
+    given: Application
+    when: Bot started
+    then: |
+      1. Log bot name
+      2. Log mode (polling/webhook)
+      3. Log configured services
+      4. Log admin IDs
+
+  - name: log_shutdown
+    given: Application and reason
+    when: Bot stopping
+    then: |
+      1. Log shutdown reason
+      2. Log final metrics
+      3. Log uptime
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # MAIN ENTRY POINT
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: main
     given: Command line arguments
@@ -198,50 +407,79 @@ behaviors:
     then: |
       1. Parse arguments
       2. Call start()
-      3. If success, call run()
-      4. On exit, call shutdown()
-      5. Return exit code
+      3. If error, log and exit
+      4. Call run()
+      5. On exit, call shutdown()
+      6. Return exit code
+
+  - name: parse_args
+    given: Command line arguments
+    when: Parsing arguments
+    then: |
+      1. Parse --config flag
+      2. Parse --mode flag
+      3. Parse --log-level flag
+      4. Return parsed args
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 constants:
   EXIT_SUCCESS: 0
   EXIT_CONFIG_ERROR: 1
   EXIT_INIT_ERROR: 2
   EXIT_RUNTIME_ERROR: 3
-  
+  EXIT_SIGNAL: 128
+
+  DEFAULT_MODE: "polling"
   DEFAULT_LOG_LEVEL: "info"
-  SHUTDOWN_TIMEOUT_MS: 5000
+  DEFAULT_WEBHOOK_PORT: 8443
+  SHUTDOWN_TIMEOUT_MS: 10000
+  HEALTH_CHECK_INTERVAL_MS: 30000
 
-test_cases:
-  - name: test_load_config_success
-    input: |
-      BOT_TOKEN=123:ABC
-      BOT_NAME=test_bot
-      SUPABASE_URL=https://test.supabase.co
-      SUPABASE_SERVICE_KEY=key123
-    expected: {success: true}
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENVIRONMENT VARIABLES
+# ═══════════════════════════════════════════════════════════════════════════════
 
-  - name: test_load_config_missing_token
-    input: |
-      BOT_NAME=test_bot
-    expected: {success: false, error: "BOT_TOKEN required"}
+env_vars:
+  required:
+    - BOT_TOKEN
+    - BOT_NAME
+    - SUPABASE_URL
+    - SUPABASE_SERVICE_KEY
 
-  - name: test_validate_config_invalid_token
-    input: {bot_token: "invalid"}
-    expected: {valid: false, error: "Invalid token format"}
+  optional:
+    - OPENAI_API_KEY
+    - REPLICATE_API_TOKEN
+    - ELEVENLABS_API_KEY
+    - WEBHOOK_URL
+    - WEBHOOK_PORT
+    - WEBHOOK_SECRET
+    - BOT_MODE
+    - LOG_LEVEL
+    - ADMIN_IDS
+    - IS_DEV
 
-  - name: test_startup_sequence
-    input: {valid_config: true}
-    expected: |
-      1. Config loaded
-      2. Services initialized
-      3. Bot created
-      4. Handlers registered
-      5. Polling started
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
 
-  - name: test_graceful_shutdown
-    input: {signal: "SIGINT"}
-    expected: |
-      1. Shutdown requested
-      2. Polling stopped
-      3. Connections closed
-      4. Exit code 0
+messages:
+  startup:
+    info: "VIBEE Bot v{version} starting..."
+    mode_polling: "Mode: Long Polling"
+    mode_webhook: "Mode: Webhook at {url}"
+    services: "Services: Telegram, Supabase{ai_services}"
+    ready: "Bot is ready! Listening for updates..."
+
+  shutdown:
+    requested: "Shutdown requested: {reason}"
+    graceful: "Graceful shutdown in progress..."
+    complete: "Shutdown complete. Uptime: {uptime}"
+
+  errors:
+    config_missing: "Missing required config: {var}"
+    config_invalid: "Invalid config: {message}"
+    init_failed: "Failed to initialize {service}: {error}"
+    connection_failed: "Failed to connect to {service}"

@@ -1,0 +1,503 @@
+name: error_handler
+version: "1.0.0"
+language: zig
+module: error_handler
+
+description: |
+  Global error handler for VIBEE Telegram Bot.
+  Handles all errors, sends user-friendly messages, and logs for debugging.
+  Supports error recovery, alerting, and metrics.
+
+imports:
+  - ./telegram_client
+  - ../middleware/logging_middleware
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ErrorHandler:
+    description: "Global error handler"
+    fields:
+      telegram: Object
+      config: ErrorConfig
+      metrics: ErrorMetrics
+      recent_errors: List<Object>
+
+  ErrorConfig:
+    description: "Error handler configuration"
+    fields:
+      send_user_message: Bool
+      log_errors: Bool
+      alert_on_critical: Bool
+      alert_chat_id: Option<Int>
+      max_recent_errors: Int
+      error_cooldown_ms: Int
+
+  ErrorMetrics:
+    description: "Error metrics"
+    fields:
+      total_errors: Int
+      errors_by_type: Map<String, Int>
+      errors_by_handler: Map<String, Int>
+      critical_errors: Int
+      recovered_errors: Int
+      user_messages_sent: Int
+
+  ErrorRecord:
+    description: "Recorded error"
+    fields:
+      id: String
+      timestamp: Timestamp
+      error_type: ErrorType
+      message: String
+      stack_trace: Option<String>
+      context: ErrorContext
+      handled: Bool
+      recovered: Bool
+
+  ErrorContext:
+    description: "Error context"
+    fields:
+      telegram_id: Option<Int>
+      chat_id: Option<Int>
+      update_id: Option<Int>
+      handler: Option<String>
+      middleware: Option<String>
+      request_id: Option<String>
+
+  ErrorType:
+    description: "Error type classification"
+    values:
+      - validation_error
+      - auth_error
+      - balance_error
+      - rate_limit_error
+      - api_error
+      - database_error
+      - network_error
+      - timeout_error
+      - handler_error
+      - middleware_error
+      - telegram_error
+      - payment_error
+      - generation_error
+      - unknown_error
+
+  ErrorSeverity:
+    description: "Error severity level"
+    values:
+      - low
+      - medium
+      - high
+      - critical
+
+  ErrorResponse:
+    description: "Error response to user"
+    fields:
+      message: String
+      show_retry: Bool
+      show_support: Bool
+      keyboard: Option<Object>
+
+  RecoveryAction:
+    description: "Recovery action"
+    values:
+      - retry
+      - refund
+      - reset_session
+      - notify_admin
+      - ignore
+      - escalate
+
+  AlertInfo:
+    description: "Alert information"
+    fields:
+      severity: ErrorSeverity
+      error_type: ErrorType
+      message: String
+      context: ErrorContext
+      timestamp: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_error_handler
+    given: TelegramClient and ErrorConfig
+    when: Creating error handler
+    then: |
+      1. Initialize metrics
+      2. Initialize recent_errors list
+      3. Return ErrorHandler
+
+  - name: create_with_defaults
+    given: TelegramClient
+    when: Creating with default config
+    then: |
+      1. Create default ErrorConfig
+      2. Return ErrorHandler
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_error
+    given: Error and ErrorContext
+    when: Any error occurs
+    then: |
+      1. Classify error type
+      2. Determine severity
+      3. Create ErrorRecord
+      4. Log error
+      5. Send user message if configured
+      6. Alert if critical
+      7. Attempt recovery
+      8. Update metrics
+      9. Return handled status
+
+  - name: handle_handler_error
+    given: Error, handler name, context
+    when: Handler throws error
+    then: |
+      1. Set error_type = handler_error
+      2. Set context.handler
+      3. Call handle_error
+      4. Return result
+
+  - name: handle_middleware_error
+    given: Error, middleware name, context
+    when: Middleware throws error
+    then: |
+      1. Set error_type = middleware_error
+      2. Set context.middleware
+      3. Call handle_error
+      4. Return result
+
+  - name: handle_api_error
+    given: API error and context
+    when: External API fails
+    then: |
+      1. Set error_type = api_error
+      2. Determine if retryable
+      3. Call handle_error
+      4. Return result
+
+  - name: handle_database_error
+    given: DB error and context
+    when: Database operation fails
+    then: |
+      1. Set error_type = database_error
+      2. Set severity = high
+      3. Call handle_error
+      4. Return result
+
+  - name: handle_telegram_error
+    given: Telegram API error and context
+    when: Telegram API fails
+    then: |
+      1. Set error_type = telegram_error
+      2. Parse Telegram error code
+      3. Call handle_error
+      4. Return result
+
+  - name: handle_payment_error
+    given: Payment error and context
+    when: Payment fails
+    then: |
+      1. Set error_type = payment_error
+      2. Set severity = high
+      3. Attempt refund if needed
+      4. Call handle_error
+      5. Return result
+
+  - name: handle_generation_error
+    given: Generation error and context
+    when: AI generation fails
+    then: |
+      1. Set error_type = generation_error
+      2. Attempt refund
+      3. Call handle_error
+      4. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR CLASSIFICATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: classify_error
+    given: Error
+    when: Determining error type
+    then: |
+      1. Check error message patterns
+      2. Check error code if available
+      3. Return ErrorType
+
+  - name: determine_severity
+    given: ErrorType and context
+    when: Determining severity
+    then: |
+      critical: database_error, payment_error (with charge)
+      high: api_error, generation_error
+      medium: handler_error, middleware_error
+      low: validation_error, rate_limit_error
+
+  - name: is_recoverable
+    given: ErrorType
+    when: Checking recoverability
+    then: |
+      Recoverable: timeout, network, rate_limit
+      Not recoverable: auth, validation, payment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER MESSAGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_error_message
+    given: Chat ID, ErrorType, language
+    when: Sending error to user
+    then: |
+      1. Get error message for type
+      2. Build response with retry/support options
+      3. Send message
+      4. Increment user_messages_sent
+
+  - name: get_user_message
+    given: ErrorType and language
+    when: Getting user-friendly message
+    then: |
+      Return localized message for error type
+
+  - name: build_error_response
+    given: ErrorType and language
+    when: Building response
+    then: |
+      1. Get message
+      2. Determine if show retry
+      3. Determine if show support
+      4. Build keyboard if needed
+      5. Return ErrorResponse
+
+  - name: should_send_message
+    given: ErrorType and context
+    when: Deciding to message user
+    then: |
+      Don't send for:
+        - Internal errors
+        - Errors without chat_id
+        - Cooldown not expired
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RECOVERY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: attempt_recovery
+    given: ErrorRecord
+    when: Attempting recovery
+    then: |
+      1. Determine recovery action
+      2. Execute action
+      3. Mark as recovered if successful
+      4. Return success
+
+  - name: determine_recovery_action
+    given: ErrorType
+    when: Choosing action
+    then: |
+      timeout/network -> retry
+      payment_error -> refund
+      auth_error -> reset_session
+      critical -> notify_admin
+      _ -> ignore
+
+  - name: execute_recovery
+    given: RecoveryAction and context
+    when: Executing recovery
+    then: |
+      match action:
+        retry -> retry_operation
+        refund -> process_refund
+        reset_session -> clear_session
+        notify_admin -> send_alert
+        _ -> no-op
+
+  - name: retry_operation
+    given: ErrorContext
+    when: Retrying
+    then: |
+      1. Wait backoff
+      2. Re-execute operation
+      3. Return result
+
+  - name: process_refund
+    given: ErrorContext
+    when: Refunding
+    then: |
+      1. Get payment info
+      2. Refund balance
+      3. Notify user
+      4. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ALERTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_alert
+    given: AlertInfo
+    when: Alerting admins
+    then: |
+      1. Format alert message
+      2. Send to alert_chat_id
+      3. Log alert sent
+
+  - name: should_alert
+    given: ErrorSeverity
+    when: Deciding to alert
+    then: |
+      Return true if:
+        - severity >= high
+        - alert_on_critical enabled
+
+  - name: format_alert
+    given: AlertInfo
+    when: Formatting alert
+    then: |
+      Return formatted message with:
+        - Severity emoji
+        - Error type
+        - Message
+        - Context details
+        - Timestamp
+
+  - name: check_alert_threshold
+    given: ErrorType
+    when: Checking threshold
+    then: |
+      1. Count recent errors of type
+      2. If > threshold, alert
+      3. Reset counter
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOGGING & METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_error
+    given: ErrorRecord
+    when: Logging error
+    then: |
+      1. Format log entry
+      2. Include context
+      3. Include stack trace if available
+      4. Write to log
+
+  - name: update_metrics
+    given: ErrorRecord
+    when: Updating metrics
+    then: |
+      1. Increment total_errors
+      2. Increment errors_by_type[type]
+      3. Increment errors_by_handler if set
+      4. If critical, increment critical_errors
+      5. If recovered, increment recovered_errors
+
+  - name: get_metrics
+    given: ErrorHandler
+    when: Getting metrics
+    then: Return ErrorMetrics
+
+  - name: get_recent_errors
+    given: ErrorHandler and limit
+    when: Getting recent errors
+    then: Return last N errors
+
+  - name: clear_old_errors
+    given: ErrorHandler
+    when: Cleaning up
+    then: |
+      1. Remove errors older than retention
+      2. Keep max_recent_errors
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_RECENT_ERRORS: 100
+  DEFAULT_ERROR_COOLDOWN_MS: 5000
+  ALERT_THRESHOLD_COUNT: 10
+  ALERT_THRESHOLD_WINDOW_MS: 60000
+  ERROR_RETENTION_HOURS: 24
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  generic_error:
+    ru: |
+      ❌ Произошла ошибка
+      
+      Попробуйте ещё раз или обратитесь в поддержку.
+    en: |
+      ❌ An error occurred
+      
+      Please try again or contact support.
+
+  validation_error:
+    ru: "❌ Неверные данные. Проверьте ввод."
+    en: "❌ Invalid data. Please check your input."
+
+  rate_limit_error:
+    ru: "⏳ Слишком много запросов. Подождите немного."
+    en: "⏳ Too many requests. Please wait."
+
+  balance_error:
+    ru: "❌ Недостаточно звёзд. Пополните баланс."
+    en: "❌ Insufficient stars. Please top up."
+
+  payment_error:
+    ru: |
+      ❌ Ошибка оплаты
+      
+      Средства не были списаны. Попробуйте ещё раз.
+    en: |
+      ❌ Payment error
+      
+      No funds were charged. Please try again.
+
+  generation_error:
+    ru: |
+      ❌ Ошибка генерации
+      
+      Звёзды возвращены на баланс. Попробуйте ещё раз.
+    en: |
+      ❌ Generation error
+      
+      Stars refunded. Please try again.
+
+  timeout_error:
+    ru: "⏰ Превышено время ожидания. Попробуйте ещё раз."
+    en: "⏰ Request timed out. Please try again."
+
+  maintenance_error:
+    ru: "🔧 Сервис временно недоступен. Попробуйте позже."
+    en: "🔧 Service temporarily unavailable. Please try later."
+
+  alert_template: |
+    🚨 VIBEE Bot Alert
+    
+    Severity: {severity}
+    Type: {error_type}
+    Message: {message}
+    
+    Context:
+    - User: {telegram_id}
+    - Handler: {handler}
+    - Request: {request_id}
+    
+    Time: {timestamp}

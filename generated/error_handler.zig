@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot_main v2.0.0 - Generated from .vibee specification
+// error_handler v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,25 +17,15 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const EXIT_SUCCESS: f64 = 0;
+pub const DEFAULT_MAX_RECENT_ERRORS: f64 = 100;
 
-pub const EXIT_CONFIG_ERROR: f64 = 1;
+pub const DEFAULT_ERROR_COOLDOWN_MS: f64 = 5000;
 
-pub const EXIT_INIT_ERROR: f64 = 2;
+pub const ALERT_THRESHOLD_COUNT: f64 = 10;
 
-pub const EXIT_RUNTIME_ERROR: f64 = 3;
+pub const ALERT_THRESHOLD_WINDOW_MS: f64 = 60000;
 
-pub const EXIT_SIGNAL: f64 = 128;
-
-pub const DEFAULT_MODE: f64 = 0;
-
-pub const DEFAULT_LOG_LEVEL: f64 = 0;
-
-pub const DEFAULT_WEBHOOK_PORT: f64 = 8443;
-
-pub const SHUTDOWN_TIMEOUT_MS: f64 = 10000;
-
-pub const HEALTH_CHECK_INTERVAL_MS: f64 = 30000;
+pub const ERROR_RETENTION_HOURS: f64 = 24;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -52,107 +42,83 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Application configuration from environment
-pub const AppConfig = struct {
-    bot_token: []const u8,
-    bot_name: []const u8,
-    supabase_url: []const u8,
-    supabase_key: []const u8,
-    supabase_service_key: []const u8,
-    openai_key: ?[]const u8,
-    replicate_token: ?[]const u8,
-    elevenlabs_key: ?[]const u8,
-    webhook_url: ?[]const u8,
-    webhook_port: ?[]const u8,
-    webhook_secret: ?[]const u8,
-    mode: BotMode,
-    log_level: LogLevel,
-    admin_ids: []const u8,
-    is_dev: bool,
-};
-
-/// Bot operation mode
-pub const BotMode = struct {
-};
-
-/// Logging level
-pub const LogLevel = struct {
-};
-
-/// Initialized service clients
-pub const AppServices = struct {
+/// Global error handler
+pub const ErrorHandler = struct {
     telegram: []const u8,
-    supabase: []const u8,
-    replicate: ?[]const u8,
-    openai: ?[]const u8,
-    elevenlabs: ?[]const u8,
+    config: ErrorConfig,
+    metrics: ErrorMetrics,
+    recent_errors: []const u8,
 };
 
-/// Main application instance
-pub const Application = struct {
-    config: AppConfig,
-    services: AppServices,
-    handlers: HandlerRegistry,
-    middleware: []const u8,
-    state: AppState,
-    metrics: AppMetrics,
+/// Error handler configuration
+pub const ErrorConfig = struct {
+    send_user_message: bool,
+    log_errors: bool,
+    alert_on_critical: bool,
+    alert_chat_id: ?[]const u8,
+    max_recent_errors: i64,
+    error_cooldown_ms: i64,
 };
 
-/// Application runtime state
-pub const AppState = struct {
-    is_running: bool,
-    started_at: ?[]const u8,
-    shutdown_requested: bool,
-    shutdown_reason: ?[]const u8,
-    last_update_id: i64,
+/// Error metrics
+pub const ErrorMetrics = struct {
+    total_errors: i64,
+    errors_by_type: std.StringHashMap([]const u8),
+    errors_by_handler: std.StringHashMap([]const u8),
+    critical_errors: i64,
+    recovered_errors: i64,
+    user_messages_sent: i64,
 };
 
-/// Application metrics
-pub const AppMetrics = struct {
-    updates_processed: i64,
-    messages_handled: i64,
-    callbacks_handled: i64,
-    payments_processed: i64,
-    errors_count: i64,
-    uptime_seconds: i64,
-};
-
-/// Registered handlers
-pub const HandlerRegistry = struct {
-    message_handler: []const u8,
-    callback_handler: []const u8,
-    payment_handler: []const u8,
-    command_handlers: []const u8,
-};
-
-/// Application startup result
-pub const StartupResult = struct {
-    success: bool,
-    app: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Startup error details
-pub const StartupError = struct {
-    phase: StartupPhase,
+/// Recorded error
+pub const ErrorRecord = struct {
+    id: []const u8,
+    timestamp: i64,
+    error_type: ErrorType,
     message: []const u8,
-    cause: ?[]const u8,
+    stack_trace: ?[]const u8,
+    context: ErrorContext,
+    handled: bool,
+    recovered: bool,
 };
 
-/// Startup phase enum
-pub const StartupPhase = struct {
+/// Error context
+pub const ErrorContext = struct {
+    telegram_id: ?[]const u8,
+    chat_id: ?[]const u8,
+    update_id: ?[]const u8,
+    handler: ?[]const u8,
+    middleware: ?[]const u8,
+    request_id: ?[]const u8,
 };
 
-/// Shutdown reason
-pub const ShutdownReason = struct {
+/// Error type classification
+pub const ErrorType = struct {
 };
 
-/// Health check status
-pub const HealthStatus = struct {
-    healthy: bool,
-    services: std.StringHashMap([]const u8),
-    uptime_seconds: i64,
-    last_update_at: ?[]const u8,
+/// Error severity level
+pub const ErrorSeverity = struct {
+};
+
+/// Error response to user
+pub const ErrorResponse = struct {
+    message: []const u8,
+    show_retry: bool,
+    show_support: bool,
+    keyboard: ?[]const u8,
+};
+
+/// Recovery action
+pub const RecoveryAction = struct {
+};
+
+/// Alert information
+pub const AlertInfo = struct {
+    severity: ErrorSeverity,
+    error_type: ErrorType,
+    message: []const u8,
+    context: ErrorContext,
+    timestamp: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -231,198 +197,219 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "load_config" {
-// Given: Environment variables
-// When: Application starts
+test "create_error_handler" {
+// Given: TelegramClient and ErrorConfig
+// When: Creating error handler
 // Then: |
     // TODO: Add test assertions
 }
 
-test "load_config_from_file" {
-// Given: Config file path
-// When: Loading from file
+test "create_with_defaults" {
+// Given: TelegramClient
+// When: Creating with default config
 // Then: |
     // TODO: Add test assertions
 }
 
-test "validate_config" {
-// Given: AppConfig
-// When: Validating configuration
+test "handle_error" {
+// Given: Error and ErrorContext
+// When: Any error occurs
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_env_var" {
-// Given: Variable name and default
-// When: Reading environment
-// Then: Return value or default
-    // TODO: Add test assertions
-}
-
-test "parse_admin_ids" {
-// Given: Comma-separated string
-// When: Parsing admin IDs
-// Then: Return List<Int>
-    // TODO: Add test assertions
-}
-
-test "init_services" {
-// Given: AppConfig
-// When: Initializing services
+test "handle_handler_error" {
+// Given: Error, handler name, context
+// When: Handler throws error
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_telegram_client" {
-// Given: Bot token
-// When: Creating Telegram client
+test "handle_middleware_error" {
+// Given: Error, middleware name, context
+// When: Middleware throws error
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_supabase_client" {
-// Given: URL and keys
-// When: Creating Supabase client
+test "handle_api_error" {
+// Given: API error and context
+// When: External API fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_handlers" {
-// Given: AppServices
-// When: Creating handlers
+test "handle_database_error" {
+// Given: DB error and context
+// When: Database operation fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_middleware" {
-// Given: AppServices
-// When: Creating middleware chain
+test "handle_telegram_error" {
+// Given: Telegram API error and context
+// When: Telegram API fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_application" {
-// Given: Config, services, handlers, middleware
-// When: Assembling application
+test "handle_payment_error" {
+// Given: Payment error and context
+// When: Payment fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start" {
-// Given: No parameters
-// When: main() called
+test "handle_generation_error" {
+// Given: Generation error and context
+// When: AI generation fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "run" {
-// Given: Application
-// When: Bot is running
+test "classify_error" {
+// Given: Error
+// When: Determining error type
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_polling" {
-// Given: Application
-// When: Starting polling mode
+test "determine_severity" {
+// Given: ErrorType and context
+// When: Determining severity
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_webhook" {
-// Given: Application
-// When: Starting webhook mode
+test "is_recoverable" {
+// Given: ErrorType
+// When: Checking recoverability
 // Then: |
     // TODO: Add test assertions
 }
 
-test "shutdown" {
-// Given: Application and ShutdownReason
-// When: Shutdown requested
+test "send_error_message" {
+// Given: Chat ID, ErrorType, language
+// When: Sending error to user
 // Then: |
     // TODO: Add test assertions
 }
 
-test "graceful_shutdown" {
-// Given: Application and timeout
-// When: Graceful shutdown
+test "get_user_message" {
+// Given: ErrorType and language
+// When: Getting user-friendly message
 // Then: |
     // TODO: Add test assertions
 }
 
-test "setup_signal_handlers" {
-// Given: Application
-// When: Setting up signals
+test "build_error_response" {
+// Given: ErrorType and language
+// When: Building response
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_sigint" {
-// Given: Application
-// When: SIGINT received
+test "should_send_message" {
+// Given: ErrorType and context
+// When: Deciding to message user
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_sigterm" {
-// Given: Application
-// When: SIGTERM received
+test "attempt_recovery" {
+// Given: ErrorRecord
+// When: Attempting recovery
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_sighup" {
-// Given: Application
-// When: SIGHUP received
+test "determine_recovery_action" {
+// Given: ErrorType
+// When: Choosing action
 // Then: |
     // TODO: Add test assertions
 }
 
-test "health_check" {
-// Given: Application
-// When: Health check requested
+test "execute_recovery" {
+// Given: RecoveryAction and context
+// When: Executing recovery
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "retry_operation" {
+// Given: ErrorContext
+// When: Retrying
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "process_refund" {
+// Given: ErrorContext
+// When: Refunding
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "send_alert" {
+// Given: AlertInfo
+// When: Alerting admins
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "should_alert" {
+// Given: ErrorSeverity
+// When: Deciding to alert
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "format_alert" {
+// Given: AlertInfo
+// When: Formatting alert
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "check_alert_threshold" {
+// Given: ErrorType
+// When: Checking threshold
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "log_error" {
+// Given: ErrorRecord
+// When: Logging error
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "update_metrics" {
+// Given: ErrorRecord
+// When: Updating metrics
 // Then: |
     // TODO: Add test assertions
 }
 
 test "get_metrics" {
-// Given: Application
-// When: Metrics requested
-// Then: Return AppMetrics
+// Given: ErrorHandler
+// When: Getting metrics
+// Then: Return ErrorMetrics
     // TODO: Add test assertions
 }
 
-test "update_metrics" {
-// Given: Application and metric update
-// When: Recording metric
-// Then: Update AppMetrics
+test "get_recent_errors" {
+// Given: ErrorHandler and limit
+// When: Getting recent errors
+// Then: Return last N errors
     // TODO: Add test assertions
 }
 
-test "log_startup" {
-// Given: Application
-// When: Bot started
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "log_shutdown" {
-// Given: Application and reason
-// When: Bot stopping
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "main" {
-// Given: Command line arguments
-// When: Program executed
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "parse_args" {
-// Given: Command line arguments
-// When: Parsing arguments
+test "clear_old_errors" {
+// Given: ErrorHandler
+// When: Cleaning up
 // Then: |
     // TODO: Add test assertions
 }

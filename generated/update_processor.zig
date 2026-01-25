@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot_main v2.0.0 - Generated from .vibee specification
+// update_processor v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,25 +17,11 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const EXIT_SUCCESS: f64 = 0;
+pub const DEFAULT_TIMEOUT_MS: f64 = 30000;
 
-pub const EXIT_CONFIG_ERROR: f64 = 1;
+pub const DEFAULT_MAX_CONCURRENT: f64 = 100;
 
-pub const EXIT_INIT_ERROR: f64 = 2;
-
-pub const EXIT_RUNTIME_ERROR: f64 = 3;
-
-pub const EXIT_SIGNAL: f64 = 128;
-
-pub const DEFAULT_MODE: f64 = 0;
-
-pub const DEFAULT_LOG_LEVEL: f64 = 0;
-
-pub const DEFAULT_WEBHOOK_PORT: f64 = 8443;
-
-pub const SHUTDOWN_TIMEOUT_MS: f64 = 10000;
-
-pub const HEALTH_CHECK_INTERVAL_MS: f64 = 30000;
+pub const MAX_RETRIES: f64 = 1;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -52,69 +38,12 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Application configuration from environment
-pub const AppConfig = struct {
-    bot_token: []const u8,
-    bot_name: []const u8,
-    supabase_url: []const u8,
-    supabase_key: []const u8,
-    supabase_service_key: []const u8,
-    openai_key: ?[]const u8,
-    replicate_token: ?[]const u8,
-    elevenlabs_key: ?[]const u8,
-    webhook_url: ?[]const u8,
-    webhook_port: ?[]const u8,
-    webhook_secret: ?[]const u8,
-    mode: BotMode,
-    log_level: LogLevel,
-    admin_ids: []const u8,
-    is_dev: bool,
-};
-
-/// Bot operation mode
-pub const BotMode = struct {
-};
-
-/// Logging level
-pub const LogLevel = struct {
-};
-
-/// Initialized service clients
-pub const AppServices = struct {
-    telegram: []const u8,
-    supabase: []const u8,
-    replicate: ?[]const u8,
-    openai: ?[]const u8,
-    elevenlabs: ?[]const u8,
-};
-
-/// Main application instance
-pub const Application = struct {
-    config: AppConfig,
-    services: AppServices,
+/// Main update processor
+pub const UpdateProcessor = struct {
     handlers: HandlerRegistry,
     middleware: []const u8,
-    state: AppState,
-    metrics: AppMetrics,
-};
-
-/// Application runtime state
-pub const AppState = struct {
-    is_running: bool,
-    started_at: ?[]const u8,
-    shutdown_requested: bool,
-    shutdown_reason: ?[]const u8,
-    last_update_id: i64,
-};
-
-/// Application metrics
-pub const AppMetrics = struct {
-    updates_processed: i64,
-    messages_handled: i64,
-    callbacks_handled: i64,
-    payments_processed: i64,
-    errors_count: i64,
-    uptime_seconds: i64,
+    config: ProcessorConfig,
+    metrics: ProcessorMetrics,
 };
 
 /// Registered handlers
@@ -122,37 +51,109 @@ pub const HandlerRegistry = struct {
     message_handler: []const u8,
     callback_handler: []const u8,
     payment_handler: []const u8,
-    command_handlers: []const u8,
+    media_handler: []const u8,
 };
 
-/// Application startup result
-pub const StartupResult = struct {
+/// Processor configuration
+pub const ProcessorConfig = struct {
+    timeout_ms: i64,
+    max_concurrent: i64,
+    log_updates: bool,
+    log_responses: bool,
+};
+
+/// Processing metrics
+pub const ProcessorMetrics = struct {
+    updates_total: i64,
+    updates_by_type: std.StringHashMap([]const u8),
+    handlers_called: std.StringHashMap([]const u8),
+    errors_total: i64,
+    avg_processing_ms: f64,
+};
+
+/// Telegram update
+pub const Update = struct {
+    update_id: i64,
+    message: ?[]const u8,
+    edited_message: ?[]const u8,
+    callback_query: ?[]const u8,
+    inline_query: ?[]const u8,
+    chosen_inline_result: ?[]const u8,
+    pre_checkout_query: ?[]const u8,
+    successful_payment: ?[]const u8,
+    poll: ?[]const u8,
+    poll_answer: ?[]const u8,
+};
+
+/// Type of update
+pub const UpdateType = struct {
+};
+
+/// Update processing result
+pub const ProcessResult = struct {
+    update_id: i64,
+    update_type: UpdateType,
+    handler_name: []const u8,
     success: bool,
-    app: ?[]const u8,
+    duration_ms: i64,
     @"error": ?[]const u8,
+    response_sent: bool,
 };
 
-/// Startup error details
-pub const StartupError = struct {
-    phase: StartupPhase,
+/// Processing error
+pub const ProcessError = struct {
+    code: ProcessErrorCode,
     message: []const u8,
-    cause: ?[]const u8,
+    handler: ?[]const u8,
+    recoverable: bool,
 };
 
-/// Startup phase enum
-pub const StartupPhase = struct {
+/// Error codes
+pub const ProcessErrorCode = struct {
 };
 
-/// Shutdown reason
-pub const ShutdownReason = struct {
+/// Telegram message
+pub const Message = struct {
+    message_id: i64,
+    from: ?[]const u8,
+    chat: []const u8,
+    date: i64,
+    text: ?[]const u8,
+    entities: ?[]const u8,
+    photo: ?[]const u8,
+    video: ?[]const u8,
+    audio: ?[]const u8,
+    voice: ?[]const u8,
+    document: ?[]const u8,
+    successful_payment: ?[]const u8,
 };
 
-/// Health check status
-pub const HealthStatus = struct {
-    healthy: bool,
-    services: std.StringHashMap([]const u8),
-    uptime_seconds: i64,
-    last_update_at: ?[]const u8,
+/// Callback query
+pub const CallbackQuery = struct {
+    id: []const u8,
+    from: []const u8,
+    message: ?[]const u8,
+    inline_message_id: ?[]const u8,
+    chat_instance: []const u8,
+    data: ?[]const u8,
+};
+
+/// Pre-checkout query
+pub const PreCheckoutQuery = struct {
+    id: []const u8,
+    from: []const u8,
+    currency: []const u8,
+    total_amount: i64,
+    invoice_payload: []const u8,
+};
+
+/// Successful payment
+pub const SuccessfulPayment = struct {
+    currency: []const u8,
+    total_amount: i64,
+    invoice_payload: []const u8,
+    telegram_payment_charge_id: []const u8,
+    provider_payment_charge_id: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -231,198 +232,170 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "load_config" {
-// Given: Environment variables
-// When: Application starts
+test "create_processor" {
+// Given: HandlerRegistry and MiddlewareChain
+// When: Creating processor
 // Then: |
     // TODO: Add test assertions
 }
 
-test "load_config_from_file" {
-// Given: Config file path
-// When: Loading from file
+test "create_with_config" {
+// Given: HandlerRegistry, MiddlewareChain, ProcessorConfig
+// When: Creating with custom config
 // Then: |
     // TODO: Add test assertions
 }
 
-test "validate_config" {
-// Given: AppConfig
-// When: Validating configuration
+test "process_update" {
+// Given: UpdateProcessor and Update
+// When: Processing any update
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_env_var" {
-// Given: Variable name and default
-// When: Reading environment
-// Then: Return value or default
-    // TODO: Add test assertions
-}
-
-test "parse_admin_ids" {
-// Given: Comma-separated string
-// When: Parsing admin IDs
-// Then: Return List<Int>
-    // TODO: Add test assertions
-}
-
-test "init_services" {
-// Given: AppConfig
-// When: Initializing services
+test "detect_update_type" {
+// Given: Update
+// When: Determining type
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_telegram_client" {
-// Given: Bot token
-// When: Creating Telegram client
+test "route_to_handler" {
+// Given: Update and UpdateType
+// When: Routing to handler
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_supabase_client" {
-// Given: URL and keys
-// When: Creating Supabase client
+test "route_message" {
+// Given: Message
+// When: Routing message update
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_handlers" {
-// Given: AppServices
-// When: Creating handlers
+test "route_command" {
+// Given: Message with command
+// When: Routing command
 // Then: |
     // TODO: Add test assertions
 }
 
-test "init_middleware" {
-// Given: AppServices
-// When: Creating middleware chain
+test "route_text_message" {
+// Given: Message with text
+// When: Routing text
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_application" {
-// Given: Config, services, handlers, middleware
-// When: Assembling application
+test "route_media" {
+// Given: Message with media
+// When: Routing media message
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start" {
-// Given: No parameters
-// When: main() called
+test "route_edited_message" {
+// Given: Edited message
+// When: Routing edited message
 // Then: |
     // TODO: Add test assertions
 }
 
-test "run" {
-// Given: Application
-// When: Bot is running
+test "route_callback" {
+// Given: CallbackQuery
+// When: Routing callback
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_polling" {
-// Given: Application
-// When: Starting polling mode
+test "route_pre_checkout" {
+// Given: PreCheckoutQuery
+// When: Routing pre-checkout
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_webhook" {
-// Given: Application
-// When: Starting webhook mode
+test "route_payment" {
+// Given: SuccessfulPayment
+// When: Routing successful payment
 // Then: |
     // TODO: Add test assertions
 }
 
-test "shutdown" {
-// Given: Application and ShutdownReason
-// When: Shutdown requested
+test "handle_unknown" {
+// Given: Update with unknown type
+// When: Unknown update type
 // Then: |
     // TODO: Add test assertions
 }
 
-test "graceful_shutdown" {
-// Given: Application and timeout
-// When: Graceful shutdown
+test "handle_handler_error" {
+// Given: Update and error
+// When: Handler threw error
 // Then: |
     // TODO: Add test assertions
 }
 
-test "setup_signal_handlers" {
-// Given: Application
-// When: Setting up signals
+test "handle_timeout" {
+// Given: Update
+// When: Processing timed out
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_sigint" {
-// Given: Application
-// When: SIGINT received
+test "recover_from_error" {
+// Given: ProcessError
+// When: Attempting recovery
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_sigterm" {
-// Given: Application
-// When: SIGTERM received
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_sighup" {
-// Given: Application
-// When: SIGHUP received
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "health_check" {
-// Given: Application
-// When: Health check requested
+test "update_metrics" {
+// Given: ProcessResult
+// When: Recording metrics
 // Then: |
     // TODO: Add test assertions
 }
 
 test "get_metrics" {
-// Given: Application
-// When: Metrics requested
-// Then: Return AppMetrics
+// Given: UpdateProcessor
+// When: Getting metrics
+// Then: Return ProcessorMetrics
     // TODO: Add test assertions
 }
 
-test "update_metrics" {
-// Given: Application and metric update
-// When: Recording metric
-// Then: Update AppMetrics
+test "reset_metrics" {
+// Given: UpdateProcessor
+// When: Resetting metrics
+// Then: Reset all counters
     // TODO: Add test assertions
 }
 
-test "log_startup" {
-// Given: Application
-// When: Bot started
+test "is_command" {
+// Given: Message
+// When: Checking for command
 // Then: |
     // TODO: Add test assertions
 }
 
-test "log_shutdown" {
-// Given: Application and reason
-// When: Bot stopping
+test "extract_command" {
+// Given: Message
+// When: Extracting command
 // Then: |
     // TODO: Add test assertions
 }
 
-test "main" {
-// Given: Command line arguments
-// When: Program executed
+test "has_media" {
+// Given: Message
+// When: Checking for media
 // Then: |
     // TODO: Add test assertions
 }
 
-test "parse_args" {
-// Given: Command line arguments
-// When: Parsing arguments
+test "get_media_type" {
+// Given: Message
+// When: Detecting media type
 // Then: |
     // TODO: Add test assertions
 }
