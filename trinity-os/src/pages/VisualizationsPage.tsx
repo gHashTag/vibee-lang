@@ -1,110 +1,62 @@
 "use client";
 import { motion } from 'framer-motion';
-import { useI18n } from '../i18n/context';
+import { Link } from 'react-router-dom';
 import QuantumBackground from '../components/QuantumBackground';
+import QuantumCanvas from '../components/QuantumCanvas';
 import Footer from '../components/Footer';
 
 const visualizations = [
   { 
-    id: 'runtime', 
-    icon: '🔮', 
-    title: '999 OS Runtime', 
-    desc: 'Full quantum computing environment with 29 modules',
-    href: '/quantum-runtime.html',
-    color: '#ffd700'
-  },
-  { 
-    id: 'quantum59', 
-    icon: '🌌', 
-    title: 'Quantum Trinity', 
-    desc: 'Evolution, Entanglement & Blockchain visualization',
-    href: '/quantum-runtime.html',
+    id: 'quantum-field', 
+    icon: '⚛️', 
+    title: 'Quantum Field', 
+    desc: 'Superposition & wave functions visualization',
+    href: '/viz/quantum-field',
     color: '#00E599'
   },
   { 
-    id: 'quantumlife', 
-    icon: '🧬', 
-    title: 'Quantum Life', 
-    desc: 'Biology + Simulation + Consciousness',
-    href: '/quantum-runtime.html',
+    id: 'neural-network', 
+    icon: '🧠', 
+    title: 'Neural Network', 
+    desc: 'Brain-inspired computing patterns',
+    href: '/viz/neural-network',
     color: '#0af'
   },
   { 
-    id: 'neuromorphic', 
-    icon: '🧠', 
-    title: 'Neuromorphic', 
-    desc: 'Brain-inspired computing patterns',
-    href: '/quantum-runtime.html',
-    color: '#f0f'
-  },
-  { 
-    id: 'consciousness', 
-    icon: '👁️', 
-    title: 'Consciousness', 
-    desc: 'Awareness field simulation',
-    href: '/quantum-runtime.html',
-    color: '#ff6'
-  },
-  { 
-    id: 'trinity', 
-    icon: '🔺', 
-    title: 'Trinity Core', 
-    desc: 'Ternary computing visualization',
-    href: '/quantum-runtime.html',
-    color: '#f66'
-  },
-  { 
-    id: 'multiverse', 
-    icon: '🌀', 
-    title: 'Multiverse', 
-    desc: 'Parallel reality simulation',
-    href: '/quantum-runtime.html',
+    id: 'wave-interference', 
+    icon: '🌊', 
+    title: 'Wave Interference', 
+    desc: 'Double-slit experiment simulation',
+    href: '/viz/wave-interference',
     color: '#6f6'
   },
   { 
-    id: 'encryption', 
-    icon: '🔐', 
-    title: 'Quantum Encryption', 
-    desc: 'Post-quantum cryptography',
-    href: '/quantum-runtime.html',
-    color: '#66f'
-  },
-  { 
-    id: 'supremacy', 
-    icon: '⚡', 
-    title: 'Quantum Supremacy', 
-    desc: 'Computational advantage demo',
-    href: '/quantum-runtime.html',
-    color: '#f90'
-  },
-  { 
-    id: 'tsp', 
-    icon: '🗺️', 
-    title: 'TSP Solver', 
-    desc: 'Traveling Salesman quantum optimization',
-    href: '/quantum-runtime.html',
-    color: '#9f6'
-  },
-  { 
-    id: 'matryoshka', 
-    icon: '🪆', 
-    title: 'Matryoshka', 
-    desc: 'Nested quantum states',
-    href: '/quantum-runtime.html',
+    id: 'entanglement', 
+    icon: '🔗', 
+    title: 'Entanglement', 
+    desc: 'Correlated quantum pairs with spin',
+    href: '/viz/entanglement',
     color: '#f6f'
   },
   { 
-    id: 'zharptitsa', 
-    icon: '🔥', 
-    title: 'Zhar-Ptitsa', 
-    desc: 'Phoenix firebird visualization',
-    href: '/quantum-runtime.html',
+    id: 'vortex', 
+    icon: '🌀', 
+    title: 'Vortex Field', 
+    desc: 'Spiral dynamics visualization',
+    href: '/viz/vortex',
     color: '#fa0'
+  },
+  { 
+    id: 'photon-beam', 
+    icon: '💫', 
+    title: 'Photon Beam', 
+    desc: 'Light propagation from source',
+    href: '/viz/photon-beam',
+    color: '#ff6'
   },
 ];
 
 export default function VisualizationsPage() {
-  useI18n(); // For language context
 
   return (
     <main style={{ background: 'var(--bg)', minHeight: '100vh' }}>
@@ -125,10 +77,10 @@ export default function VisualizationsPage() {
         justifyContent: 'space-between',
         alignItems: 'center'
       }}>
-        <a href="/" style={{ color: 'var(--text)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <Link to="/" style={{ color: 'var(--text)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ fontSize: '1.5rem' }}>←</span>
           <span style={{ fontWeight: 600 }}>TRINITY</span>
-        </a>
+        </Link>
         <div style={{ color: '#ffd700', fontFamily: 'monospace' }}>
           φ² + 1/φ² = 3
         </div>
@@ -167,31 +119,36 @@ export default function VisualizationsPage() {
           Interactive quantum computing simulations powered by TRINITY 999 OS
         </motion.p>
         
-        {/* Launch Runtime Button */}
-        <motion.a 
-          href="/quantum-runtime.html"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2 }}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            marginTop: '2rem',
-            padding: '1rem 2rem',
-            background: 'linear-gradient(135deg, var(--accent), #00b377)',
-            color: '#000',
-            textDecoration: 'none',
-            borderRadius: '8px',
-            fontWeight: 600,
-            fontSize: '1.1rem',
-            boxShadow: '0 0 30px rgba(0, 229, 153, 0.3)'
-          }}
-        >
-          🚀 Launch 999 OS Runtime
-        </motion.a>
+      </section>
+
+      {/* Hero Canvas */}
+      <section style={{ 
+        height: '40vh', 
+        minHeight: '300px',
+        position: 'relative',
+        margin: '0 2rem 2rem'
+      }}>
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          borderRadius: '16px',
+          overflow: 'hidden',
+          border: '1px solid var(--border)'
+        }}>
+          <QuantumCanvas mode="quantum-field" particleCount={1000} interactive={true} />
+        </div>
+        <div style={{
+          position: 'absolute',
+          bottom: '1rem',
+          left: '1rem',
+          background: 'rgba(0,0,0,0.6)',
+          padding: '0.5rem 1rem',
+          borderRadius: '6px',
+          fontSize: '0.8rem',
+          color: 'var(--muted)'
+        }}>
+          Interactive preview • Click & drag
+        </div>
       </section>
 
       {/* Visualizations Grid */}
@@ -206,47 +163,50 @@ export default function VisualizationsPage() {
           gap: '1.5rem'
         }}>
           {visualizations.map((viz, i) => (
-            <motion.a
+            <Link
               key={viz.id}
-              href={viz.href}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
-              viewport={{ once: true }}
-              whileHover={{ y: -5, boxShadow: `0 10px 40px ${viz.color}33` }}
-              style={{
-                display: 'block',
-                padding: '1.5rem',
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid var(--border)',
-                borderRadius: '12px',
-                textDecoration: 'none',
-                transition: 'all 0.3s ease'
-              }}
+              to={viz.href}
+              style={{ textDecoration: 'none' }}
             >
-              <div style={{ 
-                fontSize: '2.5rem', 
-                marginBottom: '1rem',
-                filter: 'drop-shadow(0 0 10px ' + viz.color + ')'
-              }}>
-                {viz.icon}
-              </div>
-              <h3 style={{ 
-                color: viz.color, 
-                fontSize: '1.2rem', 
-                fontWeight: 600,
-                marginBottom: '0.5rem'
-              }}>
-                {viz.title}
-              </h3>
-              <p style={{ 
-                color: 'var(--muted)', 
-                fontSize: '0.85rem',
-                lineHeight: 1.5
-              }}>
-                {viz.desc}
-              </p>
-            </motion.a>
+              <motion.div
+                initial={{ opacity: 0, y: 30 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.05 }}
+                viewport={{ once: true }}
+                whileHover={{ y: -5, boxShadow: `0 10px 40px ${viz.color}33` }}
+                style={{
+                  padding: '1.5rem',
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '12px',
+                  transition: 'all 0.3s ease',
+                  height: '100%'
+                }}
+              >
+                <div style={{ 
+                  fontSize: '2.5rem', 
+                  marginBottom: '1rem',
+                  filter: 'drop-shadow(0 0 10px ' + viz.color + ')'
+                }}>
+                  {viz.icon}
+                </div>
+                <h3 style={{ 
+                  color: viz.color, 
+                  fontSize: '1.2rem', 
+                  fontWeight: 600,
+                  marginBottom: '0.5rem'
+                }}>
+                  {viz.title}
+                </h3>
+                <p style={{ 
+                  color: 'var(--muted)', 
+                  fontSize: '0.85rem',
+                  lineHeight: 1.5
+                }}>
+                  {viz.desc}
+                </p>
+              </motion.div>
+            </Link>
           ))}
         </div>
       </section>

@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import VisualizationsPage from './pages/VisualizationsPage.tsx'
+import VizPage from './pages/VizPage.tsx'
 import { I18nProvider } from './i18n/context.tsx'
 
 // Register Service Worker for PWA
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<App />} />
           <Route path="/quantum" element={<VisualizationsPage />} />
           <Route path="/visualizations" element={<VisualizationsPage />} />
+          <Route path="/viz/:vizId" element={<VizPage />} />
         </Routes>
       </BrowserRouter>
     </I18nProvider>

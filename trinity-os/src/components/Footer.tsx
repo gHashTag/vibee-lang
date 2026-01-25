@@ -63,38 +63,33 @@ export default function Footer() {
             </h4>
             <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🔮</span> 999 OS Runtime
+                <a href="/visualizations" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🔮</span> All Visualizations
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>⚛️</span> Quantum Particles
+                <a href="/viz/quantum-field" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>⚛️</span> Quantum Field
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html#quantum59" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🌌</span> Quantum Trinity
+                <a href="/viz/neural-network" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🧠</span> Neural Network
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html#quantumlife" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🧬</span> Quantum Life
+                <a href="/viz/wave-interference" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🌊</span> Wave Interference
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html#neuromorphic" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🧠</span> Neuromorphic
+                <a href="/viz/entanglement" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🔗</span> Entanglement
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html#consciousness" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>👁️</span> Consciousness
-                </a>
-              </motion.li>
-              <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum-runtime.html#trinity" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🔺</span> Trinity Core
+                <a href="/viz/vortex" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🌀</span> Vortex Field
                 </a>
               </motion.li>
             </ul>
