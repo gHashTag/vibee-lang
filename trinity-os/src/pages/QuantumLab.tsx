@@ -151,44 +151,40 @@ export default function QuantumLab() {
         {menuOpen ? '✕ Close' : '☰ Modes'}
       </motion.button>
 
-      {/* Center - Current Mode Info */}
+      {/* Bottom Center - Current Mode Info */}
       <motion.div
         key={currentMode}
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
         style={{
           position: 'fixed',
-          top: '50%',
+          bottom: '2rem',
           left: '50%',
-          transform: 'translate(-50%, -50%)',
+          transform: 'translateX(-50%)',
           zIndex: 100,
           textAlign: 'center',
-          pointerEvents: 'none',
+          padding: '1rem 2rem',
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(10px)',
+          borderRadius: '16px',
+          border: '1px solid rgba(255,255,255,0.1)',
         }}
       >
         <div style={{ 
-          fontSize: '4rem', 
-          marginBottom: '0.5rem',
-          filter: `drop-shadow(0 0 30px ${current.color})`,
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center',
+          gap: '0.75rem',
+          marginBottom: '0.25rem'
         }}>
-          {current.icon}
+          <span style={{ fontSize: '2rem', filter: `drop-shadow(0 0 15px ${current.color})` }}>
+            {current.icon}
+          </span>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', margin: 0 }}>
+            {current.title}
+          </h1>
         </div>
-        <h1 style={{ 
-          fontSize: '2.5rem', 
-          fontWeight: 700, 
-          color: '#fff', 
-          margin: 0,
-          textShadow: '0 0 30px rgba(0,0,0,0.8)',
-          marginBottom: '0.5rem'
-        }}>
-          {current.title}
-        </h1>
-        <p style={{ 
-          color: 'rgba(255,255,255,0.5)', 
-          fontSize: '0.9rem', 
-          margin: 0,
-          textShadow: '0 0 10px rgba(0,0,0,0.8)',
-        }}>
+        <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', margin: 0 }}>
           Move cursor to interact • <span style={{ color: '#ffd700' }}>φ² + 1/φ² = 3</span>
         </p>
       </motion.div>
