@@ -1,0 +1,661 @@
+name: repositories
+version: "1.0.0"
+language: zig
+module: repositories
+
+description: |
+  Repository pattern implementation for VIBEE Telegram bot.
+  Generic CRUD operations, query builders, caching integration.
+  Works with PostgreSQL via postgres_client.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Repository:
+    description: "Generic repository"
+    fields:
+      table_name: String
+      primary_key: String
+      db_client: Object
+      cache_client: Option<Object>
+      cache_ttl: Int
+      soft_delete: Bool
+
+  RepositoryConfig:
+    description: "Repository configuration"
+    fields:
+      table_name: String
+      primary_key: String
+      schema: String
+      enable_cache: Bool
+      cache_prefix: String
+      cache_ttl: Int
+      soft_delete: Bool
+      timestamps: Bool
+      created_at_column: String
+      updated_at_column: String
+      deleted_at_column: String
+
+  QueryOptions:
+    description: "Query options"
+    fields:
+      select: List<String>
+      where: List<WhereClause>
+      order_by: List<OrderBy>
+      limit: Option<Int>
+      offset: Option<Int>
+      include_deleted: Bool
+      for_update: Bool
+      distinct: Bool
+
+  WhereClause:
+    description: "WHERE clause"
+    fields:
+      column: String
+      operator: WhereOperator
+      value: Object
+      or_group: Option<Int>
+
+  WhereOperator:
+    description: "WHERE operators"
+    values:
+      - eq
+      - neq
+      - gt
+      - gte
+      - lt
+      - lte
+      - like
+      - ilike
+      - in
+      - not_in
+      - is_null
+      - is_not_null
+      - between
+      - contains
+      - contained_by
+      - overlaps
+
+  OrderBy:
+    description: "ORDER BY clause"
+    fields:
+      column: String
+      direction: SortDirection
+      nulls: NullsPosition
+
+  SortDirection:
+    description: "Sort direction"
+    values:
+      - asc
+      - desc
+
+  NullsPosition:
+    description: "NULLS position"
+    values:
+      - first
+      - last
+
+  PaginatedResult:
+    description: "Paginated query result"
+    fields:
+      data: List<Object>
+      total: Int
+      page: Int
+      per_page: Int
+      total_pages: Int
+      has_next: Bool
+      has_prev: Bool
+
+  CursorPaginatedResult:
+    description: "Cursor-based pagination result"
+    fields:
+      data: List<Object>
+      next_cursor: Option<String>
+      prev_cursor: Option<String>
+      has_more: Bool
+
+  BulkResult:
+    description: "Bulk operation result"
+    fields:
+      inserted: Int
+      updated: Int
+      deleted: Int
+      errors: List<BulkError>
+
+  BulkError:
+    description: "Bulk operation error"
+    fields:
+      index: Int
+      error: String
+      data: Object
+
+  Transaction:
+    description: "Repository transaction"
+    fields:
+      id: String
+      repositories: List<String>
+      started_at: Timestamp
+      is_active: Bool
+
+  ChangeSet:
+    description: "Entity change tracking"
+    fields:
+      entity_id: String
+      entity_type: String
+      operation: ChangeOperation
+      old_values: Option<Object>
+      new_values: Object
+      changed_at: Timestamp
+      changed_by: Option<String>
+
+  ChangeOperation:
+    description: "Change operation type"
+    values:
+      - insert
+      - update
+      - delete
+      - restore
+
+  CacheStrategy:
+    description: "Caching strategy"
+    values:
+      - none
+      - read_through
+      - write_through
+      - write_behind
+      - cache_aside
+
+  AggregateResult:
+    description: "Aggregate query result"
+    fields:
+      count: Option<Int>
+      sum: Option<Float>
+      avg: Option<Float>
+      min: Option<Object>
+      max: Option<Object>
+      group_by: Option<Object>
+
+  JoinConfig:
+    description: "JOIN configuration"
+    fields:
+      table: String
+      alias: Option<String>
+      join_type: JoinType
+      on_column: String
+      foreign_column: String
+      select: List<String>
+
+  JoinType:
+    description: "JOIN type"
+    values:
+      - inner
+      - left
+      - right
+      - full
+
+  UpsertConfig:
+    description: "UPSERT configuration"
+    fields:
+      conflict_columns: List<String>
+      update_columns: List<String>
+      where: Option<String>
+
+  HookType:
+    description: "Repository hook type"
+    values:
+      - before_create
+      - after_create
+      - before_update
+      - after_update
+      - before_delete
+      - after_delete
+      - before_find
+      - after_find
+
+  Hook:
+    description: "Repository hook"
+    fields:
+      hook_type: HookType
+      handler: String
+      priority: Int
+      is_async: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_repository
+    given: RepositoryConfig
+    when: Creating repository
+    then: Return Repository
+
+  - name: set_db_client
+    given: Database client
+    when: Setting DB client
+    then: Configure client
+
+  - name: set_cache_client
+    given: Cache client
+    when: Setting cache client
+    then: Configure caching
+
+  - name: register_hook
+    given: Hook
+    when: Registering hook
+    then: Add hook handler
+
+  - name: unregister_hook
+    given: HookType and handler
+    when: Unregistering hook
+    then: Remove hook handler
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRUD OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create
+    given: Entity data
+    when: Creating entity
+    then: Return created entity
+
+  - name: create_many
+    given: List of entities
+    when: Creating multiple
+    then: Return BulkResult
+
+  - name: find_by_id
+    given: Primary key value
+    when: Finding by ID
+    then: Return entity or null
+
+  - name: find_one
+    given: QueryOptions
+    when: Finding single entity
+    then: Return entity or null
+
+  - name: find_many
+    given: QueryOptions
+    when: Finding multiple entities
+    then: Return list of entities
+
+  - name: find_all
+    given: No parameters
+    when: Finding all entities
+    then: Return all entities
+
+  - name: update
+    given: ID and data
+    when: Updating entity
+    then: Return updated entity
+
+  - name: update_many
+    given: QueryOptions and data
+    when: Updating multiple
+    then: Return count updated
+
+  - name: delete
+    given: Primary key value
+    when: Deleting entity
+    then: Return true if deleted
+
+  - name: delete_many
+    given: QueryOptions
+    when: Deleting multiple
+    then: Return count deleted
+
+  - name: upsert
+    given: Data and UpsertConfig
+    when: Upserting entity
+    then: Return entity
+
+  - name: upsert_many
+    given: List of data and UpsertConfig
+    when: Upserting multiple
+    then: Return BulkResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SOFT DELETE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: soft_delete
+    given: Primary key value
+    when: Soft deleting
+    then: Set deleted_at
+
+  - name: soft_delete_many
+    given: QueryOptions
+    when: Soft deleting multiple
+    then: Return count deleted
+
+  - name: restore
+    given: Primary key value
+    when: Restoring entity
+    then: Clear deleted_at
+
+  - name: restore_many
+    given: QueryOptions
+    when: Restoring multiple
+    then: Return count restored
+
+  - name: force_delete
+    given: Primary key value
+    when: Permanently deleting
+    then: Remove from database
+
+  - name: with_trashed
+    given: QueryOptions
+    when: Including soft deleted
+    then: Return all including deleted
+
+  - name: only_trashed
+    given: QueryOptions
+    when: Only soft deleted
+    then: Return only deleted
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAGINATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: paginate
+    given: QueryOptions, page, per_page
+    when: Paginating results
+    then: Return PaginatedResult
+
+  - name: cursor_paginate
+    given: QueryOptions, cursor, limit
+    when: Cursor pagination
+    then: Return CursorPaginatedResult
+
+  - name: chunk
+    given: QueryOptions, size, callback
+    when: Processing in chunks
+    then: Call callback for each chunk
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERY BUILDING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: where
+    given: Column, operator, value
+    when: Adding WHERE clause
+    then: Return query builder
+
+  - name: where_eq
+    given: Column and value
+    when: Adding equality condition
+    then: Return query builder
+
+  - name: where_in
+    given: Column and values
+    when: Adding IN condition
+    then: Return query builder
+
+  - name: where_null
+    given: Column
+    when: Adding IS NULL condition
+    then: Return query builder
+
+  - name: where_not_null
+    given: Column
+    when: Adding IS NOT NULL condition
+    then: Return query builder
+
+  - name: where_between
+    given: Column, min, max
+    when: Adding BETWEEN condition
+    then: Return query builder
+
+  - name: where_like
+    given: Column and pattern
+    when: Adding LIKE condition
+    then: Return query builder
+
+  - name: or_where
+    given: Column, operator, value
+    when: Adding OR WHERE clause
+    then: Return query builder
+
+  - name: order_by
+    given: Column and direction
+    when: Adding ORDER BY
+    then: Return query builder
+
+  - name: limit
+    given: Count
+    when: Adding LIMIT
+    then: Return query builder
+
+  - name: offset
+    given: Count
+    when: Adding OFFSET
+    then: Return query builder
+
+  - name: select
+    given: Columns
+    when: Selecting columns
+    then: Return query builder
+
+  - name: distinct
+    given: No parameters
+    when: Adding DISTINCT
+    then: Return query builder
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOINS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: join
+    given: JoinConfig
+    when: Adding JOIN
+    then: Return query builder
+
+  - name: left_join
+    given: Table, on_column, foreign_column
+    when: Adding LEFT JOIN
+    then: Return query builder
+
+  - name: inner_join
+    given: Table, on_column, foreign_column
+    when: Adding INNER JOIN
+    then: Return query builder
+
+  - name: with_relation
+    given: Relation name
+    when: Eager loading relation
+    then: Return query builder
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AGGREGATES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: count
+    given: Optional QueryOptions
+    when: Counting entities
+    then: Return count
+
+  - name: sum
+    given: Column and QueryOptions
+    when: Summing column
+    then: Return sum
+
+  - name: avg
+    given: Column and QueryOptions
+    when: Averaging column
+    then: Return average
+
+  - name: min
+    given: Column and QueryOptions
+    when: Finding minimum
+    then: Return min value
+
+  - name: max
+    given: Column and QueryOptions
+    when: Finding maximum
+    then: Return max value
+
+  - name: aggregate
+    given: Aggregates and QueryOptions
+    when: Multiple aggregates
+    then: Return AggregateResult
+
+  - name: group_by
+    given: Columns and aggregates
+    when: Grouping results
+    then: Return grouped results
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: begin_transaction
+    given: Optional isolation level
+    when: Starting transaction
+    then: Return Transaction
+
+  - name: commit
+    given: Transaction
+    when: Committing transaction
+    then: Persist changes
+
+  - name: rollback
+    given: Transaction
+    when: Rolling back
+    then: Discard changes
+
+  - name: with_transaction
+    given: Callback function
+    when: Executing in transaction
+    then: Auto commit/rollback
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CACHING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cache_key
+    given: ID or query
+    when: Generating cache key
+    then: Return cache key
+
+  - name: get_cached
+    given: Cache key
+    when: Getting from cache
+    then: Return cached or null
+
+  - name: set_cached
+    given: Cache key and data
+    when: Setting cache
+    then: Store in cache
+
+  - name: invalidate_cache
+    given: ID or pattern
+    when: Invalidating cache
+    then: Remove from cache
+
+  - name: invalidate_all_cache
+    given: No parameters
+    when: Clearing all cache
+    then: Remove all cached
+
+  - name: remember
+    given: Key, TTL, callback
+    when: Cache or compute
+    then: Return cached or computed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: exists
+    given: QueryOptions
+    when: Checking existence
+    then: Return true if exists
+
+  - name: first
+    given: QueryOptions
+    when: Getting first
+    then: Return first or null
+
+  - name: last
+    given: QueryOptions
+    when: Getting last
+    then: Return last or null
+
+  - name: pluck
+    given: Column and QueryOptions
+    when: Plucking column values
+    then: Return list of values
+
+  - name: increment
+    given: ID, column, amount
+    when: Incrementing column
+    then: Return new value
+
+  - name: decrement
+    given: ID, column, amount
+    when: Decrementing column
+    then: Return new value
+
+  - name: touch
+    given: ID
+    when: Updating timestamp
+    then: Update updated_at
+
+  - name: fresh
+    given: Entity
+    when: Refreshing entity
+    then: Return fresh from DB
+
+  - name: to_sql
+    given: QueryOptions
+    when: Getting SQL
+    then: Return SQL string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHANGE TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_changes
+    given: Entity ID and time range
+    when: Getting change history
+    then: Return list of ChangeSets
+
+  - name: get_original
+    given: Entity
+    when: Getting original values
+    then: Return original data
+
+  - name: is_dirty
+    given: Entity
+    when: Checking for changes
+    then: Return true if changed
+
+  - name: get_dirty
+    given: Entity
+    when: Getting changed fields
+    then: Return changed fields
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CACHE_TTL: 3600
+  DEFAULT_PAGE_SIZE: 20
+  MAX_PAGE_SIZE: 100
+  DEFAULT_CHUNK_SIZE: 1000
+
+  CACHE_PREFIX: "repo:"
+
+  COLUMN_CREATED_AT: "created_at"
+  COLUMN_UPDATED_AT: "updated_at"
+  COLUMN_DELETED_AT: "deleted_at"
+
+  CURSOR_SEPARATOR: ":"
+  CURSOR_ENCODING: "base64"

@@ -1,0 +1,977 @@
+name: redis_client
+version: "1.0.0"
+language: zig
+module: redis_client
+
+description: |
+  Redis client for VIBEE Telegram bot.
+  Supports Redis 7.x features, clustering, Lua scripting.
+  Used for caching, sessions, rate limiting, pub/sub.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  RedisClient:
+    description: "Redis client instance"
+    fields:
+      config: RedisConfig
+      pool: ConnectionPool
+      is_connected: Bool
+      stats: ClientStats
+
+  RedisConfig:
+    description: "Redis connection configuration"
+    fields:
+      host: String
+      port: Int
+      password: Option<String>
+      database: Int
+      username: Option<String>
+      tls_enabled: Bool
+      connect_timeout_ms: Int
+      command_timeout_ms: Int
+      pool_size: Int
+      retry_attempts: Int
+      retry_delay_ms: Int
+
+  ConnectionPool:
+    description: "Connection pool state"
+    fields:
+      size: Int
+      active: Int
+      idle: Int
+      waiting: Int
+
+  RedisValue:
+    description: "Redis value type"
+    values:
+      - string
+      - list
+      - set
+      - zset
+      - hash
+      - stream
+      - none
+
+  ScanResult:
+    description: "SCAN result"
+    fields:
+      cursor: String
+      keys: List<String>
+      is_complete: Bool
+
+  StreamEntry:
+    description: "Stream entry"
+    fields:
+      id: String
+      fields: Map<String, String>
+
+  StreamInfo:
+    description: "Stream information"
+    fields:
+      length: Int
+      radix_tree_keys: Int
+      radix_tree_nodes: Int
+      groups: Int
+      last_generated_id: String
+      first_entry: Option<StreamEntry>
+      last_entry: Option<StreamEntry>
+
+  ConsumerGroup:
+    description: "Consumer group"
+    fields:
+      name: String
+      consumers: Int
+      pending: Int
+      last_delivered_id: String
+
+  Consumer:
+    description: "Stream consumer"
+    fields:
+      name: String
+      pending: Int
+      idle_ms: Int
+
+  PendingEntry:
+    description: "Pending stream entry"
+    fields:
+      id: String
+      consumer: String
+      idle_ms: Int
+      delivery_count: Int
+
+  GeoPosition:
+    description: "Geo position"
+    fields:
+      longitude: Float
+      latitude: Float
+
+  GeoMember:
+    description: "Geo member with distance"
+    fields:
+      member: String
+      distance: Float
+      position: Option<GeoPosition>
+      hash: Option<Int>
+
+  SortedSetMember:
+    description: "Sorted set member"
+    fields:
+      member: String
+      score: Float
+
+  PubSubMessage:
+    description: "Pub/Sub message"
+    fields:
+      channel: String
+      pattern: Option<String>
+      message: String
+      received_at: Timestamp
+
+  LuaScript:
+    description: "Lua script"
+    fields:
+      sha1: String
+      script: String
+      num_keys: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      commands_sent: Int
+      commands_failed: Int
+      bytes_sent: Int
+      bytes_received: Int
+      connections_created: Int
+      reconnections: Int
+      avg_latency_ms: Float
+
+  RedisInfo:
+    description: "Redis server info"
+    fields:
+      version: String
+      mode: String
+      os: String
+      uptime_seconds: Int
+      connected_clients: Int
+      used_memory: Int
+      used_memory_peak: Int
+      total_commands_processed: Int
+      keyspace_hits: Int
+      keyspace_misses: Int
+
+  ClusterNode:
+    description: "Cluster node"
+    fields:
+      id: String
+      host: String
+      port: Int
+      role: String
+      master_id: Option<String>
+      slots: List<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: RedisConfig
+    when: Creating client
+    then: Return RedisClient
+
+  - name: connect
+    given: No parameters
+    when: Connecting to Redis
+    then: Establish connection pool
+
+  - name: disconnect
+    given: No parameters
+    when: Disconnecting
+    then: Close all connections
+
+  - name: ping
+    given: No parameters
+    when: Testing connection
+    then: Return PONG
+
+  - name: select_db
+    given: Database index
+    when: Selecting database
+    then: Switch database
+
+  - name: get_info
+    given: Optional section
+    when: Getting server info
+    then: Return RedisInfo
+
+  - name: get_stats
+    given: No parameters
+    when: Getting client stats
+    then: Return ClientStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STRING OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get
+    given: Key
+    when: Getting value
+    then: Return string or null
+
+  - name: set
+    given: Key and value
+    when: Setting value
+    then: Store value
+
+  - name: set_ex
+    given: Key, value, seconds
+    when: Setting with expiration
+    then: Store with TTL
+
+  - name: set_px
+    given: Key, value, milliseconds
+    when: Setting with ms expiration
+    then: Store with TTL
+
+  - name: set_nx
+    given: Key and value
+    when: Setting if not exists
+    then: Return true if set
+
+  - name: set_xx
+    given: Key and value
+    when: Setting if exists
+    then: Return true if set
+
+  - name: get_set
+    given: Key and value
+    when: Getting and setting
+    then: Return old value
+
+  - name: get_del
+    given: Key
+    when: Getting and deleting
+    then: Return value and delete
+
+  - name: get_ex
+    given: Key and expiration
+    when: Getting with new TTL
+    then: Return value, update TTL
+
+  - name: mget
+    given: List of keys
+    when: Getting multiple
+    then: Return list of values
+
+  - name: mset
+    given: Map of key-value
+    when: Setting multiple
+    then: Store all
+
+  - name: mset_nx
+    given: Map of key-value
+    when: Setting multiple if none exist
+    then: Return true if all set
+
+  - name: append
+    given: Key and value
+    when: Appending to string
+    then: Return new length
+
+  - name: strlen
+    given: Key
+    when: Getting string length
+    then: Return length
+
+  - name: get_range
+    given: Key, start, end
+    when: Getting substring
+    then: Return substring
+
+  - name: set_range
+    given: Key, offset, value
+    when: Setting substring
+    then: Return new length
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NUMERIC OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: incr
+    given: Key
+    when: Incrementing by 1
+    then: Return new value
+
+  - name: incr_by
+    given: Key and increment
+    when: Incrementing by amount
+    then: Return new value
+
+  - name: incr_by_float
+    given: Key and float increment
+    when: Incrementing by float
+    then: Return new value
+
+  - name: decr
+    given: Key
+    when: Decrementing by 1
+    then: Return new value
+
+  - name: decr_by
+    given: Key and decrement
+    when: Decrementing by amount
+    then: Return new value
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # KEY OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: del
+    given: Key or keys
+    when: Deleting keys
+    then: Return count deleted
+
+  - name: unlink
+    given: Key or keys
+    when: Async deleting keys
+    then: Return count unlinked
+
+  - name: exists
+    given: Key or keys
+    when: Checking existence
+    then: Return count existing
+
+  - name: expire
+    given: Key and seconds
+    when: Setting expiration
+    then: Return true if set
+
+  - name: expire_at
+    given: Key and timestamp
+    when: Setting absolute expiration
+    then: Return true if set
+
+  - name: pexpire
+    given: Key and milliseconds
+    when: Setting ms expiration
+    then: Return true if set
+
+  - name: persist
+    given: Key
+    when: Removing expiration
+    then: Return true if removed
+
+  - name: ttl
+    given: Key
+    when: Getting TTL in seconds
+    then: Return TTL or -1/-2
+
+  - name: pttl
+    given: Key
+    when: Getting TTL in ms
+    then: Return TTL or -1/-2
+
+  - name: type_of
+    given: Key
+    when: Getting value type
+    then: Return RedisValue
+
+  - name: rename
+    given: Old key and new key
+    when: Renaming key
+    then: Rename key
+
+  - name: rename_nx
+    given: Old key and new key
+    when: Renaming if new not exists
+    then: Return true if renamed
+
+  - name: keys
+    given: Pattern
+    when: Finding keys by pattern
+    then: Return list of keys
+
+  - name: scan
+    given: Cursor and options
+    when: Iterating keys
+    then: Return ScanResult
+
+  - name: random_key
+    given: No parameters
+    when: Getting random key
+    then: Return key or null
+
+  - name: touch
+    given: Key or keys
+    when: Updating access time
+    then: Return count touched
+
+  - name: copy
+    given: Source and destination
+    when: Copying key
+    then: Return true if copied
+
+  - name: dump
+    given: Key
+    when: Serializing value
+    then: Return serialized bytes
+
+  - name: restore
+    given: Key, ttl, serialized
+    when: Deserializing value
+    then: Restore key
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIST OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: lpush
+    given: Key and values
+    when: Pushing to head
+    then: Return new length
+
+  - name: rpush
+    given: Key and values
+    when: Pushing to tail
+    then: Return new length
+
+  - name: lpop
+    given: Key and optional count
+    when: Popping from head
+    then: Return value(s)
+
+  - name: rpop
+    given: Key and optional count
+    when: Popping from tail
+    then: Return value(s)
+
+  - name: lrange
+    given: Key, start, stop
+    when: Getting range
+    then: Return list
+
+  - name: lindex
+    given: Key and index
+    when: Getting by index
+    then: Return value
+
+  - name: lset
+    given: Key, index, value
+    when: Setting by index
+    then: Set value
+
+  - name: llen
+    given: Key
+    when: Getting length
+    then: Return length
+
+  - name: linsert
+    given: Key, before/after, pivot, value
+    when: Inserting
+    then: Return new length
+
+  - name: lrem
+    given: Key, count, value
+    when: Removing elements
+    then: Return count removed
+
+  - name: ltrim
+    given: Key, start, stop
+    when: Trimming list
+    then: Keep only range
+
+  - name: lmove
+    given: Source, dest, from, to
+    when: Moving element
+    then: Return moved element
+
+  - name: blpop
+    given: Keys and timeout
+    when: Blocking pop from head
+    then: Return key and value
+
+  - name: brpop
+    given: Keys and timeout
+    when: Blocking pop from tail
+    then: Return key and value
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SET OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: sadd
+    given: Key and members
+    when: Adding to set
+    then: Return count added
+
+  - name: srem
+    given: Key and members
+    when: Removing from set
+    then: Return count removed
+
+  - name: smembers
+    given: Key
+    when: Getting all members
+    then: Return set
+
+  - name: sismember
+    given: Key and member
+    when: Checking membership
+    then: Return true if member
+
+  - name: smismember
+    given: Key and members
+    when: Checking multiple membership
+    then: Return list of bools
+
+  - name: scard
+    given: Key
+    when: Getting cardinality
+    then: Return count
+
+  - name: spop
+    given: Key and optional count
+    when: Popping random
+    then: Return member(s)
+
+  - name: srandmember
+    given: Key and optional count
+    when: Getting random
+    then: Return member(s)
+
+  - name: smove
+    given: Source, dest, member
+    when: Moving member
+    then: Return true if moved
+
+  - name: sdiff
+    given: Keys
+    when: Getting difference
+    then: Return set
+
+  - name: sinter
+    given: Keys
+    when: Getting intersection
+    then: Return set
+
+  - name: sunion
+    given: Keys
+    when: Getting union
+    then: Return set
+
+  - name: sscan
+    given: Key, cursor, options
+    when: Iterating set
+    then: Return ScanResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SORTED SET OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: zadd
+    given: Key and score-member pairs
+    when: Adding to sorted set
+    then: Return count added
+
+  - name: zrem
+    given: Key and members
+    when: Removing from sorted set
+    then: Return count removed
+
+  - name: zscore
+    given: Key and member
+    when: Getting score
+    then: Return score or null
+
+  - name: zrank
+    given: Key and member
+    when: Getting rank (asc)
+    then: Return rank or null
+
+  - name: zrevrank
+    given: Key and member
+    when: Getting rank (desc)
+    then: Return rank or null
+
+  - name: zrange
+    given: Key, start, stop, options
+    when: Getting range by rank
+    then: Return members
+
+  - name: zrevrange
+    given: Key, start, stop, options
+    when: Getting range by rank (desc)
+    then: Return members
+
+  - name: zrangebyscore
+    given: Key, min, max, options
+    when: Getting range by score
+    then: Return members
+
+  - name: zcard
+    given: Key
+    when: Getting cardinality
+    then: Return count
+
+  - name: zcount
+    given: Key, min, max
+    when: Counting in score range
+    then: Return count
+
+  - name: zincrby
+    given: Key, increment, member
+    when: Incrementing score
+    then: Return new score
+
+  - name: zpopmin
+    given: Key and optional count
+    when: Popping min score
+    then: Return members
+
+  - name: zpopmax
+    given: Key and optional count
+    when: Popping max score
+    then: Return members
+
+  - name: zscan
+    given: Key, cursor, options
+    when: Iterating sorted set
+    then: Return ScanResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HASH OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: hget
+    given: Key and field
+    when: Getting hash field
+    then: Return value or null
+
+  - name: hset
+    given: Key and field-value pairs
+    when: Setting hash fields
+    then: Return count added
+
+  - name: hsetnx
+    given: Key, field, value
+    when: Setting if not exists
+    then: Return true if set
+
+  - name: hmget
+    given: Key and fields
+    when: Getting multiple fields
+    then: Return values
+
+  - name: hgetall
+    given: Key
+    when: Getting all fields
+    then: Return map
+
+  - name: hdel
+    given: Key and fields
+    when: Deleting fields
+    then: Return count deleted
+
+  - name: hexists
+    given: Key and field
+    when: Checking field existence
+    then: Return true if exists
+
+  - name: hlen
+    given: Key
+    when: Getting field count
+    then: Return count
+
+  - name: hkeys
+    given: Key
+    when: Getting field names
+    then: Return list
+
+  - name: hvals
+    given: Key
+    when: Getting field values
+    then: Return list
+
+  - name: hincrby
+    given: Key, field, increment
+    when: Incrementing field
+    then: Return new value
+
+  - name: hincrbyfloat
+    given: Key, field, increment
+    when: Incrementing by float
+    then: Return new value
+
+  - name: hscan
+    given: Key, cursor, options
+    when: Iterating hash
+    then: Return ScanResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAM OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: xadd
+    given: Key, id, fields
+    when: Adding to stream
+    then: Return entry ID
+
+  - name: xread
+    given: Streams and IDs
+    when: Reading from streams
+    then: Return entries
+
+  - name: xreadgroup
+    given: Group, consumer, streams
+    when: Reading as consumer
+    then: Return entries
+
+  - name: xrange
+    given: Key, start, end
+    when: Getting range
+    then: Return entries
+
+  - name: xrevrange
+    given: Key, end, start
+    when: Getting range (reverse)
+    then: Return entries
+
+  - name: xlen
+    given: Key
+    when: Getting length
+    then: Return count
+
+  - name: xinfo_stream
+    given: Key
+    when: Getting stream info
+    then: Return StreamInfo
+
+  - name: xinfo_groups
+    given: Key
+    when: Getting groups
+    then: Return list of groups
+
+  - name: xinfo_consumers
+    given: Key and group
+    when: Getting consumers
+    then: Return list of consumers
+
+  - name: xgroup_create
+    given: Key, group, ID
+    when: Creating consumer group
+    then: Create group
+
+  - name: xgroup_destroy
+    given: Key and group
+    when: Destroying group
+    then: Destroy group
+
+  - name: xack
+    given: Key, group, IDs
+    when: Acknowledging entries
+    then: Return count acked
+
+  - name: xclaim
+    given: Key, group, consumer, min_idle, IDs
+    when: Claiming entries
+    then: Return claimed entries
+
+  - name: xpending
+    given: Key, group, options
+    when: Getting pending entries
+    then: Return pending info
+
+  - name: xtrim
+    given: Key and options
+    when: Trimming stream
+    then: Return count trimmed
+
+  - name: xdel
+    given: Key and IDs
+    when: Deleting entries
+    then: Return count deleted
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PUB/SUB
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: publish
+    given: Channel and message
+    when: Publishing message
+    then: Return subscriber count
+
+  - name: subscribe
+    given: Channels
+    when: Subscribing to channels
+    then: Start receiving
+
+  - name: psubscribe
+    given: Patterns
+    when: Subscribing to patterns
+    then: Start receiving
+
+  - name: unsubscribe
+    given: Optional channels
+    when: Unsubscribing
+    then: Stop receiving
+
+  - name: punsubscribe
+    given: Optional patterns
+    when: Unsubscribing patterns
+    then: Stop receiving
+
+  - name: pubsub_channels
+    given: Optional pattern
+    when: Listing active channels
+    then: Return channels
+
+  - name: pubsub_numsub
+    given: Channels
+    when: Getting subscriber counts
+    then: Return counts
+
+  - name: on_message
+    given: Callback function
+    when: Receiving message
+    then: Call handler
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCRIPTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: eval
+    given: Script, keys, args
+    when: Executing Lua script
+    then: Return result
+
+  - name: evalsha
+    given: SHA1, keys, args
+    when: Executing cached script
+    then: Return result
+
+  - name: script_load
+    given: Script
+    when: Loading script
+    then: Return SHA1
+
+  - name: script_exists
+    given: SHA1 hashes
+    when: Checking script cache
+    then: Return existence list
+
+  - name: script_flush
+    given: Optional mode
+    when: Flushing script cache
+    then: Clear cache
+
+  - name: script_kill
+    given: No parameters
+    when: Killing running script
+    then: Kill script
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: multi
+    given: No parameters
+    when: Starting transaction
+    then: Begin queuing
+
+  - name: exec
+    given: No parameters
+    when: Executing transaction
+    then: Return results
+
+  - name: discard
+    given: No parameters
+    when: Discarding transaction
+    then: Clear queue
+
+  - name: watch
+    given: Keys
+    when: Watching keys
+    then: Enable optimistic locking
+
+  - name: unwatch
+    given: No parameters
+    when: Unwatching keys
+    then: Clear watches
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GEO OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: geoadd
+    given: Key and positions
+    when: Adding geo members
+    then: Return count added
+
+  - name: geopos
+    given: Key and members
+    when: Getting positions
+    then: Return positions
+
+  - name: geodist
+    given: Key, member1, member2, unit
+    when: Getting distance
+    then: Return distance
+
+  - name: geosearch
+    given: Key and options
+    when: Searching by radius/box
+    then: Return members
+
+  - name: geohash
+    given: Key and members
+    when: Getting geohashes
+    then: Return hashes
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_PORT: 6379
+  DEFAULT_DATABASE: 0
+  DEFAULT_CONNECT_TIMEOUT_MS: 5000
+  DEFAULT_COMMAND_TIMEOUT_MS: 30000
+  DEFAULT_POOL_SIZE: 10
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 100
+
+  # Upstash defaults
+  UPSTASH_DEFAULT_PORT: 6379
+
+  # Key prefixes
+  PREFIX_SESSION: "session:"
+  PREFIX_USER: "user:"
+  PREFIX_CACHE: "cache:"
+  PREFIX_RATE_LIMIT: "rate:"
+  PREFIX_LOCK: "lock:"
+  PREFIX_QUEUE: "queue:"
+
+  # TTL values
+  TTL_SESSION: 86400
+  TTL_CACHE_SHORT: 60
+  TTL_CACHE_MEDIUM: 300
+  TTL_CACHE_LONG: 3600
+  TTL_RATE_LIMIT: 60
+
+  # Stream
+  STREAM_MAXLEN_DEFAULT: 10000
+  STREAM_ID_NEWEST: "$"
+  STREAM_ID_OLDEST: "0"
+
+  # Geo units
+  GEO_UNIT_M: "m"
+  GEO_UNIT_KM: "km"
+  GEO_UNIT_MI: "mi"
+  GEO_UNIT_FT: "ft"

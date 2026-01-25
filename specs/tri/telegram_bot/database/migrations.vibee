@@ -1,0 +1,506 @@
+name: migrations
+version: "1.0.0"
+language: zig
+module: migrations
+
+description: |
+  Database migrations for VIBEE Telegram bot.
+  Manages schema versioning, up/down migrations, rollbacks.
+  Supports PostgreSQL (Supabase) with transaction safety.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MigrationRunner:
+    description: "Migration runner instance"
+    fields:
+      config: MigrationConfig
+      migrations: List<Migration>
+      applied: List<AppliedMigration>
+      is_initialized: Bool
+
+  MigrationConfig:
+    description: "Migration configuration"
+    fields:
+      migrations_dir: String
+      migrations_table: String
+      schema: String
+      lock_timeout_ms: Int
+      statement_timeout_ms: Int
+      dry_run: Bool
+      allow_dirty: Bool
+
+  Migration:
+    description: "Migration definition"
+    fields:
+      version: String
+      name: String
+      description: String
+      up_sql: String
+      down_sql: String
+      checksum: String
+      is_reversible: Bool
+      dependencies: List<String>
+      created_at: Timestamp
+
+  AppliedMigration:
+    description: "Applied migration record"
+    fields:
+      version: String
+      name: String
+      checksum: String
+      applied_at: Timestamp
+      applied_by: String
+      execution_time_ms: Int
+      success: Bool
+
+  MigrationStatus:
+    description: "Migration status"
+    values:
+      - pending
+      - applied
+      - failed
+      - dirty
+      - skipped
+
+  MigrationResult:
+    description: "Migration execution result"
+    fields:
+      version: String
+      name: String
+      status: MigrationStatus
+      execution_time_ms: Int
+      error: Option<String>
+      statements_executed: Int
+
+  MigrationPlan:
+    description: "Migration execution plan"
+    fields:
+      pending: List<Migration>
+      to_apply: List<Migration>
+      to_rollback: List<Migration>
+      conflicts: List<MigrationConflict>
+      is_valid: Bool
+
+  MigrationConflict:
+    description: "Migration conflict"
+    fields:
+      version: String
+      conflict_type: ConflictType
+      message: String
+      resolution: Option<String>
+
+  ConflictType:
+    description: "Conflict type"
+    values:
+      - checksum_mismatch
+      - missing_migration
+      - out_of_order
+      - dependency_missing
+      - dirty_state
+
+  SchemaSnapshot:
+    description: "Schema snapshot"
+    fields:
+      version: String
+      tables: List<TableSchema>
+      indexes: List<IndexSchema>
+      constraints: List<ConstraintSchema>
+      functions: List<FunctionSchema>
+      triggers: List<TriggerSchema>
+      created_at: Timestamp
+
+  TableSchema:
+    description: "Table schema"
+    fields:
+      name: String
+      schema: String
+      columns: List<ColumnSchema>
+      primary_key: List<String>
+      comment: Option<String>
+
+  ColumnSchema:
+    description: "Column schema"
+    fields:
+      name: String
+      data_type: String
+      is_nullable: Bool
+      default_value: Option<String>
+      is_identity: Bool
+      comment: Option<String>
+
+  IndexSchema:
+    description: "Index schema"
+    fields:
+      name: String
+      table_name: String
+      columns: List<String>
+      is_unique: Bool
+      is_primary: Bool
+      method: String
+      where_clause: Option<String>
+
+  ConstraintSchema:
+    description: "Constraint schema"
+    fields:
+      name: String
+      table_name: String
+      constraint_type: String
+      definition: String
+      columns: List<String>
+      references_table: Option<String>
+      references_columns: List<String>
+
+  FunctionSchema:
+    description: "Function schema"
+    fields:
+      name: String
+      schema: String
+      arguments: String
+      return_type: String
+      language: String
+      definition: String
+
+  TriggerSchema:
+    description: "Trigger schema"
+    fields:
+      name: String
+      table_name: String
+      event: String
+      timing: String
+      function_name: String
+
+  MigrationLock:
+    description: "Migration lock"
+    fields:
+      lock_id: Int
+      acquired_at: Timestamp
+      acquired_by: String
+      is_held: Bool
+
+  SeedData:
+    description: "Seed data definition"
+    fields:
+      name: String
+      table: String
+      data: List<Object>
+      on_conflict: OnConflict
+      dependencies: List<String>
+
+  OnConflict:
+    description: "On conflict action"
+    values:
+      - do_nothing
+      - do_update
+      - error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_runner
+    given: MigrationConfig
+    when: Creating runner
+    then: Return MigrationRunner
+
+  - name: initialize
+    given: Database connection
+    when: Initializing migrations
+    then: Create migrations table
+
+  - name: is_initialized
+    given: No parameters
+    when: Checking initialization
+    then: Return true if initialized
+
+  - name: load_migrations
+    given: Migrations directory
+    when: Loading migration files
+    then: Return list of migrations
+
+  - name: get_applied_migrations
+    given: No parameters
+    when: Getting applied migrations
+    then: Return list of applied
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIGRATION EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: migrate
+    given: Optional target version
+    when: Running migrations
+    then: Apply pending migrations
+
+  - name: migrate_up
+    given: Optional count
+    when: Running up migrations
+    then: Apply next N migrations
+
+  - name: migrate_down
+    given: Optional count
+    when: Running down migrations
+    then: Rollback last N migrations
+
+  - name: migrate_to
+    given: Target version
+    when: Migrating to version
+    then: Apply or rollback to target
+
+  - name: rollback
+    given: Optional count
+    when: Rolling back
+    then: Rollback last N migrations
+
+  - name: rollback_to
+    given: Target version
+    when: Rolling back to version
+    then: Rollback to target
+
+  - name: redo
+    given: Optional count
+    when: Redoing migrations
+    then: Rollback and reapply
+
+  - name: reset
+    given: No parameters
+    when: Resetting database
+    then: Rollback all migrations
+
+  - name: fresh
+    given: No parameters
+    when: Fresh migration
+    then: Drop all and migrate
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLANNING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: plan
+    given: Optional target version
+    when: Planning migrations
+    then: Return MigrationPlan
+
+  - name: get_pending
+    given: No parameters
+    when: Getting pending migrations
+    then: Return pending list
+
+  - name: get_status
+    given: No parameters
+    when: Getting migration status
+    then: Return status for all
+
+  - name: validate
+    given: No parameters
+    when: Validating migrations
+    then: Return validation result
+
+  - name: check_conflicts
+    given: No parameters
+    when: Checking conflicts
+    then: Return conflict list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SINGLE MIGRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: apply_migration
+    given: Migration
+    when: Applying single migration
+    then: Return MigrationResult
+
+  - name: revert_migration
+    given: Migration
+    when: Reverting single migration
+    then: Return MigrationResult
+
+  - name: skip_migration
+    given: Migration version
+    when: Skipping migration
+    then: Mark as skipped
+
+  - name: force_version
+    given: Version
+    when: Forcing version
+    then: Set current version
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: acquire_lock
+    given: Optional timeout
+    when: Acquiring migration lock
+    then: Return MigrationLock
+
+  - name: release_lock
+    given: MigrationLock
+    when: Releasing lock
+    then: Release lock
+
+  - name: is_locked
+    given: No parameters
+    when: Checking lock status
+    then: Return true if locked
+
+  - name: force_unlock
+    given: No parameters
+    when: Force unlocking
+    then: Release any lock
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCHEMA OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: snapshot_schema
+    given: No parameters
+    when: Taking schema snapshot
+    then: Return SchemaSnapshot
+
+  - name: diff_schema
+    given: Two snapshots
+    when: Comparing schemas
+    then: Return differences
+
+  - name: generate_migration
+    given: Schema diff
+    when: Generating migration
+    then: Return Migration SQL
+
+  - name: dump_schema
+    given: Output path
+    when: Dumping schema
+    then: Write schema file
+
+  - name: load_schema
+    given: Schema file path
+    when: Loading schema
+    then: Apply schema
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIGRATION CREATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_migration
+    given: Name and description
+    when: Creating new migration
+    then: Return migration file path
+
+  - name: create_migration_from_diff
+    given: Name and schema diff
+    when: Creating from diff
+    then: Return migration file path
+
+  - name: create_blank_migration
+    given: Name
+    when: Creating blank migration
+    then: Return migration file path
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SEEDING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: seed
+    given: Optional seed name
+    when: Running seeds
+    then: Insert seed data
+
+  - name: seed_fresh
+    given: No parameters
+    when: Fresh seeding
+    then: Truncate and seed
+
+  - name: load_seeds
+    given: Seeds directory
+    when: Loading seed files
+    then: Return list of seeds
+
+  - name: run_seed
+    given: SeedData
+    when: Running single seed
+    then: Insert data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: compute_checksum
+    given: SQL content
+    when: Computing checksum
+    then: Return checksum string
+
+  - name: verify_checksum
+    given: Migration
+    when: Verifying checksum
+    then: Return true if valid
+
+  - name: parse_version
+    given: Version string
+    when: Parsing version
+    then: Return version parts
+
+  - name: format_version
+    given: Version parts
+    when: Formatting version
+    then: Return version string
+
+  - name: get_current_version
+    given: No parameters
+    when: Getting current version
+    then: Return version or null
+
+  - name: is_dirty
+    given: No parameters
+    when: Checking dirty state
+    then: Return true if dirty
+
+  - name: mark_dirty
+    given: Version
+    when: Marking as dirty
+    then: Set dirty flag
+
+  - name: clear_dirty
+    given: No parameters
+    when: Clearing dirty state
+    then: Clear dirty flag
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MIGRATIONS_DIR: "migrations"
+  DEFAULT_MIGRATIONS_TABLE: "schema_migrations"
+  DEFAULT_SCHEMA: "public"
+  DEFAULT_LOCK_TIMEOUT_MS: 30000
+  DEFAULT_STATEMENT_TIMEOUT_MS: 300000
+
+  LOCK_ID: 1
+
+  VERSION_FORMAT: "YYYYMMDDHHMMSS"
+  MIGRATION_FILE_PATTERN: "*.sql"
+
+  CHECKSUM_ALGORITHM: "sha256"
+
+  # Migration table columns
+  COL_VERSION: "version"
+  COL_NAME: "name"
+  COL_CHECKSUM: "checksum"
+  COL_APPLIED_AT: "applied_at"
+  COL_APPLIED_BY: "applied_by"
+  COL_EXECUTION_TIME: "execution_time_ms"
+  COL_SUCCESS: "success"
+
+  # SQL templates
+  SQL_CREATE_TABLE: "CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(14) PRIMARY KEY, name VARCHAR(255) NOT NULL, checksum VARCHAR(64) NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), applied_by VARCHAR(255), execution_time_ms INTEGER, success BOOLEAN NOT NULL DEFAULT TRUE)"
+  SQL_LOCK: "SELECT pg_advisory_lock(1)"
+  SQL_UNLOCK: "SELECT pg_advisory_unlock(1)"
+  SQL_TRY_LOCK: "SELECT pg_try_advisory_lock(1)"

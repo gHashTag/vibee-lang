@@ -1,0 +1,563 @@
+name: postgres_client
+version: "1.0.0"
+language: zig
+module: postgres_client
+
+description: |
+  PostgreSQL client for VIBEE Telegram bot.
+  Optimized for Supabase with connection pooling via PgBouncer.
+  Supports prepared statements, COPY, LISTEN/NOTIFY.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  PostgresClient:
+    description: "PostgreSQL client instance"
+    fields:
+      config: PostgresConfig
+      pool: ConnectionPool
+      is_connected: Bool
+      stats: ClientStats
+
+  PostgresConfig:
+    description: "PostgreSQL connection configuration"
+    fields:
+      host: String
+      port: Int
+      database: String
+      user: String
+      password: String
+      ssl_mode: SslMode
+      application_name: String
+      connect_timeout_ms: Int
+      statement_timeout_ms: Int
+      pool_min_size: Int
+      pool_max_size: Int
+      pool_idle_timeout_ms: Int
+
+  SslMode:
+    description: "SSL connection mode"
+    values:
+      - disable
+      - allow
+      - prefer
+      - require
+      - verify_ca
+      - verify_full
+
+  ConnectionPool:
+    description: "Connection pool state"
+    fields:
+      min_size: Int
+      max_size: Int
+      active: Int
+      idle: Int
+      waiting: Int
+      total_connections: Int
+      total_acquired: Int
+      total_released: Int
+
+  Connection:
+    description: "Database connection"
+    fields:
+      id: String
+      pid: Int
+      state: ConnectionState
+      acquired_at: Option<Timestamp>
+      last_query_at: Option<Timestamp>
+      transaction_id: Option<String>
+
+  ConnectionState:
+    description: "Connection state"
+    values:
+      - idle
+      - active
+      - in_transaction
+      - in_failed_transaction
+      - closed
+
+  QueryResult:
+    description: "Query result"
+    fields:
+      command: String
+      row_count: Int
+      rows: List<Row>
+      fields: List<FieldInfo>
+      execution_time_ms: Int
+
+  Row:
+    description: "Result row"
+    fields:
+      values: Map<String, Object>
+
+  FieldInfo:
+    description: "Column metadata"
+    fields:
+      name: String
+      table_oid: Int
+      column_id: Int
+      data_type_oid: Int
+      data_type_name: String
+      is_nullable: Bool
+
+  PreparedStatement:
+    description: "Prepared statement"
+    fields:
+      name: String
+      sql: String
+      param_types: List<Int>
+      created_at: Timestamp
+      execution_count: Int
+
+  Transaction:
+    description: "Database transaction"
+    fields:
+      id: String
+      connection_id: String
+      isolation: IsolationLevel
+      read_only: Bool
+      deferrable: Bool
+      started_at: Timestamp
+      savepoints: List<String>
+
+  IsolationLevel:
+    description: "Transaction isolation level"
+    values:
+      - read_uncommitted
+      - read_committed
+      - repeatable_read
+      - serializable
+
+  CopyFormat:
+    description: "COPY format"
+    values:
+      - text
+      - csv
+      - binary
+
+  CopyOptions:
+    description: "COPY options"
+    fields:
+      format: CopyFormat
+      delimiter: String
+      null_string: String
+      header: Bool
+      quote: String
+      escape: String
+      encoding: String
+
+  NotifyMessage:
+    description: "NOTIFY message"
+    fields:
+      channel: String
+      payload: String
+      pid: Int
+      received_at: Timestamp
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      queries_executed: Int
+      queries_failed: Int
+      rows_fetched: Int
+      rows_affected: Int
+      bytes_sent: Int
+      bytes_received: Int
+      avg_query_time_ms: Float
+      connections_created: Int
+      connections_closed: Int
+
+  PostgresError:
+    description: "PostgreSQL error"
+    fields:
+      severity: String
+      code: String
+      message: String
+      detail: Option<String>
+      hint: Option<String>
+      position: Option<Int>
+      internal_position: Option<Int>
+      internal_query: Option<String>
+      where_clause: Option<String>
+      schema_name: Option<String>
+      table_name: Option<String>
+      column_name: Option<String>
+      data_type_name: Option<String>
+      constraint_name: Option<String>
+
+  TypeConverter:
+    description: "Type conversion config"
+    fields:
+      oid: Int
+      name: String
+      array_oid: Int
+      parser: String
+      serializer: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: PostgresConfig
+    when: Creating client
+    then: Return PostgresClient
+
+  - name: connect
+    given: No parameters
+    when: Connecting to database
+    then: Establish connection pool
+
+  - name: disconnect
+    given: No parameters
+    when: Disconnecting
+    then: Close all connections
+
+  - name: is_connected
+    given: No parameters
+    when: Checking connection
+    then: Return true if connected
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONNECTION POOL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: acquire
+    given: Optional timeout
+    when: Acquiring connection
+    then: Return Connection
+
+  - name: release
+    given: Connection
+    when: Releasing connection
+    then: Return to pool
+
+  - name: get_pool_status
+    given: No parameters
+    when: Getting pool status
+    then: Return ConnectionPool
+
+  - name: resize_pool
+    given: New min and max size
+    when: Resizing pool
+    then: Adjust pool size
+
+  - name: drain_pool
+    given: No parameters
+    when: Draining pool
+    then: Close idle connections
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERY EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: query
+    given: SQL string
+    when: Executing query
+    then: Return QueryResult
+
+  - name: query_params
+    given: SQL and parameters
+    when: Executing parameterized query
+    then: Return QueryResult
+
+  - name: query_one
+    given: SQL and parameters
+    when: Fetching single row
+    then: Return Row or null
+
+  - name: query_value
+    given: SQL and parameters
+    when: Fetching single value
+    then: Return value or null
+
+  - name: execute
+    given: SQL and parameters
+    when: Executing non-SELECT
+    then: Return affected rows
+
+  - name: execute_batch
+    given: List of SQL statements
+    when: Executing batch
+    then: Return list of results
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREPARED STATEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: prepare
+    given: Name and SQL
+    when: Preparing statement
+    then: Return PreparedStatement
+
+  - name: execute_prepared
+    given: Statement name and params
+    when: Executing prepared
+    then: Return QueryResult
+
+  - name: deallocate
+    given: Statement name
+    when: Deallocating statement
+    then: Remove prepared statement
+
+  - name: deallocate_all
+    given: No parameters
+    when: Deallocating all
+    then: Remove all prepared statements
+
+  - name: list_prepared
+    given: No parameters
+    when: Listing prepared
+    then: Return list of statements
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: begin
+    given: Optional isolation level
+    when: Starting transaction
+    then: Return Transaction
+
+  - name: begin_read_only
+    given: Optional isolation level
+    when: Starting read-only transaction
+    then: Return Transaction
+
+  - name: commit
+    given: Transaction
+    when: Committing transaction
+    then: Persist changes
+
+  - name: rollback
+    given: Transaction
+    when: Rolling back transaction
+    then: Discard changes
+
+  - name: savepoint
+    given: Transaction and name
+    when: Creating savepoint
+    then: Mark savepoint
+
+  - name: rollback_to
+    given: Transaction and savepoint
+    when: Rolling back to savepoint
+    then: Partial rollback
+
+  - name: release_savepoint
+    given: Transaction and savepoint
+    when: Releasing savepoint
+    then: Remove savepoint
+
+  - name: with_transaction
+    given: Callback function
+    when: Executing in transaction
+    then: Auto commit/rollback
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COPY OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: copy_from
+    given: Table, data, options
+    when: Bulk inserting
+    then: Return rows inserted
+
+  - name: copy_to
+    given: Query, options
+    when: Bulk exporting
+    then: Return data stream
+
+  - name: copy_from_file
+    given: Table, file path, options
+    when: Importing from file
+    then: Return rows inserted
+
+  - name: copy_to_file
+    given: Query, file path, options
+    when: Exporting to file
+    then: Return rows exported
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LISTEN/NOTIFY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: listen
+    given: Channel name
+    when: Subscribing to channel
+    then: Start listening
+
+  - name: unlisten
+    given: Channel name
+    when: Unsubscribing from channel
+    then: Stop listening
+
+  - name: unlisten_all
+    given: No parameters
+    when: Unsubscribing from all
+    then: Stop all listeners
+
+  - name: notify
+    given: Channel and payload
+    when: Sending notification
+    then: Broadcast message
+
+  - name: on_notification
+    given: Callback function
+    when: Receiving notification
+    then: Call handler
+
+  - name: get_notifications
+    given: No parameters
+    when: Polling notifications
+    then: Return pending messages
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCHEMA INTROSPECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_tables
+    given: Optional schema
+    when: Listing tables
+    then: Return table list
+
+  - name: get_columns
+    given: Table name
+    when: Getting columns
+    then: Return column list
+
+  - name: get_indexes
+    given: Table name
+    when: Getting indexes
+    then: Return index list
+
+  - name: get_constraints
+    given: Table name
+    when: Getting constraints
+    then: Return constraint list
+
+  - name: get_functions
+    given: Optional schema
+    when: Listing functions
+    then: Return function list
+
+  - name: table_exists
+    given: Table name
+    when: Checking existence
+    then: Return true if exists
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TYPE HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_type
+    given: TypeConverter
+    when: Registering custom type
+    then: Add type handler
+
+  - name: get_type_oid
+    given: Type name
+    when: Getting type OID
+    then: Return OID
+
+  - name: parse_array
+    given: Array string and element type
+    when: Parsing PostgreSQL array
+    then: Return list
+
+  - name: format_array
+    given: List and element type
+    when: Formatting array
+    then: Return PostgreSQL array string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: escape_literal
+    given: String value
+    when: Escaping literal
+    then: Return escaped string
+
+  - name: escape_identifier
+    given: Identifier
+    when: Escaping identifier
+    then: Return quoted identifier
+
+  - name: cancel_query
+    given: Connection
+    when: Cancelling query
+    then: Send cancel request
+
+  - name: get_server_version
+    given: No parameters
+    when: Getting version
+    then: Return version string
+
+  - name: get_server_pid
+    given: Connection
+    when: Getting backend PID
+    then: Return PID
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  # Connection defaults
+  DEFAULT_PORT: 5432
+  DEFAULT_CONNECT_TIMEOUT_MS: 30000
+  DEFAULT_STATEMENT_TIMEOUT_MS: 60000
+  DEFAULT_POOL_MIN_SIZE: 2
+  DEFAULT_POOL_MAX_SIZE: 10
+  DEFAULT_POOL_IDLE_TIMEOUT_MS: 300000
+
+  # Supabase defaults
+  SUPABASE_POOLER_PORT: 6543
+  SUPABASE_DIRECT_PORT: 5432
+
+  # Type OIDs
+  OID_BOOL: 16
+  OID_INT2: 21
+  OID_INT4: 23
+  OID_INT8: 20
+  OID_FLOAT4: 700
+  OID_FLOAT8: 701
+  OID_TEXT: 25
+  OID_VARCHAR: 1043
+  OID_JSON: 114
+  OID_JSONB: 3802
+  OID_UUID: 2950
+  OID_TIMESTAMP: 1114
+  OID_TIMESTAMPTZ: 1184
+  OID_DATE: 1082
+  OID_TIME: 1083
+  OID_INTERVAL: 1186
+  OID_BYTEA: 17
+
+  # Error codes
+  ERRCODE_UNIQUE_VIOLATION: "23505"
+  ERRCODE_FOREIGN_KEY_VIOLATION: "23503"
+  ERRCODE_NOT_NULL_VIOLATION: "23502"
+  ERRCODE_CHECK_VIOLATION: "23514"
+  ERRCODE_SERIALIZATION_FAILURE: "40001"
+  ERRCODE_DEADLOCK_DETECTED: "40P01"
+  ERRCODE_CONNECTION_FAILURE: "08006"
+  ERRCODE_INSUFFICIENT_PRIVILEGE: "42501"
