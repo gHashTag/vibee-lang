@@ -68,13 +68,33 @@ export default function Footer() {
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum#vortex" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ fontSize: '1rem' }}>🌀</span> Vortex Field
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum#photon" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ fontSize: '1rem' }}>✨</span> Photon Field
+                </a>
+              </motion.li>
+              <motion.li whileHover={{ x: 5 }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🔗</span> Entanglement
+                </a>
+              </motion.li>
+              <motion.li whileHover={{ x: 5 }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>💫</span> Beam Photon
+                </a>
+              </motion.li>
+              <motion.li whileHover={{ x: 5 }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🌊</span> Interference
+                </a>
+              </motion.li>
+              <motion.li whileHover={{ x: 5 }}>
+                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>〰️</span> Soliton
                 </a>
               </motion.li>
             </ul>
