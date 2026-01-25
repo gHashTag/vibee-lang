@@ -17,7 +17,17 @@ export default function MetricCard({ value, label }: MetricCardProps) {
       textAlign: 'center' 
     }}>
       <div className="val" style={{ fontSize: 'clamp(1.5rem, 5vw, 2.8rem)', fontWeight: 600, color: 'var(--text)', marginBottom: '0.5rem', lineHeight: 1 }}>{value}</div>
-      <div className="lbl" style={{ color: 'var(--muted)', fontSize: '0.7rem', lineHeight: 1.3, textTransform: 'uppercase', letterSpacing: '0.1em', opacity: 0.8 }}>{label}</div>
+      <div className="lbl" style={{ 
+        color: 'var(--muted)', 
+        fontSize: '0.65rem', 
+        lineHeight: 1.3, 
+        textTransform: 'uppercase', 
+        letterSpacing: '0.08em', 
+        opacity: 0.8,
+        padding: '0 10px',
+        width: '100%',
+        overflowWrap: 'anywhere'
+      }}>{label}</div>
     </div>
   )
 }
