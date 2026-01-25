@@ -9,7 +9,7 @@ export default function InvestorProofSection() {
   return (
     <Section id="investor-proof">
       <div className="tight fade">
-        <div className="badge" style={{ marginBottom: '1.5rem' }}>{proof.badge || 'INVESTOR PROOF-OF-CONCEPT'}</div>
+        <div className="badge" style={{ marginBottom: '1.5rem' }}>{proof.badge || 'PROOF-OF-CONCEPT'}</div>
         <h2 className="grad" style={{ fontSize: 'clamp(2.5rem, 6vw, 4rem)', marginBottom: '1.5rem', lineHeight: 1.1 }}>{proof.title || 'Hardware Truth Demo'}</h2>
         <p style={{ maxWidth: '900px', margin: '0 auto 4rem', fontSize: '1.2rem', opacity: 0.9, lineHeight: 1.6, color: '#fff' }}>
           {proof.desc || ''}
