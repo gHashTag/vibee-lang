@@ -2459,12 +2459,29 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("input wire        valid_in,");
         try self.builder.writeLine("input wire [31:0] data_out,");
         try self.builder.writeLine("input wire        valid_out,");
-        try self.builder.writeLine("input wire        ready");
+        try self.builder.writeLine("input wire        ready,");
+        try self.builder.writeLine("input wire [31:0] count,");
+        try self.builder.writeLine("input wire        running,");
+        try self.builder.writeLine("input wire        active,");
+        try self.builder.writeLine("input wire        overflow,");
+        try self.builder.writeLine("input wire        fifo_full,");
+        try self.builder.writeLine("input wire        fifo_empty,");
+        try self.builder.writeLine("input wire        done,");
+        try self.builder.writeLine("input wire        flag,");
+        try self.builder.writeLine("input wire [2:0]  state");
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
         
         self.builder.incIndent();
+        
+        // Local parameters for state machine
+        try self.builder.writeLine("// State machine parameters");
+        try self.builder.writeLine("localparam IDLE    = 3'd0;");
+        try self.builder.writeLine("localparam PROCESS = 3'd1;");
+        try self.builder.writeLine("localparam DONE    = 3'd2;");
+        try self.builder.writeLine("localparam MAX_VALUE = 32'hFFFFFFFF;");
+        try self.builder.newline();
         
         // Default clocking block
         try self.builder.writeLine("// Default clocking for assertions");
@@ -2538,15 +2555,109 @@ pub const VerilogCodeGen = struct {
     }
     
     /// Generate SVA property expression from behavior
+    /// Generate SVA property expression from behavior using semantic parsing
     fn generateSVAProperty(self: *Self, behavior: Behavior) !void {
-        // Parse "when" clause for trigger
-        const when_lower = behavior.when;
-        _ = when_lower;
+        // Parse given clause → antecedent
+        const antecedent = parseGivenClause(behavior.given);
         
-        // Generate Verilator-compatible simple assertion
-        // Full SVA with ##[0:$] not supported by Verilator
-        try self.builder.writeLine("@(posedge clk) disable iff (!rst_n)");
-        try self.builder.writeLine("1'b1 |-> 1'b1; // Placeholder - implement semantic parsing");
+        // Parse when clause → timing
+        const timing = parseWhenClause(behavior.when);
+        
+        // Parse then clause → consequent
+        const consequent = parseThenClause(behavior.then);
+        
+        // Generate SVA property
+        try self.builder.writeFmt("@({s}) disable iff (!rst_n)\n", .{timing});
+        try self.builder.writeFmt("{s} |-> {s};\n", .{ antecedent, consequent });
+    }
+    
+    /// Parse "given" clause to SVA antecedent
+    fn parseGivenClause(given: []const u8) []const u8 {
+        // Signal patterns
+        if (containsIgnoreCase(given, "running")) return "running";
+        if (containsIgnoreCase(given, "active")) return "active";
+        if (containsIgnoreCase(given, "valid")) return "valid_in";
+        if (containsIgnoreCase(given, "ready")) return "ready";
+        if (containsIgnoreCase(given, "reset")) {
+            if (containsIgnoreCase(given, "not") or containsIgnoreCase(given, "inactive")) {
+                return "rst_n";
+            }
+            return "!rst_n";
+        }
+        if (containsIgnoreCase(given, "idle")) return "(state == IDLE)";
+        if (containsIgnoreCase(given, "process")) return "(state == PROCESS)";
+        if (containsIgnoreCase(given, "counter") or containsIgnoreCase(given, "count")) {
+            if (containsIgnoreCase(given, "max")) return "(count == MAX_VALUE)";
+            if (containsIgnoreCase(given, "zero") or containsIgnoreCase(given, "0")) return "(count == 0)";
+            return "(count > 0)";
+        }
+        if (containsIgnoreCase(given, "fifo")) {
+            if (containsIgnoreCase(given, "full")) return "fifo_full";
+            if (containsIgnoreCase(given, "empty")) return "fifo_empty";
+            if (containsIgnoreCase(given, "not full")) return "!fifo_full";
+            return "!fifo_empty";
+        }
+        
+        // Default: always true
+        return "1'b1";
+    }
+    
+    /// Parse "when" clause to SVA timing
+    fn parseWhenClause(when: []const u8) []const u8 {
+        // Clock edge detection
+        if (containsIgnoreCase(when, "falling") or containsIgnoreCase(when, "negedge")) {
+            return "negedge clk";
+        }
+        // Default to rising edge
+        return "posedge clk";
+    }
+    
+    /// Parse "then" clause to SVA consequent
+    fn parseThenClause(then: []const u8) []const u8 {
+        // Increment operation
+        if (containsIgnoreCase(then, "increment") or containsIgnoreCase(then, "add")) {
+            if (containsIgnoreCase(then, "count")) {
+                return "(count == $past(count) + 1)";
+            }
+            return "($past(data_out) + 1)";
+        }
+        
+        // Decrement operation
+        if (containsIgnoreCase(then, "decrement") or containsIgnoreCase(then, "subtract")) {
+            if (containsIgnoreCase(then, "count")) {
+                return "(count == $past(count) - 1)";
+            }
+            return "($past(data_out) - 1)";
+        }
+        
+        // Set to zero/clear
+        if (containsIgnoreCase(then, "zero") or containsIgnoreCase(then, "clear") or 
+            (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "0"))) {
+            if (containsIgnoreCase(then, "count")) return "(count == 0)";
+            if (containsIgnoreCase(then, "overflow")) return "(!overflow)";
+            return "(data_out == 0)";
+        }
+        
+        // Set flag
+        if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "flag")) {
+            if (containsIgnoreCase(then, "overflow")) return "overflow";
+            if (containsIgnoreCase(then, "valid")) return "valid_out";
+            if (containsIgnoreCase(then, "done")) return "done";
+            return "flag";
+        }
+        
+        // Output valid
+        if (containsIgnoreCase(then, "valid") and containsIgnoreCase(then, "output")) {
+            return "valid_out";
+        }
+        
+        // Wrap around
+        if (containsIgnoreCase(then, "wrap")) {
+            return "(count == 0)";
+        }
+        
+        // Default: signal stays stable or becomes true
+        return "1'b1";
     }
     
     fn writeTestbench(self: *Self, spec: *const VibeeSpec) !void {
