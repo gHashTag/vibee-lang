@@ -1,0 +1,653 @@
+name: telegram_stars
+version: "1.0.0"
+language: zig
+module: telegram_stars
+
+description: |
+  Telegram Stars payment integration for VIBEE bot.
+  Native Telegram payment system using Stars currency.
+  Supports invoices, subscriptions, refunds, revenue withdrawal.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  StarsClient:
+    description: "Telegram Stars client"
+    fields:
+      config: StarsConfig
+      bot_token: String
+      is_initialized: Bool
+      stats: ClientStats
+
+  StarsConfig:
+    description: "Stars configuration"
+    fields:
+      bot_token: String
+      provider_token: String
+      webhook_secret: String
+      currency: String
+      min_amount: Int
+      max_amount: Int
+      refund_window_days: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      invoices_created: Int
+      payments_received: Int
+      refunds_issued: Int
+      total_stars_received: Int
+      total_stars_refunded: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Invoice:
+    description: "Stars invoice"
+    fields:
+      invoice_id: String
+      chat_id: Int
+      user_id: Int
+      title: String
+      description: String
+      payload: String
+      currency: String
+      prices: List<LabeledPrice>
+      total_amount: Int
+      status: InvoiceStatus
+      message_id: Option<Int>
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+      paid_at: Option<Timestamp>
+
+  LabeledPrice:
+    description: "Labeled price"
+    fields:
+      label: String
+      amount: Int
+
+  InvoiceStatus:
+    description: "Invoice status"
+    values:
+      - created
+      - sent
+      - paid
+      - cancelled
+      - expired
+      - refunded
+
+  CreateInvoiceInput:
+    description: "Create invoice input"
+    fields:
+      chat_id: Int
+      title: String
+      description: String
+      payload: String
+      prices: List<LabeledPrice>
+      photo_url: Option<String>
+      photo_size: Option<Int>
+      photo_width: Option<Int>
+      photo_height: Option<Int>
+      need_name: Bool
+      need_phone_number: Bool
+      need_email: Bool
+      need_shipping_address: Bool
+      send_phone_number_to_provider: Bool
+      send_email_to_provider: Bool
+      is_flexible: Bool
+      disable_notification: Bool
+      protect_content: Bool
+      reply_parameters: Option<Object>
+      reply_markup: Option<Object>
+
+  InvoiceLink:
+    description: "Invoice link"
+    fields:
+      link: String
+      invoice_id: String
+      expires_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SuccessfulPayment:
+    description: "Successful payment"
+    fields:
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      telegram_payment_charge_id: String
+      provider_payment_charge_id: String
+      subscription_expiration_date: Option<Int>
+      is_recurring: Bool
+      is_first_recurring: Bool
+      shipping_option_id: Option<String>
+      order_info: Option<OrderInfo>
+
+  OrderInfo:
+    description: "Order info"
+    fields:
+      name: Option<String>
+      phone_number: Option<String>
+      email: Option<String>
+      shipping_address: Option<ShippingAddress>
+
+  ShippingAddress:
+    description: "Shipping address"
+    fields:
+      country_code: String
+      state: String
+      city: String
+      street_line1: String
+      street_line2: String
+      post_code: String
+
+  PreCheckoutQuery:
+    description: "Pre-checkout query"
+    fields:
+      id: String
+      from: User
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      shipping_option_id: Option<String>
+      order_info: Option<OrderInfo>
+
+  User:
+    description: "Telegram user"
+    fields:
+      id: Int
+      is_bot: Bool
+      first_name: String
+      last_name: Option<String>
+      username: Option<String>
+      language_code: Option<String>
+      is_premium: Option<Bool>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Refund:
+    description: "Refund"
+    fields:
+      refund_id: String
+      user_id: Int
+      telegram_payment_charge_id: String
+      amount: Int
+      currency: String
+      status: RefundStatus
+      reason: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  RefundStatus:
+    description: "Refund status"
+    values:
+      - pending
+      - completed
+      - failed
+
+  RefundRequest:
+    description: "Refund request"
+    fields:
+      user_id: Int
+      telegram_payment_charge_id: String
+      reason: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Subscription:
+    description: "Stars subscription"
+    fields:
+      subscription_id: String
+      user_id: Int
+      plan_id: String
+      status: SubscriptionStatus
+      current_period_start: Timestamp
+      current_period_end: Timestamp
+      cancel_at_period_end: Bool
+      cancelled_at: Option<Timestamp>
+      created_at: Timestamp
+
+  SubscriptionStatus:
+    description: "Subscription status"
+    values:
+      - active
+      - past_due
+      - cancelled
+      - expired
+
+  SubscriptionPlan:
+    description: "Subscription plan"
+    fields:
+      plan_id: String
+      name: String
+      description: String
+      price_stars: Int
+      interval: SubscriptionInterval
+      interval_count: Int
+      features: List<String>
+      is_active: Bool
+
+  SubscriptionInterval:
+    description: "Subscription interval"
+    values:
+      - day
+      - week
+      - month
+      - year
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REVENUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StarTransaction:
+    description: "Star transaction"
+    fields:
+      id: String
+      amount: Int
+      date: Int
+      source: Option<TransactionPartner>
+      receiver: Option<TransactionPartner>
+
+  TransactionPartner:
+    description: "Transaction partner"
+    fields:
+      type: PartnerType
+      user: Option<User>
+      invoice_payload: Option<String>
+
+  PartnerType:
+    description: "Partner type"
+    values:
+      - user
+      - fragment
+      - telegram_ads
+      - other
+
+  RevenueWithdrawal:
+    description: "Revenue withdrawal"
+    fields:
+      withdrawal_id: String
+      amount: Int
+      status: WithdrawalStatus
+      destination: WithdrawalDestination
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  WithdrawalStatus:
+    description: "Withdrawal status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+
+  WithdrawalDestination:
+    description: "Withdrawal destination"
+    values:
+      - fragment
+      - ton_wallet
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRODUCTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Product:
+    description: "Digital product"
+    fields:
+      product_id: String
+      name: String
+      description: String
+      price_stars: Int
+      category: ProductCategory
+      image_url: Option<String>
+      is_active: Bool
+      metadata: Object
+
+  ProductCategory:
+    description: "Product category"
+    values:
+      - generation
+      - subscription
+      - credits
+      - feature
+      - bundle
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StarsError:
+    description: "Stars error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_payload
+      - insufficient_stars
+      - invoice_not_found
+      - invoice_expired
+      - payment_failed
+      - refund_failed
+      - refund_window_expired
+      - subscription_not_found
+      - withdrawal_failed
+      - rate_limited
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: StarsConfig
+    when: Creating client
+    then: Return StarsClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate configuration
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_invoice
+    given: CreateInvoiceInput
+    when: Creating invoice
+    then: Return Invoice
+
+  - name: send_invoice
+    given: Chat ID and invoice
+    when: Sending invoice
+    then: Return message ID
+
+  - name: create_invoice_link
+    given: Invoice parameters
+    when: Creating invoice link
+    then: Return InvoiceLink
+
+  - name: get_invoice
+    given: Invoice ID
+    when: Getting invoice
+    then: Return Invoice
+
+  - name: cancel_invoice
+    given: Invoice ID
+    when: Cancelling invoice
+    then: Return success
+
+  - name: list_invoices
+    given: User ID and filters
+    when: Listing invoices
+    then: Return invoice list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: answer_pre_checkout_query
+    given: Query ID and ok flag
+    when: Answering pre-checkout
+    then: Return success
+
+  - name: process_successful_payment
+    given: SuccessfulPayment
+    when: Processing payment
+    then: Return transaction ID
+
+  - name: get_payment
+    given: Payment charge ID
+    when: Getting payment
+    then: Return payment details
+
+  - name: list_payments
+    given: User ID and filters
+    when: Listing payments
+    then: Return payment list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: refund_star_payment
+    given: RefundRequest
+    when: Refunding payment
+    then: Return Refund
+
+  - name: get_refund
+    given: Refund ID
+    when: Getting refund
+    then: Return Refund
+
+  - name: list_refunds
+    given: User ID and filters
+    when: Listing refunds
+    then: Return refund list
+
+  - name: can_refund
+    given: Payment charge ID
+    when: Checking refund eligibility
+    then: Return true if can refund
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_subscription
+    given: User ID and plan ID
+    when: Creating subscription
+    then: Return Subscription
+
+  - name: get_subscription
+    given: Subscription ID
+    when: Getting subscription
+    then: Return Subscription
+
+  - name: cancel_subscription
+    given: Subscription ID
+    when: Cancelling subscription
+    then: Return Subscription
+
+  - name: renew_subscription
+    given: Subscription ID
+    when: Renewing subscription
+    then: Return Subscription
+
+  - name: list_subscriptions
+    given: User ID
+    when: Listing subscriptions
+    then: Return subscription list
+
+  - name: get_active_subscription
+    given: User ID
+    when: Getting active subscription
+    then: Return Subscription or null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLANS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_plan
+    given: SubscriptionPlan
+    when: Creating plan
+    then: Return plan
+
+  - name: update_plan
+    given: Plan ID and updates
+    when: Updating plan
+    then: Return plan
+
+  - name: delete_plan
+    given: Plan ID
+    when: Deleting plan
+    then: Return success
+
+  - name: list_plans
+    given: Optional filters
+    when: Listing plans
+    then: Return plan list
+
+  - name: get_plan
+    given: Plan ID
+    when: Getting plan
+    then: Return plan
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRODUCTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_product
+    given: Product
+    when: Creating product
+    then: Return product
+
+  - name: update_product
+    given: Product ID and updates
+    when: Updating product
+    then: Return product
+
+  - name: delete_product
+    given: Product ID
+    when: Deleting product
+    then: Return success
+
+  - name: list_products
+    given: Optional category
+    when: Listing products
+    then: Return product list
+
+  - name: get_product
+    given: Product ID
+    when: Getting product
+    then: Return product
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REVENUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_star_transactions
+    given: Offset and limit
+    when: Getting transactions
+    then: Return StarTransaction list
+
+  - name: get_revenue_balance
+    given: No parameters
+    when: Getting balance
+    then: Return balance in stars
+
+  - name: withdraw_revenue
+    given: Amount and destination
+    when: Withdrawing revenue
+    then: Return RevenueWithdrawal
+
+  - name: get_withdrawal
+    given: Withdrawal ID
+    when: Getting withdrawal
+    then: Return RevenueWithdrawal
+
+  - name: list_withdrawals
+    given: Filters
+    when: Listing withdrawals
+    then: Return withdrawal list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_pre_checkout
+    given: PreCheckoutQuery
+    when: Handling pre-checkout
+    then: Return approval or rejection
+
+  - name: handle_successful_payment
+    given: SuccessfulPayment
+    when: Handling payment
+    then: Process and return result
+
+  - name: verify_webhook
+    given: Payload and signature
+    when: Verifying webhook
+    then: Return true if valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: stars_to_usd
+    given: Stars amount
+    when: Converting to USD
+    then: Return USD amount
+
+  - name: usd_to_stars
+    given: USD amount
+    when: Converting to stars
+    then: Return stars amount
+
+  - name: format_price
+    given: Stars amount
+    when: Formatting price
+    then: Return formatted string
+
+  - name: validate_payload
+    given: Payload string
+    when: Validating payload
+    then: Return true if valid
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CURRENCY_XTR: "XTR"
+  MIN_STARS_AMOUNT: 1
+  MAX_STARS_AMOUNT: 10000
+  REFUND_WINDOW_DAYS: 21
+
+  # Conversion rate (approximate)
+  STARS_PER_USD: 50
+  USD_PER_STAR: 0.02
+
+  # Invoice limits
+  MAX_TITLE_LENGTH: 32
+  MAX_DESCRIPTION_LENGTH: 255
+  MAX_PAYLOAD_LENGTH: 128
+  MAX_PRICES_COUNT: 10
+
+  # Subscription intervals
+  INTERVAL_DAY: 86400
+  INTERVAL_WEEK: 604800
+  INTERVAL_MONTH: 2592000
+  INTERVAL_YEAR: 31536000
+
+  # Default plans
+  PLAN_BASIC_STARS: 100
+  PLAN_PRO_STARS: 500
+  PLAN_PREMIUM_STARS: 1000
+
+  # Product categories
+  CATEGORY_GENERATION: "generation"
+  CATEGORY_SUBSCRIPTION: "subscription"
+  CATEGORY_CREDITS: "credits"

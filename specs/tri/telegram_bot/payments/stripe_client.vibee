@@ -1,0 +1,655 @@
+name: stripe_client
+version: "1.0.0"
+language: zig
+module: stripe_client
+
+description: |
+  Stripe payment integration for VIBEE Telegram bot.
+  Supports Checkout Sessions, Payment Intents, Subscriptions.
+  Handles webhooks, refunds, customer management.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  StripeClient:
+    description: "Stripe API client"
+    fields:
+      config: StripeConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  StripeConfig:
+    description: "Stripe configuration"
+    fields:
+      secret_key: String
+      publishable_key: String
+      webhook_secret: String
+      api_version: String
+      base_url: String
+      timeout_ms: Int
+      max_retries: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      payments_created: Int
+      payments_succeeded: Int
+      payments_failed: Int
+      refunds_issued: Int
+      total_amount_cents: Int
+      total_refunded_cents: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CUSTOMERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Customer:
+    description: "Stripe customer"
+    fields:
+      id: String
+      object: String
+      email: Option<String>
+      name: Option<String>
+      phone: Option<String>
+      description: Option<String>
+      metadata: Object
+      default_source: Option<String>
+      invoice_settings: Option<InvoiceSettings>
+      created: Int
+      livemode: Bool
+
+  InvoiceSettings:
+    description: "Invoice settings"
+    fields:
+      default_payment_method: Option<String>
+      footer: Option<String>
+
+  CreateCustomerInput:
+    description: "Create customer input"
+    fields:
+      email: Option<String>
+      name: Option<String>
+      phone: Option<String>
+      description: Option<String>
+      metadata: Option<Object>
+      payment_method: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHECKOUT SESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CheckoutSession:
+    description: "Checkout session"
+    fields:
+      id: String
+      object: String
+      url: Option<String>
+      status: CheckoutStatus
+      mode: CheckoutMode
+      customer: Option<String>
+      customer_email: Option<String>
+      payment_intent: Option<String>
+      subscription: Option<String>
+      amount_total: Option<Int>
+      currency: Option<String>
+      payment_status: PaymentStatus
+      success_url: String
+      cancel_url: String
+      metadata: Object
+      created: Int
+      expires_at: Int
+
+  CheckoutStatus:
+    description: "Checkout status"
+    values:
+      - open
+      - complete
+      - expired
+
+  CheckoutMode:
+    description: "Checkout mode"
+    values:
+      - payment
+      - subscription
+      - setup
+
+  PaymentStatus:
+    description: "Payment status"
+    values:
+      - unpaid
+      - paid
+      - no_payment_required
+
+  CreateCheckoutInput:
+    description: "Create checkout input"
+    fields:
+      mode: CheckoutMode
+      line_items: List<LineItem>
+      success_url: String
+      cancel_url: String
+      customer: Option<String>
+      customer_email: Option<String>
+      client_reference_id: Option<String>
+      metadata: Option<Object>
+      allow_promotion_codes: Bool
+      billing_address_collection: Option<String>
+      shipping_address_collection: Option<Object>
+      expires_at: Option<Int>
+
+  LineItem:
+    description: "Line item"
+    fields:
+      price: Option<String>
+      price_data: Option<PriceData>
+      quantity: Int
+
+  PriceData:
+    description: "Price data"
+    fields:
+      currency: String
+      unit_amount: Int
+      product_data: ProductData
+      recurring: Option<Recurring>
+
+  ProductData:
+    description: "Product data"
+    fields:
+      name: String
+      description: Option<String>
+      images: Option<List<String>>
+      metadata: Option<Object>
+
+  Recurring:
+    description: "Recurring settings"
+    fields:
+      interval: RecurringInterval
+      interval_count: Int
+
+  RecurringInterval:
+    description: "Recurring interval"
+    values:
+      - day
+      - week
+      - month
+      - year
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT INTENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PaymentIntent:
+    description: "Payment intent"
+    fields:
+      id: String
+      object: String
+      amount: Int
+      currency: String
+      status: PaymentIntentStatus
+      client_secret: String
+      customer: Option<String>
+      description: Option<String>
+      metadata: Object
+      payment_method: Option<String>
+      payment_method_types: List<String>
+      receipt_email: Option<String>
+      created: Int
+      canceled_at: Option<Int>
+
+  PaymentIntentStatus:
+    description: "Payment intent status"
+    values:
+      - requires_payment_method
+      - requires_confirmation
+      - requires_action
+      - processing
+      - requires_capture
+      - canceled
+      - succeeded
+
+  CreatePaymentIntentInput:
+    description: "Create payment intent input"
+    fields:
+      amount: Int
+      currency: String
+      customer: Option<String>
+      description: Option<String>
+      metadata: Option<Object>
+      payment_method_types: Option<List<String>>
+      receipt_email: Option<String>
+      setup_future_usage: Option<String>
+      capture_method: Option<String>
+      confirm: Bool
+      payment_method: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Subscription:
+    description: "Stripe subscription"
+    fields:
+      id: String
+      object: String
+      customer: String
+      status: SubscriptionStatus
+      current_period_start: Int
+      current_period_end: Int
+      cancel_at_period_end: Bool
+      canceled_at: Option<Int>
+      ended_at: Option<Int>
+      items: SubscriptionItems
+      latest_invoice: Option<String>
+      default_payment_method: Option<String>
+      metadata: Object
+      created: Int
+
+  SubscriptionStatus:
+    description: "Subscription status"
+    values:
+      - incomplete
+      - incomplete_expired
+      - trialing
+      - active
+      - past_due
+      - canceled
+      - unpaid
+      - paused
+
+  SubscriptionItems:
+    description: "Subscription items"
+    fields:
+      object: String
+      data: List<SubscriptionItem>
+
+  SubscriptionItem:
+    description: "Subscription item"
+    fields:
+      id: String
+      object: String
+      price: Price
+      quantity: Int
+
+  Price:
+    description: "Price"
+    fields:
+      id: String
+      object: String
+      active: Bool
+      currency: String
+      unit_amount: Option<Int>
+      recurring: Option<Recurring>
+      product: String
+      type: PriceType
+
+  PriceType:
+    description: "Price type"
+    values:
+      - one_time
+      - recurring
+
+  CreateSubscriptionInput:
+    description: "Create subscription input"
+    fields:
+      customer: String
+      items: List<SubscriptionItemInput>
+      default_payment_method: Option<String>
+      metadata: Option<Object>
+      trial_period_days: Option<Int>
+      cancel_at_period_end: Bool
+      proration_behavior: Option<String>
+
+  SubscriptionItemInput:
+    description: "Subscription item input"
+    fields:
+      price: String
+      quantity: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Refund:
+    description: "Refund"
+    fields:
+      id: String
+      object: String
+      amount: Int
+      currency: String
+      payment_intent: Option<String>
+      charge: Option<String>
+      status: RefundStatus
+      reason: Option<RefundReason>
+      metadata: Object
+      created: Int
+
+  RefundStatus:
+    description: "Refund status"
+    values:
+      - pending
+      - succeeded
+      - failed
+      - canceled
+
+  RefundReason:
+    description: "Refund reason"
+    values:
+      - duplicate
+      - fraudulent
+      - requested_by_customer
+
+  CreateRefundInput:
+    description: "Create refund input"
+    fields:
+      payment_intent: Option<String>
+      charge: Option<String>
+      amount: Option<Int>
+      reason: Option<RefundReason>
+      metadata: Option<Object>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WebhookEvent:
+    description: "Webhook event"
+    fields:
+      id: String
+      object: String
+      type: String
+      data: EventData
+      created: Int
+      livemode: Bool
+      pending_webhooks: Int
+      request: Option<EventRequest>
+
+  EventData:
+    description: "Event data"
+    fields:
+      object: Object
+      previous_attributes: Option<Object>
+
+  EventRequest:
+    description: "Event request"
+    fields:
+      id: Option<String>
+      idempotency_key: Option<String>
+
+  WebhookEventType:
+    description: "Webhook event types"
+    values:
+      - checkout_session_completed
+      - checkout_session_expired
+      - payment_intent_succeeded
+      - payment_intent_payment_failed
+      - customer_subscription_created
+      - customer_subscription_updated
+      - customer_subscription_deleted
+      - invoice_paid
+      - invoice_payment_failed
+      - charge_refunded
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StripeError:
+    description: "Stripe error"
+    fields:
+      type: ErrorType
+      code: Option<String>
+      message: String
+      param: Option<String>
+      decline_code: Option<String>
+
+  ErrorType:
+    description: "Error type"
+    values:
+      - api_error
+      - card_error
+      - idempotency_error
+      - invalid_request_error
+      - authentication_error
+      - rate_limit_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: StripeConfig
+    when: Creating client
+    then: Return StripeClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate API key
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CUSTOMERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_customer
+    given: CreateCustomerInput
+    when: Creating customer
+    then: Return Customer
+
+  - name: get_customer
+    given: Customer ID
+    when: Getting customer
+    then: Return Customer
+
+  - name: update_customer
+    given: Customer ID and updates
+    when: Updating customer
+    then: Return Customer
+
+  - name: delete_customer
+    given: Customer ID
+    when: Deleting customer
+    then: Return success
+
+  - name: list_customers
+    given: Filters and pagination
+    when: Listing customers
+    then: Return customer list
+
+  - name: get_or_create_customer
+    given: Email and metadata
+    when: Getting or creating
+    then: Return Customer
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHECKOUT SESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_checkout_session
+    given: CreateCheckoutInput
+    when: Creating checkout
+    then: Return CheckoutSession
+
+  - name: get_checkout_session
+    given: Session ID
+    when: Getting session
+    then: Return CheckoutSession
+
+  - name: expire_checkout_session
+    given: Session ID
+    when: Expiring session
+    then: Return CheckoutSession
+
+  - name: list_checkout_sessions
+    given: Filters and pagination
+    when: Listing sessions
+    then: Return session list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT INTENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_payment_intent
+    given: CreatePaymentIntentInput
+    when: Creating payment intent
+    then: Return PaymentIntent
+
+  - name: get_payment_intent
+    given: Payment intent ID
+    when: Getting payment intent
+    then: Return PaymentIntent
+
+  - name: confirm_payment_intent
+    given: Payment intent ID
+    when: Confirming payment
+    then: Return PaymentIntent
+
+  - name: cancel_payment_intent
+    given: Payment intent ID
+    when: Canceling payment
+    then: Return PaymentIntent
+
+  - name: capture_payment_intent
+    given: Payment intent ID
+    when: Capturing payment
+    then: Return PaymentIntent
+
+  - name: list_payment_intents
+    given: Filters and pagination
+    when: Listing payment intents
+    then: Return payment intent list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_subscription
+    given: CreateSubscriptionInput
+    when: Creating subscription
+    then: Return Subscription
+
+  - name: get_subscription
+    given: Subscription ID
+    when: Getting subscription
+    then: Return Subscription
+
+  - name: update_subscription
+    given: Subscription ID and updates
+    when: Updating subscription
+    then: Return Subscription
+
+  - name: cancel_subscription
+    given: Subscription ID
+    when: Canceling subscription
+    then: Return Subscription
+
+  - name: pause_subscription
+    given: Subscription ID
+    when: Pausing subscription
+    then: Return Subscription
+
+  - name: resume_subscription
+    given: Subscription ID
+    when: Resuming subscription
+    then: Return Subscription
+
+  - name: list_subscriptions
+    given: Customer ID and filters
+    when: Listing subscriptions
+    then: Return subscription list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_refund
+    given: CreateRefundInput
+    when: Creating refund
+    then: Return Refund
+
+  - name: get_refund
+    given: Refund ID
+    when: Getting refund
+    then: Return Refund
+
+  - name: list_refunds
+    given: Payment intent ID
+    when: Listing refunds
+    then: Return refund list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: construct_event
+    given: Payload and signature
+    when: Constructing event
+    then: Return WebhookEvent
+
+  - name: verify_webhook_signature
+    given: Payload, signature, secret
+    when: Verifying signature
+    then: Return true if valid
+
+  - name: handle_webhook
+    given: WebhookEvent
+    when: Handling webhook
+    then: Process event
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: format_amount
+    given: Amount in cents and currency
+    when: Formatting amount
+    then: Return formatted string
+
+  - name: parse_amount
+    given: Amount string and currency
+    when: Parsing amount
+    then: Return amount in cents
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  BASE_URL: "https://api.stripe.com/v1"
+  API_VERSION: "2024-11-20.acacia"
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_RETRIES: 3
+
+  # Currencies
+  CURRENCY_USD: "usd"
+  CURRENCY_EUR: "eur"
+  CURRENCY_RUB: "rub"
+
+  # Minimum amounts (in cents)
+  MIN_AMOUNT_USD: 50
+  MIN_AMOUNT_EUR: 50
+  MIN_AMOUNT_RUB: 6000
+
+  # Webhook signature header
+  SIGNATURE_HEADER: "Stripe-Signature"
+  SIGNATURE_TOLERANCE_SECONDS: 300
+
+  # Payment method types
+  PM_CARD: "card"
+  PM_LINK: "link"
+  PM_SEPA_DEBIT: "sepa_debit"
+
+  # Checkout session expiry
+  DEFAULT_EXPIRY_MINUTES: 30
+  MAX_EXPIRY_MINUTES: 1440

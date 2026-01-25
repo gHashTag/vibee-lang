@@ -1,0 +1,651 @@
+name: payment_router
+version: "1.0.0"
+language: zig
+module: payment_router
+
+description: |
+  Unified payment router for VIBEE Telegram bot.
+  Routes payments to Telegram Stars, Stripe, CryptoBot.
+  Handles provider selection, fallback, reconciliation.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  PaymentRouter:
+    description: "Payment router instance"
+    fields:
+      config: RouterConfig
+      providers: Map<String, ProviderClient>
+      stats: RouterStats
+      is_running: Bool
+
+  RouterConfig:
+    description: "Router configuration"
+    fields:
+      default_provider: PaymentProvider
+      fallback_enabled: Bool
+      fallback_order: List<PaymentProvider>
+      auto_convert_currency: Bool
+      base_currency: String
+      webhook_base_url: String
+      reconciliation_enabled: Bool
+
+  PaymentProvider:
+    description: "Payment provider"
+    values:
+      - telegram_stars
+      - stripe
+      - cryptobot
+      - robokassa
+      - yookassa
+
+  ProviderClient:
+    description: "Provider client wrapper"
+    fields:
+      provider: PaymentProvider
+      client: Object
+      is_available: Bool
+      supported_currencies: List<String>
+      min_amount: Int
+      max_amount: Int
+      fee_percent: Float
+      error_count: Int
+      last_error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UNIFIED PAYMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PaymentRequest:
+    description: "Unified payment request"
+    fields:
+      request_id: String
+      user_id: Int
+      amount: Int
+      currency: String
+      description: String
+      provider_override: Option<PaymentProvider>
+      product_id: Option<String>
+      subscription_plan_id: Option<String>
+      metadata: Object
+      success_url: Option<String>
+      cancel_url: Option<String>
+      expires_in: Option<Int>
+
+  PaymentResponse:
+    description: "Unified payment response"
+    fields:
+      payment_id: String
+      request_id: String
+      provider: PaymentProvider
+      status: PaymentStatus
+      payment_url: Option<String>
+      invoice_id: Option<String>
+      amount: Int
+      currency: String
+      fee: Int
+      net_amount: Int
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+
+  PaymentStatus:
+    description: "Payment status"
+    values:
+      - pending
+      - awaiting_payment
+      - processing
+      - completed
+      - failed
+      - cancelled
+      - refunded
+      - expired
+
+  Payment:
+    description: "Payment record"
+    fields:
+      payment_id: String
+      user_id: Int
+      provider: PaymentProvider
+      provider_payment_id: String
+      amount: Int
+      currency: String
+      fee: Int
+      net_amount: Int
+      status: PaymentStatus
+      description: String
+      product_id: Option<String>
+      subscription_id: Option<String>
+      metadata: Object
+      created_at: Timestamp
+      updated_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RefundRequest:
+    description: "Refund request"
+    fields:
+      payment_id: String
+      amount: Option<Int>
+      reason: RefundReason
+      metadata: Option<Object>
+
+  RefundReason:
+    description: "Refund reason"
+    values:
+      - requested_by_customer
+      - duplicate
+      - fraudulent
+      - service_not_provided
+      - other
+
+  Refund:
+    description: "Refund record"
+    fields:
+      refund_id: String
+      payment_id: String
+      provider: PaymentProvider
+      provider_refund_id: String
+      amount: Int
+      currency: String
+      status: RefundStatus
+      reason: RefundReason
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  RefundStatus:
+    description: "Refund status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SubscriptionRequest:
+    description: "Subscription request"
+    fields:
+      user_id: Int
+      plan_id: String
+      provider_override: Option<PaymentProvider>
+      trial_days: Option<Int>
+      metadata: Option<Object>
+
+  SubscriptionPlan:
+    description: "Subscription plan"
+    fields:
+      plan_id: String
+      name: String
+      description: String
+      prices: List<PlanPrice>
+      interval: BillingInterval
+      interval_count: Int
+      trial_days: Int
+      features: List<String>
+      is_active: Bool
+
+  PlanPrice:
+    description: "Plan price"
+    fields:
+      provider: PaymentProvider
+      amount: Int
+      currency: String
+
+  BillingInterval:
+    description: "Billing interval"
+    values:
+      - day
+      - week
+      - month
+      - year
+
+  Subscription:
+    description: "Subscription record"
+    fields:
+      subscription_id: String
+      user_id: Int
+      plan_id: String
+      provider: PaymentProvider
+      provider_subscription_id: String
+      status: SubscriptionStatus
+      current_period_start: Timestamp
+      current_period_end: Timestamp
+      cancel_at_period_end: Bool
+      cancelled_at: Option<Timestamp>
+      created_at: Timestamp
+
+  SubscriptionStatus:
+    description: "Subscription status"
+    values:
+      - trialing
+      - active
+      - past_due
+      - cancelled
+      - expired
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WebhookEvent:
+    description: "Unified webhook event"
+    fields:
+      event_id: String
+      provider: PaymentProvider
+      event_type: WebhookEventType
+      payment_id: Option<String>
+      subscription_id: Option<String>
+      data: Object
+      received_at: Timestamp
+
+  WebhookEventType:
+    description: "Webhook event type"
+    values:
+      - payment_created
+      - payment_completed
+      - payment_failed
+      - payment_refunded
+      - subscription_created
+      - subscription_renewed
+      - subscription_cancelled
+      - subscription_expired
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RECONCILIATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReconciliationReport:
+    description: "Reconciliation report"
+    fields:
+      report_id: String
+      period_start: Timestamp
+      period_end: Timestamp
+      provider: PaymentProvider
+      total_payments: Int
+      total_amount: Int
+      total_fees: Int
+      total_refunds: Int
+      discrepancies: List<Discrepancy>
+      status: ReconciliationStatus
+      created_at: Timestamp
+
+  Discrepancy:
+    description: "Reconciliation discrepancy"
+    fields:
+      payment_id: String
+      type: DiscrepancyType
+      expected_amount: Int
+      actual_amount: Int
+      description: String
+
+  DiscrepancyType:
+    description: "Discrepancy type"
+    values:
+      - amount_mismatch
+      - missing_payment
+      - duplicate_payment
+      - status_mismatch
+
+  ReconciliationStatus:
+    description: "Reconciliation status"
+    values:
+      - pending
+      - in_progress
+      - completed
+      - failed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RouterStats:
+    description: "Router statistics"
+    fields:
+      total_payments: Int
+      successful_payments: Int
+      failed_payments: Int
+      total_amount: Int
+      total_fees: Int
+      total_refunds: Int
+      by_provider: Map<String, ProviderStats>
+      by_currency: Map<String, CurrencyStats>
+
+  ProviderStats:
+    description: "Provider statistics"
+    fields:
+      payments: Int
+      successes: Int
+      failures: Int
+      amount: Int
+      fees: Int
+      avg_processing_time_ms: Float
+
+  CurrencyStats:
+    description: "Currency statistics"
+    fields:
+      payments: Int
+      amount: Int
+      fees: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PaymentError:
+    description: "Payment error"
+    fields:
+      code: ErrorCode
+      message: String
+      provider: Option<PaymentProvider>
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_amount
+      - invalid_currency
+      - provider_unavailable
+      - payment_failed
+      - refund_failed
+      - subscription_failed
+      - insufficient_funds
+      - rate_limited
+      - all_providers_failed
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_router
+    given: RouterConfig
+    when: Creating router
+    then: Return PaymentRouter
+
+  - name: start
+    given: No parameters
+    when: Starting router
+    then: Initialize providers
+
+  - name: stop
+    given: No parameters
+    when: Stopping router
+    then: Cleanup resources
+
+  - name: register_provider
+    given: PaymentProvider and client
+    when: Registering provider
+    then: Add to providers
+
+  - name: unregister_provider
+    given: PaymentProvider
+    when: Unregistering provider
+    then: Remove from providers
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_payment
+    given: PaymentRequest
+    when: Creating payment
+    then: Return PaymentResponse
+
+  - name: get_payment
+    given: Payment ID
+    when: Getting payment
+    then: Return Payment
+
+  - name: get_payment_status
+    given: Payment ID
+    when: Getting status
+    then: Return PaymentStatus
+
+  - name: cancel_payment
+    given: Payment ID
+    when: Cancelling payment
+    then: Return Payment
+
+  - name: list_payments
+    given: User ID and filters
+    when: Listing payments
+    then: Return payment list
+
+  - name: sync_payment_status
+    given: Payment ID
+    when: Syncing with provider
+    then: Return updated Payment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUNDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_refund
+    given: RefundRequest
+    when: Creating refund
+    then: Return Refund
+
+  - name: get_refund
+    given: Refund ID
+    when: Getting refund
+    then: Return Refund
+
+  - name: list_refunds
+    given: Payment ID
+    when: Listing refunds
+    then: Return refund list
+
+  - name: can_refund
+    given: Payment ID
+    when: Checking refund eligibility
+    then: Return true if can refund
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_subscription
+    given: SubscriptionRequest
+    when: Creating subscription
+    then: Return Subscription
+
+  - name: get_subscription
+    given: Subscription ID
+    when: Getting subscription
+    then: Return Subscription
+
+  - name: cancel_subscription
+    given: Subscription ID
+    when: Cancelling subscription
+    then: Return Subscription
+
+  - name: renew_subscription
+    given: Subscription ID
+    when: Renewing subscription
+    then: Return Subscription
+
+  - name: list_subscriptions
+    given: User ID
+    when: Listing subscriptions
+    then: Return subscription list
+
+  - name: get_active_subscription
+    given: User ID
+    when: Getting active subscription
+    then: Return Subscription or null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLANS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_plan
+    given: SubscriptionPlan
+    when: Creating plan
+    then: Return plan
+
+  - name: update_plan
+    given: Plan ID and updates
+    when: Updating plan
+    then: Return plan
+
+  - name: delete_plan
+    given: Plan ID
+    when: Deleting plan
+    then: Return success
+
+  - name: list_plans
+    given: Optional filters
+    when: Listing plans
+    then: Return plan list
+
+  - name: get_plan
+    given: Plan ID
+    when: Getting plan
+    then: Return plan
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROVIDER SELECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: select_provider
+    given: PaymentRequest
+    when: Selecting provider
+    then: Return PaymentProvider
+
+  - name: select_fallback
+    given: Request and failed provider
+    when: Selecting fallback
+    then: Return next provider
+
+  - name: get_available_providers
+    given: Currency and amount
+    when: Getting available providers
+    then: Return provider list
+
+  - name: get_provider_fees
+    given: Provider, amount, currency
+    when: Getting fees
+    then: Return fee amount
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_webhook
+    given: Provider, payload, signature
+    when: Handling webhook
+    then: Return WebhookEvent
+
+  - name: process_webhook_event
+    given: WebhookEvent
+    when: Processing event
+    then: Update payment/subscription
+
+  - name: verify_webhook
+    given: Provider, payload, signature
+    when: Verifying webhook
+    then: Return true if valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RECONCILIATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: reconcile
+    given: Provider and date range
+    when: Reconciling payments
+    then: Return ReconciliationReport
+
+  - name: get_reconciliation_report
+    given: Report ID
+    when: Getting report
+    then: Return ReconciliationReport
+
+  - name: resolve_discrepancy
+    given: Discrepancy and resolution
+    when: Resolving discrepancy
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Optional time range
+    when: Getting statistics
+    then: Return RouterStats
+
+  - name: get_provider_stats
+    given: PaymentProvider
+    when: Getting provider stats
+    then: Return ProviderStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear all stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: convert_currency
+    given: Amount, from, to
+    when: Converting currency
+    then: Return converted amount
+
+  - name: format_amount
+    given: Amount and currency
+    when: Formatting amount
+    then: Return formatted string
+
+  - name: validate_amount
+    given: Amount, currency, provider
+    when: Validating amount
+    then: Return true if valid
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CURRENCY: "XTR"
+  DEFAULT_PROVIDER: "telegram_stars"
+
+  # Provider fees (percent)
+  FEE_TELEGRAM_STARS: 0.0
+  FEE_STRIPE: 2.9
+  FEE_CRYPTOBOT: 0.5
+
+  # Minimum amounts
+  MIN_AMOUNT_STARS: 1
+  MIN_AMOUNT_USD_CENTS: 50
+  MIN_AMOUNT_USDT: 1
+
+  # Maximum amounts
+  MAX_AMOUNT_STARS: 10000
+  MAX_AMOUNT_USD_CENTS: 99999999
+  MAX_AMOUNT_USDT: 100000
+
+  # Refund window (days)
+  REFUND_WINDOW_STARS: 21
+  REFUND_WINDOW_STRIPE: 180
+  REFUND_WINDOW_CRYPTOBOT: 0
+
+  # Webhook paths
+  WEBHOOK_PATH_STARS: "/webhooks/stars"
+  WEBHOOK_PATH_STRIPE: "/webhooks/stripe"
+  WEBHOOK_PATH_CRYPTOBOT: "/webhooks/cryptobot"
+
+  # Reconciliation
+  RECONCILIATION_INTERVAL_HOURS: 24

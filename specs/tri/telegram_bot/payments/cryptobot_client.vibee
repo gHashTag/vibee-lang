@@ -1,0 +1,562 @@
+name: cryptobot_client
+version: "1.0.0"
+language: zig
+module: cryptobot_client
+
+description: |
+  CryptoBot payment integration for VIBEE Telegram bot.
+  Supports USDT, TON, BTC, ETH cryptocurrency payments.
+  Handles invoices, transfers, webhooks.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CryptoBotClient:
+    description: "CryptoBot API client"
+    fields:
+      config: CryptoBotConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  CryptoBotConfig:
+    description: "CryptoBot configuration"
+    fields:
+      api_token: String
+      base_url: String
+      webhook_secret: String
+      timeout_ms: Int
+      max_retries: Int
+      testnet: Bool
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      invoices_created: Int
+      invoices_paid: Int
+      transfers_sent: Int
+      total_received_usd: Float
+      total_transferred_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CURRENCIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CryptoCurrency:
+    description: "Supported cryptocurrencies"
+    values:
+      - usdt
+      - ton
+      - btc
+      - eth
+      - ltc
+      - bnb
+      - trx
+      - usdc
+      - jet
+      - cati
+      - not
+
+  FiatCurrency:
+    description: "Supported fiat currencies"
+    values:
+      - usd
+      - eur
+      - rub
+      - byn
+      - uah
+      - gbp
+      - cny
+      - kzt
+      - uzs
+      - gel
+      - try
+      - amd
+      - thb
+      - inr
+      - brl
+      - idr
+      - azn
+      - aed
+      - pln
+      - ils
+
+  ExchangeRate:
+    description: "Exchange rate"
+    fields:
+      is_valid: Bool
+      is_crypto: Bool
+      is_fiat: Bool
+      source: String
+      target: String
+      rate: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Invoice:
+    description: "CryptoBot invoice"
+    fields:
+      invoice_id: Int
+      hash: String
+      currency_type: CurrencyType
+      asset: Option<String>
+      fiat: Option<String>
+      amount: String
+      paid_asset: Option<String>
+      paid_amount: Option<String>
+      paid_fiat_rate: Option<String>
+      accepted_assets: Option<List<String>>
+      fee_asset: Option<String>
+      fee_amount: Option<String>
+      fee: Option<String>
+      pay_url: String
+      bot_invoice_url: String
+      mini_app_invoice_url: String
+      web_app_invoice_url: String
+      description: Option<String>
+      status: InvoiceStatus
+      created_at: String
+      paid_usd_rate: Option<String>
+      usd_rate: Option<String>
+      allow_comments: Bool
+      allow_anonymous: Bool
+      expiration_date: Option<String>
+      paid_at: Option<String>
+      paid_anonymously: Option<Bool>
+      comment: Option<String>
+      hidden_message: Option<String>
+      payload: Option<String>
+      paid_btn_name: Option<PaidButtonName>
+      paid_btn_url: Option<String>
+
+  CurrencyType:
+    description: "Currency type"
+    values:
+      - crypto
+      - fiat
+
+  InvoiceStatus:
+    description: "Invoice status"
+    values:
+      - active
+      - paid
+      - expired
+
+  PaidButtonName:
+    description: "Paid button name"
+    values:
+      - view_item
+      - open_channel
+      - open_bot
+      - callback
+
+  CreateInvoiceInput:
+    description: "Create invoice input"
+    fields:
+      currency_type: Option<CurrencyType>
+      asset: Option<String>
+      fiat: Option<String>
+      accepted_assets: Option<List<String>>
+      amount: String
+      description: Option<String>
+      hidden_message: Option<String>
+      paid_btn_name: Option<PaidButtonName>
+      paid_btn_url: Option<String>
+      payload: Option<String>
+      allow_comments: Option<Bool>
+      allow_anonymous: Option<Bool>
+      expires_in: Option<Int>
+
+  InvoiceFilter:
+    description: "Invoice filter"
+    fields:
+      asset: Option<String>
+      fiat: Option<String>
+      invoice_ids: Option<List<Int>>
+      status: Option<InvoiceStatus>
+      offset: Option<Int>
+      count: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSFERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Transfer:
+    description: "CryptoBot transfer"
+    fields:
+      transfer_id: Int
+      spend_id: String
+      user_id: Int
+      asset: String
+      amount: String
+      status: TransferStatus
+      completed_at: String
+      comment: Option<String>
+
+  TransferStatus:
+    description: "Transfer status"
+    values:
+      - completed
+
+  CreateTransferInput:
+    description: "Create transfer input"
+    fields:
+      user_id: Int
+      asset: String
+      amount: String
+      spend_id: String
+      comment: Option<String>
+      disable_send_notification: Option<Bool>
+
+  TransferFilter:
+    description: "Transfer filter"
+    fields:
+      asset: Option<String>
+      transfer_ids: Option<List<Int>>
+      spend_id: Option<String>
+      offset: Option<Int>
+      count: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Check:
+    description: "CryptoBot check"
+    fields:
+      check_id: Int
+      hash: String
+      asset: String
+      amount: String
+      bot_check_url: String
+      status: CheckStatus
+      created_at: String
+      activated_at: Option<String>
+
+  CheckStatus:
+    description: "Check status"
+    values:
+      - active
+      - activated
+
+  CreateCheckInput:
+    description: "Create check input"
+    fields:
+      asset: String
+      amount: String
+      pin_to_user_id: Option<Int>
+      pin_to_username: Option<String>
+
+  CheckFilter:
+    description: "Check filter"
+    fields:
+      asset: Option<String>
+      check_ids: Option<List<Int>>
+      status: Option<CheckStatus>
+      offset: Option<Int>
+      count: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Balance:
+    description: "Account balance"
+    fields:
+      currency_code: String
+      available: String
+      onhold: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WebhookUpdate:
+    description: "Webhook update"
+    fields:
+      update_id: Int
+      update_type: UpdateType
+      request_date: String
+      payload: WebhookPayload
+
+  UpdateType:
+    description: "Update type"
+    values:
+      - invoice_paid
+
+  WebhookPayload:
+    description: "Webhook payload"
+    fields:
+      invoice_id: Int
+      hash: String
+      currency_type: CurrencyType
+      asset: Option<String>
+      fiat: Option<String>
+      amount: String
+      paid_asset: String
+      paid_amount: String
+      paid_fiat_rate: Option<String>
+      fee_asset: Option<String>
+      fee_amount: Option<String>
+      fee: Option<String>
+      pay_url: String
+      bot_invoice_url: String
+      description: Option<String>
+      status: InvoiceStatus
+      created_at: String
+      paid_usd_rate: Option<String>
+      usd_rate: Option<String>
+      paid_at: String
+      paid_anonymously: Bool
+      comment: Option<String>
+      payload: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # APP INFO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AppInfo:
+    description: "App information"
+    fields:
+      app_id: Int
+      name: String
+      payment_processing_bot_username: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CryptoBotError:
+    description: "API error"
+    fields:
+      code: ErrorCode
+      name: String
+
+  ErrorCode:
+    description: "Error codes"
+    values:
+      - unauthorized
+      - invalid_currency
+      - invalid_amount
+      - invoice_not_found
+      - invoice_already_paid
+      - insufficient_balance
+      - transfer_failed
+      - check_not_found
+      - rate_limit
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: CryptoBotConfig
+    when: Creating client
+    then: Return CryptoBotClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate API token
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: get_me
+    given: No parameters
+    when: Getting app info
+    then: Return AppInfo
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CURRENCIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_currencies
+    given: No parameters
+    when: Getting currencies
+    then: Return currency list
+
+  - name: get_exchange_rates
+    given: No parameters
+    when: Getting exchange rates
+    then: Return ExchangeRate list
+
+  - name: get_exchange_rate
+    given: Source and target currency
+    when: Getting specific rate
+    then: Return ExchangeRate
+
+  - name: convert_amount
+    given: Amount, source, target
+    when: Converting amount
+    then: Return converted amount
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_balance
+    given: No parameters
+    when: Getting balance
+    then: Return Balance list
+
+  - name: get_balance_for_asset
+    given: Asset code
+    when: Getting asset balance
+    then: Return Balance
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_invoice
+    given: CreateInvoiceInput
+    when: Creating invoice
+    then: Return Invoice
+
+  - name: get_invoices
+    given: InvoiceFilter
+    when: Getting invoices
+    then: Return Invoice list
+
+  - name: get_invoice
+    given: Invoice ID
+    when: Getting invoice
+    then: Return Invoice
+
+  - name: delete_invoice
+    given: Invoice ID
+    when: Deleting invoice
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSFERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transfer
+    given: CreateTransferInput
+    when: Creating transfer
+    then: Return Transfer
+
+  - name: get_transfers
+    given: TransferFilter
+    when: Getting transfers
+    then: Return Transfer list
+
+  - name: get_transfer
+    given: Transfer ID
+    when: Getting transfer
+    then: Return Transfer
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_check
+    given: CreateCheckInput
+    when: Creating check
+    then: Return Check
+
+  - name: get_checks
+    given: CheckFilter
+    when: Getting checks
+    then: Return Check list
+
+  - name: get_check
+    given: Check ID
+    when: Getting check
+    then: Return Check
+
+  - name: delete_check
+    given: Check ID
+    when: Deleting check
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: verify_webhook
+    given: Payload and signature
+    when: Verifying webhook
+    then: Return true if valid
+
+  - name: parse_webhook
+    given: Payload
+    when: Parsing webhook
+    then: Return WebhookUpdate
+
+  - name: handle_invoice_paid
+    given: WebhookPayload
+    when: Handling paid invoice
+    then: Process payment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: format_amount
+    given: Amount and asset
+    when: Formatting amount
+    then: Return formatted string
+
+  - name: parse_amount
+    given: Amount string
+    when: Parsing amount
+    then: Return decimal amount
+
+  - name: generate_spend_id
+    given: No parameters
+    when: Generating spend ID
+    then: Return unique ID
+
+  - name: is_testnet
+    given: No parameters
+    when: Checking testnet
+    then: Return true if testnet
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  BASE_URL_MAINNET: "https://pay.crypt.bot/api"
+  BASE_URL_TESTNET: "https://testnet-pay.crypt.bot/api"
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_RETRIES: 3
+
+  # Signature header
+  SIGNATURE_HEADER: "crypto-pay-api-signature"
+
+  # Minimum amounts
+  MIN_AMOUNT_USDT: "1"
+  MIN_AMOUNT_TON: "0.01"
+  MIN_AMOUNT_BTC: "0.0001"
+  MIN_AMOUNT_ETH: "0.001"
+
+  # Invoice expiry
+  DEFAULT_EXPIRES_IN: 3600
+  MAX_EXPIRES_IN: 86400
+
+  # Pagination
+  DEFAULT_COUNT: 100
+  MAX_COUNT: 1000
+
+  # Assets
+  ASSET_USDT: "USDT"
+  ASSET_TON: "TON"
+  ASSET_BTC: "BTC"
+  ASSET_ETH: "ETH"
+  ASSET_NOT: "NOT"
+  ASSET_JET: "JET"
