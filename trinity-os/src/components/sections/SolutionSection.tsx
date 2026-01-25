@@ -68,14 +68,14 @@ export default function SolutionSection() {
         </div>
       </div>
       
-      <div className="grid-row fade" style={{ alignItems: 'stretch' }}>
+      <div className="grid-row fade" style={{ alignItems: 'stretch', gap: '15px' }}>
         {s.cards?.map((card: { value: string; label: string; color: string }, i: number) => (
           <motion.div
             key={i}
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             transition={{ delay: 1.5 + i * 0.1 }}
-            style={{ flex: 1, minWidth: '140px', display: 'flex' }}
+            style={{ flex: '1 1 140px', display: 'flex' }}
           >
             <MetricCard value={card.value} label={card.label} color={card.color as any} />
           </motion.div>
