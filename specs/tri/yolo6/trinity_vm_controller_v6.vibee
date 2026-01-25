@@ -1,0 +1,272 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRINITY VM CONTROLLER v6.0 - CLOUD MINING ORCHESTRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Target VM: trinity-vm-v1 (34.136.123.86, us-central1-a)
+# Mission: Deploy and manage FPGA mining operations
+# Golden Identity: φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: trinity_vm_controller_v6
+version: "6.0.0"
+language: zig
+module: trinity_vm_controller_v6
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATION PATTERN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+creation_pattern:
+  source: VMConfig
+  transformer: CloudOrchestration
+  result: MiningCluster
+  target_cloud: "Google Cloud Platform"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VM DIAGNOSTICS STATUS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+diagnostics:
+  vm_instance: "trinity-vm-v1"
+  status: "RUNNING (IDLE)"
+  host: "34.136.123.86"
+  zone: "us-central1-a"
+  issues:
+    - "cpuminer-multi not compiled"
+    - "BTC address not configured"
+    - "Pool connection not established"
+  code_present:
+    - "cpuminer-multi source"
+    - "trinity_fpga_mvp"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES - VM CONTROLLER COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  VMInstance:
+    description: "Cloud VM instance"
+    fields:
+      name: String
+      host: String
+      zone: String
+      status: String
+      cpu_cores: Int
+      memory_gb: Int
+
+  MinerConfig:
+    description: "Mining software configuration"
+    fields:
+      algorithm: String
+      pool_url: String
+      btc_address: String
+      worker_name: String
+      threads: Int
+
+  PoolConnection:
+    description: "Mining pool connection"
+    fields:
+      pool_name: String
+      stratum_url: String
+      port: Int
+      connected: Bool
+      latency_ms: Int
+
+  MiningMetrics:
+    description: "Real-time mining metrics"
+    fields:
+      hashrate_mhs: Float
+      accepted_shares: Int
+      rejected_shares: Int
+      efficiency: Float
+      uptime_hours: Float
+
+  DeploymentStatus:
+    description: "Deployment phase status"
+    fields:
+      phase: String
+      progress_percent: Int
+      errors: List<String>
+      completed: Bool
+
+  PhoenixHealth:
+    description: "Auto-recovery health status"
+    fields:
+      healthy: Bool
+      last_rebirth: Int
+      generation: Int
+      fitness: Float
+
+  BuildConfig:
+    description: "Build configuration"
+    fields:
+      compiler_flags: String
+      optimization_level: String
+      target_arch: String
+      dependencies: List<String>
+
+  LogEntry:
+    description: "Mining log entry"
+    fields:
+      timestamp: Int
+      level: String
+      message: String
+      hashrate: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS - VM CONTROLLER OPERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: check_vm_status
+    given: "VM instance name"
+    when: "Status check requested"
+    then: "Return VM status, host, zone"
+    test_cases:
+      - name: test_vm_status
+        input: { name: "trinity-vm-v1" }
+        expected: { status: "RUNNING", host: "34.136.123.86" }
+
+  - name: install_dependencies
+    given: "Fresh VM"
+    when: "Dependency installation"
+    then: "Install build-essential, autoconf, libcurl, libjansson, libssl"
+    test_cases:
+      - name: test_deps_install
+        input: { vm: "trinity-vm-v1" }
+        expected: { installed: true, packages: 5 }
+
+  - name: build_cpuminer
+    given: "Dependencies installed"
+    when: "Build requested"
+    then: "Run autogen.sh, configure CFLAGS=-O3, make"
+    test_cases:
+      - name: test_build
+        input: { source_dir: "~/cpuminer-multi" }
+        expected: { binary: "cpuminer", success: true }
+
+  - name: configure_pool
+    given: "Pool URL and BTC address"
+    when: "Pool configuration"
+    then: "Set stratum connection parameters"
+    test_cases:
+      - name: test_pool_config
+        input: { pool: "stratum+tcp://pool.example.com:3333", btc: "bc1q..." }
+        expected: { configured: true }
+
+  - name: start_mining
+    given: "Build complete and pool configured"
+    when: "Mining start requested"
+    then: "Launch cpuminer with nohup, log to nohup.out"
+    test_cases:
+      - name: test_start
+        input: { algorithm: "yescrypt", threads: 4 }
+        expected: { pid: 12345, running: true }
+
+  - name: monitor_hashrate
+    given: "Mining active"
+    when: "Metrics requested"
+    then: "Return current hashrate, shares, efficiency"
+    test_cases:
+      - name: test_monitor
+        input: { pid: 12345 }
+        expected: { hashrate_mhs: 0.5, shares: 100 }
+
+  - name: phoenix_health_check
+    given: "Mining running"
+    when: "Health check interval"
+    then: "Check hashrate > threshold, trigger rebirth if needed"
+    test_cases:
+      - name: test_health_ok
+        input: { hashrate: 0.5, threshold: 0.3 }
+        expected: { healthy: true }
+      - name: test_health_rebirth
+        input: { hashrate: 0.1, threshold: 0.3 }
+        expected: { healthy: false, rebirth: true }
+
+  - name: read_logs
+    given: "Log file path"
+    when: "Log read requested"
+    then: "Return last N log entries"
+    test_cases:
+      - name: test_logs
+        input: { path: "nohup.out", lines: 10 }
+        expected: { entries: 10 }
+
+  - name: stop_mining
+    given: "Mining PID"
+    when: "Stop requested"
+    then: "Kill process gracefully"
+    test_cases:
+      - name: test_stop
+        input: { pid: 12345 }
+        expected: { stopped: true }
+
+  - name: deploy_trinity_fpga
+    given: "FPGA bitstream ready"
+    when: "FPGA deployment"
+    then: "Upload and configure FPGA accelerator"
+    test_cases:
+      - name: test_fpga_deploy
+        input: { bitstream: "trinity_v6.bit" }
+        expected: { deployed: true, hashrate_boost: 100.0 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEPLOYMENT PLAN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+deployment_plan:
+  phase_1_build:
+    commands:
+      - "sudo apt-get update"
+      - "sudo apt-get install -y build-essential autoconf automake libcurl4-openssl-dev libjansson-dev libssl-dev zlib1g-dev"
+      - "cd ~/cpuminer-multi && ./autogen.sh"
+      - "cd ~/cpuminer-multi && ./configure CFLAGS='-O3'"
+      - "cd ~/cpuminer-multi && make"
+    expected_time_min: 10
+
+  phase_2_configure:
+    commands:
+      - "export BTC_ADDRESS='YOUR_BTC_ADDRESS'"
+      - "export POOL_URL='stratum+tcp://pool.example.com:3333'"
+      - "export WORKER_NAME='trinity-vm-v1'"
+    expected_time_min: 1
+
+  phase_3_launch:
+    commands:
+      - "cd ~/cpuminer-multi && nohup ./cpuminer -a yescrypt -o $POOL_URL -u $BTC_ADDRESS.$WORKER_NAME -p x &"
+    expected_time_min: 1
+
+  phase_4_monitor:
+    commands:
+      - "tail -f ~/cpuminer-multi/nohup.out"
+      - "sudo journalctl -f"
+    continuous: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BENCHMARK METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+benchmark:
+  cpu_mining_baseline:
+    algorithm: "yescrypt"
+    hashrate_khs: 500
+    power_watts: 65
+    efficiency_khs_per_watt: 7.7
+  
+  with_trinity_fpga:
+    algorithm: "phi-sha256"
+    hashrate_mhs: 50
+    power_watts: 80
+    efficiency_mhs_per_watt: 0.625
+    improvement_vs_cpu: "100x hashrate"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED FORMULAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_formulas:
+  golden_identity: "φ² + 1/φ² = 3"
+  vibee_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  rebirth_threshold: "H_min = H_target / φ"
+  efficiency_target: "E = H / P > 3.0 MH/s/W"
+  uptime_target: "99.9% via Phoenix Rebirth"
