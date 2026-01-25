@@ -41,7 +41,7 @@ export default function TractionSection() {
         ))}
       </div>
 
-      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(140px, 15vw, 180px), 1fr))', gap: '20px', alignItems: 'center' }}>
+      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(120px, 14vw, 180px), 1fr))', gap: '15px', alignItems: 'center' }}>
         {displayMetrics?.map((m: { value: string; label: string; color: string }, i: number) => (
           <div key={i} style={{ width: '100%' }}>
             <MetricCard value={m.value} label={m.label} color={m.color as any} />

@@ -10,10 +10,10 @@ export default function MarketFunnel({ items }: { items: FunnelItem[] }) {
   return (
     <div style={{ 
       display: 'grid', 
-      gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(200px, 28vw, 320px), 1fr))', 
-      gap: '1.5rem', 
+      gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(180px, 25vw, 300px), 1fr))', 
+      gap: 'clamp(1rem, 2vw, 1.5rem)', 
       width: '100%', 
-      maxWidth: '1000px', 
+      maxWidth: '1100px', 
       margin: '2rem auto', 
       padding: '0 1rem' 
     }}>
