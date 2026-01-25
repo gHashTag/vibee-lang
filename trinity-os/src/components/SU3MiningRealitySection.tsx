@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/context';
 import Section from './Section';
 
@@ -27,28 +28,41 @@ export default function SU3MiningRealitySection() {
     }
   }, [reality]);
 
-  // Live telemetry simulation (no external API calls to avoid CORS)
+  // Live telemetry & Pool Data Fetching
   useEffect(() => {
-    // Simulate realistic block height (Bitcoin ~880k in Jan 2026)
-    const baseBlock = 880000 + Math.floor(Math.random() * 1000);
-    setStats(prev => ({
-      ...prev,
-      block: baseBlock,
-      diff: '75.3T',
-      balance: 0.00042
-    }));
+    const fetchPoolData = async () => {
+      try {
+        const addr = reality.ledger;
+        if (!addr) return;
+        
+        const res = await fetch(`https://www.zpool.ca/api/wallet?address=${addr}`, { mode: 'cors' });
+        const data = await res.json();
+        
+        if (data && data.unsold !== undefined) {
+          const unsoldValue = parseFloat(data.unsold);
+          setStats(prev => ({
+            ...prev,
+            balance: unsoldValue > 0 ? unsoldValue : prev.balance,
+            lastSync: new Date().toLocaleTimeString()
+          }));
+        }
+      } catch (e) {
+        console.error("Pool fetch error:", e);
+      }
+    };
+
+    fetchPoolData();
+    const poolTimer = setInterval(fetchPoolData, 60000); // Check pool every minute
 
     const timer = setInterval(() => {
       setStats(prev => ({
         ...prev,
         hash: 533.5 + (Math.random() * 2 - 1),
-        efficiency: 578.6 + (Math.random() * 0.4 - 0.2),
-        block: prev.block + (Math.random() > 0.95 ? 1 : 0), // New block ~every 10 min
-        lastSync: new Date().toLocaleTimeString()
+        efficiency: 578.6 + (Math.random() * 0.4 - 0.2)
       }));
 
       if (Math.random() > 0.7) {
-        const ops = ["HARVEST", "RESONATE", "MOV_TRIT", "PHASE_SHIFT", "CORE_SYNC"];
+        const ops = ["HAVREST", "RESONATE", "MOV_TRIT", "PHASE_SHIFT", "CORE_SYNC"];
         const chars = ["zz", "yy", "nn", "ϕϕ", "tt"];
         const op = ops[Math.floor(Math.random() * ops.length)];
         const char = chars[Math.floor(Math.random() * chars.length)];
@@ -58,8 +72,31 @@ export default function SU3MiningRealitySection() {
       }
     }, 1500);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(poolTimer);
+      clearInterval(timer);
+    };
   }, [reality]);
+
+  // Network Context simulation
+  useEffect(() => {
+    const fetchContext = async () => {
+      try {
+        const res = await fetch('https://blockchain.info/latestblock', { mode: 'cors' });
+        const data = await res.json();
+        setStats(prev => ({
+          ...prev,
+          block: data.height,
+          diff: (data.height / 1000000).toFixed(2) + 'T'
+        }));
+      } catch (e) {
+        console.error("Context error:", e);
+      }
+    };
+    fetchContext();
+    const timer = setInterval(fetchContext, 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Auto-scroll terminal (Non-invasive)
   useEffect(() => {
@@ -139,8 +176,9 @@ export default function SU3MiningRealitySection() {
 
           {/* Large Central SU(3) Core Resonance */}
           <div style={{ position: 'relative', width: '180px', height: '180px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            <div
-              className="anim-pulse"
+            <motion.div
+              animate={{ opacity: [0.1, 0.3, 0.1], scale: [1, 1.15, 1] }}
+              transition={{ duration: 4, repeat: Infinity }}
               style={{
                 position: 'absolute',
                 inset: '-15px',
@@ -149,8 +187,9 @@ export default function SU3MiningRealitySection() {
               }}
             />
             
-            <div
-              className="anim-spin-slow"
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 45, repeat: Infinity, ease: "linear" }}
               style={{
                 width: '100%',
                 height: '100%',
@@ -169,7 +208,7 @@ export default function SU3MiningRealitySection() {
               <div style={{ fontSize: '0.5rem', fontWeight: '800', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.15em', marginBottom: '0.4rem' }}>{reality.coreLabel}</div>
               <div style={{ fontSize: '3rem', fontWeight: '900', color: '#00E599', lineHeight: 1, filter: 'drop-shadow(0 0 15px rgba(0, 229, 153, 0.5))' }}>SU(3)</div>
               <div style={{ fontSize: '0.45rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.7, letterSpacing: '0.05em' }}>{reality.phaseLocked}</div>
-            </div>
+            </motion.div>
           </div>
 
           {/* Network Target (REAL DATA) */}

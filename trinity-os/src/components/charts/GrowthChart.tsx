@@ -1,9 +1,10 @@
 "use client";
+import { motion } from "framer-motion";
 
 interface DataPoint {
   year: string;
-  revenue: number;
-  valuation: number;
+  revenue: number; // in Millions
+  valuation: number; // in Millions
 }
 
 const data: DataPoint[] = [
@@ -17,20 +18,24 @@ const data: DataPoint[] = [
 export default function GrowthChart() {
   const maxVal = 10000;
   const height = 300;
-  const width = 800;
+  const width = 800; // viewbox width
   const padding = 40;
 
+  // Calculate points for the SVG path
   const points = data.map((d, i) => {
     const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
     const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
     return `${x},${y}`;
   }).join(" ");
 
+
+
   return (
     <div className="premium-card fade" style={{ width: '100%', maxWidth: '900px', margin: '3rem auto', padding: 'clamp(1rem, 4vw, 2rem)' }}>
       <h3 style={{ textAlign: 'center', marginBottom: '2rem', fontSize: 'clamp(1rem, 4vw, 1.2rem)' }}>Valuation Growth Projection (LOG Scale)</h3>
       <div style={{ width: '100%' }}>
         <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+          {/* Grid Lines */}
           {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
              <line 
                key={tick} 
@@ -43,29 +48,55 @@ export default function GrowthChart() {
              />
           ))}
 
-          <path
-            d={points ? `M ${points} ${width - padding},${height - padding} ${padding},${height - padding} Z` : ""}
+          {/* Area */}
+          <motion.path
+            initial={{ d: `M ${padding},${height - padding} L ${padding},${height - padding} ${width - padding},${height - padding} ${width - padding},${height - padding} Z` }}
+            animate={{ d: points ? `M ${points} ${width - padding},${height - padding} ${padding},${height - padding} Z` : "" }}
+            transition={{ duration: 1.5, ease: "easeInOut" }}
             fill="url(#grad1)"
             opacity="0.3"
           />
 
-          <polyline
-            className="draw-path"
+          {/* Line */}
+          <motion.polyline
             fill="none"
             stroke="var(--accent)"
             strokeWidth="3"
             points={points || ""}
+            initial={{ pathLength: 0 }}
+            whileInView={{ pathLength: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 2, ease: "easeInOut" }}
           />
 
+          {/* Points */}
           {data.map((d, i) => {
              const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
              const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
              return (
-               <g key={i} className={`anim-fade-in-up anim-delay-${Math.min(i + 1, 5)}`}>
-                 <circle cx={x} cy={y} r="5" fill="var(--bg)" stroke="var(--accent)" strokeWidth="2" />
-                 <text x={x} y={y - 15} textAnchor="middle" fill="var(--text)" fontSize="12" fontWeight="600">
+               <g key={i}>
+                 <motion.circle 
+                   cy={y} 
+                   r="5" 
+                   fill="var(--bg)" 
+                   stroke="var(--accent)" 
+                   strokeWidth="2" 
+                   initial={{ opacity: 0, cx: x }}
+                   whileInView={{ opacity: 1 }}
+                   transition={{ delay: 1 + i * 0.2 }}
+                 />
+                 <motion.text
+                   x={x}
+                   y={y - 15}
+                   textAnchor="middle"
+                   fill="var(--text)"
+                   fontSize="12"
+                   initial={{ opacity: 0, y: y - 5 }}
+                   whileInView={{ opacity: 1, y: y - 15 }}
+                   transition={{ delay: 1.2 + i * 0.2 }}
+                 >
                    ${d.valuation >= 1000 ? d.valuation / 1000 + 'B' : d.valuation + 'M'}
-                 </text>
+                 </motion.text>
                  <text x={x} y={height - 10} textAnchor="middle" fill="var(--muted)" fontSize="12">{d.year}</text>
                </g>
              )

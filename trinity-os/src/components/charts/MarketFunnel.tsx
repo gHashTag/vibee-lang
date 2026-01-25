@@ -1,4 +1,5 @@
 "use client";
+import { motion } from "framer-motion";
 
 interface FunnelItem {
   value: string;
@@ -18,9 +19,13 @@ export default function MarketFunnel({ items }: { items: FunnelItem[] }) {
     }}>
       {items.map((item, i) => {
         return (
-          <div
+          <motion.div
             key={i}
-            className={`premium-card anim-fade-in-up anim-delay-${i + 1}`}
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6, delay: i * 0.2 }}
+            className="premium-card"
             style={{ 
               minHeight: '180px',
               display: 'flex',
@@ -37,7 +42,7 @@ export default function MarketFunnel({ items }: { items: FunnelItem[] }) {
              <div style={{ fontSize: 'clamp(2rem, 8vw, 3.5rem)', fontWeight: 600, color: i === 2 ? 'var(--accent)' : 'var(--text)', lineHeight: 1, marginBottom: '0.5rem' }}>{item.value}</div>
              <div style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{item.label?.split('—')[0]}</div>
              <div style={{ fontSize: '0.85rem', color: 'var(--text)', marginTop: '0.3rem', fontWeight: 500 }}>{item.label?.split('—')[1]}</div>
-          </div>
+          </motion.div>
         )
       })}
     </div>

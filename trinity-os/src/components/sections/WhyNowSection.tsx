@@ -1,4 +1,5 @@
 "use client";
+import { motion } from 'framer-motion'
 import { useI18n } from '../../i18n/context'
 import Section from '../Section'
 
@@ -25,13 +26,17 @@ export default function WhyNowSection() {
         <h2 className="fade" dangerouslySetInnerHTML={{ __html: uc?.title }} style={{ marginBottom: '3rem' }} />
         <div className="grid fade">
           {uc?.items?.map((item: { title: string; desc: string }, i: number) => (
-            <div 
+            <motion.div 
               key={i} 
-              className={`premium-card anim-fade-in-up anim-delay-${i + 1}`}
+              className="premium-card"
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.1, duration: 0.6 }}
+              viewport={{ once: true }}
             >
               <h4 style={{ fontSize: '1.2rem', marginBottom: '1rem', color: 'var(--text)' }}>{item.title}</h4>
               <p style={{ textAlign: 'left', margin: 0, fontSize: '0.9rem' }}>{item.desc}</p>
-            </div>
+            </motion.div>
           ))}
         </div>
       </div>

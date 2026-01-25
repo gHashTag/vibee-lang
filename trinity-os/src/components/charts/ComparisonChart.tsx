@@ -1,4 +1,5 @@
 "use client";
+import { motion } from "framer-motion";
 
 interface ComparisonProps {
   data: { model: string; value: number; color: string }[];
@@ -17,24 +18,23 @@ export default function ComparisonChart({ data, title, note }: ComparisonProps) 
           <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
             <div style={{ fontSize: '0.8rem', color: 'var(--text)', textAlign: 'left', fontWeight: 500, opacity: 0.8 }}>{row.model}</div>
             <div style={{ flex: 1, height: '28px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', position: 'relative', overflow: 'hidden' }}>
-                <div 
-                  className="bar-animate"
-                  style={{ 
-                    height: '100%', 
-                    width: `${(row.value / 80) * 100}%`,
-                    background: row.color, 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'flex-end', 
-                    paddingRight: '0.8rem',
-                    borderRadius: '4px',
-                    animation: `barGrowX 1.5s cubic-bezier(0.16, 1, 0.3, 1) ${i * 0.2}s forwards`,
-                    transform: 'scaleX(0)',
-                    transformOrigin: 'left'
-                  }}
-                >
-                  <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#000', whiteSpace: 'nowrap' }}>{row.value}</span>
-                </div>
+              <motion.div 
+                initial={{ width: 0 }}
+                whileInView={{ width: `${(row.value / 80) * 100}%` }}
+                viewport={{ once: true }}
+                transition={{ duration: 1.5, ease: "easeOut", delay: i * 0.2 }}
+                style={{ 
+                  height: '100%', 
+                  background: row.color, 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'flex-end', 
+                  paddingRight: '0.8rem',
+                  borderRadius: '4px'
+                }}
+              >
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#000', whiteSpace: 'nowrap' }}>{row.value}</span>
+              </motion.div>
             </div>
           </div>
         ))}
