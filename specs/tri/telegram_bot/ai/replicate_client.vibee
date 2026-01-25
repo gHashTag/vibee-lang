@@ -1,0 +1,696 @@
+name: replicate_client
+version: "2.0.0"
+language: zig
+module: replicate_client
+
+description: |
+  Replicate API client for VIBEE Telegram bot.
+  Supports Flux, SDXL, Stable Video Diffusion, Kling, Luma.
+  Handles predictions, webhooks, model versions, file uploads.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ReplicateClient:
+    description: "Replicate API client"
+    fields:
+      config: ClientConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  ClientConfig:
+    description: "Client configuration"
+    fields:
+      api_token: String
+      base_url: String
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+      webhook_url: Option<String>
+      webhook_secret: Option<String>
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      predictions_created: Int
+      predictions_succeeded: Int
+      predictions_failed: Int
+      total_compute_time_ms: Int
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODELS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ModelType:
+    description: "Supported model types"
+    values:
+      - flux_pro
+      - flux_dev
+      - flux_schnell
+      - flux_pro_ultra
+      - sdxl
+      - sdxl_lightning
+      - stable_diffusion_3
+      - stable_video_diffusion
+      - kling_video
+      - luma_dream_machine
+      - minimax_video
+      - runway_gen3
+      - face_swap
+      - upscaler
+      - background_removal
+      - image_to_prompt
+      - whisper
+      - musicgen
+
+  ModelInfo:
+    description: "Model information"
+    fields:
+      owner: String
+      name: String
+      version: String
+      description: String
+      visibility: String
+      hardware: String
+      run_count: Int
+      cover_image_url: Option<String>
+
+  ModelVersion:
+    description: "Model version"
+    fields:
+      id: String
+      created_at: Timestamp
+      cog_version: String
+      openapi_schema: Object
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREDICTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PredictionStatus:
+    description: "Prediction status"
+    values:
+      - starting
+      - processing
+      - succeeded
+      - failed
+      - canceled
+
+  Prediction:
+    description: "Prediction object"
+    fields:
+      id: String
+      model: String
+      version: String
+      status: PredictionStatus
+      input: Object
+      output: Option<Object>
+      error: Option<String>
+      logs: Option<String>
+      metrics: Option<PredictionMetrics>
+      urls: PredictionUrls
+      created_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+      data_removed: Bool
+
+  PredictionMetrics:
+    description: "Prediction metrics"
+    fields:
+      predict_time: Option<Float>
+      total_time: Option<Float>
+      input_token_count: Option<Int>
+      output_token_count: Option<Int>
+
+  PredictionUrls:
+    description: "Prediction URLs"
+    fields:
+      get: String
+      cancel: String
+      stream: Option<String>
+
+  CreatePredictionInput:
+    description: "Create prediction input"
+    fields:
+      model: Option<String>
+      version: Option<String>
+      input: Object
+      webhook: Option<String>
+      webhook_events_filter: List<String>
+      stream: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ImageGenerationInput:
+    description: "Image generation input"
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      width: Int
+      height: Int
+      num_outputs: Int
+      guidance_scale: Float
+      num_inference_steps: Int
+      seed: Option<Int>
+      aspect_ratio: Option<String>
+      output_format: OutputFormat
+      output_quality: Int
+      safety_tolerance: Int
+      prompt_upsampling: Bool
+
+  OutputFormat:
+    description: "Output format"
+    values:
+      - webp
+      - jpg
+      - png
+
+  AspectRatio:
+    description: "Aspect ratio presets"
+    values:
+      - ratio_1_1
+      - ratio_16_9
+      - ratio_9_16
+      - ratio_4_3
+      - ratio_3_4
+      - ratio_21_9
+      - ratio_9_21
+      - custom
+
+  FluxProInput:
+    description: "Flux Pro specific input"
+    fields:
+      prompt: String
+      aspect_ratio: String
+      output_format: String
+      output_quality: Int
+      safety_tolerance: Int
+      prompt_upsampling: Bool
+      seed: Option<Int>
+
+  FluxDevInput:
+    description: "Flux Dev specific input"
+    fields:
+      prompt: String
+      image: Option<String>
+      mask: Option<String>
+      aspect_ratio: String
+      num_outputs: Int
+      num_inference_steps: Int
+      guidance_scale: Float
+      output_format: String
+      output_quality: Int
+      seed: Option<Int>
+      go_fast: Bool
+
+  SDXLInput:
+    description: "SDXL specific input"
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      image: Option<String>
+      mask: Option<String>
+      width: Int
+      height: Int
+      num_outputs: Int
+      scheduler: String
+      num_inference_steps: Int
+      guidance_scale: Float
+      prompt_strength: Float
+      seed: Option<Int>
+      refine: String
+      high_noise_frac: Float
+      apply_watermark: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  VideoGenerationInput:
+    description: "Video generation input"
+    fields:
+      prompt: Option<String>
+      image: Option<String>
+      duration_seconds: Int
+      fps: Int
+      motion_bucket_id: Int
+      cond_aug: Float
+      seed: Option<Int>
+
+  StableVideoDiffusionInput:
+    description: "SVD specific input"
+    fields:
+      input_image: String
+      video_length: String
+      sizing_strategy: String
+      frames_per_second: Int
+      motion_bucket_id: Int
+      cond_aug: Float
+      decoding_t: Int
+      seed: Option<Int>
+
+  KlingVideoInput:
+    description: "Kling video input"
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      image: Option<String>
+      duration: Int
+      aspect_ratio: String
+      seed: Option<Int>
+
+  LumaInput:
+    description: "Luma Dream Machine input"
+    fields:
+      prompt: String
+      start_image: Option<String>
+      end_image: Option<String>
+      aspect_ratio: String
+      loop: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FaceSwapInput:
+    description: "Face swap input"
+    fields:
+      source_image: String
+      target_image: String
+      source_face_index: Int
+      target_face_index: Int
+
+  UpscaleInput:
+    description: "Upscale input"
+    fields:
+      image: String
+      scale: Int
+      face_enhance: Bool
+      model: String
+
+  BackgroundRemovalInput:
+    description: "Background removal input"
+    fields:
+      image: String
+      output_format: String
+
+  ImageToPromptInput:
+    description: "Image to prompt input"
+    fields:
+      image: String
+      mode: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WhisperInput:
+    description: "Whisper transcription input"
+    fields:
+      audio: String
+      model: String
+      language: Option<String>
+      translate: Bool
+      temperature: Float
+      transcription: String
+      suppress_tokens: String
+      logprob_threshold: Float
+      no_speech_threshold: Float
+      condition_on_previous_text: Bool
+      compression_ratio_threshold: Float
+
+  MusicGenInput:
+    description: "MusicGen input"
+    fields:
+      prompt: String
+      duration: Int
+      model_version: String
+      output_format: String
+      normalization_strategy: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WebhookEvent:
+    description: "Webhook event types"
+    values:
+      - start
+      - output
+      - logs
+      - completed
+
+  WebhookPayload:
+    description: "Webhook payload"
+    fields:
+      id: String
+      status: PredictionStatus
+      output: Option<Object>
+      error: Option<String>
+      logs: Option<String>
+      metrics: Option<PredictionMetrics>
+      completed_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FILES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FileUpload:
+    description: "File upload result"
+    fields:
+      id: String
+      name: String
+      content_type: String
+      size: Int
+      urls: FileUrls
+      created_at: Timestamp
+      expires_at: Timestamp
+
+  FileUrls:
+    description: "File URLs"
+    fields:
+      get: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReplicateError:
+    description: "API error"
+    fields:
+      status: Int
+      detail: String
+      type: ErrorType
+
+  ErrorType:
+    description: "Error types"
+    values:
+      - invalid_token
+      - rate_limited
+      - model_not_found
+      - version_not_found
+      - prediction_failed
+      - timeout
+      - server_error
+      - nsfw_detected
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: ClientConfig
+    when: Creating client
+    then: Return ReplicateClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate token and setup
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODELS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_model
+    given: Owner and name
+    when: Getting model info
+    then: Return ModelInfo
+
+  - name: list_model_versions
+    given: Owner and name
+    when: Listing versions
+    then: Return list of versions
+
+  - name: get_model_version
+    given: Owner, name, version
+    when: Getting version
+    then: Return ModelVersion
+
+  - name: get_latest_version
+    given: ModelType
+    when: Getting latest version
+    then: Return version string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREDICTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_prediction
+    given: CreatePredictionInput
+    when: Creating prediction
+    then: Return Prediction
+
+  - name: get_prediction
+    given: Prediction ID
+    when: Getting prediction
+    then: Return Prediction
+
+  - name: cancel_prediction
+    given: Prediction ID
+    when: Canceling prediction
+    then: Return Prediction
+
+  - name: list_predictions
+    given: Optional cursor
+    when: Listing predictions
+    then: Return list of predictions
+
+  - name: wait_for_prediction
+    given: Prediction ID and timeout
+    when: Waiting for completion
+    then: Return completed Prediction
+
+  - name: stream_prediction
+    given: Prediction ID
+    when: Streaming output
+    then: Return output stream
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_image
+    given: ImageGenerationInput and ModelType
+    when: Generating image
+    then: Return Prediction
+
+  - name: generate_flux_pro
+    given: FluxProInput
+    when: Generating with Flux Pro
+    then: Return Prediction
+
+  - name: generate_flux_dev
+    given: FluxDevInput
+    when: Generating with Flux Dev
+    then: Return Prediction
+
+  - name: generate_flux_schnell
+    given: FluxDevInput
+    when: Generating with Flux Schnell
+    then: Return Prediction
+
+  - name: generate_sdxl
+    given: SDXLInput
+    when: Generating with SDXL
+    then: Return Prediction
+
+  - name: generate_sd3
+    given: ImageGenerationInput
+    when: Generating with SD3
+    then: Return Prediction
+
+  - name: inpaint
+    given: Image, mask, prompt
+    when: Inpainting image
+    then: Return Prediction
+
+  - name: img2img
+    given: Image, prompt, strength
+    when: Image to image
+    then: Return Prediction
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_video
+    given: VideoGenerationInput and ModelType
+    when: Generating video
+    then: Return Prediction
+
+  - name: generate_svd
+    given: StableVideoDiffusionInput
+    when: Generating with SVD
+    then: Return Prediction
+
+  - name: generate_kling
+    given: KlingVideoInput
+    when: Generating with Kling
+    then: Return Prediction
+
+  - name: generate_luma
+    given: LumaInput
+    when: Generating with Luma
+    then: Return Prediction
+
+  - name: image_to_video
+    given: Image URL and options
+    when: Converting image to video
+    then: Return Prediction
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: face_swap
+    given: FaceSwapInput
+    when: Swapping faces
+    then: Return Prediction
+
+  - name: upscale
+    given: UpscaleInput
+    when: Upscaling image
+    then: Return Prediction
+
+  - name: remove_background
+    given: BackgroundRemovalInput
+    when: Removing background
+    then: Return Prediction
+
+  - name: image_to_prompt
+    given: ImageToPromptInput
+    when: Getting prompt from image
+    then: Return Prediction
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transcribe
+    given: WhisperInput
+    when: Transcribing audio
+    then: Return Prediction
+
+  - name: generate_music
+    given: MusicGenInput
+    when: Generating music
+    then: Return Prediction
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FILES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: upload_file
+    given: File data and content type
+    when: Uploading file
+    then: Return FileUpload
+
+  - name: upload_from_url
+    given: URL
+    when: Uploading from URL
+    then: Return FileUpload
+
+  - name: get_file
+    given: File ID
+    when: Getting file
+    then: Return FileUpload
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: verify_webhook
+    given: Payload and signature
+    when: Verifying webhook
+    then: Return true if valid
+
+  - name: parse_webhook
+    given: Payload
+    when: Parsing webhook
+    then: Return WebhookPayload
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: ModelType and parameters
+    when: Estimating cost
+    then: Return estimated USD
+
+  - name: get_model_version_id
+    given: ModelType
+    when: Getting version ID
+    then: Return version string
+
+  - name: build_input
+    given: ModelType and parameters
+    when: Building input object
+    then: Return input object
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  BASE_URL: "https://api.replicate.com"
+  DEFAULT_TIMEOUT_MS: 300000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+
+  # Model versions (updated regularly)
+  VERSION_FLUX_PRO: "black-forest-labs/flux-pro"
+  VERSION_FLUX_DEV: "black-forest-labs/flux-dev"
+  VERSION_FLUX_SCHNELL: "black-forest-labs/flux-schnell"
+  VERSION_FLUX_PRO_ULTRA: "black-forest-labs/flux-1.1-pro-ultra"
+  VERSION_SDXL: "stability-ai/sdxl"
+  VERSION_SD3: "stability-ai/stable-diffusion-3"
+  VERSION_SVD: "stability-ai/stable-video-diffusion"
+  VERSION_KLING: "fofr/kling-video"
+  VERSION_LUMA: "luma/dream-machine"
+  VERSION_FACE_SWAP: "lucataco/faceswap"
+  VERSION_UPSCALER: "nightmareai/real-esrgan"
+  VERSION_BG_REMOVAL: "cjwbw/rembg"
+  VERSION_IMG2PROMPT: "methexis-inc/img2prompt"
+  VERSION_WHISPER: "openai/whisper"
+  VERSION_MUSICGEN: "meta/musicgen"
+
+  # Default parameters
+  DEFAULT_WIDTH: 1024
+  DEFAULT_HEIGHT: 1024
+  DEFAULT_NUM_OUTPUTS: 1
+  DEFAULT_GUIDANCE_SCALE: 7.5
+  DEFAULT_NUM_INFERENCE_STEPS: 50
+  DEFAULT_OUTPUT_FORMAT: "webp"
+  DEFAULT_OUTPUT_QUALITY: 80
+  DEFAULT_SAFETY_TOLERANCE: 2
+
+  # Webhook events
+  WEBHOOK_EVENTS_ALL: "start,output,logs,completed"
+  WEBHOOK_EVENTS_COMPLETED: "completed"
+
+  # Rate limits
+  RATE_LIMIT_REQUESTS_PER_MINUTE: 600
+  RATE_LIMIT_CONCURRENT_PREDICTIONS: 100

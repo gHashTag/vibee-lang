@@ -1,0 +1,786 @@
+name: openai_client
+version: "2.0.0"
+language: zig
+module: openai_client
+
+description: |
+  OpenAI API client for VIBEE Telegram bot.
+  Supports GPT-4o, o1, DALL-E 3, Whisper, TTS, Embeddings, Vision.
+  Includes streaming, function calling, assistants API.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  OpenAIClient:
+    description: "OpenAI API client"
+    fields:
+      config: ClientConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  ClientConfig:
+    description: "Client configuration"
+    fields:
+      api_key: String
+      organization: Option<String>
+      project: Option<String>
+      base_url: String
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      requests_made: Int
+      tokens_used: Int
+      prompt_tokens: Int
+      completion_tokens: Int
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHAT COMPLETIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ChatModel:
+    description: "Chat models"
+    values:
+      - gpt_4o
+      - gpt_4o_mini
+      - gpt_4o_audio_preview
+      - gpt_4_turbo
+      - gpt_4
+      - gpt_3_5_turbo
+      - o1
+      - o1_mini
+      - o1_preview
+
+  MessageRole:
+    description: "Message role"
+    values:
+      - system
+      - user
+      - assistant
+      - tool
+      - function
+
+  ChatMessage:
+    description: "Chat message"
+    fields:
+      role: MessageRole
+      content: MessageContent
+      name: Option<String>
+      tool_calls: Option<List<ToolCall>>
+      tool_call_id: Option<String>
+      refusal: Option<String>
+
+  MessageContent:
+    description: "Message content (text or multimodal)"
+    fields:
+      text: Option<String>
+      parts: Option<List<ContentPart>>
+
+  ContentPart:
+    description: "Content part"
+    fields:
+      type: ContentType
+      text: Option<String>
+      image_url: Option<ImageUrl>
+      input_audio: Option<InputAudio>
+
+  ContentType:
+    description: "Content type"
+    values:
+      - text
+      - image_url
+      - input_audio
+
+  ImageUrl:
+    description: "Image URL"
+    fields:
+      url: String
+      detail: ImageDetail
+
+  ImageDetail:
+    description: "Image detail level"
+    values:
+      - auto
+      - low
+      - high
+
+  InputAudio:
+    description: "Input audio"
+    fields:
+      data: String
+      format: AudioFormat
+
+  AudioFormat:
+    description: "Audio format"
+    values:
+      - wav
+      - mp3
+
+  ChatCompletionRequest:
+    description: "Chat completion request"
+    fields:
+      model: String
+      messages: List<ChatMessage>
+      temperature: Option<Float>
+      top_p: Option<Float>
+      n: Option<Int>
+      stream: Bool
+      stop: Option<List<String>>
+      max_tokens: Option<Int>
+      max_completion_tokens: Option<Int>
+      presence_penalty: Option<Float>
+      frequency_penalty: Option<Float>
+      logit_bias: Option<Object>
+      logprobs: Option<Bool>
+      top_logprobs: Option<Int>
+      user: Option<String>
+      tools: Option<List<Tool>>
+      tool_choice: Option<ToolChoice>
+      response_format: Option<ResponseFormat>
+      seed: Option<Int>
+
+  ChatCompletion:
+    description: "Chat completion response"
+    fields:
+      id: String
+      object: String
+      created: Int
+      model: String
+      choices: List<Choice>
+      usage: Usage
+      system_fingerprint: Option<String>
+
+  Choice:
+    description: "Completion choice"
+    fields:
+      index: Int
+      message: ChatMessage
+      finish_reason: FinishReason
+      logprobs: Option<Object>
+
+  FinishReason:
+    description: "Finish reason"
+    values:
+      - stop
+      - length
+      - tool_calls
+      - content_filter
+      - function_call
+
+  Usage:
+    description: "Token usage"
+    fields:
+      prompt_tokens: Int
+      completion_tokens: Int
+      total_tokens: Int
+      prompt_tokens_details: Option<TokenDetails>
+      completion_tokens_details: Option<TokenDetails>
+
+  TokenDetails:
+    description: "Token details"
+    fields:
+      cached_tokens: Option<Int>
+      reasoning_tokens: Option<Int>
+      audio_tokens: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOOLS & FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Tool:
+    description: "Tool definition"
+    fields:
+      type: String
+      function: FunctionDefinition
+
+  FunctionDefinition:
+    description: "Function definition"
+    fields:
+      name: String
+      description: Option<String>
+      parameters: Object
+      strict: Option<Bool>
+
+  ToolCall:
+    description: "Tool call"
+    fields:
+      id: String
+      type: String
+      function: FunctionCall
+
+  FunctionCall:
+    description: "Function call"
+    fields:
+      name: String
+      arguments: String
+
+  ToolChoice:
+    description: "Tool choice"
+    fields:
+      type: String
+      function: Option<FunctionName>
+
+  FunctionName:
+    description: "Function name"
+    fields:
+      name: String
+
+  ResponseFormat:
+    description: "Response format"
+    fields:
+      type: ResponseFormatType
+      json_schema: Option<Object>
+
+  ResponseFormatType:
+    description: "Response format type"
+    values:
+      - text
+      - json_object
+      - json_schema
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ChatCompletionChunk:
+    description: "Streaming chunk"
+    fields:
+      id: String
+      object: String
+      created: Int
+      model: String
+      choices: List<ChunkChoice>
+      usage: Option<Usage>
+
+  ChunkChoice:
+    description: "Chunk choice"
+    fields:
+      index: Int
+      delta: Delta
+      finish_reason: Option<FinishReason>
+      logprobs: Option<Object>
+
+  Delta:
+    description: "Delta content"
+    fields:
+      role: Option<MessageRole>
+      content: Option<String>
+      tool_calls: Option<List<ToolCallDelta>>
+      refusal: Option<String>
+
+  ToolCallDelta:
+    description: "Tool call delta"
+    fields:
+      index: Int
+      id: Option<String>
+      type: Option<String>
+      function: Option<FunctionCallDelta>
+
+  FunctionCallDelta:
+    description: "Function call delta"
+    fields:
+      name: Option<String>
+      arguments: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGES (DALL-E)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ImageModel:
+    description: "Image models"
+    values:
+      - dall_e_3
+      - dall_e_2
+
+  ImageSize:
+    description: "Image sizes"
+    values:
+      - size_256x256
+      - size_512x512
+      - size_1024x1024
+      - size_1024x1792
+      - size_1792x1024
+
+  ImageQuality:
+    description: "Image quality"
+    values:
+      - standard
+      - hd
+
+  ImageStyle:
+    description: "Image style"
+    values:
+      - vivid
+      - natural
+
+  ImageGenerationRequest:
+    description: "Image generation request"
+    fields:
+      model: String
+      prompt: String
+      n: Int
+      size: String
+      quality: String
+      style: String
+      response_format: String
+      user: Option<String>
+
+  ImageResponse:
+    description: "Image response"
+    fields:
+      created: Int
+      data: List<ImageData>
+
+  ImageData:
+    description: "Image data"
+    fields:
+      url: Option<String>
+      b64_json: Option<String>
+      revised_prompt: Option<String>
+
+  ImageEditRequest:
+    description: "Image edit request"
+    fields:
+      image: String
+      mask: Option<String>
+      prompt: String
+      model: String
+      n: Int
+      size: String
+      response_format: String
+      user: Option<String>
+
+  ImageVariationRequest:
+    description: "Image variation request"
+    fields:
+      image: String
+      model: String
+      n: Int
+      size: String
+      response_format: String
+      user: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO (WHISPER & TTS)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WhisperModel:
+    description: "Whisper models"
+    values:
+      - whisper_1
+
+  TranscriptionRequest:
+    description: "Transcription request"
+    fields:
+      file: String
+      model: String
+      language: Option<String>
+      prompt: Option<String>
+      response_format: String
+      temperature: Float
+      timestamp_granularities: List<String>
+
+  TranscriptionResponse:
+    description: "Transcription response"
+    fields:
+      text: String
+      task: Option<String>
+      language: Option<String>
+      duration: Option<Float>
+      words: Option<List<Word>>
+      segments: Option<List<Segment>>
+
+  Word:
+    description: "Word with timestamp"
+    fields:
+      word: String
+      start: Float
+      end: Float
+
+  Segment:
+    description: "Segment with timestamp"
+    fields:
+      id: Int
+      seek: Int
+      start: Float
+      end: Float
+      text: String
+      tokens: List<Int>
+      temperature: Float
+      avg_logprob: Float
+      compression_ratio: Float
+      no_speech_prob: Float
+
+  TranslationRequest:
+    description: "Translation request"
+    fields:
+      file: String
+      model: String
+      prompt: Option<String>
+      response_format: String
+      temperature: Float
+
+  TTSModel:
+    description: "TTS models"
+    values:
+      - tts_1
+      - tts_1_hd
+
+  TTSVoice:
+    description: "TTS voices"
+    values:
+      - alloy
+      - echo
+      - fable
+      - onyx
+      - nova
+      - shimmer
+
+  TTSRequest:
+    description: "TTS request"
+    fields:
+      model: String
+      input: String
+      voice: String
+      response_format: String
+      speed: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EMBEDDINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  EmbeddingModel:
+    description: "Embedding models"
+    values:
+      - text_embedding_3_small
+      - text_embedding_3_large
+      - text_embedding_ada_002
+
+  EmbeddingRequest:
+    description: "Embedding request"
+    fields:
+      model: String
+      input: List<String>
+      encoding_format: String
+      dimensions: Option<Int>
+      user: Option<String>
+
+  EmbeddingResponse:
+    description: "Embedding response"
+    fields:
+      object: String
+      data: List<Embedding>
+      model: String
+      usage: EmbeddingUsage
+
+  Embedding:
+    description: "Embedding data"
+    fields:
+      object: String
+      index: Int
+      embedding: List<Float>
+
+  EmbeddingUsage:
+    description: "Embedding usage"
+    fields:
+      prompt_tokens: Int
+      total_tokens: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ModerationRequest:
+    description: "Moderation request"
+    fields:
+      model: String
+      input: List<String>
+
+  ModerationResponse:
+    description: "Moderation response"
+    fields:
+      id: String
+      model: String
+      results: List<ModerationResult>
+
+  ModerationResult:
+    description: "Moderation result"
+    fields:
+      flagged: Bool
+      categories: ModerationCategories
+      category_scores: ModerationScores
+
+  ModerationCategories:
+    description: "Moderation categories"
+    fields:
+      hate: Bool
+      hate_threatening: Bool
+      harassment: Bool
+      harassment_threatening: Bool
+      self_harm: Bool
+      self_harm_intent: Bool
+      self_harm_instructions: Bool
+      sexual: Bool
+      sexual_minors: Bool
+      violence: Bool
+      violence_graphic: Bool
+
+  ModerationScores:
+    description: "Moderation scores"
+    fields:
+      hate: Float
+      hate_threatening: Float
+      harassment: Float
+      harassment_threatening: Float
+      self_harm: Float
+      self_harm_intent: Float
+      self_harm_instructions: Float
+      sexual: Float
+      sexual_minors: Float
+      violence: Float
+      violence_graphic: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  OpenAIError:
+    description: "API error"
+    fields:
+      error: ErrorDetail
+
+  ErrorDetail:
+    description: "Error detail"
+    fields:
+      message: String
+      type: String
+      param: Option<String>
+      code: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: ClientConfig
+    when: Creating client
+    then: Return OpenAIClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate API key
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHAT COMPLETIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: chat
+    given: ChatCompletionRequest
+    when: Creating chat completion
+    then: Return ChatCompletion
+
+  - name: chat_stream
+    given: ChatCompletionRequest
+    when: Streaming chat completion
+    then: Return stream of chunks
+
+  - name: chat_simple
+    given: Model, system prompt, user message
+    when: Simple chat
+    then: Return response text
+
+  - name: chat_with_tools
+    given: Request and tools
+    when: Chat with function calling
+    then: Return ChatCompletion
+
+  - name: chat_with_vision
+    given: Model, messages with images
+    when: Chat with vision
+    then: Return ChatCompletion
+
+  - name: chat_json
+    given: Request with JSON schema
+    when: Structured output
+    then: Return parsed JSON
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_image
+    given: ImageGenerationRequest
+    when: Generating image
+    then: Return ImageResponse
+
+  - name: edit_image
+    given: ImageEditRequest
+    when: Editing image
+    then: Return ImageResponse
+
+  - name: create_variation
+    given: ImageVariationRequest
+    when: Creating variation
+    then: Return ImageResponse
+
+  - name: generate_dalle3
+    given: Prompt, size, quality, style
+    when: DALL-E 3 generation
+    then: Return ImageResponse
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transcribe
+    given: TranscriptionRequest
+    when: Transcribing audio
+    then: Return TranscriptionResponse
+
+  - name: translate
+    given: TranslationRequest
+    when: Translating audio
+    then: Return TranscriptionResponse
+
+  - name: text_to_speech
+    given: TTSRequest
+    when: Generating speech
+    then: Return audio bytes
+
+  - name: tts_simple
+    given: Text, voice, model
+    when: Simple TTS
+    then: Return audio bytes
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EMBEDDINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_embedding
+    given: EmbeddingRequest
+    when: Creating embedding
+    then: Return EmbeddingResponse
+
+  - name: embed_text
+    given: Text and model
+    when: Embedding single text
+    then: Return embedding vector
+
+  - name: embed_texts
+    given: Texts and model
+    when: Embedding multiple texts
+    then: Return list of embeddings
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: moderate
+    given: ModerationRequest
+    when: Moderating content
+    then: Return ModerationResponse
+
+  - name: is_safe
+    given: Text
+    when: Checking safety
+    then: Return true if safe
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: count_tokens
+    given: Text and model
+    when: Counting tokens
+    then: Return token count
+
+  - name: estimate_cost
+    given: Model, input tokens, output tokens
+    when: Estimating cost
+    then: Return estimated USD
+
+  - name: list_models
+    given: No parameters
+    when: Listing models
+    then: Return model list
+
+  - name: get_model
+    given: Model ID
+    when: Getting model info
+    then: Return model info
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  BASE_URL: "https://api.openai.com/v1"
+  DEFAULT_TIMEOUT_MS: 120000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+
+  # Models
+  MODEL_GPT_4O: "gpt-4o"
+  MODEL_GPT_4O_MINI: "gpt-4o-mini"
+  MODEL_GPT_4_TURBO: "gpt-4-turbo"
+  MODEL_O1: "o1"
+  MODEL_O1_MINI: "o1-mini"
+  MODEL_DALLE_3: "dall-e-3"
+  MODEL_WHISPER: "whisper-1"
+  MODEL_TTS_1: "tts-1"
+  MODEL_TTS_1_HD: "tts-1-hd"
+  MODEL_EMBEDDING_3_SMALL: "text-embedding-3-small"
+  MODEL_EMBEDDING_3_LARGE: "text-embedding-3-large"
+
+  # Defaults
+  DEFAULT_TEMPERATURE: 1.0
+  DEFAULT_TOP_P: 1.0
+  DEFAULT_MAX_TOKENS: 4096
+  DEFAULT_N: 1
+
+  # Image defaults
+  DEFAULT_IMAGE_SIZE: "1024x1024"
+  DEFAULT_IMAGE_QUALITY: "standard"
+  DEFAULT_IMAGE_STYLE: "vivid"
+
+  # TTS defaults
+  DEFAULT_TTS_VOICE: "alloy"
+  DEFAULT_TTS_SPEED: 1.0
+  DEFAULT_TTS_FORMAT: "mp3"
+
+  # Rate limits (tier 1)
+  RATE_LIMIT_RPM_GPT4O: 500
+  RATE_LIMIT_TPM_GPT4O: 30000
+  RATE_LIMIT_RPM_DALLE: 7
+  RATE_LIMIT_IPM_DALLE: 7
+
+  # Pricing (per 1M tokens, USD)
+  PRICE_GPT4O_INPUT: 2.50
+  PRICE_GPT4O_OUTPUT: 10.00
+  PRICE_GPT4O_MINI_INPUT: 0.15
+  PRICE_GPT4O_MINI_OUTPUT: 0.60
+  PRICE_O1_INPUT: 15.00
+  PRICE_O1_OUTPUT: 60.00

@@ -1,0 +1,671 @@
+name: ai_router
+version: "1.0.0"
+language: zig
+module: ai_router
+
+description: |
+  Unified AI router for VIBEE Telegram bot.
+  Routes requests to appropriate providers with fallback.
+  Handles load balancing, cost optimization, rate limiting.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AIRouter:
+    description: "AI router instance"
+    fields:
+      config: RouterConfig
+      providers: Map<String, ProviderClient>
+      routes: List<Route>
+      stats: RouterStats
+      is_running: Bool
+
+  RouterConfig:
+    description: "Router configuration"
+    fields:
+      default_provider: AIProvider
+      fallback_enabled: Bool
+      fallback_order: List<AIProvider>
+      retry_on_failure: Bool
+      max_retries: Int
+      timeout_ms: Int
+      cost_optimization: Bool
+      load_balancing: LoadBalancingStrategy
+
+  AIProvider:
+    description: "AI provider"
+    values:
+      - replicate
+      - openai
+      - anthropic
+      - together
+      - groq
+      - local
+
+  ProviderClient:
+    description: "Provider client wrapper"
+    fields:
+      provider: AIProvider
+      client: Object
+      is_available: Bool
+      rate_limit_remaining: Int
+      rate_limit_reset: Timestamp
+      error_count: Int
+      last_error: Option<String>
+
+  LoadBalancingStrategy:
+    description: "Load balancing strategy"
+    values:
+      - round_robin
+      - least_cost
+      - least_latency
+      - weighted
+      - random
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Route:
+    description: "Routing rule"
+    fields:
+      id: String
+      name: String
+      task_type: TaskType
+      model_type: Option<ModelType>
+      provider: AIProvider
+      fallback_providers: List<AIProvider>
+      priority: Int
+      conditions: List<RouteCondition>
+      is_active: Bool
+
+  TaskType:
+    description: "AI task type"
+    values:
+      - text_generation
+      - image_generation
+      - video_generation
+      - audio_transcription
+      - text_to_speech
+      - embedding
+      - moderation
+      - face_swap
+      - upscale
+      - background_removal
+
+  ModelType:
+    description: "Model type"
+    values:
+      - flux_pro
+      - flux_dev
+      - flux_schnell
+      - sdxl
+      - stable_video
+      - kling
+      - luma
+      - gpt_4o
+      - gpt_4o_mini
+      - claude_sonnet
+      - claude_haiku
+      - whisper
+      - dalle_3
+
+  RouteCondition:
+    description: "Route condition"
+    fields:
+      field: String
+      operator: ConditionOperator
+      value: Object
+
+  ConditionOperator:
+    description: "Condition operator"
+    values:
+      - eq
+      - neq
+      - gt
+      - lt
+      - gte
+      - lte
+      - contains
+      - in
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REQUESTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AIRequest:
+    description: "Unified AI request"
+    fields:
+      id: String
+      task_type: TaskType
+      model_type: Option<ModelType>
+      provider_override: Option<AIProvider>
+      input: RequestInput
+      options: RequestOptions
+      metadata: RequestMetadata
+      created_at: Timestamp
+
+  RequestInput:
+    description: "Request input"
+    fields:
+      prompt: Option<String>
+      negative_prompt: Option<String>
+      image: Option<String>
+      images: Option<List<String>>
+      audio: Option<String>
+      messages: Option<List<Object>>
+      system_prompt: Option<String>
+
+  RequestOptions:
+    description: "Request options"
+    fields:
+      width: Option<Int>
+      height: Option<Int>
+      aspect_ratio: Option<String>
+      num_outputs: Option<Int>
+      guidance_scale: Option<Float>
+      num_inference_steps: Option<Int>
+      seed: Option<Int>
+      temperature: Option<Float>
+      max_tokens: Option<Int>
+      output_format: Option<String>
+      quality: Option<String>
+      style: Option<String>
+      voice: Option<String>
+      language: Option<String>
+
+  RequestMetadata:
+    description: "Request metadata"
+    fields:
+      user_id: Option<Int>
+      session_id: Option<String>
+      priority: Priority
+      budget_usd: Option<Float>
+      deadline_ms: Option<Int>
+      tags: List<String>
+
+  Priority:
+    description: "Request priority"
+    values:
+      - low
+      - normal
+      - high
+      - urgent
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESPONSES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AIResponse:
+    description: "Unified AI response"
+    fields:
+      id: String
+      request_id: String
+      provider: AIProvider
+      model: String
+      status: ResponseStatus
+      output: ResponseOutput
+      usage: ResponseUsage
+      timing: ResponseTiming
+      error: Option<AIError>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  ResponseStatus:
+    description: "Response status"
+    values:
+      - pending
+      - processing
+      - succeeded
+      - failed
+      - cancelled
+      - timeout
+
+  ResponseOutput:
+    description: "Response output"
+    fields:
+      text: Option<String>
+      images: Option<List<String>>
+      video: Option<String>
+      audio: Option<String>
+      embedding: Option<List<Float>>
+      raw: Option<Object>
+
+  ResponseUsage:
+    description: "Response usage"
+    fields:
+      input_tokens: Option<Int>
+      output_tokens: Option<Int>
+      total_tokens: Option<Int>
+      compute_time_ms: Option<Int>
+      cost_usd: Float
+
+  ResponseTiming:
+    description: "Response timing"
+    fields:
+      queue_time_ms: Int
+      processing_time_ms: Int
+      total_time_ms: Int
+      provider_latency_ms: Int
+
+  AIError:
+    description: "AI error"
+    fields:
+      code: ErrorCode
+      message: String
+      provider: AIProvider
+      retryable: Bool
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_request
+      - authentication_failed
+      - rate_limited
+      - quota_exceeded
+      - model_not_found
+      - content_filtered
+      - timeout
+      - provider_error
+      - all_providers_failed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RouterStats:
+    description: "Router statistics"
+    fields:
+      total_requests: Int
+      successful_requests: Int
+      failed_requests: Int
+      fallback_count: Int
+      total_cost_usd: Float
+      avg_latency_ms: Float
+      by_provider: Map<String, ProviderStats>
+      by_task_type: Map<String, TaskStats>
+
+  ProviderStats:
+    description: "Provider statistics"
+    fields:
+      requests: Int
+      successes: Int
+      failures: Int
+      avg_latency_ms: Float
+      total_cost_usd: Float
+      error_rate: Float
+
+  TaskStats:
+    description: "Task statistics"
+    fields:
+      requests: Int
+      successes: Int
+      failures: Int
+      avg_latency_ms: Float
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST & BUDGET
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CostEstimate:
+    description: "Cost estimate"
+    fields:
+      provider: AIProvider
+      model: String
+      estimated_cost_usd: Float
+      confidence: Float
+
+  Budget:
+    description: "Budget configuration"
+    fields:
+      user_id: Int
+      daily_limit_usd: Float
+      monthly_limit_usd: Float
+      current_daily_usd: Float
+      current_monthly_usd: Float
+      reset_daily: Timestamp
+      reset_monthly: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUEUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  QueuedRequest:
+    description: "Queued request"
+    fields:
+      request: AIRequest
+      priority: Int
+      queued_at: Timestamp
+      attempts: Int
+      last_error: Option<String>
+
+  QueueStats:
+    description: "Queue statistics"
+    fields:
+      pending: Int
+      processing: Int
+      completed: Int
+      failed: Int
+      avg_wait_time_ms: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_router
+    given: RouterConfig
+    when: Creating router
+    then: Return AIRouter
+
+  - name: start
+    given: No parameters
+    when: Starting router
+    then: Initialize providers
+
+  - name: stop
+    given: No parameters
+    when: Stopping router
+    then: Cleanup resources
+
+  - name: register_provider
+    given: AIProvider and client
+    when: Registering provider
+    then: Add to providers
+
+  - name: unregister_provider
+    given: AIProvider
+    when: Unregistering provider
+    then: Remove from providers
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: route
+    given: AIRequest
+    when: Routing request
+    then: Return AIResponse
+
+  - name: route_async
+    given: AIRequest
+    when: Async routing
+    then: Return request ID
+
+  - name: select_provider
+    given: AIRequest
+    when: Selecting provider
+    then: Return AIProvider
+
+  - name: select_fallback
+    given: AIRequest and failed provider
+    when: Selecting fallback
+    then: Return next provider
+
+  - name: get_route
+    given: TaskType and ModelType
+    when: Getting route
+    then: Return Route
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROUTE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_route
+    given: Route
+    when: Adding route
+    then: Store route
+
+  - name: update_route
+    given: Route ID and updates
+    when: Updating route
+    then: Update route
+
+  - name: delete_route
+    given: Route ID
+    when: Deleting route
+    then: Remove route
+
+  - name: list_routes
+    given: Optional filter
+    when: Listing routes
+    then: Return routes
+
+  - name: enable_route
+    given: Route ID
+    when: Enabling route
+    then: Set active
+
+  - name: disable_route
+    given: Route ID
+    when: Disabling route
+    then: Set inactive
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TASK EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_text
+    given: Prompt and options
+    when: Generating text
+    then: Return AIResponse
+
+  - name: generate_image
+    given: Prompt and options
+    when: Generating image
+    then: Return AIResponse
+
+  - name: generate_video
+    given: Input and options
+    when: Generating video
+    then: Return AIResponse
+
+  - name: transcribe_audio
+    given: Audio and options
+    when: Transcribing
+    then: Return AIResponse
+
+  - name: text_to_speech
+    given: Text and options
+    when: Generating speech
+    then: Return AIResponse
+
+  - name: create_embedding
+    given: Text and options
+    when: Creating embedding
+    then: Return AIResponse
+
+  - name: moderate_content
+    given: Content
+    when: Moderating
+    then: Return AIResponse
+
+  - name: process_image
+    given: Image, task, options
+    when: Processing image
+    then: Return AIResponse
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST & BUDGET
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: AIRequest
+    when: Estimating cost
+    then: Return CostEstimate list
+
+  - name: get_cheapest_provider
+    given: AIRequest
+    when: Finding cheapest
+    then: Return AIProvider
+
+  - name: check_budget
+    given: User ID and estimated cost
+    when: Checking budget
+    then: Return true if within budget
+
+  - name: update_budget
+    given: User ID and cost
+    when: Updating budget
+    then: Deduct from budget
+
+  - name: get_budget
+    given: User ID
+    when: Getting budget
+    then: Return Budget
+
+  - name: set_budget
+    given: Budget
+    when: Setting budget
+    then: Store budget
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROVIDER HEALTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_provider_health
+    given: AIProvider
+    when: Checking health
+    then: Return health status
+
+  - name: mark_provider_unavailable
+    given: AIProvider and duration
+    when: Marking unavailable
+    then: Disable temporarily
+
+  - name: mark_provider_available
+    given: AIProvider
+    when: Marking available
+    then: Enable provider
+
+  - name: get_provider_status
+    given: AIProvider
+    when: Getting status
+    then: Return ProviderClient
+
+  - name: reset_provider_errors
+    given: AIProvider
+    when: Resetting errors
+    then: Clear error count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUEUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enqueue
+    given: AIRequest
+    when: Enqueueing request
+    then: Return queue position
+
+  - name: dequeue
+    given: No parameters
+    when: Dequeueing request
+    then: Return next request
+
+  - name: get_queue_stats
+    given: No parameters
+    when: Getting queue stats
+    then: Return QueueStats
+
+  - name: cancel_queued
+    given: Request ID
+    when: Cancelling queued
+    then: Remove from queue
+
+  - name: prioritize
+    given: Request ID and priority
+    when: Changing priority
+    then: Update priority
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Optional time range
+    when: Getting statistics
+    then: Return RouterStats
+
+  - name: get_provider_stats
+    given: AIProvider
+    when: Getting provider stats
+    then: Return ProviderStats
+
+  - name: get_task_stats
+    given: TaskType
+    when: Getting task stats
+    then: Return TaskStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear all stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_response
+    given: Request ID
+    when: Getting response
+    then: Return AIResponse
+
+  - name: cancel_request
+    given: Request ID
+    when: Cancelling request
+    then: Cancel and return
+
+  - name: retry_request
+    given: Request ID
+    when: Retrying request
+    then: Retry and return
+
+  - name: list_supported_models
+    given: TaskType
+    when: Listing models
+    then: Return model list
+
+  - name: get_model_info
+    given: ModelType
+    when: Getting model info
+    then: Return model details
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 300000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+
+  # Provider health
+  MAX_CONSECUTIVE_ERRORS: 5
+  PROVIDER_COOLDOWN_MS: 60000
+  HEALTH_CHECK_INTERVAL_MS: 30000
+
+  # Queue
+  MAX_QUEUE_SIZE: 10000
+  QUEUE_PROCESS_INTERVAL_MS: 100
+
+  # Budget defaults
+  DEFAULT_DAILY_LIMIT_USD: 10.0
+  DEFAULT_MONTHLY_LIMIT_USD: 100.0
+
+  # Priority weights
+  PRIORITY_LOW: 1
+  PRIORITY_NORMAL: 5
+  PRIORITY_HIGH: 10
+  PRIORITY_URGENT: 100
+
+  # Cost thresholds
+  COST_THRESHOLD_WARN_USD: 1.0
+  COST_THRESHOLD_BLOCK_USD: 10.0

@@ -1,0 +1,571 @@
+name: anthropic_client
+version: "1.0.0"
+language: zig
+module: anthropic_client
+
+description: |
+  Anthropic API client for VIBEE Telegram bot.
+  Supports Claude 3.5 Sonnet, Claude 3 Opus/Haiku.
+  Includes streaming, tool use, vision, prompt caching.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AnthropicClient:
+    description: "Anthropic API client"
+    fields:
+      config: ClientConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  ClientConfig:
+    description: "Client configuration"
+    fields:
+      api_key: String
+      base_url: String
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+      anthropic_version: String
+      anthropic_beta: Option<List<String>>
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      requests_made: Int
+      input_tokens: Int
+      output_tokens: Int
+      cache_creation_tokens: Int
+      cache_read_tokens: Int
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODELS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ClaudeModel:
+    description: "Claude models"
+    values:
+      - claude_3_5_sonnet
+      - claude_3_5_sonnet_v2
+      - claude_3_opus
+      - claude_3_sonnet
+      - claude_3_haiku
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MessageRole:
+    description: "Message role"
+    values:
+      - user
+      - assistant
+
+  Message:
+    description: "Message"
+    fields:
+      role: MessageRole
+      content: MessageContent
+
+  MessageContent:
+    description: "Message content"
+    fields:
+      text: Option<String>
+      blocks: Option<List<ContentBlock>>
+
+  ContentBlock:
+    description: "Content block"
+    fields:
+      type: ContentBlockType
+      text: Option<String>
+      source: Option<ImageSource>
+      tool_use_id: Option<String>
+      tool_name: Option<String>
+      tool_input: Option<Object>
+      content: Option<String>
+      cache_control: Option<CacheControl>
+
+  ContentBlockType:
+    description: "Content block type"
+    values:
+      - text
+      - image
+      - tool_use
+      - tool_result
+
+  ImageSource:
+    description: "Image source"
+    fields:
+      type: ImageSourceType
+      media_type: String
+      data: Option<String>
+      url: Option<String>
+
+  ImageSourceType:
+    description: "Image source type"
+    values:
+      - base64
+      - url
+
+  CacheControl:
+    description: "Cache control"
+    fields:
+      type: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REQUESTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MessagesRequest:
+    description: "Messages request"
+    fields:
+      model: String
+      messages: List<Message>
+      max_tokens: Int
+      system: Option<SystemPrompt>
+      temperature: Option<Float>
+      top_p: Option<Float>
+      top_k: Option<Int>
+      stop_sequences: Option<List<String>>
+      stream: Bool
+      tools: Option<List<Tool>>
+      tool_choice: Option<ToolChoice>
+      metadata: Option<Metadata>
+
+  SystemPrompt:
+    description: "System prompt"
+    fields:
+      text: Option<String>
+      blocks: Option<List<SystemBlock>>
+
+  SystemBlock:
+    description: "System block"
+    fields:
+      type: String
+      text: String
+      cache_control: Option<CacheControl>
+
+  Metadata:
+    description: "Request metadata"
+    fields:
+      user_id: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESPONSES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MessagesResponse:
+    description: "Messages response"
+    fields:
+      id: String
+      type: String
+      role: MessageRole
+      content: List<ResponseContentBlock>
+      model: String
+      stop_reason: StopReason
+      stop_sequence: Option<String>
+      usage: Usage
+
+  ResponseContentBlock:
+    description: "Response content block"
+    fields:
+      type: ResponseBlockType
+      text: Option<String>
+      id: Option<String>
+      name: Option<String>
+      input: Option<Object>
+
+  ResponseBlockType:
+    description: "Response block type"
+    values:
+      - text
+      - tool_use
+
+  StopReason:
+    description: "Stop reason"
+    values:
+      - end_turn
+      - max_tokens
+      - stop_sequence
+      - tool_use
+
+  Usage:
+    description: "Token usage"
+    fields:
+      input_tokens: Int
+      output_tokens: Int
+      cache_creation_input_tokens: Option<Int>
+      cache_read_input_tokens: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StreamEvent:
+    description: "Stream event"
+    fields:
+      type: StreamEventType
+      message: Option<MessagesResponse>
+      index: Option<Int>
+      content_block: Option<ResponseContentBlock>
+      delta: Option<StreamDelta>
+      usage: Option<Usage>
+
+  StreamEventType:
+    description: "Stream event type"
+    values:
+      - message_start
+      - content_block_start
+      - content_block_delta
+      - content_block_stop
+      - message_delta
+      - message_stop
+      - ping
+      - error
+
+  StreamDelta:
+    description: "Stream delta"
+    fields:
+      type: DeltaType
+      text: Option<String>
+      partial_json: Option<String>
+      stop_reason: Option<StopReason>
+      stop_sequence: Option<String>
+
+  DeltaType:
+    description: "Delta type"
+    values:
+      - text_delta
+      - input_json_delta
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOOLS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Tool:
+    description: "Tool definition"
+    fields:
+      name: String
+      description: Option<String>
+      input_schema: Object
+      cache_control: Option<CacheControl>
+
+  ToolChoice:
+    description: "Tool choice"
+    fields:
+      type: ToolChoiceType
+      name: Option<String>
+
+  ToolChoiceType:
+    description: "Tool choice type"
+    values:
+      - auto
+      - any
+      - tool
+
+  ToolResult:
+    description: "Tool result"
+    fields:
+      type: String
+      tool_use_id: String
+      content: ToolResultContent
+      is_error: Option<Bool>
+
+  ToolResultContent:
+    description: "Tool result content"
+    fields:
+      text: Option<String>
+      blocks: Option<List<ContentBlock>>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCHES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BatchRequest:
+    description: "Batch request"
+    fields:
+      custom_id: String
+      params: MessagesRequest
+
+  Batch:
+    description: "Batch"
+    fields:
+      id: String
+      type: String
+      processing_status: BatchStatus
+      request_counts: BatchCounts
+      ended_at: Option<Timestamp>
+      created_at: Timestamp
+      expires_at: Timestamp
+      cancel_initiated_at: Option<Timestamp>
+      results_url: Option<String>
+
+  BatchStatus:
+    description: "Batch status"
+    values:
+      - in_progress
+      - canceling
+      - ended
+
+  BatchCounts:
+    description: "Batch counts"
+    fields:
+      processing: Int
+      succeeded: Int
+      errored: Int
+      canceled: Int
+      expired: Int
+
+  BatchResult:
+    description: "Batch result"
+    fields:
+      custom_id: String
+      result: BatchResultData
+
+  BatchResultData:
+    description: "Batch result data"
+    fields:
+      type: String
+      message: Option<MessagesResponse>
+      error: Option<ErrorDetail>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AnthropicError:
+    description: "API error"
+    fields:
+      type: String
+      error: ErrorDetail
+
+  ErrorDetail:
+    description: "Error detail"
+    fields:
+      type: ErrorType
+      message: String
+
+  ErrorType:
+    description: "Error type"
+    values:
+      - invalid_request_error
+      - authentication_error
+      - permission_error
+      - not_found_error
+      - rate_limit_error
+      - api_error
+      - overloaded_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: ClientConfig
+    when: Creating client
+    then: Return AnthropicClient
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate API key
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_message
+    given: MessagesRequest
+    when: Creating message
+    then: Return MessagesResponse
+
+  - name: create_message_stream
+    given: MessagesRequest
+    when: Streaming message
+    then: Return stream of events
+
+  - name: chat_simple
+    given: Model, system, user message
+    when: Simple chat
+    then: Return response text
+
+  - name: chat_with_vision
+    given: Model, messages with images
+    when: Chat with vision
+    then: Return MessagesResponse
+
+  - name: chat_with_tools
+    given: Request and tools
+    when: Chat with tools
+    then: Return MessagesResponse
+
+  - name: continue_conversation
+    given: Previous response and new message
+    when: Continuing conversation
+    then: Return MessagesResponse
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOOL USE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute_tool_loop
+    given: Request, tools, executor
+    when: Running tool loop
+    then: Return final response
+
+  - name: extract_tool_calls
+    given: MessagesResponse
+    when: Extracting tool calls
+    then: Return list of tool uses
+
+  - name: build_tool_result
+    given: Tool use ID and result
+    when: Building tool result
+    then: Return ToolResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROMPT CACHING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_cached_message
+    given: Request with cache control
+    when: Creating with caching
+    then: Return MessagesResponse
+
+  - name: add_cache_control
+    given: Content block
+    when: Adding cache control
+    then: Return block with cache
+
+  - name: get_cache_stats
+    given: Usage
+    when: Getting cache stats
+    then: Return cache token counts
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCHES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_batch
+    given: List of BatchRequest
+    when: Creating batch
+    then: Return Batch
+
+  - name: get_batch
+    given: Batch ID
+    when: Getting batch
+    then: Return Batch
+
+  - name: list_batches
+    given: Optional limit and cursor
+    when: Listing batches
+    then: Return list of batches
+
+  - name: cancel_batch
+    given: Batch ID
+    when: Canceling batch
+    then: Return Batch
+
+  - name: get_batch_results
+    given: Batch ID
+    when: Getting results
+    then: Return list of BatchResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: count_tokens
+    given: Messages and model
+    when: Counting tokens
+    then: Return token count
+
+  - name: estimate_cost
+    given: Model, input tokens, output tokens
+    when: Estimating cost
+    then: Return estimated USD
+
+  - name: build_message
+    given: Role and content
+    when: Building message
+    then: Return Message
+
+  - name: build_image_block
+    given: Image data or URL
+    when: Building image block
+    then: Return ContentBlock
+
+  - name: build_tool
+    given: Name, description, schema
+    when: Building tool
+    then: Return Tool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  BASE_URL: "https://api.anthropic.com"
+  DEFAULT_TIMEOUT_MS: 120000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+  ANTHROPIC_VERSION: "2023-06-01"
+
+  # Models
+  MODEL_CLAUDE_3_5_SONNET: "claude-3-5-sonnet-20241022"
+  MODEL_CLAUDE_3_5_SONNET_V1: "claude-3-5-sonnet-20240620"
+  MODEL_CLAUDE_3_OPUS: "claude-3-opus-20240229"
+  MODEL_CLAUDE_3_SONNET: "claude-3-sonnet-20240229"
+  MODEL_CLAUDE_3_HAIKU: "claude-3-haiku-20240307"
+
+  # Defaults
+  DEFAULT_MAX_TOKENS: 4096
+  DEFAULT_TEMPERATURE: 1.0
+  MAX_TOKENS_OPUS: 4096
+  MAX_TOKENS_SONNET: 8192
+  MAX_TOKENS_HAIKU: 4096
+
+  # Context windows
+  CONTEXT_WINDOW_CLAUDE_3_5: 200000
+  CONTEXT_WINDOW_CLAUDE_3: 200000
+
+  # Beta features
+  BETA_PROMPT_CACHING: "prompt-caching-2024-07-31"
+  BETA_MESSAGE_BATCHES: "message-batches-2024-09-24"
+  BETA_COMPUTER_USE: "computer-use-2024-10-22"
+
+  # Rate limits (tier 1)
+  RATE_LIMIT_RPM: 50
+  RATE_LIMIT_TPM_INPUT: 40000
+  RATE_LIMIT_TPM_OUTPUT: 8000
+
+  # Pricing (per 1M tokens, USD)
+  PRICE_CLAUDE_3_5_SONNET_INPUT: 3.00
+  PRICE_CLAUDE_3_5_SONNET_OUTPUT: 15.00
+  PRICE_CLAUDE_3_OPUS_INPUT: 15.00
+  PRICE_CLAUDE_3_OPUS_OUTPUT: 75.00
+  PRICE_CLAUDE_3_HAIKU_INPUT: 0.25
+  PRICE_CLAUDE_3_HAIKU_OUTPUT: 1.25
+
+  # Cache pricing
+  PRICE_CACHE_WRITE_MULTIPLIER: 1.25
+  PRICE_CACHE_READ_MULTIPLIER: 0.10
