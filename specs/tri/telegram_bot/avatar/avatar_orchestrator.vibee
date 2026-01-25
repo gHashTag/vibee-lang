@@ -1,0 +1,752 @@
+name: avatar_orchestrator
+version: "1.0.0"
+language: zig
+module: avatar_orchestrator
+
+description: |
+  Avatar orchestrator for VIBEE Telegram bot.
+  Unified API combining identity, brain, and generation.
+  Single entry point for all avatar interactions.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Orchestrator:
+    description: "Avatar orchestrator"
+    fields:
+      config: OrchestratorConfig
+      identity_service: Object
+      brain_service: Object
+      generator_service: Object
+      session_manager: Object
+      stats: OrchestratorStats
+      is_initialized: Bool
+
+  OrchestratorConfig:
+    description: "Orchestrator configuration"
+    fields:
+      max_concurrent_sessions: Int
+      session_timeout_minutes: Int
+      enable_voice_responses: Bool
+      enable_video_responses: Bool
+      default_response_mode: ResponseMode
+      cost_limit_per_user_stars: Int
+      enable_learning: Bool
+
+  OrchestratorStats:
+    description: "Orchestrator statistics"
+    fields:
+      total_interactions: Int
+      text_interactions: Int
+      voice_interactions: Int
+      video_interactions: Int
+      avatars_created: Int
+      sessions_active: Int
+      total_cost_stars: Int
+      avg_response_time_ms: Int
+
+  ResponseMode:
+    description: "Response mode"
+    values:
+      - text_only
+      - text_and_voice
+      - text_and_video
+      - voice_only
+      - video_only
+      - adaptive
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UNIFIED AVATAR
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UnifiedAvatar:
+    description: "Unified avatar with all components"
+    fields:
+      avatar_id: String
+      telegram_id: Int
+      identity: AvatarIdentity
+      brain: AvatarBrain
+      generation: AvatarGeneration
+      status: AvatarStatus
+      capabilities: AvatarCapabilities
+      usage: AvatarUsage
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  AvatarIdentity:
+    description: "Avatar identity summary"
+    fields:
+      name: String
+      display_name: String
+      bio: Option<String>
+      profile_image_url: Option<String>
+      voice_id: Option<String>
+      style_preset: String
+
+  AvatarBrain:
+    description: "Avatar brain summary"
+    fields:
+      personality_id: String
+      traits_summary: String
+      memory_count: Int
+      knowledge_count: Int
+      conversation_count: Int
+
+  AvatarGeneration:
+    description: "Avatar generation assets"
+    fields:
+      face_image_url: Option<String>
+      body_image_url: Option<String>
+      expression_pack: List<String>
+      voice_sample_url: Option<String>
+      intro_video_url: Option<String>
+
+  AvatarStatus:
+    description: "Avatar status"
+    values:
+      - creating
+      - ready
+      - busy
+      - offline
+      - suspended
+
+  AvatarCapabilities:
+    description: "Avatar capabilities"
+    fields:
+      can_chat: Bool
+      can_voice: Bool
+      can_video: Bool
+      can_face_swap: Bool
+      can_lip_sync: Bool
+      languages: List<String>
+
+  AvatarUsage:
+    description: "Avatar usage"
+    fields:
+      total_messages: Int
+      total_voice_minutes: Float
+      total_video_minutes: Float
+      total_cost_stars: Int
+      last_interaction_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AVATAR CREATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CreateAvatarInput:
+    description: "Create avatar input"
+    fields:
+      telegram_id: Int
+      name: String
+      creation_mode: CreationMode
+      face_source: Option<FaceSource>
+      voice_source: Option<VoiceSource>
+      personality_template: Option<PersonalityTemplate>
+      style_preset: Option<String>
+
+  CreationMode:
+    description: "Creation mode"
+    values:
+      - quick
+      - guided
+      - advanced
+      - clone_from_photo
+      - generate_random
+
+  FaceSource:
+    description: "Face source"
+    fields:
+      source_type: FaceSourceType
+      image_url: Option<String>
+      generation_prompt: Option<String>
+      style: Option<String>
+
+  FaceSourceType:
+    description: "Face source type"
+    values:
+      - upload
+      - generate
+      - select_preset
+
+  VoiceSource:
+    description: "Voice source"
+    fields:
+      source_type: VoiceSourceType
+      audio_samples: Option<List<String>>
+      preset_voice_id: Option<String>
+      voice_description: Option<String>
+
+  VoiceSourceType:
+    description: "Voice source type"
+    values:
+      - clone
+      - preset
+      - generate
+
+  PersonalityTemplate:
+    description: "Personality template"
+    values:
+      - professional
+      - friendly
+      - creative
+      - technical
+      - sales
+      - support
+      - educator
+      - entertainer
+      - custom
+
+  CreateAvatarOutput:
+    description: "Create avatar output"
+    fields:
+      avatar: UnifiedAvatar
+      creation_steps: List<CreationStep>
+      total_time_ms: Int
+      total_cost_stars: Int
+
+  CreationStep:
+    description: "Creation step"
+    fields:
+      step_name: String
+      status: StepStatus
+      duration_ms: Int
+      cost_stars: Int
+      error: Option<String>
+
+  StepStatus:
+    description: "Step status"
+    values:
+      - pending
+      - in_progress
+      - completed
+      - failed
+      - skipped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INTERACTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  InteractionInput:
+    description: "Interaction input"
+    fields:
+      avatar_id: String
+      user_id: Int
+      session_id: Option<String>
+      input_type: InputType
+      text: Option<String>
+      audio_url: Option<String>
+      image_url: Option<String>
+      response_mode: Option<ResponseMode>
+      context: Option<InteractionContext>
+
+  InputType:
+    description: "Input type"
+    values:
+      - text
+      - voice
+      - image
+      - multimodal
+
+  InteractionContext:
+    description: "Interaction context"
+    fields:
+      chat_id: Int
+      message_id: Option<Int>
+      reply_to_message_id: Option<Int>
+      is_group_chat: Bool
+      mentioned_users: List<Int>
+
+  InteractionOutput:
+    description: "Interaction output"
+    fields:
+      interaction_id: String
+      session_id: String
+      response: AvatarResponse
+      processing_time_ms: Int
+      cost_stars: Int
+      memories_created: Int
+      learning_events: Int
+
+  AvatarResponse:
+    description: "Avatar response"
+    fields:
+      text: String
+      voice_url: Option<String>
+      video_url: Option<String>
+      image_url: Option<String>
+      suggested_actions: List<SuggestedAction>
+      emotion: Option<Emotion>
+      confidence: Float
+
+  SuggestedAction:
+    description: "Suggested action"
+    fields:
+      action_type: ActionType
+      label: String
+      data: String
+
+  ActionType:
+    description: "Action type"
+    values:
+      - reply
+      - button
+      - link
+      - command
+
+  Emotion:
+    description: "Detected/expressed emotion"
+    values:
+      - neutral
+      - happy
+      - sad
+      - excited
+      - curious
+      - confused
+      - empathetic
+      - professional
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAMING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StreamInput:
+    description: "Stream input"
+    fields:
+      avatar_id: String
+      user_id: Int
+      session_id: Option<String>
+      text: String
+      stream_voice: Bool
+      stream_video: Bool
+
+  StreamChunk:
+    description: "Stream chunk"
+    fields:
+      chunk_id: Int
+      chunk_type: ChunkType
+      content: String
+      is_final: Bool
+      metadata: Option<Object>
+
+  ChunkType:
+    description: "Chunk type"
+    values:
+      - text
+      - voice_url
+      - video_url
+      - emotion
+      - action
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BatchInteractionInput:
+    description: "Batch interaction input"
+    fields:
+      avatar_id: String
+      interactions: List<InteractionInput>
+      parallel: Bool
+      stop_on_error: Bool
+
+  BatchInteractionOutput:
+    description: "Batch interaction output"
+    fields:
+      batch_id: String
+      results: List<InteractionOutput>
+      total_time_ms: Int
+      total_cost_stars: Int
+      success_count: Int
+      failure_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AVATAR ACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  GenerateContentInput:
+    description: "Generate content input"
+    fields:
+      avatar_id: String
+      content_type: ContentType
+      prompt: Option<String>
+      script: Option<String>
+      duration_seconds: Option<Int>
+      style: Option<String>
+
+  ContentType:
+    description: "Content type"
+    values:
+      - profile_image
+      - expression_pack
+      - voice_greeting
+      - intro_video
+      - custom_video
+      - social_post
+
+  GenerateContentOutput:
+    description: "Generate content output"
+    fields:
+      content_id: String
+      content_type: ContentType
+      url: String
+      thumbnail_url: Option<String>
+      duration_seconds: Option<Float>
+      processing_time_ms: Int
+      cost_stars: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AVATAR CUSTOMIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CustomizeInput:
+    description: "Customize input"
+    fields:
+      avatar_id: String
+      customization_type: CustomizationType
+      data: Object
+
+  CustomizationType:
+    description: "Customization type"
+    values:
+      - update_name
+      - update_bio
+      - update_face
+      - update_voice
+      - update_personality
+      - update_style
+      - add_knowledge
+      - update_capabilities
+
+  CustomizeOutput:
+    description: "Customize output"
+    fields:
+      success: Bool
+      avatar: UnifiedAvatar
+      changes_applied: List<String>
+      regeneration_needed: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AvatarAnalytics:
+    description: "Avatar analytics"
+    fields:
+      avatar_id: String
+      period: AnalyticsPeriod
+      interactions: InteractionAnalytics
+      engagement: EngagementAnalytics
+      costs: CostAnalytics
+      learning: LearningAnalytics
+
+  AnalyticsPeriod:
+    description: "Analytics period"
+    values:
+      - day
+      - week
+      - month
+      - all_time
+
+  InteractionAnalytics:
+    description: "Interaction analytics"
+    fields:
+      total_interactions: Int
+      text_count: Int
+      voice_count: Int
+      video_count: Int
+      avg_response_time_ms: Int
+      unique_users: Int
+
+  EngagementAnalytics:
+    description: "Engagement analytics"
+    fields:
+      avg_session_duration_minutes: Float
+      avg_messages_per_session: Float
+      return_user_rate: Float
+      satisfaction_score: Option<Float>
+
+  CostAnalytics:
+    description: "Cost analytics"
+    fields:
+      total_cost_stars: Int
+      text_cost_stars: Int
+      voice_cost_stars: Int
+      video_cost_stars: Int
+      generation_cost_stars: Int
+
+  LearningAnalytics:
+    description: "Learning analytics"
+    fields:
+      memories_created: Int
+      knowledge_items_added: Int
+      feedback_received: Int
+      improvements_made: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  OrchestratorError:
+    description: "Orchestrator error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+      recoverable: Bool
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - avatar_not_found
+      - avatar_busy
+      - session_expired
+      - quota_exceeded
+      - cost_limit_exceeded
+      - generation_failed
+      - voice_unavailable
+      - video_unavailable
+      - invalid_input
+      - service_unavailable
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_orchestrator
+    given: OrchestratorConfig
+    when: Creating orchestrator
+    then: Return Orchestrator
+
+  - name: initialize
+    given: No parameters
+    when: Initializing orchestrator
+    then: Initialize all services
+
+  - name: shutdown
+    given: No parameters
+    when: Shutting down
+    then: Cleanup resources
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return OrchestratorStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AVATAR MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_avatar
+    given: CreateAvatarInput
+    when: Creating avatar
+    then: Return CreateAvatarOutput
+
+  - name: create_avatar_quick
+    given: Telegram ID and name
+    when: Quick creating avatar
+    then: Return UnifiedAvatar
+
+  - name: get_avatar
+    given: Avatar ID
+    when: Getting avatar
+    then: Return UnifiedAvatar
+
+  - name: get_user_avatars
+    given: Telegram ID
+    when: Getting user avatars
+    then: Return avatar list
+
+  - name: get_primary_avatar
+    given: Telegram ID
+    when: Getting primary avatar
+    then: Return UnifiedAvatar
+
+  - name: update_avatar
+    given: Avatar ID and updates
+    when: Updating avatar
+    then: Return UnifiedAvatar
+
+  - name: delete_avatar
+    given: Avatar ID
+    when: Deleting avatar
+    then: Return success
+
+  - name: set_primary_avatar
+    given: Avatar ID
+    when: Setting primary
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INTERACTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: interact
+    given: InteractionInput
+    when: Interacting with avatar
+    then: Return InteractionOutput
+
+  - name: interact_text
+    given: Avatar ID, user ID, text
+    when: Text interaction
+    then: Return AvatarResponse
+
+  - name: interact_voice
+    given: Avatar ID, user ID, audio URL
+    when: Voice interaction
+    then: Return AvatarResponse
+
+  - name: interact_stream
+    given: StreamInput
+    when: Streaming interaction
+    then: Return stream
+
+  - name: interact_batch
+    given: BatchInteractionInput
+    when: Batch interaction
+    then: Return BatchInteractionOutput
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTENT GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_content
+    given: GenerateContentInput
+    when: Generating content
+    then: Return GenerateContentOutput
+
+  - name: generate_greeting
+    given: Avatar ID
+    when: Generating greeting
+    then: Return voice URL
+
+  - name: generate_intro_video
+    given: Avatar ID and script
+    when: Generating intro
+    then: Return video URL
+
+  - name: generate_expression_pack
+    given: Avatar ID
+    when: Generating expressions
+    then: Return expression URLs
+
+  - name: regenerate_face
+    given: Avatar ID and prompt
+    when: Regenerating face
+    then: Return image URL
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CUSTOMIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: customize
+    given: CustomizeInput
+    when: Customizing avatar
+    then: Return CustomizeOutput
+
+  - name: update_personality
+    given: Avatar ID and traits
+    when: Updating personality
+    then: Return success
+
+  - name: update_voice
+    given: Avatar ID and voice source
+    when: Updating voice
+    then: Return success
+
+  - name: update_appearance
+    given: Avatar ID and appearance
+    when: Updating appearance
+    then: Return success
+
+  - name: teach_avatar
+    given: Avatar ID and content
+    when: Teaching avatar
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_analytics
+    given: Avatar ID and period
+    when: Getting analytics
+    then: Return AvatarAnalytics
+
+  - name: get_interaction_history
+    given: Avatar ID and user ID
+    when: Getting history
+    then: Return interaction list
+
+  - name: get_cost_summary
+    given: Avatar ID and period
+    when: Getting costs
+    then: Return CostAnalytics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: Interaction type and parameters
+    when: Estimating cost
+    then: Return cost estimate
+
+  - name: check_capabilities
+    given: Avatar ID
+    when: Checking capabilities
+    then: Return AvatarCapabilities
+
+  - name: get_available_templates
+    given: No parameters
+    when: Getting templates
+    then: Return template list
+
+  - name: validate_input
+    given: InteractionInput
+    when: Validating input
+    then: Return validation result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_SESSION_TIMEOUT_MINUTES: 30
+  DEFAULT_MAX_CONCURRENT_SESSIONS: 100
+  DEFAULT_COST_LIMIT_STARS: 1000
+
+  # Response modes
+  DEFAULT_RESPONSE_MODE: "text_only"
+  VOICE_RESPONSE_COST_MULTIPLIER: 2.0
+  VIDEO_RESPONSE_COST_MULTIPLIER: 5.0
+
+  # Creation
+  QUICK_CREATE_TIMEOUT_MS: 30000
+  GUIDED_CREATE_TIMEOUT_MS: 120000
+  MAX_CREATION_STEPS: 10
+
+  # Interaction
+  MAX_TEXT_LENGTH: 4000
+  MAX_AUDIO_DURATION_SECONDS: 60
+  MAX_BATCH_SIZE: 10
+  STREAM_CHUNK_SIZE: 100
+
+  # Content generation
+  DEFAULT_EXPRESSION_COUNT: 6
+  DEFAULT_INTRO_DURATION_SECONDS: 15
+  MAX_VIDEO_DURATION_SECONDS: 60
+
+  # Costs (stars)
+  COST_TEXT_INTERACTION: 1
+  COST_VOICE_INTERACTION: 3
+  COST_VIDEO_INTERACTION: 10
+  COST_FACE_GENERATION: 5
+  COST_VOICE_CLONE: 50
+  COST_INTRO_VIDEO: 25

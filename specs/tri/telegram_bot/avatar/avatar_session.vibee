@@ -1,0 +1,608 @@
+name: avatar_session
+version: "1.0.0"
+language: zig
+module: avatar_session
+
+description: |
+  Avatar session management for VIBEE Telegram bot.
+  Tracks user-avatar interactions, context, state.
+  Supports multi-turn conversations with memory.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SessionManager:
+    description: "Session manager"
+    fields:
+      config: SessionConfig
+      cache: Object
+      database: Object
+      stats: SessionStats
+      is_initialized: Bool
+
+  SessionConfig:
+    description: "Session configuration"
+    fields:
+      default_timeout_minutes: Int
+      max_sessions_per_user: Int
+      max_messages_per_session: Int
+      enable_persistence: Bool
+      cleanup_interval_minutes: Int
+      context_window_size: Int
+
+  SessionStats:
+    description: "Session statistics"
+    fields:
+      active_sessions: Int
+      total_sessions_created: Int
+      total_messages: Int
+      avg_session_duration_minutes: Float
+      avg_messages_per_session: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Session:
+    description: "Avatar session"
+    fields:
+      session_id: String
+      avatar_id: String
+      user_id: Int
+      chat_id: Int
+      status: SessionStatus
+      context: SessionContext
+      messages: List<SessionMessage>
+      metadata: SessionMetadata
+      created_at: Timestamp
+      updated_at: Timestamp
+      expires_at: Timestamp
+
+  SessionStatus:
+    description: "Session status"
+    values:
+      - active
+      - paused
+      - expired
+      - ended
+      - error
+
+  SessionContext:
+    description: "Session context"
+    fields:
+      topic: Option<String>
+      mood: Option<Mood>
+      intent_history: List<Intent>
+      entities: List<Entity>
+      user_preferences: UserPreferences
+      conversation_summary: Option<String>
+      relevant_memories: List<String>
+      active_knowledge: List<String>
+
+  Mood:
+    description: "User mood"
+    values:
+      - positive
+      - negative
+      - neutral
+      - curious
+      - frustrated
+      - excited
+
+  Intent:
+    description: "User intent"
+    values:
+      - question
+      - request
+      - feedback
+      - complaint
+      - greeting
+      - farewell
+      - small_talk
+      - task
+
+  Entity:
+    description: "Extracted entity"
+    fields:
+      entity_type: EntityType
+      value: String
+      confidence: Float
+      position: Int
+
+  EntityType:
+    description: "Entity type"
+    values:
+      - person
+      - location
+      - organization
+      - date
+      - time
+      - number
+      - product
+      - custom
+
+  UserPreferences:
+    description: "User preferences"
+    fields:
+      response_length: ResponseLength
+      formality: Formality
+      language: String
+      emoji_preference: Bool
+      voice_enabled: Bool
+      video_enabled: Bool
+
+  ResponseLength:
+    description: "Response length"
+    values:
+      - brief
+      - normal
+      - detailed
+
+  Formality:
+    description: "Formality level"
+    values:
+      - casual
+      - neutral
+      - formal
+
+  SessionMetadata:
+    description: "Session metadata"
+    fields:
+      platform: Platform
+      device_type: Option<String>
+      client_version: Option<String>
+      is_group_chat: Bool
+      total_tokens_used: Int
+      total_cost_stars: Int
+
+  Platform:
+    description: "Platform"
+    values:
+      - telegram
+      - web
+      - api
+      - mobile
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SessionMessage:
+    description: "Session message"
+    fields:
+      message_id: String
+      role: MessageRole
+      content: MessageContent
+      tokens: Int
+      cost_stars: Int
+      timestamp: Timestamp
+      metadata: MessageMetadata
+
+  MessageRole:
+    description: "Message role"
+    values:
+      - user
+      - avatar
+      - system
+
+  MessageContent:
+    description: "Message content"
+    fields:
+      text: Option<String>
+      voice_url: Option<String>
+      video_url: Option<String>
+      image_url: Option<String>
+      attachments: List<Attachment>
+
+  Attachment:
+    description: "Message attachment"
+    fields:
+      attachment_type: AttachmentType
+      url: String
+      file_name: Option<String>
+      file_size: Option<Int>
+      mime_type: Option<String>
+
+  AttachmentType:
+    description: "Attachment type"
+    values:
+      - image
+      - audio
+      - video
+      - document
+      - sticker
+
+  MessageMetadata:
+    description: "Message metadata"
+    fields:
+      telegram_message_id: Option<Int>
+      reply_to_message_id: Option<String>
+      detected_intent: Option<Intent>
+      detected_mood: Option<Mood>
+      entities_extracted: List<Entity>
+      response_time_ms: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CreateSessionInput:
+    description: "Create session input"
+    fields:
+      avatar_id: String
+      user_id: Int
+      chat_id: Int
+      platform: Platform
+      initial_context: Option<SessionContext>
+      timeout_minutes: Option<Int>
+
+  AddMessageInput:
+    description: "Add message input"
+    fields:
+      session_id: String
+      role: MessageRole
+      content: MessageContent
+      metadata: Option<MessageMetadata>
+
+  UpdateContextInput:
+    description: "Update context input"
+    fields:
+      session_id: String
+      topic: Option<String>
+      mood: Option<Mood>
+      add_entities: Option<List<Entity>>
+      add_memories: Option<List<String>>
+      update_preferences: Option<UserPreferences>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT BUILDING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ContextWindow:
+    description: "Context window for LLM"
+    fields:
+      system_prompt: String
+      messages: List<ContextMessage>
+      total_tokens: Int
+      truncated: Bool
+
+  ContextMessage:
+    description: "Context message"
+    fields:
+      role: String
+      content: String
+      name: Option<String>
+
+  ContextBuildOptions:
+    description: "Context build options"
+    fields:
+      max_tokens: Int
+      include_system_prompt: Bool
+      include_memories: Bool
+      include_knowledge: Bool
+      include_summary: Bool
+      recent_messages_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION HISTORY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SessionHistory:
+    description: "Session history"
+    fields:
+      avatar_id: String
+      user_id: Int
+      sessions: List<SessionSummary>
+      total_sessions: Int
+      total_messages: Int
+      first_interaction: Timestamp
+      last_interaction: Timestamp
+
+  SessionSummary:
+    description: "Session summary"
+    fields:
+      session_id: String
+      status: SessionStatus
+      message_count: Int
+      duration_minutes: Float
+      topic: Option<String>
+      summary: Option<String>
+      created_at: Timestamp
+      ended_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION TRANSFER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TransferSessionInput:
+    description: "Transfer session input"
+    fields:
+      session_id: String
+      target_avatar_id: String
+      transfer_context: Bool
+      transfer_history: Bool
+
+  TransferSessionOutput:
+    description: "Transfer session output"
+    fields:
+      new_session_id: String
+      context_transferred: Bool
+      messages_transferred: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SessionAnalytics:
+    description: "Session analytics"
+    fields:
+      session_id: String
+      duration_minutes: Float
+      message_count: Int
+      user_messages: Int
+      avatar_messages: Int
+      avg_response_time_ms: Float
+      topics_discussed: List<String>
+      mood_progression: List<Mood>
+      satisfaction_indicators: SatisfactionIndicators
+
+  SatisfactionIndicators:
+    description: "Satisfaction indicators"
+    fields:
+      positive_signals: Int
+      negative_signals: Int
+      questions_answered: Int
+      tasks_completed: Int
+      escalation_requested: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SessionError:
+    description: "Session error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - session_not_found
+      - session_expired
+      - session_limit_exceeded
+      - message_limit_exceeded
+      - invalid_avatar
+      - context_too_large
+      - database_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: SessionConfig
+    when: Creating manager
+    then: Return SessionManager
+
+  - name: initialize
+    given: No parameters
+    when: Initializing manager
+    then: Setup connections
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return SessionStats
+
+  - name: cleanup_expired
+    given: No parameters
+    when: Cleaning up
+    then: Return cleaned count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION CRUD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_session
+    given: CreateSessionInput
+    when: Creating session
+    then: Return Session
+
+  - name: get_session
+    given: Session ID
+    when: Getting session
+    then: Return Session
+
+  - name: get_active_session
+    given: Avatar ID and user ID
+    when: Getting active session
+    then: Return Session
+
+  - name: get_or_create_session
+    given: Avatar ID, user ID, chat ID
+    when: Getting or creating
+    then: Return Session
+
+  - name: update_session
+    given: Session ID and updates
+    when: Updating session
+    then: Return Session
+
+  - name: end_session
+    given: Session ID
+    when: Ending session
+    then: Return success
+
+  - name: pause_session
+    given: Session ID
+    when: Pausing session
+    then: Return success
+
+  - name: resume_session
+    given: Session ID
+    when: Resuming session
+    then: Return Session
+
+  - name: extend_session
+    given: Session ID and minutes
+    when: Extending session
+    then: Return new expiry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_message
+    given: AddMessageInput
+    when: Adding message
+    then: Return SessionMessage
+
+  - name: get_messages
+    given: Session ID and limit
+    when: Getting messages
+    then: Return message list
+
+  - name: get_recent_messages
+    given: Session ID and count
+    when: Getting recent
+    then: Return message list
+
+  - name: delete_message
+    given: Message ID
+    when: Deleting message
+    then: Return success
+
+  - name: edit_message
+    given: Message ID and content
+    when: Editing message
+    then: Return SessionMessage
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: update_context
+    given: UpdateContextInput
+    when: Updating context
+    then: Return SessionContext
+
+  - name: get_context
+    given: Session ID
+    when: Getting context
+    then: Return SessionContext
+
+  - name: build_context_window
+    given: Session ID and options
+    when: Building context
+    then: Return ContextWindow
+
+  - name: summarize_context
+    given: Session ID
+    when: Summarizing context
+    then: Return summary
+
+  - name: clear_context
+    given: Session ID
+    when: Clearing context
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HISTORY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_session_history
+    given: Avatar ID and user ID
+    when: Getting history
+    then: Return SessionHistory
+
+  - name: get_user_sessions
+    given: User ID
+    when: Getting user sessions
+    then: Return session list
+
+  - name: get_avatar_sessions
+    given: Avatar ID
+    when: Getting avatar sessions
+    then: Return session list
+
+  - name: search_sessions
+    given: Query and filters
+    when: Searching sessions
+    then: Return session list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSFER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transfer_session
+    given: TransferSessionInput
+    when: Transferring session
+    then: Return TransferSessionOutput
+
+  - name: merge_sessions
+    given: Session IDs
+    when: Merging sessions
+    then: Return merged session
+
+  - name: fork_session
+    given: Session ID
+    when: Forking session
+    then: Return new session
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_session_analytics
+    given: Session ID
+    when: Getting analytics
+    then: Return SessionAnalytics
+
+  - name: get_satisfaction_score
+    given: Session ID
+    when: Getting satisfaction
+    then: Return score
+
+  - name: export_session
+    given: Session ID
+    when: Exporting session
+    then: Return export data
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MINUTES: 30
+  DEFAULT_MAX_SESSIONS_PER_USER: 5
+  DEFAULT_MAX_MESSAGES: 100
+  DEFAULT_CLEANUP_INTERVAL: 15
+  DEFAULT_CONTEXT_WINDOW: 20
+
+  # Context building
+  MAX_CONTEXT_TOKENS: 8000
+  SYSTEM_PROMPT_TOKENS: 500
+  MEMORY_TOKENS: 1000
+  KNOWLEDGE_TOKENS: 1000
+
+  # Message limits
+  MAX_MESSAGE_LENGTH: 4000
+  MAX_ATTACHMENTS: 5
+  MAX_ATTACHMENT_SIZE_MB: 10
+
+  # History
+  MAX_HISTORY_SESSIONS: 100
+  SESSION_RETENTION_DAYS: 90
+
+  # Analytics
+  POSITIVE_SIGNAL_KEYWORDS: "thanks,great,helpful,perfect,awesome"
+  NEGATIVE_SIGNAL_KEYWORDS: "wrong,bad,useless,terrible,hate"
