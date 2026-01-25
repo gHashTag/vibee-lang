@@ -1,0 +1,653 @@
+name: generation_pipeline
+version: "1.0.0"
+language: zig
+module: generation_pipeline
+
+description: |
+  End-to-end AI generation pipeline for VIBEE Telegram bot.
+  Orchestrates: input validation → model selection → generation → 
+  post-processing → storage → delivery.
+  Supports image, video, audio generation with webhooks.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Pipeline:
+    description: "Generation pipeline"
+    fields:
+      config: PipelineConfig
+      replicate_client: Object
+      storage_client: Object
+      media_processor: Object
+      model_registry: Object
+      stats: PipelineStats
+      is_initialized: Bool
+
+  PipelineConfig:
+    description: "Pipeline configuration"
+    fields:
+      max_concurrent_jobs: Int
+      default_timeout_ms: Int
+      retry_attempts: Int
+      retry_delay_ms: Int
+      webhook_url: Option<String>
+      storage_bucket: String
+      temp_dir: String
+      enable_nsfw_check: Bool
+      enable_watermark: Bool
+      watermark_image: Option<String>
+
+  PipelineStats:
+    description: "Pipeline statistics"
+    fields:
+      total_generations: Int
+      successful_generations: Int
+      failed_generations: Int
+      total_processing_time_ms: Int
+      total_cost_usd: Float
+      images_generated: Int
+      videos_generated: Int
+      audio_generated: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION REQUEST
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  GenerationRequest:
+    description: "Generation request"
+    fields:
+      request_id: String
+      user_id: Int
+      chat_id: Int
+      generation_type: GenerationType
+      model_id: Option<String>
+      input: GenerationInput
+      options: GenerationOptions
+      callback: Option<CallbackConfig>
+      metadata: Object
+      created_at: Timestamp
+
+  GenerationType:
+    description: "Type of generation"
+    values:
+      - text_to_image
+      - image_to_image
+      - image_upscale
+      - image_edit
+      - face_swap
+      - background_removal
+      - image_to_video
+      - text_to_video
+      - video_upscale
+      - lip_sync
+      - text_to_speech
+      - voice_clone
+      - music_generation
+
+  GenerationInput:
+    description: "Generation input"
+    fields:
+      prompt: Option<String>
+      negative_prompt: Option<String>
+      image_url: Option<String>
+      image_data: Option<Object>
+      video_url: Option<String>
+      video_data: Option<Object>
+      audio_url: Option<String>
+      audio_data: Option<Object>
+      mask_url: Option<String>
+      reference_images: Option<List<String>>
+      text: Option<String>
+
+  GenerationOptions:
+    description: "Generation options"
+    fields:
+      width: Option<Int>
+      height: Option<Int>
+      aspect_ratio: Option<AspectRatio>
+      num_outputs: Option<Int>
+      guidance_scale: Option<Float>
+      num_inference_steps: Option<Int>
+      seed: Option<Int>
+      style: Option<String>
+      quality: Option<QualityLevel>
+      duration_seconds: Option<Float>
+      fps: Option<Int>
+      voice_id: Option<String>
+      language: Option<String>
+
+  AspectRatio:
+    description: "Aspect ratio"
+    values:
+      - square_1_1
+      - portrait_9_16
+      - landscape_16_9
+      - portrait_3_4
+      - landscape_4_3
+      - portrait_2_3
+      - landscape_3_2
+      - wide_21_9
+
+  QualityLevel:
+    description: "Quality level"
+    values:
+      - draft
+      - standard
+      - high
+      - ultra
+
+  CallbackConfig:
+    description: "Callback configuration"
+    fields:
+      webhook_url: Option<String>
+      telegram_notify: Bool
+      message_id: Option<Int>
+      inline_message_id: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION RESULT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  GenerationResult:
+    description: "Generation result"
+    fields:
+      request_id: String
+      status: GenerationStatus
+      outputs: List<GenerationOutput>
+      model_used: String
+      provider: String
+      processing_time_ms: Int
+      cost_usd: Float
+      error: Option<GenerationError>
+      metadata: Object
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  GenerationStatus:
+    description: "Generation status"
+    values:
+      - pending
+      - validating
+      - queued
+      - processing
+      - post_processing
+      - uploading
+      - completed
+      - failed
+      - cancelled
+      - timeout
+
+  GenerationOutput:
+    description: "Generation output"
+    fields:
+      output_id: String
+      output_type: OutputType
+      url: String
+      storage_path: String
+      thumbnail_url: Option<String>
+      width: Option<Int>
+      height: Option<Int>
+      duration_ms: Option<Int>
+      file_size: Int
+      content_type: String
+      metadata: Object
+
+  OutputType:
+    description: "Output type"
+    values:
+      - image
+      - video
+      - audio
+      - text
+
+  GenerationError:
+    description: "Generation error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+      retryable: Bool
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_input
+      - invalid_prompt
+      - nsfw_detected
+      - model_not_found
+      - model_unavailable
+      - rate_limited
+      - quota_exceeded
+      - insufficient_balance
+      - timeout
+      - provider_error
+      - storage_error
+      - processing_error
+      - unknown_error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PIPELINE STAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PipelineStage:
+    description: "Pipeline stage"
+    values:
+      - input_validation
+      - content_moderation
+      - model_selection
+      - input_preprocessing
+      - generation
+      - output_postprocessing
+      - storage_upload
+      - notification
+
+  StageResult:
+    description: "Stage result"
+    fields:
+      stage: PipelineStage
+      success: Bool
+      duration_ms: Int
+      error: Option<String>
+      data: Option<Object>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODEL SELECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ModelSelectionCriteria:
+    description: "Model selection criteria"
+    fields:
+      generation_type: GenerationType
+      quality_preference: QualityLevel
+      speed_preference: SpeedPreference
+      cost_preference: CostPreference
+      required_features: Option<List<String>>
+      excluded_models: Option<List<String>>
+
+  SpeedPreference:
+    description: "Speed preference"
+    values:
+      - fastest
+      - balanced
+      - quality_first
+
+  CostPreference:
+    description: "Cost preference"
+    values:
+      - cheapest
+      - balanced
+      - best_quality
+
+  SelectedModel:
+    description: "Selected model"
+    fields:
+      model_id: String
+      provider: String
+      version: String
+      estimated_time_ms: Int
+      estimated_cost_usd: Float
+      confidence: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WebhookEvent:
+    description: "Webhook event"
+    fields:
+      event_id: String
+      event_type: WebhookEventType
+      request_id: String
+      timestamp: Timestamp
+      data: Object
+
+  WebhookEventType:
+    description: "Webhook event type"
+    values:
+      - generation_started
+      - generation_progress
+      - generation_completed
+      - generation_failed
+      - generation_cancelled
+
+  WebhookPayload:
+    description: "Webhook payload"
+    fields:
+      event: WebhookEvent
+      result: Option<GenerationResult>
+      progress: Option<Int>
+      signature: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BatchRequest:
+    description: "Batch generation request"
+    fields:
+      batch_id: String
+      user_id: Int
+      requests: List<GenerationRequest>
+      options: BatchOptions
+      created_at: Timestamp
+
+  BatchOptions:
+    description: "Batch options"
+    fields:
+      parallel: Bool
+      max_concurrent: Int
+      stop_on_error: Bool
+      callback: Option<CallbackConfig>
+
+  BatchResult:
+    description: "Batch result"
+    fields:
+      batch_id: String
+      status: BatchStatus
+      total: Int
+      completed: Int
+      failed: Int
+      results: List<GenerationResult>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  BatchStatus:
+    description: "Batch status"
+    values:
+      - pending
+      - processing
+      - completed
+      - partial
+      - failed
+      - cancelled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CostEstimate:
+    description: "Cost estimate"
+    fields:
+      model_id: String
+      base_cost_usd: Float
+      additional_cost_usd: Float
+      total_cost_usd: Float
+      stars_cost: Int
+      breakdown: List<CostItem>
+
+  CostItem:
+    description: "Cost item"
+    fields:
+      name: String
+      quantity: Float
+      unit_cost_usd: Float
+      total_cost_usd: Float
+
+  UsageRecord:
+    description: "Usage record"
+    fields:
+      record_id: String
+      user_id: Int
+      request_id: String
+      model_id: String
+      generation_type: GenerationType
+      cost_usd: Float
+      stars_charged: Int
+      processing_time_ms: Int
+      created_at: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_pipeline
+    given: PipelineConfig
+    when: Creating pipeline
+    then: Return Pipeline
+
+  - name: initialize
+    given: No parameters
+    when: Initializing pipeline
+    then: Initialize all clients
+
+  - name: shutdown
+    given: No parameters
+    when: Shutting down
+    then: Cleanup resources
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return PipelineStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear all counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate
+    given: GenerationRequest
+    when: Starting generation
+    then: Return GenerationResult
+
+  - name: generate_async
+    given: GenerationRequest
+    when: Starting async generation
+    then: Return request_id
+
+  - name: get_generation_status
+    given: Request ID
+    when: Getting status
+    then: Return GenerationResult
+
+  - name: cancel_generation
+    given: Request ID
+    when: Cancelling generation
+    then: Return success
+
+  - name: retry_generation
+    given: Request ID
+    when: Retrying generation
+    then: Return new request_id
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_batch
+    given: BatchRequest
+    when: Starting batch
+    then: Return BatchResult
+
+  - name: generate_batch_async
+    given: BatchRequest
+    when: Starting async batch
+    then: Return batch_id
+
+  - name: get_batch_status
+    given: Batch ID
+    when: Getting batch status
+    then: Return BatchResult
+
+  - name: cancel_batch
+    given: Batch ID
+    when: Cancelling batch
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PIPELINE STAGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_input
+    given: GenerationRequest
+    when: Validating input
+    then: Return validation result
+
+  - name: check_content_moderation
+    given: GenerationInput
+    when: Checking content
+    then: Return moderation result
+
+  - name: select_model
+    given: ModelSelectionCriteria
+    when: Selecting model
+    then: Return SelectedModel
+
+  - name: preprocess_input
+    given: GenerationInput and model
+    when: Preprocessing
+    then: Return processed input
+
+  - name: execute_generation
+    given: Processed input and model
+    when: Executing generation
+    then: Return raw output
+
+  - name: postprocess_output
+    given: Raw output and options
+    when: Postprocessing
+    then: Return processed output
+
+  - name: upload_to_storage
+    given: Output data
+    when: Uploading
+    then: Return storage URL
+
+  - name: send_notification
+    given: Result and callback
+    when: Notifying
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: GenerationRequest
+    when: Estimating cost
+    then: Return CostEstimate
+
+  - name: check_balance
+    given: User ID and cost
+    when: Checking balance
+    then: Return has_balance
+
+  - name: charge_user
+    given: User ID and cost
+    when: Charging user
+    then: Return success
+
+  - name: record_usage
+    given: UsageRecord
+    when: Recording usage
+    then: Return success
+
+  - name: get_user_usage
+    given: User ID and date range
+    when: Getting usage
+    then: Return usage records
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_webhook
+    given: WebhookPayload
+    when: Receiving webhook
+    then: Process and update status
+
+  - name: verify_webhook_signature
+    given: Payload and signature
+    when: Verifying signature
+    then: Return is_valid
+
+  - name: send_webhook
+    given: WebhookEvent
+    when: Sending webhook
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_supported_types
+    given: No parameters
+    when: Getting supported types
+    then: Return GenerationType list
+
+  - name: get_available_models
+    given: GenerationType
+    when: Getting models
+    then: Return model list
+
+  - name: get_model_info
+    given: Model ID
+    when: Getting model info
+    then: Return model details
+
+  - name: validate_prompt
+    given: Prompt text
+    when: Validating prompt
+    then: Return validation result
+
+  - name: enhance_prompt
+    given: Prompt and style
+    when: Enhancing prompt
+    then: Return enhanced prompt
+
+  - name: translate_prompt
+    given: Prompt and target language
+    when: Translating prompt
+    then: Return translated prompt
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 300000
+  DEFAULT_MAX_CONCURRENT: 10
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 5000
+
+  # Quality defaults
+  DEFAULT_IMAGE_WIDTH: 1024
+  DEFAULT_IMAGE_HEIGHT: 1024
+  DEFAULT_VIDEO_DURATION: 5
+  DEFAULT_VIDEO_FPS: 24
+  DEFAULT_AUDIO_DURATION: 30
+
+  # Limits
+  MAX_PROMPT_LENGTH: 4000
+  MAX_NEGATIVE_PROMPT_LENGTH: 2000
+  MAX_IMAGE_SIZE: 10485760
+  MAX_VIDEO_SIZE: 104857600
+  MAX_AUDIO_SIZE: 52428800
+  MAX_BATCH_SIZE: 10
+  MAX_OUTPUTS_PER_REQUEST: 4
+
+  # Cost multipliers
+  COST_MULTIPLIER_HIGH_QUALITY: 1.5
+  COST_MULTIPLIER_ULTRA_QUALITY: 2.0
+  COST_MULTIPLIER_FAST: 0.8
+
+  # Storage paths
+  STORAGE_PATH_IMAGES: "generations/images"
+  STORAGE_PATH_VIDEOS: "generations/videos"
+  STORAGE_PATH_AUDIO: "generations/audio"
+  STORAGE_PATH_TEMP: "generations/temp"
+
+  # Webhook
+  WEBHOOK_TIMEOUT_MS: 10000
+  WEBHOOK_MAX_RETRIES: 3
