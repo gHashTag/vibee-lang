@@ -1,0 +1,150 @@
+/*
+ * VIBEE BitNet Device Tree Include for ZCU104
+ *
+ * Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+ * Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+ *
+ * Copyright (c) 2024 VIBEE Project
+ * SPDX-License-Identifier: GPL-2.0
+ */
+
+/ {
+    /* ═══════════════════════════════════════════════════════════════════════
+     * Reserved Memory for DMA buffers
+     * ═══════════════════════════════════════════════════════════════════════ */
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        /* BitNet DMA buffer region - 256MB at 0x70000000 */
+        bitnet_reserved: bitnet@70000000 {
+            compatible = "shared-dma-pool";
+            no-map;
+            reg = <0x0 0x70000000 0x0 0x10000000>;  /* 256MB */
+            label = "bitnet-dma-pool";
+        };
+    };
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * PL (Programmable Logic) Bus
+     * ═══════════════════════════════════════════════════════════════════════ */
+    amba_pl: amba_pl@0 {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "simple-bus";
+        ranges;
+
+        /* ───────────────────────────────────────────────────────────────────
+         * BitNet Accelerator
+         * ─────────────────────────────────────────────────────────────────── */
+        bitnet_accel: bitnet@a0000000 {
+            compatible = "vibee,bitnet-1.0";
+            reg = <0x0 0xa0000000 0x0 0x10000>;  /* 64KB register space */
+            
+            /* Interrupt */
+            interrupt-parent = <&gic>;
+            interrupts = <0 89 4>;  /* SPI 89, level high */
+            
+            /* Reserved memory for DMA */
+            memory-region = <&bitnet_reserved>;
+            
+            /* DMA channels */
+            dmas = <&axi_dma_0 0     /* MM2S channel for input */
+                    &axi_dma_0 1     /* S2MM channel for output */
+                    &axi_dma_1 0>;   /* MM2S channel for weights */
+            dma-names = "input", "output", "weights";
+            
+            /* Clock */
+            clocks = <&zynqmp_clk 71>;  /* PL0 clock */
+            clock-names = "aclk";
+            
+            /* Custom properties */
+            vibee,num-simd-cores = <27>;    /* 3³ SIMD blocks */
+            vibee,simd-width = <54>;        /* 54-bit SIMD */
+            vibee,max-layers = <28>;        /* Max network layers */
+            vibee,weight-bits = <2>;        /* Ternary weights */
+            
+            status = "okay";
+        };
+
+        /* ───────────────────────────────────────────────────────────────────
+         * AXI DMA Controller 0 (Input/Output)
+         * ─────────────────────────────────────────────────────────────────── */
+        axi_dma_0: dma@a0010000 {
+            #dma-cells = <1>;
+            compatible = "xlnx,axi-dma-1.00.a";
+            reg = <0x0 0xa0010000 0x0 0x10000>;
+            
+            interrupt-parent = <&gic>;
+            interrupts = <0 90 4>, <0 91 4>;  /* MM2S, S2MM */
+            
+            xlnx,addrwidth = <40>;
+            xlnx,include-sg;
+            
+            clocks = <&zynqmp_clk 71>, <&zynqmp_clk 71>;
+            clock-names = "s_axi_lite_aclk", "m_axi_sg_aclk";
+            
+            /* MM2S Channel (Memory to Stream - Input) */
+            dma-channel@a0010000 {
+                compatible = "xlnx,axi-dma-mm2s-channel";
+                dma-channels = <1>;
+                interrupts = <0 90 4>;
+                xlnx,datawidth = <64>;
+                xlnx,device-id = <0>;
+                xlnx,include-dre;
+            };
+            
+            /* S2MM Channel (Stream to Memory - Output) */
+            dma-channel@a0010030 {
+                compatible = "xlnx,axi-dma-s2mm-channel";
+                dma-channels = <1>;
+                interrupts = <0 91 4>;
+                xlnx,datawidth = <64>;
+                xlnx,device-id = <0>;
+                xlnx,include-dre;
+            };
+            
+            status = "okay";
+        };
+
+        /* ───────────────────────────────────────────────────────────────────
+         * AXI DMA Controller 1 (Weights)
+         * ─────────────────────────────────────────────────────────────────── */
+        axi_dma_1: dma@a0020000 {
+            #dma-cells = <1>;
+            compatible = "xlnx,axi-dma-1.00.a";
+            reg = <0x0 0xa0020000 0x0 0x10000>;
+            
+            interrupt-parent = <&gic>;
+            interrupts = <0 92 4>;  /* MM2S only */
+            
+            xlnx,addrwidth = <40>;
+            xlnx,include-sg;
+            
+            clocks = <&zynqmp_clk 71>, <&zynqmp_clk 71>;
+            clock-names = "s_axi_lite_aclk", "m_axi_sg_aclk";
+            
+            /* MM2S Channel (Memory to Stream - Weights) */
+            dma-channel@a0020000 {
+                compatible = "xlnx,axi-dma-mm2s-channel";
+                dma-channels = <1>;
+                interrupts = <0 92 4>;
+                xlnx,datawidth = <64>;
+                xlnx,device-id = <1>;
+                xlnx,include-dre;
+            };
+            
+            status = "okay";
+        };
+    };
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Aliases
+ * ═══════════════════════════════════════════════════════════════════════════ */
+/ {
+    aliases {
+        bitnet0 = &bitnet_accel;
+    };
+};

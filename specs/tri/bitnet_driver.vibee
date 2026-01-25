@@ -1,0 +1,357 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE BitNet Linux Driver Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# Platform driver для управления BitNet акселератором из Linux
+#
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_driver
+version: "1.0.0"
+language: c
+module: bitnet_drv
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Регистры акселератора
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BitNetRegisters:
+    description: "Карта регистров BitNet акселератора"
+    base_address: 0xA0000000
+    registers:
+      CTRL:
+        offset: 0x00
+        access: RW
+        bits:
+          START: 0
+          RESET: 1
+          IRQ_EN: 2
+          ABORT: 3
+      STATUS:
+        offset: 0x04
+        access: RO
+        bits:
+          BUSY: 0
+          DONE: 1
+          ERROR: 2
+          IRQ_PENDING: 3
+      VERSION:
+        offset: 0x08
+        access: RO
+      CONFIG:
+        offset: 0x0C
+        access: RW
+        bits:
+          NUM_LAYERS: "7:0"
+          BATCH_SIZE: "15:8"
+          SIMD_ENABLE: 16
+      INPUT_ADDR_LO:
+        offset: 0x10
+        access: RW
+      INPUT_ADDR_HI:
+        offset: 0x14
+        access: RW
+      OUTPUT_ADDR_LO:
+        offset: 0x18
+        access: RW
+      OUTPUT_ADDR_HI:
+        offset: 0x1C
+        access: RW
+      WEIGHT_ADDR_LO:
+        offset: 0x20
+        access: RW
+      WEIGHT_ADDR_HI:
+        offset: 0x24
+        access: RW
+      INPUT_SIZE:
+        offset: 0x28
+        access: RW
+      OUTPUT_SIZE:
+        offset: 0x2C
+        access: RW
+      INFERENCE_COUNT:
+        offset: 0x30
+        access: RO
+      CYCLE_COUNT:
+        offset: 0x34
+        access: RO
+      ERROR_CODE:
+        offset: 0x38
+        access: RO
+      CURRENT_LAYER:
+        offset: 0x3C
+        access: RO
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Состояния драйвера
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  DriverState:
+    description: "Состояние драйвера"
+    values:
+      IDLE: 0
+      LOADING_WEIGHTS: 1
+      RUNNING_INFERENCE: 2
+      DMA_TRANSFER: 3
+      ERROR: 4
+
+  ErrorCode:
+    description: "Коды ошибок"
+    values:
+      SUCCESS: 0
+      INVALID_PARAM: -1
+      DMA_ERROR: -2
+      TIMEOUT: -3
+      BUSY: -4
+      NO_MEMORY: -5
+      WEIGHT_MISMATCH: -6
+      HW_ERROR: -7
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IOCTL структуры
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  InferenceRequest:
+    description: "Запрос на inference"
+    fields:
+      input_offset: Int      # Смещение в mmap буфере
+      output_offset: Int
+      input_size: Int
+      output_size: Int
+      num_tokens: Int
+      flags: Int
+
+  WeightRequest:
+    description: "Запрос на загрузку весов"
+    fields:
+      weight_offset: Int
+      layer_id: Int
+      weight_size: Int
+
+  StatusResponse:
+    description: "Ответ со статусом"
+    fields:
+      state: Int
+      current_layer: Int
+      tokens_processed: Int
+      error_code: Int
+
+  PerfResponse:
+    description: "Ответ с метриками производительности"
+    fields:
+      total_cycles: Int
+      dma_cycles: Int
+      compute_cycles: Int
+      tokens_per_second: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IOCTL КОМАНДЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ioctl:
+  magic: 'B'
+  commands:
+    START_INFERENCE:
+      number: 1
+      direction: IOW
+      arg_type: InferenceRequest
+    LOAD_WEIGHTS:
+      number: 2
+      direction: IOW
+      arg_type: WeightRequest
+    GET_STATUS:
+      number: 3
+      direction: IOR
+      arg_type: StatusResponse
+    WAIT_COMPLETE:
+      number: 4
+      direction: IO
+    ABORT:
+      number: 5
+      direction: IO
+    GET_PERF:
+      number: 6
+      direction: IOR
+      arg_type: PerfResponse
+    RESET:
+      number: 7
+      direction: IO
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Инициализация
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: probe
+    given: Device Tree содержит bitnet node
+    when: Kernel загружает драйвер
+    then: Инициализирует устройство, регистрирует char device
+
+  - name: remove
+    given: Драйвер загружен
+    when: Kernel выгружает драйвер
+    then: Освобождает ресурсы, удаляет char device
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # File operations
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: open
+    given: /dev/bitnet0 существует
+    when: Userspace вызывает open()
+    then: Инициализирует контекст, проверяет доступность
+
+  - name: release
+    given: Файл открыт
+    when: Userspace вызывает close()
+    then: Освобождает контекст, останавливает DMA если активен
+
+  - name: mmap
+    given: DMA буфер выделен
+    when: Userspace вызывает mmap()
+    then: Отображает DMA буфер в userspace (zero-copy)
+
+  - name: ioctl
+    given: Файл открыт
+    when: Userspace вызывает ioctl()
+    then: Выполняет команду (inference, load_weights, status, etc.)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DMA операции
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: dma_transfer_input
+    given: Input данные в DMA буфере
+    when: Запуск inference
+    then: DMA MM2S передаёт данные в акселератор
+
+  - name: dma_transfer_output
+    given: Inference завершён
+    when: Акселератор сигнализирует DONE
+    then: DMA S2MM передаёт результат в буфер
+
+  - name: dma_transfer_weights
+    given: Веса в DMA буфере
+    when: Загрузка весов
+    then: DMA MM2S передаёт веса в акселератор
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Прерывания
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: irq_handler
+    given: IRQ включен
+    when: Акселератор генерирует прерывание
+    then: Обрабатывает DONE/ERROR, будит ожидающие процессы
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНФИГУРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+config:
+  device_name: "bitnet"
+  device_class: "bitnet"
+  max_devices: 4
+  
+  dma:
+    input_buffer_size: 0x4000000    # 64MB
+    output_buffer_size: 0x4000000   # 64MB
+    weight_buffer_size: 0x8000000   # 128MB
+    total_reserved: 0x10000000      # 256MB
+  
+  timeouts:
+    inference_ms: 30000             # 30 секунд
+    dma_ms: 5000                    # 5 секунд
+    reset_ms: 100                   # 100 мс
+
+  device_tree:
+    compatible: "vibee,bitnet-1.0"
+    reg_size: 0x10000
+    irq_type: "level-high"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USERSPACE API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+userspace_api:
+  library_name: libbitnet
+  
+  functions:
+    - name: bitnet_init
+      description: "Инициализация контекста"
+      params:
+        - device: String
+      returns: "bitnet_ctx_t*"
+    
+    - name: bitnet_destroy
+      description: "Освобождение контекста"
+      params:
+        - ctx: "bitnet_ctx_t*"
+    
+    - name: bitnet_load_weights
+      description: "Загрузка весов из файла"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - model_path: String
+      returns: Int
+    
+    - name: bitnet_inference
+      description: "Синхронный inference"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - input_tokens: "int32_t*"
+        - num_tokens: Int
+        - output_tokens: "int32_t*"
+        - max_output: Int
+      returns: Int
+    
+    - name: bitnet_inference_async
+      description: "Асинхронный inference"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - input_tokens: "int32_t*"
+        - num_tokens: Int
+      returns: Int
+    
+    - name: bitnet_wait
+      description: "Ожидание завершения"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - timeout_ms: Int
+      returns: Int
+    
+    - name: bitnet_get_output
+      description: "Получение результата"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - output_tokens: "int32_t*"
+        - max_output: Int
+      returns: Int
+    
+    - name: bitnet_get_status
+      description: "Получение статуса"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - status: "bitnet_status_t*"
+      returns: Int
+    
+    - name: bitnet_get_perf
+      description: "Получение метрик"
+      params:
+        - ctx: "bitnet_ctx_t*"
+        - perf: "bitnet_perf_t*"
+      returns: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОЩЕЙ БЕССМЕРТЕН | ЗОЛОТАЯ ЦЕПЬ ЗАМКНУТА | φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
