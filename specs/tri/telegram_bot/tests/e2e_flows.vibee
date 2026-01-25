@@ -1,0 +1,398 @@
+name: e2e_flows
+version: "1.0.0"
+language: zig
+module: e2e_flows
+
+description: |
+  End-to-end user flow tests for VIBEE Telegram bot.
+  Complete user journeys from registration to generation.
+  Tests all critical paths and edge cases.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  E2ETestRunner:
+    description: "E2E test runner"
+    fields:
+      config: TestConfig
+      results: List<FlowResult>
+      is_running: Bool
+
+  TestConfig:
+    description: "Test configuration"
+    fields:
+      timeout_ms: Int
+      retry_count: Int
+      parallel: Bool
+      verbose: Bool
+      fail_fast: Bool
+      tags: List<String>
+
+  UserFlow:
+    description: "User flow definition"
+    fields:
+      flow_id: String
+      name: String
+      description: String
+      category: FlowCategory
+      steps: List<FlowStep>
+      preconditions: List<String>
+      expected_outcome: String
+      tags: List<String>
+      timeout_ms: Int
+
+  FlowCategory:
+    description: "Flow category"
+    values:
+      - onboarding
+      - generation
+      - payment
+      - subscription
+      - settings
+      - support
+      - admin
+
+  FlowStep:
+    description: "Flow step"
+    fields:
+      step_id: String
+      action: StepAction
+      input: Object
+      expected: Object
+      timeout_ms: Int
+      retry_on_fail: Bool
+
+  StepAction:
+    description: "Step action type"
+    values:
+      - send_command
+      - send_message
+      - send_photo
+      - send_video
+      - send_audio
+      - click_button
+      - wait_for_message
+      - wait_for_callback
+      - wait_for_generation
+      - wait_for_payment
+      - verify_state
+      - verify_balance
+      - verify_subscription
+
+  FlowResult:
+    description: "Flow execution result"
+    fields:
+      flow_id: String
+      status: FlowStatus
+      duration_ms: Int
+      steps_completed: Int
+      steps_total: Int
+      step_results: List<StepResult>
+      error: Option<String>
+      screenshots: List<String>
+
+  FlowStatus:
+    description: "Flow status"
+    values:
+      - passed
+      - failed
+      - skipped
+      - timeout
+      - error
+
+  StepResult:
+    description: "Step result"
+    fields:
+      step_id: String
+      status: StepStatus
+      duration_ms: Int
+      actual: Option<Object>
+      expected: Option<Object>
+      error: Option<String>
+
+  StepStatus:
+    description: "Step status"
+    values:
+      - passed
+      - failed
+      - skipped
+
+  TestUser:
+    description: "Test user"
+    fields:
+      telegram_id: Int
+      username: String
+      language: String
+      is_premium: Bool
+      balance: Int
+
+  TestReport:
+    description: "Test report"
+    fields:
+      report_id: String
+      started_at: Timestamp
+      completed_at: Timestamp
+      total_flows: Int
+      passed: Int
+      failed: Int
+      skipped: Int
+      duration_ms: Int
+      results: List<FlowResult>
+      coverage: Object
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RUNNER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_runner
+    given: TestConfig
+    when: Initializing runner
+    then: Return E2ETestRunner
+
+  - name: run_all_flows
+    given: No parameters
+    when: Running all flows
+    then: Return TestReport
+
+  - name: run_flow
+    given: Flow ID
+    when: Running single flow
+    then: Return FlowResult
+
+  - name: run_flows_by_category
+    given: FlowCategory
+    when: Running category
+    then: Return list of results
+
+  - name: run_flows_by_tag
+    given: Tag
+    when: Running by tag
+    then: Return list of results
+
+  - name: stop_runner
+    given: No parameters
+    when: Stopping runner
+    then: Stop execution
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ONBOARDING FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_new_user_registration
+    given: Test user
+    when: New user starts bot
+    then: Verify welcome message and menu
+
+  - name: test_language_selection
+    given: Test user
+    when: User selects language
+    then: Verify language changed
+
+  - name: test_welcome_bonus
+    given: Test user
+    when: New user registers
+    then: Verify bonus credited
+
+  - name: test_referral_registration
+    given: Test user and referrer
+    when: User registers via referral
+    then: Verify both get bonus
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_image_generation_flow
+    given: Test user with balance
+    when: User generates image
+    then: Verify image received and balance deducted
+
+  - name: test_image_to_video_flow
+    given: Test user with image
+    when: User converts to video
+    then: Verify video received
+
+  - name: test_text_to_video_flow
+    given: Test user with balance
+    when: User generates video from text
+    then: Verify video received
+
+  - name: test_face_swap_flow
+    given: Test user with two images
+    when: User swaps faces
+    then: Verify result received
+
+  - name: test_upscale_flow
+    given: Test user with image
+    when: User upscales image
+    then: Verify upscaled image
+
+  - name: test_voice_clone_flow
+    given: Test user with audio
+    when: User clones voice
+    then: Verify voice model created
+
+  - name: test_tts_flow
+    given: Test user with text
+    when: User generates speech
+    then: Verify audio received
+
+  - name: test_generation_insufficient_balance
+    given: Test user with zero balance
+    when: User tries to generate
+    then: Verify error and top-up prompt
+
+  - name: test_generation_cancellation
+    given: Test user with active generation
+    when: User cancels
+    then: Verify cancellation and refund
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_stars_purchase_flow
+    given: Test user
+    when: User buys stars
+    then: Verify payment and balance
+
+  - name: test_subscription_purchase_flow
+    given: Test user
+    when: User buys subscription
+    then: Verify subscription active
+
+  - name: test_subscription_upgrade_flow
+    given: Test user with basic sub
+    when: User upgrades to pro
+    then: Verify upgrade and proration
+
+  - name: test_subscription_cancellation_flow
+    given: Test user with subscription
+    when: User cancels subscription
+    then: Verify cancellation at period end
+
+  - name: test_refund_flow
+    given: Test user with recent payment
+    when: Admin issues refund
+    then: Verify refund processed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SETTINGS FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_change_language_flow
+    given: Test user
+    when: User changes language
+    then: Verify all messages in new language
+
+  - name: test_notification_settings_flow
+    given: Test user
+    when: User disables notifications
+    then: Verify no notifications sent
+
+  - name: test_quiet_hours_flow
+    given: Test user
+    when: User sets quiet hours
+    then: Verify notifications delayed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUPPORT FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_support_request_flow
+    given: Test user
+    when: User sends support request
+    then: Verify ticket created
+
+  - name: test_faq_flow
+    given: Test user
+    when: User browses FAQ
+    then: Verify FAQ displayed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: test_invalid_input_handling
+    given: Test user
+    when: User sends invalid input
+    then: Verify error message
+
+  - name: test_rate_limit_handling
+    given: Test user
+    when: User exceeds rate limit
+    then: Verify rate limit message
+
+  - name: test_maintenance_mode_handling
+    given: Test user during maintenance
+    when: User tries action
+    then: Verify maintenance message
+
+  - name: test_generation_failure_handling
+    given: Test user
+    when: Generation fails
+    then: Verify error and refund
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_test_user
+    given: User config
+    when: Creating test user
+    then: Return TestUser
+
+  - name: cleanup_test_user
+    given: Test user
+    when: Cleaning up
+    then: Remove test data
+
+  - name: simulate_message
+    given: User and message
+    when: Simulating message
+    then: Process and return response
+
+  - name: simulate_callback
+    given: User and callback data
+    when: Simulating callback
+    then: Process and return response
+
+  - name: wait_for_condition
+    given: Condition and timeout
+    when: Waiting
+    then: Return when condition met
+
+  - name: generate_report
+    given: Results
+    when: Generating report
+    then: Return TestReport
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 30000
+  GENERATION_TIMEOUT_MS: 300000
+  PAYMENT_TIMEOUT_MS: 60000
+  DEFAULT_RETRY_COUNT: 3
+
+  TEST_USER_ID_BASE: 900000000
+  TEST_BALANCE_DEFAULT: 1000
+
+  TAG_SMOKE: "smoke"
+  TAG_REGRESSION: "regression"
+  TAG_CRITICAL: "critical"
+  TAG_SLOW: "slow"
+
+  FLOW_ONBOARDING: "onboarding"
+  FLOW_GENERATION: "generation"
+  FLOW_PAYMENT: "payment"
+  FLOW_SETTINGS: "settings"
