@@ -22,24 +22,30 @@ export default function InvestSection() {
       
       <p className="fade" style={{ fontSize: '1.2rem', margin: '4rem 0', fontStyle: 'italic', maxWidth: '700px' }}>{inv?.closing}</p>
       
-      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1.5rem' }}>
-        <div className="premium-card" style={{ textAlign: 'center', padding: '2rem' }}>
-          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)' }}>{inv.investorTitle}</h4>
-          <a href={`mailto:${inv?.contact?.email}?subject=Pitch Deck Request`} className="btn" style={{ width: '100%' }}>
-            {inv?.ctas?.investor}
-          </a>
+      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(200px, 25vw, 300px), 1fr))', gap: '1.5rem' }}>
+        <div className="premium-card" style={{ textAlign: 'center', padding: 'clamp(1.5rem, 4vw, 2rem)', display: 'flex', flexDirection: 'column' }}>
+          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{inv.investorTitle}</h4>
+          <div style={{ marginTop: 'auto' }}>
+            <a href={`mailto:${inv?.contact?.email}?subject=Pitch Deck Request`} className="btn" style={{ width: '100%', fontSize: '0.9rem' }}>
+              {inv?.ctas?.investor}
+            </a>
+          </div>
         </div>
-        <div className="premium-card" style={{ textAlign: 'center', padding: '2rem' }}>
-          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)' }}>{inv.partnerTitle}</h4>
-          <a href={`mailto:${inv?.contact?.email}?subject=Integration Inquiry`} className="btn secondary" style={{ width: '100%' }}>
-            {inv?.ctas?.partner}
-          </a>
+        <div className="premium-card" style={{ textAlign: 'center', padding: 'clamp(1.5rem, 4vw, 2rem)', display: 'flex', flexDirection: 'column' }}>
+          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{inv.partnerTitle}</h4>
+          <div style={{ marginTop: 'auto' }}>
+            <a href={`mailto:${inv?.contact?.email}?subject=Integration Inquiry`} className="btn secondary" style={{ width: '100%', fontSize: '0.9rem' }}>
+              {inv?.ctas?.partner}
+            </a>
+          </div>
         </div>
-        <div className="premium-card" style={{ textAlign: 'center', padding: '2rem' }}>
-          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)' }}>{inv.talentTitle}</h4>
-          <a href="https://t.me/vibee_dev" className="btn secondary" style={{ width: '100%', borderColor: '#229ED9', color: '#229ED9' }}>
-            {inv?.ctas?.talent}
-          </a>
+        <div className="premium-card" style={{ textAlign: 'center', padding: 'clamp(1.5rem, 4vw, 2rem)', display: 'flex', flexDirection: 'column' }}>
+          <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{inv.talentTitle}</h4>
+          <div style={{ marginTop: 'auto' }}>
+            <a href="https://t.me/vibee_dev" className="btn secondary" style={{ width: '100%', borderColor: '#229ED9', color: '#229ED9', fontSize: '0.9rem' }}>
+              {inv?.ctas?.talent}
+            </a>
+          </div>
         </div>
       </div>
 

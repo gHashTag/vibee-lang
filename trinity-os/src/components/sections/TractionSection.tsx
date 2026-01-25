@@ -30,9 +30,11 @@ export default function TractionSection() {
         ))}
       </div>
 
-      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '15px' }}>
+      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(150px, 42vw, 320px), 1fr))', gap: 'clamp(10px, 2vw, 20px)' }}>
         {displayMetrics?.map((m: { value: string; label: string; color: string }, i: number) => (
-          <MetricCard key={i} value={m.value} label={m.label} color={m.color as any} />
+          <div key={i} style={{ display: 'flex' }}>
+            <MetricCard value={m.value} label={m.label} color={m.color as any} />
+          </div>
         ))}
       </div>
     </Section>
