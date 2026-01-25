@@ -97,6 +97,61 @@ pub const AnthropicClient = struct {
         return self.chatWithSystem(null, user_message);
     }
 
+    /// Chat with vision (screenshot analysis) - Claude Vision API
+    pub fn chatWithVision(self: *Self, prompt: []const u8, image_base64: []const u8) AnthropicError!ChatResponse {
+        const start_time = std.time.nanoTimestamp();
+
+        // Build vision request JSON (Anthropic format with image content)
+        const request_body = self.buildVisionRequestJson(prompt, image_base64) catch return AnthropicError.OutOfMemory;
+        defer self.allocator.free(request_body);
+
+        // Make HTTP request
+        var response = self.makeRequest(request_body) catch return AnthropicError.NetworkError;
+        defer response.deinit();
+
+        const end_time = std.time.nanoTimestamp();
+
+        // Check status
+        if (response.status == 401) return AnthropicError.InvalidApiKey;
+        if (response.status == 429) return AnthropicError.RateLimited;
+        if (response.status == 529) return AnthropicError.Overloaded;
+        if (response.status != 200) return AnthropicError.ApiError;
+
+        return self.parseResponse(response.body, @intCast(end_time - start_time)) catch return AnthropicError.ParseError;
+    }
+
+    /// Build vision request with image content
+    fn buildVisionRequestJson(self: *Self, prompt: []const u8, image_base64: []const u8) ![]u8 {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer buffer.deinit();
+
+        const writer = buffer.writer();
+
+        // Anthropic vision format:
+        // {"model":"...", "max_tokens":..., "messages":[{"role":"user","content":[
+        //   {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}},
+        //   {"type":"text","text":"..."}
+        // ]}]}
+
+        try writer.writeAll("{\"model\":\"");
+        try writer.writeAll(self.model);
+        try writer.writeAll("\",\"max_tokens\":");
+        try writer.print("{d}", .{self.max_tokens});
+        try writer.writeAll(",\"messages\":[{\"role\":\"user\",\"content\":[");
+        
+        // Image content
+        try writer.writeAll("{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"");
+        try writer.writeAll(image_base64);
+        try writer.writeAll("\"}},");
+        
+        // Text content
+        try writer.writeAll("{\"type\":\"text\",\"text\":\"");
+        try self.writeEscaped(writer, prompt);
+        try writer.writeAll("\"}]}]}");
+
+        return buffer.toOwnedSlice();
+    }
+
     /// Chat with optional system prompt (Anthropic-specific: system is separate field)
     pub fn chatWithSystem(self: *Self, system_prompt: ?[]const u8, user_message: []const u8) AnthropicError!ChatResponse {
         const start_time = std.time.nanoTimestamp();

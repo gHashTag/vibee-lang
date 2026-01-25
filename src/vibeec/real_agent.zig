@@ -6200,6 +6200,64 @@ pub const RealAgent = struct {
         return self.captureScreenshot();
     }
 
+    /// Get accessibility tree via CDP Accessibility.getFullAXTree
+    pub fn getAccessibilityTree(self: *Self) AgentError![]const u8 {
+        if (!self.connected) return AgentError.BrowserConnectionFailed;
+
+        // CDP Accessibility.getFullAXTree command
+        var cmd_buf: [256]u8 = undefined;
+        const cmd = std.fmt.bufPrint(&cmd_buf, "{{\"id\":{d},\"method\":\"Accessibility.getFullAXTree\",\"params\":{{}}}}", .{self.message_id}) catch return AgentError.OutOfMemory;
+        self.message_id += 1;
+
+        self.ws.sendText(cmd) catch return AgentError.EvaluationFailed;
+
+        const frame = self.ws.receive() catch return AgentError.EvaluationFailed;
+        
+        // Return full response for parsing
+        return self.allocator.dupe(u8, frame.payload) catch return AgentError.OutOfMemory;
+    }
+
+    /// Get interactive elements from accessibility tree
+    pub fn getInteractiveFromA11y(self: *Self) AgentError![]const u8 {
+        const tree_json = try self.getAccessibilityTree();
+        defer self.allocator.free(tree_json);
+
+        // Extract interactive elements (buttons, links, inputs, etc.)
+        var result = std.ArrayList(u8).init(self.allocator);
+        errdefer result.deinit();
+
+        const writer = result.writer();
+        try writer.writeAll("Interactive elements:\n");
+
+        // Parse and filter for interactive roles
+        const interactive_roles = [_][]const u8{
+            "button", "link", "textbox", "checkbox", "radio",
+            "combobox", "listbox", "menuitem", "tab", "searchbox",
+        };
+
+        for (interactive_roles) |role| {
+            // Find all nodes with this role
+            var search_pos: usize = 0;
+            while (std.mem.indexOf(u8, tree_json[search_pos..], role)) |pos| {
+                const abs_pos = search_pos + pos;
+                // Extract name if available
+                if (std.mem.indexOf(u8, tree_json[abs_pos..@min(abs_pos + 500, tree_json.len)], "\"name\":")) |name_pos| {
+                    const name_start = abs_pos + name_pos + 8;
+                    if (name_start < tree_json.len and tree_json[name_start] == '"') {
+                        var name_end = name_start + 1;
+                        while (name_end < tree_json.len and tree_json[name_end] != '"') : (name_end += 1) {}
+                        if (name_end > name_start + 1) {
+                            try writer.print("- [{s}] {s}\n", .{ role, tree_json[name_start + 1 .. name_end] });
+                        }
+                    }
+                }
+                search_pos = abs_pos + role.len;
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
     /// Close connection
     pub fn close(self: *Self) void {
         self.ws.close();

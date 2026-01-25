@@ -776,6 +776,73 @@ pub const LLMProvider = enum {
     together, // Together AI
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MULTI-AGENT ORCHESTRATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const AgentRole = enum {
+    vision, // Screenshot analysis, element finding by visual description
+    dom, // DOM/A11y tree parsing, selector-based element finding
+    planning, // Task decomposition, action sequence planning
+    action, // Browser action execution (click, type, navigate)
+    verification, // Verify action success by comparing states
+};
+
+pub const SubTask = struct {
+    description: []const u8,
+    assigned_agent: AgentRole,
+    dependencies: []const usize, // Indices of tasks this depends on
+    completed: bool,
+    result: ?[]const u8,
+};
+
+pub const MultiAgentConfig = struct {
+    use_vision: bool = true,
+    use_a11y: bool = true,
+    parallel_analysis: bool = false,
+    vision_confidence_threshold: f32 = 0.7,
+    max_retries: u32 = 3,
+};
+
+/// Route task to appropriate agent based on task type
+pub fn routeToAgent(task_description: []const u8) AgentRole {
+    // Vision tasks: finding elements by visual description
+    if (std.mem.indexOf(u8, task_description, "find") != null or
+        std.mem.indexOf(u8, task_description, "locate") != null or
+        std.mem.indexOf(u8, task_description, "where is") != null or
+        std.mem.indexOf(u8, task_description, "look for") != null)
+    {
+        return .vision;
+    }
+
+    // DOM tasks: selector-based operations
+    if (std.mem.indexOf(u8, task_description, "#") != null or
+        std.mem.indexOf(u8, task_description, ".class") != null or
+        std.mem.indexOf(u8, task_description, "selector") != null)
+    {
+        return .dom;
+    }
+
+    // Verification tasks
+    if (std.mem.indexOf(u8, task_description, "verify") != null or
+        std.mem.indexOf(u8, task_description, "check") != null or
+        std.mem.indexOf(u8, task_description, "confirm") != null)
+    {
+        return .verification;
+    }
+
+    // Planning tasks
+    if (std.mem.indexOf(u8, task_description, "plan") != null or
+        std.mem.indexOf(u8, task_description, "steps") != null or
+        std.mem.indexOf(u8, task_description, "how to") != null)
+    {
+        return .planning;
+    }
+
+    // Default to action
+    return .action;
+}
+
 pub const PlanningAgent = struct {
     allocator: Allocator,
     browser: real_agent.RealAgent,
@@ -972,6 +1039,21 @@ pub const PlanningAgent = struct {
         // Capture screenshot
         const screenshot = self.browser.captureScreenshot() catch return error.ScreenshotFailed;
         defer self.allocator.free(screenshot);
+
+        // Try Anthropic Claude Vision first (better for UI understanding)
+        if (self.anthropic_client) |*client| {
+            var response = client.chatWithVision(prompt, screenshot) catch {
+                // Fall back to OpenAI GPT-4V
+                if (self.llm_client) |*openai_client| {
+                    var openai_response = openai_client.chatWithVision(prompt, screenshot) catch return error.VisionFailed;
+                    defer openai_response.deinit();
+                    return self.allocator.dupe(u8, openai_response.content) catch return error.OutOfMemory;
+                }
+                return error.VisionFailed;
+            };
+            defer response.deinit();
+            return self.allocator.dupe(u8, response.content) catch return error.OutOfMemory;
+        }
 
         // Use GPT-4V for analysis
         if (self.llm_client) |*client| {
