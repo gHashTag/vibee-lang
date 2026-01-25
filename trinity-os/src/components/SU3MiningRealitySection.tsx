@@ -17,7 +17,11 @@ export default function SU3MiningRealitySection() {
     hash: 533.7,
   });
 
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>([
+    "[SYSTEM] SU(3) Core V5.1 initialized",
+    "[HARDWARE] Phase-locked loop synchronized",
+    "[NETWORK] Handshake pending..."
+  ]);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Real-time Telemetry Loop
@@ -184,21 +188,30 @@ export default function SU3MiningRealitySection() {
 
         {/* Coptic Terminal (Instruction Bridge) */}
         <div style={{ 
-          height: '100px', 
-          background: 'rgba(0,0,0,0.4)', 
-          border: '1px solid rgba(255,255,255,0.05)', 
+          background: 'rgba(0,0,0,0.6)', 
+          border: '1px solid rgba(0, 229, 153, 0.2)', 
           borderRadius: '12px', 
-          marginBottom: '2rem',
-          padding: '0.8rem',
+          marginBottom: '2.5rem',
+          padding: '1rem',
+          position: 'relative',
           overflow: 'hidden',
           fontFamily: '"JetBrains Mono", monospace',
-          fontSize: '0.65rem'
+          boxShadow: 'inset 0 0 20px rgba(0, 229, 153, 0.05)'
         }}>
-          <div style={{ display: 'flex', flexDirection: 'column-reverse' }}>
+          <div style={{ marginBottom: '0.8rem', color: '#00E599', fontWeight: '800', fontSize: '0.55rem', textTransform: 'uppercase', opacity: 0.6, letterSpacing: '0.1em' }}>
+            Live Hardware-to-Network Instruction Bridge
+          </div>
+          <div style={{ 
+            height: '100px', 
+            overflow: 'hidden',
+            fontSize: '0.65rem',
+            display: 'flex', 
+            flexDirection: 'column-reverse'
+          }}>
             <div ref={logEndRef} />
             {logs.map((log, i) => (
-              <div key={i} style={{ marginBottom: '0.2rem', color: i === 0 ? 'var(--accent)' : 'rgba(255,255,255,0.3)' }}>
-                <span style={{ opacity: 0.4, marginRight: '10px' }}>[{new Date().toLocaleTimeString()}]</span>
+              <div key={i} style={{ marginBottom: '0.2rem', color: i === logs.length - 1 ? 'var(--accent)' : 'rgba(255,255,255,0.4)' }}>
+                <span style={{ opacity: 0.3, marginRight: '10px' }}>[{new Date().toLocaleTimeString()}]</span>
                 {log}
               </div>
             ))}
@@ -241,6 +254,30 @@ export default function SU3MiningRealitySection() {
             <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.3)', marginTop: '0.5rem' }}>
               {reality.pulse}
             </div>
+          </div>
+        </div>
+
+        {/* Investor Proof Section */}
+        <div style={{ marginTop: '4rem', padding: '2rem', borderTop: '1px solid rgba(0, 229, 153, 0.1)' }}>
+          <div style={{ textAlign: 'left', marginBottom: '2.5rem' }}>
+            <h3 style={{ fontSize: '1.2rem', color: 'var(--accent)', marginBottom: '1rem' }}>{reality.proofTitle}</h3>
+            <p style={{ fontSize: '0.9rem', lineHeight: '1.6', color: 'rgba(255,255,255,0.7)', maxWidth: '600px' }}>
+              {reality.proofIntro}
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem' }}>
+            {reality.proofItems?.map((item: any, i: number) => (
+              <div key={i} style={{ 
+                background: 'rgba(255,255,255,0.02)', 
+                padding: '1.2rem', 
+                borderRadius: '12px', 
+                borderLeft: '2px solid var(--accent)' 
+              }}>
+                <h4 style={{ fontSize: '0.9rem', marginBottom: '0.6rem', color: '#fff' }}>{item.title}</h4>
+                <p style={{ fontSize: '0.75rem', lineHeight: '1.4', color: 'var(--muted)', margin: 0 }}>{item.desc}</p>
+              </div>
+            ))}
           </div>
         </div>
       </div>
