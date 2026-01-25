@@ -1,35 +1,95 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEURO PHOTO SERVICE - AI Image Generation
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-level service for AI image generation using Replicate API
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
 name: neuro_photo
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: neuro_photo
 
 description: |
-  Neuro photo generation service for VIBEE Telegram bot.
-  Handles AI image generation using trained user models.
+  Neuro photo generation service - high-level API for AI image generation.
+  
+  Features:
+  - Multiple model support (Flux, SDXL, Midjourney-style)
+  - Aspect ratio handling
+  - Cost calculation
+  - Generation history tracking
+  - Error handling with retries
 
 imports:
-  - replicate_client
-  - user
-  - telegram
+  - replicate_api
+  - ../db/generation_repository
+  - ../db/user_repository
 
 types:
-  NeuroPhotoRequest:
-    description: "Neuro photo generation request"
-    fields:
-      prompt: String
-      model_url: String
-      num_images: Int
-      telegram_id: String
-      bot_name: String
-      aspect_ratio: Option<String>
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  NeuroPhotoResponse:
-    description: "Neuro photo generation response"
+  NeuroPhotoService:
+    description: "Neuro photo service instance"
+    fields:
+      replicate: ReplicateClient
+      db: GenerationRepository
+      default_model: ImageModelId
+      max_concurrent: Int
+
+  ImageModelId:
+    description: "Supported image models"
+    variants:
+      - FluxPro
+      - FluxDev
+      - FluxSchnell
+      - SDXL
+      - SDXLLightning
+      - Kandinsky
+      - Midjourney
+
+  ImageModelConfig:
+    description: "Model configuration"
+    fields:
+      id: ImageModelId
+      name: String
+      display_name: String
+      replicate_version: String
+      cost_stars: Int
+      max_outputs: Int
+      supports_negative: Bool
+      default_steps: Int
+      default_guidance: Float
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST/RESPONSE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  GenerateImageRequest:
+    description: "Image generation request"
+    fields:
+      user_id: Int
+      chat_id: Int
+      prompt: String
+      negative_prompt: Option<String>
+      model: ImageModelId
+      aspect_ratio: AspectRatio
+      num_outputs: Int
+      seed: Option<Int>
+      guidance_scale: Option<Float>
+      num_steps: Option<Int>
+
+  GenerateImageResponse:
+    description: "Image generation response"
     fields:
       success: Bool
-      data: Option<String>
-      urls: Option<List<String>>
-      error: Option<String>
+      generation_id: Option<String>
+      image_urls: List<String>
+      model_used: ImageModelId
+      cost_stars: Int
+      duration_ms: Int
+      error: Option<GenerationError>
 
   AspectRatio:
     description: "Image aspect ratio"
@@ -39,70 +99,404 @@ types:
       - Landscape_16_9
       - Portrait_3_4
       - Landscape_4_3
+      - Ultrawide_21_9
+      - Tall_9_21
+
+  AspectDimensions:
+    description: "Pixel dimensions for aspect ratio"
+    fields:
+      width: Int
+      height: Int
+      ratio_string: String
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GENERATION TRACKING
+  # ═══════════════════════════════════════════════════════════════════════════
 
   GenerationStatus:
     description: "Generation status"
     variants:
       - Pending
       - Processing
-      - Completed
+      - Succeeded
       - Failed
+      - Cancelled
+      - Refunded
 
   GenerationRecord:
-    description: "Generation record in database"
+    description: "Generation record for database"
     fields:
       id: String
-      user_id: String
+      user_id: Int
+      chat_id: Int
       prompt: String
-      model_url: String
+      negative_prompt: Option<String>
+      model: ImageModelId
+      aspect_ratio: AspectRatio
+      num_outputs: Int
       status: GenerationStatus
-      result_urls: Option<List<String>>
+      prediction_id: Option<String>
+      image_urls: List<String>
+      cost_stars: Int
+      duration_ms: Option<Int>
+      error_message: Option<String>
       created_at: Timestamp
       completed_at: Option<Timestamp>
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  GenerationError:
+    description: "Generation error types"
+    variants:
+      - InsufficientBalance
+      - InvalidPrompt
+      - PromptTooLong
+      - NSFWContent
+      - ModelUnavailable
+      - RateLimited
+      - Timeout
+      - ApiError
+      - Unknown
+
+  ErrorDetails:
+    description: "Detailed error information"
+    fields:
+      error_type: GenerationError
+      message: String
+      user_message_ru: String
+      user_message_en: String
+      retryable: Bool
+
 behaviors:
-  - name: generate_neuro_photo
-    given: NeuroPhotoRequest
-    when: Generating image
-    then: Returns NeuroPhotoResponse
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: generate_neuro_photo_hybrid
-    given: NeuroPhotoRequest with fallback
-    when: Generating with fallback providers
-    then: Returns NeuroPhotoResponse
+  - name: create_service
+    given: ReplicateClient and GenerationRepository
+    when: Initializing service
+    then: |
+      1. Store replicate client
+      2. Store db repository
+      3. Set default_model = FluxDev
+      4. Set max_concurrent = 5
+      5. Return NeuroPhotoService
 
-  - name: generate_neuro_photo_direct
-    given: NeuroPhotoRequest
-    when: Direct generation without server
-    then: Returns NeuroPhotoResponse
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN GENERATION FLOW
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: generate_image
+    given: NeuroPhotoService and GenerateImageRequest
+    when: User requests image generation
+    then: |
+      1. Validate request (prompt, model, etc.)
+      2. Check user balance >= cost
+      3. Create GenerationRecord with status=Pending
+      4. Deduct balance
+      5. Build Replicate input based on model
+      6. Call replicate.create_prediction
+      7. Update record with prediction_id, status=Processing
+      8. Call replicate.wait_for_prediction
+      9. If succeeded:
+         - Extract image URLs
+         - Update record: status=Succeeded, image_urls
+         - Return success response
+      10. If failed:
+         - Refund balance
+         - Update record: status=Failed, error
+         - Return error response
+
+  - name: generate_image_async
+    given: NeuroPhotoService and GenerateImageRequest
+    when: Async generation (webhook-based)
+    then: |
+      1. Validate and check balance
+      2. Create record, deduct balance
+      3. Create prediction with webhook URL
+      4. Return generation_id immediately
+      5. Webhook handler processes completion
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MODEL-SPECIFIC GENERATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: generate_with_flux
+    given: Request with Flux model
+    when: Using Flux Pro/Dev/Schnell
+    then: |
+      Build FluxInput:
+        prompt: request.prompt
+        aspect_ratio: to_flux_ratio(request.aspect_ratio)
+        num_outputs: request.num_outputs
+        output_format: "webp"
+        output_quality: 90
+        safety_tolerance: 2
+        prompt_upsampling: true (for Pro/Dev)
+      
+      Call replicate.generate_image_flux
+
+  - name: generate_with_sdxl
+    given: Request with SDXL model
+    when: Using SDXL or SDXL Lightning
+    then: |
+      Build SDXLInput:
+        prompt: request.prompt
+        negative_prompt: request.negative_prompt
+        width: dimensions.width
+        height: dimensions.height
+        num_outputs: request.num_outputs
+        scheduler: "K_EULER"
+        num_inference_steps: request.num_steps or 50
+        guidance_scale: request.guidance_scale or 7.5
+        seed: request.seed
+      
+      Call replicate.generate_image_sdxl
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VALIDATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: validate_request
+    given: GenerateImageRequest
+    when: Validating before generation
+    then: |
+      Checks:
+        1. prompt.length >= 3
+        2. prompt.length <= 2000
+        3. num_outputs >= 1 and <= model.max_outputs
+        4. model is valid ImageModelId
+        5. aspect_ratio is valid
+      
+      Return: {valid: bool, errors: list}
 
   - name: validate_prompt
     given: Prompt string
-    when: Validating input
-    then: Returns validation result
+    when: Checking prompt content
+    then: |
+      Checks:
+        1. Not empty or whitespace only
+        2. Length within limits
+        3. No prohibited patterns (optional)
+        4. Contains meaningful content
+      
+      Return: {valid: bool, error: string}
 
-  - name: get_aspect_ratio_dimensions
+  - name: check_nsfw
+    given: Prompt string
+    when: Checking for NSFW content
+    then: |
+      Check against prohibited word list
+      Return: {is_nsfw: bool, reason: string}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COST CALCULATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: calculate_cost
+    given: Model and num_outputs
+    when: Calculating generation cost
+    then: |
+      base_cost = MODEL_COSTS[model]
+      total = base_cost * num_outputs
+      Return total in stars
+
+  - name: get_model_cost
+    given: ImageModelId
+    when: Getting model base cost
+    then: |
+      FluxPro: 50 stars
+      FluxDev: 30 stars
+      FluxSchnell: 10 stars
+      SDXL: 20 stars
+      SDXLLightning: 15 stars
+      Kandinsky: 15 stars
+      Midjourney: 100 stars
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ASPECT RATIO HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_dimensions
     given: AspectRatio
-    when: Getting dimensions
-    then: Returns width and height
+    when: Converting to pixel dimensions
+    then: |
+      Square_1_1:     1024 x 1024
+      Portrait_9_16:  768 x 1344
+      Landscape_16_9: 1344 x 768
+      Portrait_3_4:   896 x 1152
+      Landscape_4_3:  1152 x 896
+      Ultrawide_21_9: 1536 x 640
+      Tall_9_21:      640 x 1536
 
-  - name: save_generation_record
-    given: Generation data
-    when: Saving to database
-    then: Returns GenerationRecord
+  - name: to_flux_ratio
+    given: AspectRatio
+    when: Converting to Flux format
+    then: |
+      Square_1_1:     "1:1"
+      Portrait_9_16:  "9:16"
+      Landscape_16_9: "16:9"
+      Portrait_3_4:   "3:4"
+      Landscape_4_3:  "4:3"
+      Ultrawide_21_9: "21:9"
+      Tall_9_21:      "9:21"
+
+  - name: parse_aspect_ratio
+    given: String like "16:9" or "portrait"
+    when: Parsing user input
+    then: |
+      "1:1", "square" -> Square_1_1
+      "9:16", "portrait", "vertical" -> Portrait_9_16
+      "16:9", "landscape", "horizontal" -> Landscape_16_9
+      "3:4" -> Portrait_3_4
+      "4:3" -> Landscape_4_3
+      Default -> Square_1_1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_generation_error
+    given: Error from Replicate
+    when: Generation failed
+    then: |
+      Parse error message:
+        "NSFW" -> NSFWContent
+        "rate limit" -> RateLimited
+        "timeout" -> Timeout
+        "model" -> ModelUnavailable
+        else -> ApiError
+      
+      Return ErrorDetails with user messages
+
+  - name: get_error_message
+    given: GenerationError and language
+    when: Getting user-friendly message
+    then: |
+      InsufficientBalance:
+        RU: "Недостаточно звёзд на балансе"
+        EN: "Insufficient stars balance"
+      
+      NSFWContent:
+        RU: "Запрос содержит запрещённый контент"
+        EN: "Request contains prohibited content"
+      
+      Timeout:
+        RU: "Превышено время ожидания. Попробуйте ещё раз"
+        EN: "Request timed out. Please try again"
+      
+      RateLimited:
+        RU: "Слишком много запросов. Подождите минуту"
+        EN: "Too many requests. Please wait a minute"
+
+  - name: should_retry
+    given: GenerationError
+    when: Deciding whether to retry
+    then: |
+      Retryable: Timeout, RateLimited, ApiError
+      Not retryable: InsufficientBalance, InvalidPrompt, NSFWContent
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HISTORY & STATS
+  # ═══════════════════════════════════════════════════════════════════════════
 
   - name: get_user_generations
-    given: User ID
-    when: Fetching history
-    then: Returns list of GenerationRecord
+    given: User ID and pagination
+    when: Fetching generation history
+    then: |
+      Query db for user's generations
+      Order by created_at DESC
+      Return list of GenerationRecord
 
-  - name: increment_generation_count
+  - name: get_generation_by_id
+    given: Generation ID
+    when: Fetching specific generation
+    then: Return GenerationRecord or null
+
+  - name: get_user_stats
     given: User ID
-    when: Updating stats
-    then: Returns new count
+    when: Getting generation statistics
+    then: |
+      Return:
+        total_generations: count
+        total_spent_stars: sum
+        favorite_model: most used
+        last_generation: timestamp
 
 constants:
-  DEFAULT_NUM_IMAGES: 1
-  MAX_NUM_IMAGES: 4
-  DEFAULT_ASPECT_RATIO: "1:1"
+  # Model costs in stars
+  COST_FLUX_PRO: 50
+  COST_FLUX_DEV: 30
+  COST_FLUX_SCHNELL: 10
+  COST_SDXL: 20
+  COST_SDXL_LIGHTNING: 15
+  COST_KANDINSKY: 15
+  COST_MIDJOURNEY: 100
+
+  # Limits
+  MAX_PROMPT_LENGTH: 2000
+  MIN_PROMPT_LENGTH: 3
+  MAX_OUTPUTS_FLUX: 4
+  MAX_OUTPUTS_SDXL: 4
+  DEFAULT_NUM_OUTPUTS: 1
+
+  # Timeouts
   GENERATION_TIMEOUT_MS: 120000
+  POLL_INTERVAL_MS: 2000
+
+  # Default parameters
+  DEFAULT_GUIDANCE_SCALE: 7.5
+  DEFAULT_INFERENCE_STEPS: 50
+  DEFAULT_OUTPUT_FORMAT: "webp"
+  DEFAULT_OUTPUT_QUALITY: 90
+
+test_cases:
+  - name: test_create_service
+    input: {replicate: "valid", db: "valid"}
+    expected: {default_model: "FluxDev"}
+
+  - name: test_validate_prompt_valid
+    input: {prompt: "a beautiful sunset over mountains"}
+    expected: {valid: true}
+
+  - name: test_validate_prompt_too_short
+    input: {prompt: "hi"}
+    expected: {valid: false, error: "min_length"}
+
+  - name: test_validate_prompt_too_long
+    input: {prompt: "x".repeat(2500)}
+    expected: {valid: false, error: "max_length"}
+
+  - name: test_calculate_cost_flux_pro
+    input: {model: "FluxPro", num_outputs: 2}
+    expected: {cost: 100}
+
+  - name: test_calculate_cost_sdxl
+    input: {model: "SDXL", num_outputs: 1}
+    expected: {cost: 20}
+
+  - name: test_get_dimensions_square
+    input: {aspect_ratio: "Square_1_1"}
+    expected: {width: 1024, height: 1024}
+
+  - name: test_get_dimensions_portrait
+    input: {aspect_ratio: "Portrait_9_16"}
+    expected: {width: 768, height: 1344}
+
+  - name: test_parse_aspect_ratio_string
+    input: {input: "16:9"}
+    expected: {aspect_ratio: "Landscape_16_9"}
+
+  - name: test_error_message_ru
+    input: {error: "InsufficientBalance", lang: "ru"}
+    expected: {message: "Недостаточно звёзд на балансе"}
+
+  - name: test_should_retry_timeout
+    input: {error: "Timeout"}
+    expected: {retryable: true}
+
+  - name: test_should_retry_nsfw
+    input: {error: "NSFWContent"}
+    expected: {retryable: false}

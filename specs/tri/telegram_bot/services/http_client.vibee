@@ -1,0 +1,454 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTTP CLIENT - Base HTTP Client for API Calls
+# ═══════════════════════════════════════════════════════════════════════════════
+# Low-level HTTP client used by all API services
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: http_client
+version: "1.0.0"
+language: zig
+module: http_client
+
+description: |
+  Base HTTP client for making API requests.
+  
+  Features:
+  - GET, POST, PUT, DELETE methods
+  - JSON serialization/deserialization
+  - Retry logic with exponential backoff
+  - Timeout handling
+  - Error parsing
+
+types:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  HttpClient:
+    description: "HTTP client instance"
+    fields:
+      base_url: Option<String>
+      default_headers: Map<String, String>
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+
+  HttpConfig:
+    description: "HTTP client configuration"
+    fields:
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+      follow_redirects: Bool
+      verify_ssl: Bool
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST TYPES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  HttpMethod:
+    description: "HTTP methods"
+    variants:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - HEAD
+      - OPTIONS
+
+  HttpRequest:
+    description: "HTTP request"
+    fields:
+      method: HttpMethod
+      url: String
+      headers: Map<String, String>
+      body: Option<String>
+      timeout_ms: Option<Int>
+
+  RequestBuilder:
+    description: "Fluent request builder"
+    fields:
+      method: HttpMethod
+      url: String
+      headers: Map<String, String>
+      query_params: Map<String, String>
+      body: Option<String>
+      timeout_ms: Option<Int>
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RESPONSE TYPES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  HttpResponse:
+    description: "HTTP response"
+    fields:
+      status_code: Int
+      status_text: String
+      headers: Map<String, String>
+      body: String
+      elapsed_ms: Int
+
+  JsonResponse:
+    description: "Parsed JSON response"
+    fields:
+      status_code: Int
+      data: Option<Object>
+      error: Option<HttpError>
+      elapsed_ms: Int
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR TYPES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  HttpError:
+    description: "HTTP error types"
+    variants:
+      - ConnectionFailed
+      - Timeout
+      - DnsError
+      - SslError
+      - InvalidUrl
+      - TooManyRedirects
+      - RequestCancelled
+      - ResponseTooLarge
+      - ParseError
+
+  HttpErrorDetails:
+    description: "Detailed HTTP error"
+    fields:
+      error_type: HttpError
+      status_code: Option<Int>
+      message: String
+      retryable: Bool
+      retry_after: Option<Int>
+
+  ApiErrorResponse:
+    description: "Standard API error response"
+    fields:
+      error: String
+      message: Option<String>
+      code: Option<String>
+      details: Option<Object>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: create_client
+    given: Optional HttpConfig
+    when: Creating HTTP client
+    then: |
+      1. Set default timeout = 30000ms
+      2. Set max_retries = 3
+      3. Set retry_delay = 1000ms
+      4. Return HttpClient
+
+  - name: create_client_with_base_url
+    given: Base URL and config
+    when: Creating client for specific API
+    then: |
+      1. Create client
+      2. Set base_url
+      3. Return HttpClient
+
+  - name: set_default_header
+    given: HttpClient, key, and value
+    when: Setting default header
+    then: |
+      Add header to default_headers
+      Will be included in all requests
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST METHODS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get
+    given: HttpClient and URL
+    when: Making GET request
+    then: |
+      1. Build request with method=GET
+      2. Execute request
+      3. Return HttpResponse
+
+  - name: post
+    given: HttpClient, URL, and body
+    when: Making POST request
+    then: |
+      1. Build request with method=POST
+      2. Set Content-Type if not set
+      3. Execute request
+      4. Return HttpResponse
+
+  - name: post_json
+    given: HttpClient, URL, and JSON object
+    when: Making POST with JSON body
+    then: |
+      1. Serialize object to JSON string
+      2. Set Content-Type: application/json
+      3. Execute POST
+      4. Return JsonResponse
+
+  - name: put
+    given: HttpClient, URL, and body
+    when: Making PUT request
+    then: |
+      1. Build request with method=PUT
+      2. Execute request
+      3. Return HttpResponse
+
+  - name: delete
+    given: HttpClient and URL
+    when: Making DELETE request
+    then: |
+      1. Build request with method=DELETE
+      2. Execute request
+      3. Return HttpResponse
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST BUILDER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: request
+    given: HttpClient and method
+    when: Starting request builder
+    then: Return RequestBuilder
+
+  - name: builder_url
+    given: RequestBuilder and URL
+    when: Setting URL
+    then: |
+      If base_url set -> prepend base_url
+      Return RequestBuilder
+
+  - name: builder_header
+    given: RequestBuilder, key, and value
+    when: Adding header
+    then: |
+      Add to headers map
+      Return RequestBuilder
+
+  - name: builder_query
+    given: RequestBuilder, key, and value
+    when: Adding query parameter
+    then: |
+      Add to query_params map
+      Return RequestBuilder
+
+  - name: builder_json_body
+    given: RequestBuilder and object
+    when: Setting JSON body
+    then: |
+      Serialize to JSON
+      Set Content-Type: application/json
+      Return RequestBuilder
+
+  - name: builder_timeout
+    given: RequestBuilder and timeout_ms
+    when: Setting timeout
+    then: |
+      Set timeout_ms
+      Return RequestBuilder
+
+  - name: builder_send
+    given: RequestBuilder
+    when: Executing request
+    then: |
+      1. Build final URL with query params
+      2. Merge headers with defaults
+      3. Execute request
+      4. Return HttpResponse
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST EXECUTION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: execute
+    given: HttpClient and HttpRequest
+    when: Executing HTTP request
+    then: |
+      1. Start timer
+      2. Open connection
+      3. Send request
+      4. Read response
+      5. Calculate elapsed_ms
+      6. Return HttpResponse or error
+
+  - name: execute_with_retry
+    given: HttpClient, HttpRequest, and retry config
+    when: Executing with retry logic
+    then: |
+      Loop up to max_retries:
+        1. Execute request
+        2. If success -> return response
+        3. If retryable error:
+           - Wait retry_delay * 2^attempt
+           - Continue
+        4. If non-retryable -> return error
+      Return final error
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RESPONSE PARSING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: parse_json
+    given: HttpResponse
+    when: Parsing JSON response
+    then: |
+      1. Check Content-Type is application/json
+      2. Parse body as JSON
+      3. Return JsonResponse
+
+  - name: parse_error
+    given: HttpResponse with error status
+    when: Parsing error response
+    then: |
+      1. Try parse as ApiErrorResponse
+      2. Extract error message
+      3. Return HttpErrorDetails
+
+  - name: is_success
+    given: HttpResponse
+    when: Checking if successful
+    then: Return status_code >= 200 and < 300
+
+  - name: is_retryable
+    given: HttpResponse or HttpError
+    when: Checking if should retry
+    then: |
+      Retryable:
+        - 429 Too Many Requests
+        - 500 Internal Server Error
+        - 502 Bad Gateway
+        - 503 Service Unavailable
+        - 504 Gateway Timeout
+        - ConnectionFailed
+        - Timeout
+      
+      Not retryable:
+        - 400 Bad Request
+        - 401 Unauthorized
+        - 403 Forbidden
+        - 404 Not Found
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # URL UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: build_url
+    given: Base URL and path
+    when: Constructing full URL
+    then: |
+      1. Ensure base ends without /
+      2. Ensure path starts with /
+      3. Return base + path
+
+  - name: add_query_params
+    given: URL and params map
+    when: Adding query string
+    then: |
+      1. URL encode each value
+      2. Join with &
+      3. Append ?params to URL
+      4. Return full URL
+
+  - name: url_encode
+    given: String value
+    when: Encoding for URL
+    then: |
+      Encode special characters:
+        space -> %20
+        & -> %26
+        = -> %3D
+        etc.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HEADER UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: set_bearer_auth
+    given: RequestBuilder and token
+    when: Setting Bearer authentication
+    then: |
+      Set header: Authorization: Bearer {token}
+      Return RequestBuilder
+
+  - name: set_basic_auth
+    given: RequestBuilder, username, and password
+    when: Setting Basic authentication
+    then: |
+      1. Encode username:password as base64
+      2. Set header: Authorization: Basic {encoded}
+      Return RequestBuilder
+
+  - name: set_content_type
+    given: RequestBuilder and content_type
+    when: Setting Content-Type
+    then: |
+      Set header: Content-Type: {content_type}
+      Return RequestBuilder
+
+constants:
+  # Default configuration
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+  MAX_RETRY_DELAY_MS: 30000
+  MAX_RESPONSE_SIZE_MB: 50
+
+  # Content types
+  CONTENT_TYPE_JSON: "application/json"
+  CONTENT_TYPE_FORM: "application/x-www-form-urlencoded"
+  CONTENT_TYPE_MULTIPART: "multipart/form-data"
+
+  # Common headers
+  HEADER_AUTHORIZATION: "Authorization"
+  HEADER_CONTENT_TYPE: "Content-Type"
+  HEADER_ACCEPT: "Accept"
+  HEADER_USER_AGENT: "User-Agent"
+
+  # User agent
+  USER_AGENT: "VIBEE-Bot/1.0 (Zig)"
+
+test_cases:
+  - name: test_create_client
+    input: {}
+    expected: {timeout_ms: 30000, max_retries: 3}
+
+  - name: test_build_url
+    input: {base: "https://api.example.com", path: "/v1/users"}
+    expected: {url: "https://api.example.com/v1/users"}
+
+  - name: test_add_query_params
+    input: {url: "https://api.example.com/search", params: {q: "hello world"}}
+    expected: {url: "https://api.example.com/search?q=hello%20world"}
+
+  - name: test_set_bearer_auth
+    input: {token: "abc123"}
+    expected: {header: "Authorization: Bearer abc123"}
+
+  - name: test_is_success_200
+    input: {status_code: 200}
+    expected: {is_success: true}
+
+  - name: test_is_success_404
+    input: {status_code: 404}
+    expected: {is_success: false}
+
+  - name: test_is_retryable_429
+    input: {status_code: 429}
+    expected: {retryable: true}
+
+  - name: test_is_retryable_401
+    input: {status_code: 401}
+    expected: {retryable: false}
+
+  - name: test_parse_json_success
+    input: {body: "{\"id\": 1, \"name\": \"test\"}"}
+    expected: {data: {id: 1, name: "test"}}
+
+  - name: test_url_encode
+    input: {value: "hello world&foo=bar"}
+    expected: {encoded: "hello%20world%26foo%3Dbar"}

@@ -1,141 +1,533 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# REPLICATE API - AI Generation Service
+# REPLICATE API - Complete AI Generation Service
 # ═══════════════════════════════════════════════════════════════════════════════
-# Real AI generation via Replicate API
-# Models: Flux Schnell, SDXL, Stable Video, etc.
+# Full Replicate API client with HTTP implementation details
 # φ² + 1/φ² = 3 | PHOENIX = 999
 # ═══════════════════════════════════════════════════════════════════════════════
 
 name: replicate_api
-version: "2.0.0"
+version: "3.0.0"
 language: zig
 module: replicate_api
 
 description: |
-  Replicate API client for AI generation.
+  Complete Replicate API client for AI generation.
+  
+  Endpoints:
+  - POST /v1/predictions - Create prediction
+  - GET /v1/predictions/{id} - Get prediction status
+  - POST /v1/predictions/{id}/cancel - Cancel prediction
   
   Supported models:
-  - black-forest-labs/flux-schnell (fast image gen)
-  - stability-ai/sdxl (high quality image)
-  - stability-ai/stable-video-diffusion (image to video)
-  - cjwbw/rembg (background removal)
-  - nightmareai/real-esrgan (upscale)
+  - Flux Pro/Dev/Schnell (image generation)
+  - SDXL (high quality images)
+  - Stable Video Diffusion (image to video)
+  - Kling (video generation)
+  - Luma Dream Machine (video)
+
+imports:
+  - ../core/http_client
 
 types:
-  ReplicateConfig:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ReplicateClient:
+    description: "Replicate API client instance"
     fields:
       api_token: String
       base_url: String
-      timeout_seconds: Int
+      timeout_ms: Int
+      max_retries: Int
+      retry_delay_ms: Int
+
+  ReplicateConfig:
+    description: "Client configuration"
+    fields:
+      api_token: String
+      timeout_ms: Int
+      max_retries: Int
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PREDICTION TYPES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  PredictionStatus:
+    description: "Prediction status enum"
+    variants:
+      - Starting
+      - Processing
+      - Succeeded
+      - Failed
+      - Canceled
+
+  CreatePredictionRequest:
+    description: "Request to create a prediction"
+    fields:
+      version: String
+      input: PredictionInput
+      webhook: Option<String>
+      webhook_events_filter: Option<List<String>>
 
   PredictionInput:
+    description: "Generic prediction input"
+    fields:
+      prompt: Option<String>
+      negative_prompt: Option<String>
+      image: Option<String>
+      width: Option<Int>
+      height: Option<Int>
+      num_outputs: Option<Int>
+      guidance_scale: Option<Float>
+      num_inference_steps: Option<Int>
+      seed: Option<Int>
+      aspect_ratio: Option<String>
+      output_format: Option<String>
+      output_quality: Option<Int>
+
+  Prediction:
+    description: "Prediction response object"
+    fields:
+      id: String
+      version: String
+      status: PredictionStatus
+      input: Object
+      output: Option<Object>
+      error: Option<String>
+      logs: Option<String>
+      metrics: Option<PredictionMetrics>
+      created_at: String
+      started_at: Option<String>
+      completed_at: Option<String>
+      urls: PredictionUrls
+
+  PredictionMetrics:
+    description: "Prediction timing metrics"
+    fields:
+      predict_time: Option<Float>
+      total_time: Option<Float>
+
+  PredictionUrls:
+    description: "Prediction API URLs"
+    fields:
+      get: String
+      cancel: String
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MODEL DEFINITIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ModelInfo:
+    description: "AI model information"
+    fields:
+      id: String
+      owner: String
+      name: String
+      version: String
+      description: String
+      input_schema: Object
+      output_schema: Object
+
+  ImageModel:
+    description: "Image generation model"
+    variants:
+      - FluxPro
+      - FluxDev
+      - FluxSchnell
+      - SDXL
+      - SDXLLightning
+      - Kandinsky
+
+  VideoModel:
+    description: "Video generation model"
+    variants:
+      - StableVideoDiffusion
+      - KlingV1
+      - KlingV1_5
+      - LumaDreamMachine
+      - RunwayGen3
+      - Minimax
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPECIALIZED INPUTS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  FluxInput:
+    description: "Input for Flux models"
+    fields:
+      prompt: String
+      aspect_ratio: String
+      num_outputs: Int
+      output_format: String
+      output_quality: Int
+      safety_tolerance: Int
+      prompt_upsampling: Bool
+
+  SDXLInput:
+    description: "Input for SDXL model"
     fields:
       prompt: String
       negative_prompt: Option<String>
       width: Int
       height: Int
       num_outputs: Int
-      guidance_scale: Float
+      scheduler: String
       num_inference_steps: Int
+      guidance_scale: Float
+      seed: Option<Int>
 
-  PredictionResponse:
+  StableVideoInput:
+    description: "Input for Stable Video Diffusion"
     fields:
-      id: String
-      status: String
-      output: Option<List<String>>
+      input_image: String
+      motion_bucket_id: Int
+      fps: Int
+      cond_aug: Float
+      decoding_t: Int
+      seed: Option<Int>
+
+  KlingInput:
+    description: "Input for Kling video model"
+    fields:
+      prompt: String
+      image_url: Option<String>
+      aspect_ratio: String
+      duration: Int
+      cfg_scale: Float
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RESULT TYPES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  GenerationResult:
+    description: "Result of generation operation"
+    fields:
+      success: Bool
+      prediction_id: Option<String>
+      output_urls: List<String>
       error: Option<String>
-      urls: Object
+      duration_ms: Int
+      cost_estimate: Option<Float>
 
-  ModelVersion:
+  PollResult:
+    description: "Result of polling operation"
     fields:
-      name: String
-      version: String
-      cost_per_run: Float
+      status: PredictionStatus
+      output: Option<Object>
+      error: Option<String>
+      progress: Option<Int>
 
-constants:
-  FLUX_SCHNELL: "black-forest-labs/flux-schnell"
-  SDXL: "stability-ai/sdxl"
-  STABLE_VIDEO: "stability-ai/stable-video-diffusion"
-  REMBG: "cjwbw/rembg"
-  REAL_ESRGAN: "nightmareai/real-esrgan"
-  
-  API_BASE: "https://api.replicate.com/v1"
-  DEFAULT_TIMEOUT: 60
+  ApiError:
+    description: "API error details"
+    fields:
+      status_code: Int
+      error_type: String
+      message: String
+      detail: Option<String>
 
 behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: create_client
+    given: API token
+    when: Initializing client
+    then: |
+      1. Validate token format (starts with "r8_")
+      2. Set base_url = "https://api.replicate.com"
+      3. Set default timeout = 120000ms
+      4. Set max_retries = 3
+      5. Return ReplicateClient
+
+  - name: build_headers
+    given: ReplicateClient
+    when: Building request headers
+    then: |
+      Return:
+        Authorization: "Bearer {api_token}"
+        Content-Type: "application/json"
+        Accept: "application/json"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CORE API METHODS
+  # ═══════════════════════════════════════════════════════════════════════════
+
   - name: create_prediction
-    given: Model version and input parameters
-    when: AI generation requested
-    then: POST to /predictions with JSON body, return prediction ID
+    given: ReplicateClient and CreatePredictionRequest
+    when: Starting a new prediction
+    then: |
+      HTTP Request:
+        POST https://api.replicate.com/v1/predictions
+        Headers: Authorization, Content-Type
+        Body: {
+          "version": "{version}",
+          "input": {input_object}
+        }
+      
+      Response 201:
+        Parse JSON into Prediction
+        Return prediction.id
+      
+      Response 4xx/5xx:
+        Parse error, return ApiError
 
   - name: get_prediction
-    given: Prediction ID
-    when: Checking generation status
-    then: GET /predictions/{id}, return status and output
-
-  - name: wait_for_completion
-    given: Prediction ID and timeout
-    when: Synchronous generation needed
-    then: Poll until status is succeeded/failed or timeout
-
-  - name: generate_image
-    given: Prompt and model
-    when: Image generation requested
+    given: ReplicateClient and prediction_id
+    when: Checking prediction status
     then: |
-      1. Create prediction with prompt
-      2. Wait for completion (max 60s)
-      3. Return output URL or error
+      HTTP Request:
+        GET https://api.replicate.com/v1/predictions/{id}
+        Headers: Authorization
+      
+      Response 200:
+        Parse JSON into Prediction
+        Return Prediction
+      
+      Response 404:
+        Return error "Prediction not found"
 
-  - name: generate_video
-    given: Image URL and model
-    when: Video generation requested
+  - name: cancel_prediction
+    given: ReplicateClient and prediction_id
+    when: Canceling a running prediction
     then: |
-      1. Create prediction with image input
-      2. Wait for completion (max 120s)
-      3. Return video URL or error
+      HTTP Request:
+        POST https://api.replicate.com/v1/predictions/{id}/cancel
+        Headers: Authorization
+      
+      Response 200:
+        Return success
+      
+      Response 4xx:
+        Return error
 
-  - name: remove_background
-    given: Image URL
-    when: Background removal requested
-    then: Use rembg model, return transparent PNG URL
+  - name: wait_for_prediction
+    given: ReplicateClient, prediction_id, and timeout_ms
+    when: Waiting for prediction to complete
+    then: |
+      Loop:
+        1. Call get_prediction
+        2. If status == Succeeded -> return output
+        3. If status == Failed -> return error
+        4. If status == Canceled -> return canceled
+        5. If elapsed > timeout -> return timeout error
+        6. Sleep poll_interval_ms (2000)
+        7. Continue loop
 
-  - name: upscale_image
-    given: Image URL and scale factor
-    when: Upscale requested
-    then: Use real-esrgan model, return upscaled image URL
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IMAGE GENERATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: build_auth_header
-    given: API token
-    when: Making API request
-    then: Return "Authorization: Bearer {token}"
+  - name: generate_image_flux
+    given: ReplicateClient and FluxInput
+    when: Generating image with Flux
+    then: |
+      1. Build CreatePredictionRequest:
+         version = MODEL_VERSIONS.flux_pro (or flux_dev, flux_schnell)
+         input = FluxInput as JSON
+      2. Call create_prediction
+      3. Call wait_for_prediction
+      4. Extract output URLs from result
+      5. Return GenerationResult
 
-  - name: parse_response
-    given: JSON response body
-    when: API response received
-    then: Parse into PredictionResponse struct
+  - name: generate_image_sdxl
+    given: ReplicateClient and SDXLInput
+    when: Generating image with SDXL
+    then: |
+      1. Build CreatePredictionRequest:
+         version = MODEL_VERSIONS.sdxl
+         input = SDXLInput as JSON
+      2. Call create_prediction
+      3. Call wait_for_prediction
+      4. Extract output URLs
+      5. Return GenerationResult
 
-  - name: handle_error
-    given: Error response
-    when: API returns error
-    then: Extract error message, log, return user-friendly message
+  - name: get_image_dimensions
+    given: Aspect ratio string
+    when: Converting ratio to dimensions
+    then: |
+      "1:1"   -> 1024, 1024
+      "16:9"  -> 1344, 768
+      "9:16"  -> 768, 1344
+      "4:3"   -> 1152, 896
+      "3:4"   -> 896, 1152
+      "21:9"  -> 1536, 640
+      "9:21"  -> 640, 1536
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VIDEO GENERATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: generate_video_stable
+    given: ReplicateClient and StableVideoInput
+    when: Generating video from image
+    then: |
+      1. Build CreatePredictionRequest:
+         version = MODEL_VERSIONS.stable_video
+         input = StableVideoInput as JSON
+      2. Call create_prediction
+      3. Call wait_for_prediction (longer timeout)
+      4. Extract video URL
+      5. Return GenerationResult
+
+  - name: generate_video_kling
+    given: ReplicateClient and KlingInput
+    when: Generating video with Kling
+    then: |
+      1. Build CreatePredictionRequest:
+         version = MODEL_VERSIONS.kling_v1_5
+         input = KlingInput as JSON
+      2. Call create_prediction
+      3. Call wait_for_prediction (5 min timeout)
+      4. Extract video URL
+      5. Return GenerationResult
+
+  - name: generate_video_text
+    given: ReplicateClient, prompt, model, and duration
+    when: Text-to-video generation
+    then: |
+      1. Select model version based on model enum
+      2. Build appropriate input
+      3. Create and wait for prediction
+      4. Return video URL
+
+  - name: generate_video_image
+    given: ReplicateClient, image_url, model, and motion_prompt
+    when: Image-to-video generation
+    then: |
+      1. Select model version
+      2. Build input with image_url
+      3. Add motion_prompt if provided
+      4. Create and wait for prediction
+      5. Return video URL
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # UTILITY METHODS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: estimate_cost
+    given: Model and parameters
+    when: Estimating generation cost
+    then: |
+      Image models:
+        flux_pro: $0.055 per image
+        flux_dev: $0.025 per image
+        flux_schnell: $0.003 per image
+        sdxl: $0.01 per image
+      
+      Video models:
+        stable_video: $0.10 per video
+        kling: $0.20 per second
+        luma: $0.15 per second
+
+  - name: validate_input
+    given: Model and input
+    when: Validating before submission
+    then: |
+      Check:
+        - Required fields present
+        - Dimensions within limits
+        - Prompt length valid
+        - Image URL accessible (for I2V)
+      Return validation result
+
+  - name: handle_rate_limit
+    given: ApiError with 429 status
+    when: Rate limited
+    then: |
+      1. Extract retry-after header
+      2. Wait specified time
+      3. Retry request
+      4. Return result or error after max retries
+
+  - name: parse_output
+    given: Prediction output object
+    when: Extracting result URLs
+    then: |
+      If output is string -> return [output]
+      If output is array -> return output
+      If output is object with "url" -> return [output.url]
+      Else -> return error
+
+constants:
+  # API Configuration
+  API_BASE_URL: "https://api.replicate.com"
+  API_VERSION: "v1"
+  DEFAULT_TIMEOUT_MS: 120000
+  VIDEO_TIMEOUT_MS: 600000
+  POLL_INTERVAL_MS: 2000
+  MAX_RETRIES: 3
+
+  # Model Versions (Replicate model:version format)
+  MODEL_FLUX_PRO: "black-forest-labs/flux-pro"
+  MODEL_FLUX_DEV: "black-forest-labs/flux-dev"
+  MODEL_FLUX_SCHNELL: "black-forest-labs/flux-schnell"
+  MODEL_SDXL: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b"
+  MODEL_SDXL_LIGHTNING: "bytedance/sdxl-lightning-4step"
+  MODEL_STABLE_VIDEO: "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438"
+  MODEL_KLING_V1: "kling-ai/kling-video"
+  MODEL_KLING_V1_5: "kling-ai/kling-video-v1.5"
+  MODEL_LUMA: "luma/dream-machine"
+  MODEL_MINIMAX: "minimax/video-01"
+
+  # Default Parameters
+  DEFAULT_NUM_OUTPUTS: 1
+  DEFAULT_GUIDANCE_SCALE: 7.5
+  DEFAULT_INFERENCE_STEPS: 50
+  DEFAULT_OUTPUT_FORMAT: "webp"
+  DEFAULT_OUTPUT_QUALITY: 90
+
+  # Limits
+  MAX_PROMPT_LENGTH: 2000
+  MAX_IMAGE_SIZE_MB: 10
+  MAX_VIDEO_DURATION: 60
 
 test_cases:
-  - name: test_create_prediction
-    input: {model: "flux-schnell", prompt: "a cat"}
-    expected: {has_id: true}
+  - name: test_create_client
+    input: {token: "r8_test123"}
+    expected: {base_url: "https://api.replicate.com", valid: true}
 
-  - name: test_auth_header
-    input: {token: "r8_test"}
-    expected: {header: "Bearer r8_test"}
+  - name: test_invalid_token
+    input: {token: "invalid"}
+    expected: {valid: false, error: "Invalid token format"}
 
-  - name: test_parse_succeeded
-    input: {status: "succeeded", output: ["https://..."]}
-    expected: {success: true}
+  - name: test_build_headers
+    input: {token: "r8_abc"}
+    expected: {authorization: "Bearer r8_abc"}
 
-  - name: test_parse_failed
-    input: {status: "failed", error: "Out of memory"}
-    expected: {success: false}
+  - name: test_create_prediction_request
+    input: {model: "flux_pro", prompt: "a cat"}
+    expected: {has_version: true, has_input: true}
 
-  - name: test_timeout
-    input: {timeout: 60, elapsed: 70}
+  - name: test_parse_succeeded_output
+    input: {status: "succeeded", output: ["https://url1.jpg"]}
+    expected: {success: true, urls: ["https://url1.jpg"]}
+
+  - name: test_parse_failed_output
+    input: {status: "failed", error: "NSFW content"}
+    expected: {success: false, error: "NSFW content"}
+
+  - name: test_get_dimensions_square
+    input: {aspect_ratio: "1:1"}
+    expected: {width: 1024, height: 1024}
+
+  - name: test_get_dimensions_portrait
+    input: {aspect_ratio: "9:16"}
+    expected: {width: 768, height: 1344}
+
+  - name: test_estimate_cost_flux_pro
+    input: {model: "flux_pro", num_outputs: 1}
+    expected: {cost: 0.055}
+
+  - name: test_estimate_cost_video
+    input: {model: "kling", duration: 5}
+    expected: {cost: 1.0}
+
+  - name: test_wait_timeout
+    input: {timeout_ms: 1000, elapsed_ms: 2000}
     expected: {error: "timeout"}
+
+  - name: test_rate_limit_retry
+    input: {status_code: 429, retry_after: 5}
+    expected: {waits: true, retries: true}

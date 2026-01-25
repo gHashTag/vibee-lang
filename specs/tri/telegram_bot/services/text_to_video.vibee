@@ -1,115 +1,552 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEXT TO VIDEO SERVICE - AI Video Generation
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-level service for AI video generation from text prompts
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
 name: text_to_video
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: text_to_video
 
 description: |
-  Text-to-video generation service for VIBEE Telegram bot.
-  Handles video generation from text prompts using various AI models.
+  Text-to-video generation service - high-level API for AI video generation.
+  
+  Features:
+  - Multiple model support (Runway, Kling, Luma, Minimax)
+  - Duration and aspect ratio handling
+  - Progress tracking
+  - Cost calculation per second
+  - Long-running job management
 
 imports:
-  - replicate_client
-  - user
-  - telegram
+  - replicate_api
+  - ../db/generation_repository
+  - ../db/user_repository
 
 types:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  TextToVideoService:
+    description: "Text-to-video service instance"
+    fields:
+      replicate: ReplicateClient
+      db: GenerationRepository
+      default_model: VideoModelId
+      max_concurrent: Int
+
   VideoModelId:
-    description: "Video model identifiers"
+    description: "Supported video models"
     variants:
-      - KlingV1_6Pro
-      - RayV2
-      - Veo3
-      - Veo3Fast
-      - RunwayAleph
-      - MinimaxVideo
+      - RunwayGen3
+      - RunwayGen3Turbo
+      - KlingV1
+      - KlingV1_5Pro
+      - LumaDreamMachine
+      - Minimax
       - HaiperVideo
-
-  TextToVideoRequest:
-    description: "Text-to-video request"
-    fields:
-      prompt: String
-      video_model: VideoModelId
-      aspect_ratio: Option<String>
-      duration: Option<Int>
-      telegram_id: String
-      username: String
-      is_ru: Bool
-      bot_name: String
-
-  TextToVideoResponse:
-    description: "Text-to-video response"
-    fields:
-      success: Bool
-      video_url: Option<String>
-      job_id: Option<String>
-      message: Option<String>
-      error: Option<String>
-
-  VideoGenerationStatus:
-    description: "Video generation status"
-    variants:
-      - Queued
-      - Processing
-      - Completed
-      - Failed
-
-  VideoJobInfo:
-    description: "Video job information"
-    fields:
-      job_id: String
-      status: VideoGenerationStatus
-      progress: Option<Int>
-      video_url: Option<String>
-      error: Option<String>
+      - CogVideoX
 
   VideoModelConfig:
     description: "Video model configuration"
     fields:
       id: VideoModelId
       name: String
-      provider: String
+      display_name: String
+      replicate_version: String
+      cost_per_second: Int
+      min_duration: Int
       max_duration: Int
       supported_ratios: List<String>
-      cost_per_second: Float
+      avg_generation_time: Int
+      quality_tier: String
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST/RESPONSE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  GenerateVideoRequest:
+    description: "Video generation request"
+    fields:
+      user_id: Int
+      chat_id: Int
+      prompt: String
+      negative_prompt: Option<String>
+      model: VideoModelId
+      aspect_ratio: VideoAspectRatio
+      duration_seconds: Int
+      fps: Option<Int>
+      seed: Option<Int>
+      cfg_scale: Option<Float>
+
+  GenerateVideoResponse:
+    description: "Video generation response"
+    fields:
+      success: Bool
+      generation_id: String
+      job_id: Option<String>
+      status: VideoJobStatus
+      video_url: Option<String>
+      thumbnail_url: Option<String>
+      model_used: VideoModelId
+      duration_seconds: Int
+      cost_stars: Int
+      generation_time_ms: Option<Int>
+      error: Option<VideoError>
+
+  VideoAspectRatio:
+    description: "Video aspect ratio"
+    variants:
+      - Landscape_16_9
+      - Portrait_9_16
+      - Square_1_1
+      - Cinematic_21_9
+      - Vertical_4_5
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB TRACKING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  VideoJobStatus:
+    description: "Video job status"
+    variants:
+      - Queued
+      - Starting
+      - Processing
+      - Rendering
+      - Succeeded
+      - Failed
+      - Cancelled
+      - Refunded
+
+  VideoJob:
+    description: "Video generation job"
+    fields:
+      id: String
+      generation_id: String
+      user_id: Int
+      prediction_id: Option<String>
+      status: VideoJobStatus
+      progress_percent: Int
+      estimated_time_remaining: Option<Int>
+      video_url: Option<String>
+      error: Option<String>
+      created_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+
+  VideoGenerationRecord:
+    description: "Video generation record for database"
+    fields:
+      id: String
+      user_id: Int
+      chat_id: Int
+      prompt: String
+      negative_prompt: Option<String>
+      model: VideoModelId
+      aspect_ratio: VideoAspectRatio
+      duration_seconds: Int
+      status: VideoJobStatus
+      prediction_id: Option<String>
+      video_url: Option<String>
+      thumbnail_url: Option<String>
+      cost_stars: Int
+      generation_time_ms: Option<Int>
+      error_message: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  VideoError:
+    description: "Video generation error types"
+    variants:
+      - InsufficientBalance
+      - InvalidPrompt
+      - PromptTooLong
+      - NSFWContent
+      - ModelUnavailable
+      - DurationTooLong
+      - RateLimited
+      - Timeout
+      - RenderingFailed
+      - ApiError
+      - Unknown
+
+  VideoErrorDetails:
+    description: "Detailed video error information"
+    fields:
+      error_type: VideoError
+      message: String
+      user_message_ru: String
+      user_message_en: String
+      retryable: Bool
 
 behaviors:
-  - name: generate_text_to_video
-    given: TextToVideoRequest
-    when: Starting video generation
-    then: Returns TextToVideoResponse
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: check_video_status
-    given: Job ID
-    when: Checking generation status
-    then: Returns VideoJobInfo
+  - name: create_service
+    given: ReplicateClient and GenerationRepository
+    when: Initializing service
+    then: |
+      1. Store replicate client
+      2. Store db repository
+      3. Set default_model = KlingV1_5Pro
+      4. Set max_concurrent = 3
+      5. Return TextToVideoService
 
-  - name: get_video_model_config
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN GENERATION FLOW
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: generate_video
+    given: TextToVideoService and GenerateVideoRequest
+    when: User requests video generation
+    then: |
+      1. Validate request
+      2. Calculate cost = cost_per_second * duration
+      3. Check user balance >= cost
+      4. Create VideoGenerationRecord with status=Queued
+      5. Deduct balance
+      6. Build model-specific input
+      7. Call replicate.create_prediction
+      8. Update record: prediction_id, status=Processing
+      9. Return generation_id (async completion)
+
+  - name: generate_video_sync
+    given: TextToVideoService and GenerateVideoRequest
+    when: Synchronous generation needed
+    then: |
+      1. Call generate_video (steps 1-8)
+      2. Call wait_for_video with long timeout
+      3. If succeeded:
+         - Update record: status=Succeeded, video_url
+         - Return complete response
+      4. If failed:
+         - Refund balance
+         - Update record: status=Failed
+         - Return error response
+
+  - name: wait_for_video
+    given: Generation ID and timeout
+    when: Waiting for video completion
+    then: |
+      Loop (max 10 minutes):
+        1. Get prediction status
+        2. Update progress_percent
+        3. If succeeded -> extract video_url, return
+        4. If failed -> return error
+        5. Sleep 5 seconds
+        6. Continue
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MODEL-SPECIFIC GENERATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: generate_with_runway
+    given: Request with Runway model
+    when: Using Runway Gen-3
+    then: |
+      Build input:
+        prompt: request.prompt
+        aspect_ratio: to_runway_ratio(request.aspect_ratio)
+        duration: request.duration_seconds
+        seed: request.seed
+      
+      Call replicate with MODEL_RUNWAY_GEN3
+
+  - name: generate_with_kling
+    given: Request with Kling model
+    when: Using Kling V1/V1.5
+    then: |
+      Build KlingInput:
+        prompt: request.prompt
+        aspect_ratio: to_kling_ratio(request.aspect_ratio)
+        duration: request.duration_seconds
+        cfg_scale: request.cfg_scale or 0.5
+      
+      Call replicate with MODEL_KLING
+
+  - name: generate_with_luma
+    given: Request with Luma model
+    when: Using Luma Dream Machine
+    then: |
+      Build input:
+        prompt: request.prompt
+        aspect_ratio: to_luma_ratio(request.aspect_ratio)
+        loop: false
+      
+      Call replicate with MODEL_LUMA
+
+  - name: generate_with_minimax
+    given: Request with Minimax model
+    when: Using Minimax Video
+    then: |
+      Build input:
+        prompt: request.prompt
+        prompt_optimizer: true
+      
+      Call replicate with MODEL_MINIMAX
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB MANAGEMENT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_job_status
+    given: Generation ID
+    when: Checking job status
+    then: |
+      1. Get record from db
+      2. If prediction_id exists:
+         - Call replicate.get_prediction
+         - Update progress from logs
+      3. Return VideoJob with current status
+
+  - name: cancel_job
+    given: Generation ID
+    when: User cancels generation
+    then: |
+      1. Get record
+      2. If status in [Queued, Processing]:
+         - Call replicate.cancel_prediction
+         - Refund balance
+         - Update status = Cancelled
+         - Return success
+      3. Else return error (cannot cancel)
+
+  - name: get_progress_from_logs
+    given: Prediction logs
+    when: Parsing progress
+    then: |
+      Parse logs for progress indicators:
+        "Starting" -> 5%
+        "Generating frames" -> 20-80%
+        "Rendering" -> 85%
+        "Encoding" -> 95%
+      Return progress_percent
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VALIDATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: validate_request
+    given: GenerateVideoRequest
+    when: Validating before generation
+    then: |
+      Checks:
+        1. prompt.length >= 10
+        2. prompt.length <= 1500
+        3. duration >= model.min_duration
+        4. duration <= model.max_duration
+        5. aspect_ratio in model.supported_ratios
+      
+      Return: {valid: bool, errors: list}
+
+  - name: validate_video_prompt
+    given: Prompt string
+    when: Checking video prompt
+    then: |
+      Video prompts should describe:
+        - Motion/action
+        - Camera movement (optional)
+        - Style/mood
+      
+      Warn if no motion words detected
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COST CALCULATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: calculate_cost
+    given: Model and duration
+    when: Calculating generation cost
+    then: |
+      cost = MODEL_COSTS[model] * duration_seconds
+      Return cost in stars
+
+  - name: get_model_cost_per_second
     given: VideoModelId
-    when: Getting model info
-    then: Returns VideoModelConfig
+    when: Getting model cost rate
+    then: |
+      RunwayGen3: 25 stars/sec
+      RunwayGen3Turbo: 15 stars/sec
+      KlingV1: 15 stars/sec
+      KlingV1_5Pro: 20 stars/sec
+      LumaDreamMachine: 18 stars/sec
+      Minimax: 10 stars/sec
+      HaiperVideo: 12 stars/sec
+      CogVideoX: 8 stars/sec
 
-  - name: validate_video_request
-    given: TextToVideoRequest
-    when: Validating request
-    then: Returns validation result
+  - name: estimate_generation_time
+    given: Model and duration
+    when: Estimating wait time
+    then: |
+      RunwayGen3: 2-4 minutes
+      KlingV1_5Pro: 1-3 minutes
+      LumaDreamMachine: 2-5 minutes
+      Minimax: 1-2 minutes
+      
+      Return estimated_seconds
 
-  - name: estimate_video_cost
-    given: Model ID and duration
-    when: Estimating cost
-    then: Returns cost in stars
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ASPECT RATIO HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: cancel_video_generation
-    given: Job ID
-    when: Canceling generation
-    then: Returns success status
+  - name: get_video_dimensions
+    given: VideoAspectRatio
+    when: Converting to pixel dimensions
+    then: |
+      Landscape_16_9: 1280 x 720
+      Portrait_9_16:  720 x 1280
+      Square_1_1:     1024 x 1024
+      Cinematic_21_9: 1280 x 544
+      Vertical_4_5:   864 x 1080
 
-  - name: save_video_to_storage
-    given: Video URL and user ID
-    when: Storing video
-    then: Returns storage URL
+  - name: to_model_ratio
+    given: VideoAspectRatio and model
+    when: Converting to model-specific format
+    then: |
+      Runway: "16:9", "9:16", "1:1"
+      Kling: "16:9", "9:16", "1:1"
+      Luma: "16:9", "9:16", "1:1", "21:9"
+      Minimax: "16:9", "9:16"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_video_error
+    given: Error from Replicate
+    when: Video generation failed
+    then: |
+      Parse error:
+        "NSFW" -> NSFWContent
+        "rate limit" -> RateLimited
+        "timeout" -> Timeout
+        "render" -> RenderingFailed
+        "duration" -> DurationTooLong
+        else -> ApiError
+      
+      Return VideoErrorDetails
+
+  - name: get_video_error_message
+    given: VideoError and language
+    when: Getting user-friendly message
+    then: |
+      InsufficientBalance:
+        RU: "Недостаточно звёзд. Видео стоит {cost}⭐"
+        EN: "Insufficient stars. Video costs {cost}⭐"
+      
+      DurationTooLong:
+        RU: "Максимальная длительность для этой модели: {max}с"
+        EN: "Maximum duration for this model: {max}s"
+      
+      Timeout:
+        RU: "Генерация заняла слишком много времени"
+        EN: "Generation took too long"
+      
+      RenderingFailed:
+        RU: "Ошибка рендеринга. Попробуйте другой промпт"
+        EN: "Rendering failed. Try a different prompt"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HISTORY & STATS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_user_videos
+    given: User ID and pagination
+    when: Fetching video history
+    then: |
+      Query db for user's video generations
+      Order by created_at DESC
+      Return list of VideoGenerationRecord
+
+  - name: get_video_by_id
+    given: Generation ID
+    when: Fetching specific video
+    then: Return VideoGenerationRecord or null
 
 constants:
+  # Model costs in stars per second
+  COST_RUNWAY_GEN3: 25
+  COST_RUNWAY_GEN3_TURBO: 15
+  COST_KLING_V1: 15
+  COST_KLING_V1_5_PRO: 20
+  COST_LUMA: 18
+  COST_MINIMAX: 10
+  COST_HAIPER: 12
+  COST_COGVIDEO: 8
+
+  # Duration limits
+  MIN_DURATION: 3
+  MAX_DURATION_RUNWAY: 10
+  MAX_DURATION_KLING: 10
+  MAX_DURATION_LUMA: 5
+  MAX_DURATION_MINIMAX: 6
   DEFAULT_DURATION: 5
-  MAX_DURATION: 60
-  DEFAULT_ASPECT_RATIO: "16:9"
+
+  # Timeouts
   GENERATION_TIMEOUT_MS: 600000
+  POLL_INTERVAL_MS: 5000
+
+  # Model versions
+  MODEL_RUNWAY_GEN3: "runway/gen-3-alpha"
+  MODEL_RUNWAY_GEN3_TURBO: "runway/gen-3-alpha-turbo"
+  MODEL_KLING_V1: "kling-ai/kling-video"
+  MODEL_KLING_V1_5: "kling-ai/kling-video-v1.5-pro"
+  MODEL_LUMA: "luma/dream-machine"
+  MODEL_MINIMAX: "minimax/video-01"
+  MODEL_HAIPER: "haiper-ai/haiper-video-2"
+  MODEL_COGVIDEO: "tencent/cogvideox-5b"
+
+test_cases:
+  - name: test_create_service
+    input: {replicate: "valid", db: "valid"}
+    expected: {default_model: "KlingV1_5Pro"}
+
+  - name: test_calculate_cost_runway_5s
+    input: {model: "RunwayGen3", duration: 5}
+    expected: {cost: 125}
+
+  - name: test_calculate_cost_kling_10s
+    input: {model: "KlingV1_5Pro", duration: 10}
+    expected: {cost: 200}
+
+  - name: test_validate_prompt_too_short
+    input: {prompt: "cat"}
+    expected: {valid: false, error: "min_length"}
+
+  - name: test_validate_duration_too_long
+    input: {model: "Luma", duration: 10}
+    expected: {valid: false, error: "max_duration"}
+
+  - name: test_get_dimensions_landscape
+    input: {aspect_ratio: "Landscape_16_9"}
+    expected: {width: 1280, height: 720}
+
+  - name: test_get_dimensions_portrait
+    input: {aspect_ratio: "Portrait_9_16"}
+    expected: {width: 720, height: 1280}
+
+  - name: test_estimate_time_runway
+    input: {model: "RunwayGen3", duration: 5}
+    expected: {estimated_seconds: 180}
+
+  - name: test_parse_progress_starting
+    input: {logs: "Starting generation..."}
+    expected: {progress: 5}
+
+  - name: test_parse_progress_rendering
+    input: {logs: "Rendering video..."}
+    expected: {progress: 85}
+
+  - name: test_error_message_duration
+    input: {error: "DurationTooLong", max: 5, lang: "ru"}
+    expected: {message: "Максимальная длительность для этой модели: 5с"}

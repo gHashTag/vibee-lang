@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// text_to_video v1.0.0 - Generated from .vibee specification
+// text_to_video v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,13 +17,53 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const COST_RUNWAY_GEN3: f64 = 25;
+
+pub const COST_RUNWAY_GEN3_TURBO: f64 = 15;
+
+pub const COST_KLING_V1: f64 = 15;
+
+pub const COST_KLING_V1_5_PRO: f64 = 20;
+
+pub const COST_LUMA: f64 = 18;
+
+pub const COST_MINIMAX: f64 = 10;
+
+pub const COST_HAIPER: f64 = 12;
+
+pub const COST_COGVIDEO: f64 = 8;
+
+pub const MIN_DURATION: f64 = 3;
+
+pub const MAX_DURATION_RUNWAY: f64 = 10;
+
+pub const MAX_DURATION_KLING: f64 = 10;
+
+pub const MAX_DURATION_LUMA: f64 = 5;
+
+pub const MAX_DURATION_MINIMAX: f64 = 6;
+
 pub const DEFAULT_DURATION: f64 = 5;
 
-pub const MAX_DURATION: f64 = 60;
-
-pub const DEFAULT_ASPECT_RATIO: f64 = 0;
-
 pub const GENERATION_TIMEOUT_MS: f64 = 600000;
+
+pub const POLL_INTERVAL_MS: f64 = 5000;
+
+pub const MODEL_RUNWAY_GEN3: f64 = 0;
+
+pub const MODEL_RUNWAY_GEN3_TURBO: f64 = 0;
+
+pub const MODEL_KLING_V1: f64 = 0;
+
+pub const MODEL_KLING_V1_5: f64 = 0;
+
+pub const MODEL_LUMA: f64 = 0;
+
+pub const MODEL_MINIMAX: f64 = 0;
+
+pub const MODEL_HAIPER: f64 = 0;
+
+pub const MODEL_COGVIDEO: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -40,52 +80,117 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Video model identifiers
+/// Text-to-video service instance
+pub const TextToVideoService = struct {
+    replicate: ReplicateClient,
+    db: GenerationRepository,
+    default_model: VideoModelId,
+    max_concurrent: i64,
+};
+
+/// Supported video models
 pub const VideoModelId = struct {
-};
-
-/// Text-to-video request
-pub const TextToVideoRequest = struct {
-    prompt: []const u8,
-    video_model: VideoModelId,
-    aspect_ratio: ?[]const u8,
-    duration: ?[]const u8,
-    telegram_id: []const u8,
-    username: []const u8,
-    is_ru: bool,
-    bot_name: []const u8,
-};
-
-/// Text-to-video response
-pub const TextToVideoResponse = struct {
-    success: bool,
-    video_url: ?[]const u8,
-    job_id: ?[]const u8,
-    message: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Video generation status
-pub const VideoGenerationStatus = struct {
-};
-
-/// Video job information
-pub const VideoJobInfo = struct {
-    job_id: []const u8,
-    status: VideoGenerationStatus,
-    progress: ?[]const u8,
-    video_url: ?[]const u8,
-    @"error": ?[]const u8,
 };
 
 /// Video model configuration
 pub const VideoModelConfig = struct {
     id: VideoModelId,
     name: []const u8,
-    provider: []const u8,
+    display_name: []const u8,
+    replicate_version: []const u8,
+    cost_per_second: i64,
+    min_duration: i64,
     max_duration: i64,
     supported_ratios: []const u8,
-    cost_per_second: f64,
+    avg_generation_time: i64,
+    quality_tier: []const u8,
+};
+
+/// Video generation request
+pub const GenerateVideoRequest = struct {
+    user_id: i64,
+    chat_id: i64,
+    prompt: []const u8,
+    negative_prompt: ?[]const u8,
+    model: VideoModelId,
+    aspect_ratio: VideoAspectRatio,
+    duration_seconds: i64,
+    fps: ?[]const u8,
+    seed: ?[]const u8,
+    cfg_scale: ?[]const u8,
+};
+
+/// Video generation response
+pub const GenerateVideoResponse = struct {
+    success: bool,
+    generation_id: []const u8,
+    job_id: ?[]const u8,
+    status: VideoJobStatus,
+    video_url: ?[]const u8,
+    thumbnail_url: ?[]const u8,
+    model_used: VideoModelId,
+    duration_seconds: i64,
+    cost_stars: i64,
+    generation_time_ms: ?[]const u8,
+    @"error": ?[]const u8,
+};
+
+/// Video aspect ratio
+pub const VideoAspectRatio = struct {
+};
+
+/// Video job status
+pub const VideoJobStatus = struct {
+};
+
+/// Video generation job
+pub const VideoJob = struct {
+    id: []const u8,
+    generation_id: []const u8,
+    user_id: i64,
+    prediction_id: ?[]const u8,
+    status: VideoJobStatus,
+    progress_percent: i64,
+    estimated_time_remaining: ?[]const u8,
+    video_url: ?[]const u8,
+    @"error": ?[]const u8,
+    created_at: i64,
+    started_at: ?[]const u8,
+    completed_at: ?[]const u8,
+};
+
+/// Video generation record for database
+pub const VideoGenerationRecord = struct {
+    id: []const u8,
+    user_id: i64,
+    chat_id: i64,
+    prompt: []const u8,
+    negative_prompt: ?[]const u8,
+    model: VideoModelId,
+    aspect_ratio: VideoAspectRatio,
+    duration_seconds: i64,
+    status: VideoJobStatus,
+    prediction_id: ?[]const u8,
+    video_url: ?[]const u8,
+    thumbnail_url: ?[]const u8,
+    cost_stars: i64,
+    generation_time_ms: ?[]const u8,
+    error_message: ?[]const u8,
+    created_at: i64,
+    completed_at: ?[]const u8,
+};
+
+/// Video generation error types
+pub const VideoError = struct {
+};
+
+/// Detailed video error information
+pub const VideoErrorDetails = struct {
+    error_type: VideoError,
+    message: []const u8,
+    user_message_ru: []const u8,
+    user_message_en: []const u8,
+    retryable: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -164,52 +269,157 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "generate_text_to_video" {
-// Given: TextToVideoRequest
-// When: Starting video generation
-// Then: Returns TextToVideoResponse
+test "create_service" {
+// Given: ReplicateClient and GenerationRepository
+// When: Initializing service
+// Then: |
     // TODO: Add test assertions
 }
 
-test "check_video_status" {
-// Given: Job ID
-// When: Checking generation status
-// Then: Returns VideoJobInfo
+test "generate_video" {
+// Given: TextToVideoService and GenerateVideoRequest
+// When: User requests video generation
+// Then: |
     // TODO: Add test assertions
 }
 
-test "get_video_model_config" {
+test "generate_video_sync" {
+// Given: TextToVideoService and GenerateVideoRequest
+// When: Synchronous generation needed
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "wait_for_video" {
+// Given: Generation ID and timeout
+// When: Waiting for video completion
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "generate_with_runway" {
+// Given: Request with Runway model
+// When: Using Runway Gen-3
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "generate_with_kling" {
+// Given: Request with Kling model
+// When: Using Kling V1/V1.5
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "generate_with_luma" {
+// Given: Request with Luma model
+// When: Using Luma Dream Machine
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "generate_with_minimax" {
+// Given: Request with Minimax model
+// When: Using Minimax Video
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_job_status" {
+// Given: Generation ID
+// When: Checking job status
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "cancel_job" {
+// Given: Generation ID
+// When: User cancels generation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_progress_from_logs" {
+// Given: Prediction logs
+// When: Parsing progress
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "validate_request" {
+// Given: GenerateVideoRequest
+// When: Validating before generation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "validate_video_prompt" {
+// Given: Prompt string
+// When: Checking video prompt
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "calculate_cost" {
+// Given: Model and duration
+// When: Calculating generation cost
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_model_cost_per_second" {
 // Given: VideoModelId
-// When: Getting model info
-// Then: Returns VideoModelConfig
+// When: Getting model cost rate
+// Then: |
     // TODO: Add test assertions
 }
 
-test "validate_video_request" {
-// Given: TextToVideoRequest
-// When: Validating request
-// Then: Returns validation result
+test "estimate_generation_time" {
+// Given: Model and duration
+// When: Estimating wait time
+// Then: |
     // TODO: Add test assertions
 }
 
-test "estimate_video_cost" {
-// Given: Model ID and duration
-// When: Estimating cost
-// Then: Returns cost in stars
+test "get_video_dimensions" {
+// Given: VideoAspectRatio
+// When: Converting to pixel dimensions
+// Then: |
     // TODO: Add test assertions
 }
 
-test "cancel_video_generation" {
-// Given: Job ID
-// When: Canceling generation
-// Then: Returns success status
+test "to_model_ratio" {
+// Given: VideoAspectRatio and model
+// When: Converting to model-specific format
+// Then: |
     // TODO: Add test assertions
 }
 
-test "save_video_to_storage" {
-// Given: Video URL and user ID
-// When: Storing video
-// Then: Returns storage URL
+test "handle_video_error" {
+// Given: Error from Replicate
+// When: Video generation failed
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_video_error_message" {
+// Given: VideoError and language
+// When: Getting user-friendly message
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_user_videos" {
+// Given: User ID and pagination
+// When: Fetching video history
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_video_by_id" {
+// Given: Generation ID
+// When: Fetching specific video
+// Then: Return VideoGenerationRecord or null
     // TODO: Add test assertions
 }
 

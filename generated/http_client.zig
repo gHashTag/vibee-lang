@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// neuro_photo v2.0.0 - Generated from .vibee specification
+// http_client v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,41 +17,31 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const COST_FLUX_PRO: f64 = 50;
+pub const DEFAULT_TIMEOUT_MS: f64 = 30000;
 
-pub const COST_FLUX_DEV: f64 = 30;
+pub const DEFAULT_MAX_RETRIES: f64 = 3;
 
-pub const COST_FLUX_SCHNELL: f64 = 10;
+pub const DEFAULT_RETRY_DELAY_MS: f64 = 1000;
 
-pub const COST_SDXL: f64 = 20;
+pub const MAX_RETRY_DELAY_MS: f64 = 30000;
 
-pub const COST_SDXL_LIGHTNING: f64 = 15;
+pub const MAX_RESPONSE_SIZE_MB: f64 = 50;
 
-pub const COST_KANDINSKY: f64 = 15;
+pub const CONTENT_TYPE_JSON: f64 = 0;
 
-pub const COST_MIDJOURNEY: f64 = 100;
+pub const CONTENT_TYPE_FORM: f64 = 0;
 
-pub const MAX_PROMPT_LENGTH: f64 = 2000;
+pub const CONTENT_TYPE_MULTIPART: f64 = 0;
 
-pub const MIN_PROMPT_LENGTH: f64 = 3;
+pub const HEADER_AUTHORIZATION: f64 = 0;
 
-pub const MAX_OUTPUTS_FLUX: f64 = 4;
+pub const HEADER_CONTENT_TYPE: f64 = 0;
 
-pub const MAX_OUTPUTS_SDXL: f64 = 4;
+pub const HEADER_ACCEPT: f64 = 0;
 
-pub const DEFAULT_NUM_OUTPUTS: f64 = 1;
+pub const HEADER_USER_AGENT: f64 = 0;
 
-pub const GENERATION_TIMEOUT_MS: f64 = 120000;
-
-pub const POLL_INTERVAL_MS: f64 = 2000;
-
-pub const DEFAULT_GUIDANCE_SCALE: f64 = 7.5;
-
-pub const DEFAULT_INFERENCE_STEPS: f64 = 50;
-
-pub const DEFAULT_OUTPUT_FORMAT: f64 = 0;
-
-pub const DEFAULT_OUTPUT_QUALITY: f64 = 90;
+pub const USER_AGENT: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -68,102 +58,83 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Neuro photo service instance
-pub const NeuroPhotoService = struct {
-    replicate: ReplicateClient,
-    db: GenerationRepository,
-    default_model: ImageModelId,
-    max_concurrent: i64,
+/// HTTP client instance
+pub const HttpClient = struct {
+    base_url: ?[]const u8,
+    default_headers: std.StringHashMap([]const u8),
+    timeout_ms: i64,
+    max_retries: i64,
+    retry_delay_ms: i64,
 };
 
-/// Supported image models
-pub const ImageModelId = struct {
+/// HTTP client configuration
+pub const HttpConfig = struct {
+    timeout_ms: i64,
+    max_retries: i64,
+    retry_delay_ms: i64,
+    follow_redirects: bool,
+    verify_ssl: bool,
 };
 
-/// Model configuration
-pub const ImageModelConfig = struct {
-    id: ImageModelId,
-    name: []const u8,
-    display_name: []const u8,
-    replicate_version: []const u8,
-    cost_stars: i64,
-    max_outputs: i64,
-    supports_negative: bool,
-    default_steps: i64,
-    default_guidance: f64,
+/// HTTP methods
+pub const HttpMethod = struct {
 };
 
-/// Image generation request
-pub const GenerateImageRequest = struct {
-    user_id: i64,
-    chat_id: i64,
-    prompt: []const u8,
-    negative_prompt: ?[]const u8,
-    model: ImageModelId,
-    aspect_ratio: AspectRatio,
-    num_outputs: i64,
-    seed: ?[]const u8,
-    guidance_scale: ?[]const u8,
-    num_steps: ?[]const u8,
+/// HTTP request
+pub const HttpRequest = struct {
+    method: HttpMethod,
+    url: []const u8,
+    headers: std.StringHashMap([]const u8),
+    body: ?[]const u8,
+    timeout_ms: ?[]const u8,
 };
 
-/// Image generation response
-pub const GenerateImageResponse = struct {
-    success: bool,
-    generation_id: ?[]const u8,
-    image_urls: []const u8,
-    model_used: ImageModelId,
-    cost_stars: i64,
-    duration_ms: i64,
+/// Fluent request builder
+pub const RequestBuilder = struct {
+    method: HttpMethod,
+    url: []const u8,
+    headers: std.StringHashMap([]const u8),
+    query_params: std.StringHashMap([]const u8),
+    body: ?[]const u8,
+    timeout_ms: ?[]const u8,
+};
+
+/// HTTP response
+pub const HttpResponse = struct {
+    status_code: i64,
+    status_text: []const u8,
+    headers: std.StringHashMap([]const u8),
+    body: []const u8,
+    elapsed_ms: i64,
+};
+
+/// Parsed JSON response
+pub const JsonResponse = struct {
+    status_code: i64,
+    data: ?[]const u8,
     @"error": ?[]const u8,
+    elapsed_ms: i64,
 };
 
-/// Image aspect ratio
-pub const AspectRatio = struct {
+/// HTTP error types
+pub const HttpError = struct {
 };
 
-/// Pixel dimensions for aspect ratio
-pub const AspectDimensions = struct {
-    width: i64,
-    height: i64,
-    ratio_string: []const u8,
-};
-
-/// Generation status
-pub const GenerationStatus = struct {
-};
-
-/// Generation record for database
-pub const GenerationRecord = struct {
-    id: []const u8,
-    user_id: i64,
-    chat_id: i64,
-    prompt: []const u8,
-    negative_prompt: ?[]const u8,
-    model: ImageModelId,
-    aspect_ratio: AspectRatio,
-    num_outputs: i64,
-    status: GenerationStatus,
-    prediction_id: ?[]const u8,
-    image_urls: []const u8,
-    cost_stars: i64,
-    duration_ms: ?[]const u8,
-    error_message: ?[]const u8,
-    created_at: i64,
-    completed_at: ?[]const u8,
-};
-
-/// Generation error types
-pub const GenerationError = struct {
-};
-
-/// Detailed error information
-pub const ErrorDetails = struct {
-    error_type: GenerationError,
+/// Detailed HTTP error
+pub const HttpErrorDetails = struct {
+    error_type: HttpError,
+    status_code: ?[]const u8,
     message: []const u8,
-    user_message_ru: []const u8,
-    user_message_en: []const u8,
     retryable: bool,
+    retry_after: ?[]const u8,
+};
+
+/// Standard API error response
+pub const ApiErrorResponse = struct {
+    @"error": []const u8,
+    message: ?[]const u8,
+    code: ?[]const u8,
+    details: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -242,135 +213,191 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_service" {
-// Given: ReplicateClient and GenerationRepository
-// When: Initializing service
+test "create_client" {
+// Given: Optional HttpConfig
+// When: Creating HTTP client
 // Then: |
     // TODO: Add test assertions
 }
 
-test "generate_image" {
-// Given: NeuroPhotoService and GenerateImageRequest
-// When: User requests image generation
+test "create_client_with_base_url" {
+// Given: Base URL and config
+// When: Creating client for specific API
 // Then: |
     // TODO: Add test assertions
 }
 
-test "generate_image_async" {
-// Given: NeuroPhotoService and GenerateImageRequest
-// When: Async generation (webhook-based)
+test "set_default_header" {
+// Given: HttpClient, key, and value
+// When: Setting default header
 // Then: |
     // TODO: Add test assertions
 }
 
-test "generate_with_flux" {
-// Given: Request with Flux model
-// When: Using Flux Pro/Dev/Schnell
+test "get" {
+// Given: HttpClient and URL
+// When: Making GET request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "generate_with_sdxl" {
-// Given: Request with SDXL model
-// When: Using SDXL or SDXL Lightning
+test "post" {
+// Given: HttpClient, URL, and body
+// When: Making POST request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "validate_request" {
-// Given: GenerateImageRequest
-// When: Validating before generation
+test "post_json" {
+// Given: HttpClient, URL, and JSON object
+// When: Making POST with JSON body
 // Then: |
     // TODO: Add test assertions
 }
 
-test "validate_prompt" {
-// Given: Prompt string
-// When: Checking prompt content
+test "put" {
+// Given: HttpClient, URL, and body
+// When: Making PUT request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "check_nsfw" {
-// Given: Prompt string
-// When: Checking for NSFW content
+test "delete" {
+// Given: HttpClient and URL
+// When: Making DELETE request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "calculate_cost" {
-// Given: Model and num_outputs
-// When: Calculating generation cost
+test "request" {
+// Given: HttpClient and method
+// When: Starting request builder
+// Then: Return RequestBuilder
+    // TODO: Add test assertions
+}
+
+test "builder_url" {
+// Given: RequestBuilder and URL
+// When: Setting URL
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_model_cost" {
-// Given: ImageModelId
-// When: Getting model base cost
+test "builder_header" {
+// Given: RequestBuilder, key, and value
+// When: Adding header
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_dimensions" {
-// Given: AspectRatio
-// When: Converting to pixel dimensions
+test "builder_query" {
+// Given: RequestBuilder, key, and value
+// When: Adding query parameter
 // Then: |
     // TODO: Add test assertions
 }
 
-test "to_flux_ratio" {
-// Given: AspectRatio
-// When: Converting to Flux format
+test "builder_json_body" {
+// Given: RequestBuilder and object
+// When: Setting JSON body
 // Then: |
     // TODO: Add test assertions
 }
 
-test "parse_aspect_ratio" {
-// Given: String like "16:9" or "portrait"
-// When: Parsing user input
+test "builder_timeout" {
+// Given: RequestBuilder and timeout_ms
+// When: Setting timeout
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_generation_error" {
-// Given: Error from Replicate
-// When: Generation failed
+test "builder_send" {
+// Given: RequestBuilder
+// When: Executing request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_error_message" {
-// Given: GenerationError and language
-// When: Getting user-friendly message
+test "execute" {
+// Given: HttpClient and HttpRequest
+// When: Executing HTTP request
 // Then: |
     // TODO: Add test assertions
 }
 
-test "should_retry" {
-// Given: GenerationError
-// When: Deciding whether to retry
+test "execute_with_retry" {
+// Given: HttpClient, HttpRequest, and retry config
+// When: Executing with retry logic
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_user_generations" {
-// Given: User ID and pagination
-// When: Fetching generation history
+test "parse_json" {
+// Given: HttpResponse
+// When: Parsing JSON response
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_generation_by_id" {
-// Given: Generation ID
-// When: Fetching specific generation
-// Then: Return GenerationRecord or null
+test "parse_error" {
+// Given: HttpResponse with error status
+// When: Parsing error response
+// Then: |
     // TODO: Add test assertions
 }
 
-test "get_user_stats" {
-// Given: User ID
-// When: Getting generation statistics
+test "is_success" {
+// Given: HttpResponse
+// When: Checking if successful
+// Then: Return status_code >= 200 and < 300
+    // TODO: Add test assertions
+}
+
+test "is_retryable" {
+// Given: HttpResponse or HttpError
+// When: Checking if should retry
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_url" {
+// Given: Base URL and path
+// When: Constructing full URL
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "add_query_params" {
+// Given: URL and params map
+// When: Adding query string
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "url_encode" {
+// Given: String value
+// When: Encoding for URL
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "set_bearer_auth" {
+// Given: RequestBuilder and token
+// When: Setting Bearer authentication
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "set_basic_auth" {
+// Given: RequestBuilder, username, and password
+// When: Setting Basic authentication
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "set_content_type" {
+// Given: RequestBuilder and content_type
+// When: Setting Content-Type
 // Then: |
     // TODO: Add test assertions
 }

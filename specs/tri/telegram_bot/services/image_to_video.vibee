@@ -1,76 +1,551 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMAGE TO VIDEO SERVICE - Animate Images
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-level service for animating images into videos
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
 name: image_to_video
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: image_to_video
 
 description: |
-  Image-to-video generation service for VIBEE Telegram bot.
-  Handles video generation from images using various AI models.
+  Image-to-video service - animate static images into videos.
+  
+  Features:
+  - Multiple model support (Stable Video, Runway I2V, Kling I2V)
+  - Motion prompt support
+  - Image validation and preprocessing
+  - Duration control
+  - Progress tracking
 
 imports:
-  - replicate_client
-  - user
-  - telegram
+  - replicate_api
+  - ../db/generation_repository
+  - ../db/user_repository
 
 types:
-  ImageToVideoRequest:
-    description: "Image-to-video request"
-    fields:
-      image_url: String
-      prompt: String
-      video_model: String
-      aspect_ratio: Option<String>
-      duration: Option<Int>
-      telegram_id: String
-      username: String
-      is_ru: Bool
-      bot_name: String
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  ImageToVideoResponse:
-    description: "Image-to-video response"
+  ImageToVideoService:
+    description: "Image-to-video service instance"
+    fields:
+      replicate: ReplicateClient
+      db: GenerationRepository
+      default_model: I2VModelId
+      temp_storage_url: String
+
+  I2VModelId:
+    description: "Supported image-to-video models"
+    variants:
+      - StableVideoDiffusion
+      - StableVideoXT
+      - RunwayI2V
+      - KlingI2V
+      - LumaI2V
+      - AnimateDiff
+      - DynamiCrafter
+
+  I2VModelConfig:
+    description: "I2V model configuration"
+    fields:
+      id: I2VModelId
+      name: String
+      display_name: String
+      replicate_version: String
+      cost_per_second: Int
+      min_duration: Int
+      max_duration: Int
+      supports_motion_prompt: Bool
+      best_for: String
+      input_requirements: ImageRequirements
+
+  ImageRequirements:
+    description: "Image input requirements"
+    fields:
+      min_width: Int
+      min_height: Int
+      max_width: Int
+      max_height: Int
+      max_file_size_mb: Int
+      supported_formats: List<String>
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REQUEST/RESPONSE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  AnimateImageRequest:
+    description: "Image animation request"
+    fields:
+      user_id: Int
+      chat_id: Int
+      image_url: String
+      image_file_id: Option<String>
+      motion_prompt: Option<String>
+      model: I2VModelId
+      duration_seconds: Int
+      fps: Option<Int>
+      motion_bucket_id: Option<Int>
+      seed: Option<Int>
+
+  AnimateImageResponse:
+    description: "Image animation response"
     fields:
       success: Bool
-      video_url: Option<String>
+      generation_id: String
       job_id: Option<String>
-      message: Option<String>
-      error: Option<String>
+      status: I2VJobStatus
+      video_url: Option<String>
+      thumbnail_url: Option<String>
+      model_used: I2VModelId
+      duration_seconds: Int
+      cost_stars: Int
+      generation_time_ms: Option<Int>
+      error: Option<I2VError>
 
-  I2VProvider:
-    description: "Image-to-video provider"
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IMAGE HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ImageInfo:
+    description: "Uploaded image information"
+    fields:
+      url: String
+      file_id: Option<String>
+      width: Int
+      height: Int
+      format: String
+      file_size_bytes: Int
+
+  ImageValidation:
+    description: "Image validation result"
+    fields:
+      valid: Bool
+      width: Int
+      height: Int
+      format: String
+      errors: List<String>
+      warnings: List<String>
+
+  ProcessedImage:
+    description: "Preprocessed image ready for I2V"
+    fields:
+      url: String
+      width: Int
+      height: Int
+      was_resized: Bool
+      was_converted: Bool
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB TRACKING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  I2VJobStatus:
+    description: "I2V job status"
     variants:
-      - Replicate
-      - KieAI
-      - Runway
-      - Kling
+      - Queued
+      - Preprocessing
+      - Generating
+      - Rendering
+      - Succeeded
+      - Failed
+      - Cancelled
+
+  I2VJob:
+    description: "I2V generation job"
+    fields:
+      id: String
+      generation_id: String
+      user_id: Int
+      prediction_id: Option<String>
+      status: I2VJobStatus
+      progress_percent: Int
+      video_url: Option<String>
+      error: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  I2VGenerationRecord:
+    description: "I2V generation record for database"
+    fields:
+      id: String
+      user_id: Int
+      chat_id: Int
+      image_url: String
+      motion_prompt: Option<String>
+      model: I2VModelId
+      duration_seconds: Int
+      status: I2VJobStatus
+      prediction_id: Option<String>
+      video_url: Option<String>
+      cost_stars: Int
+      generation_time_ms: Option<Int>
+      error_message: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  I2VError:
+    description: "I2V error types"
+    variants:
+      - InsufficientBalance
+      - InvalidImage
+      - ImageTooSmall
+      - ImageTooLarge
+      - UnsupportedFormat
+      - ImageNotAccessible
+      - NSFWContent
+      - ModelUnavailable
+      - RateLimited
+      - Timeout
+      - RenderingFailed
+      - Unknown
 
 behaviors:
-  - name: generate_image_to_video
-    given: ImageToVideoRequest
-    when: Starting video generation
-    then: Returns ImageToVideoResponse
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVICE LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: generate_with_fallback
-    given: ImageToVideoRequest
-    when: Using fallback providers
-    then: Returns ImageToVideoResponse
+  - name: create_service
+    given: ReplicateClient and GenerationRepository
+    when: Initializing service
+    then: |
+      1. Store replicate client
+      2. Store db repository
+      3. Set default_model = StableVideoDiffusion
+      4. Return ImageToVideoService
 
-  - name: validate_image_for_video
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN ANIMATION FLOW
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: animate_image
+    given: ImageToVideoService and AnimateImageRequest
+    when: User requests image animation
+    then: |
+      1. Validate and preprocess image
+      2. Calculate cost
+      3. Check user balance
+      4. Create I2VGenerationRecord
+      5. Deduct balance
+      6. Build model-specific input
+      7. Call replicate.create_prediction
+      8. Update record with prediction_id
+      9. Return generation_id (async)
+
+  - name: animate_image_sync
+    given: ImageToVideoService and AnimateImageRequest
+    when: Synchronous animation needed
+    then: |
+      1. Call animate_image (steps 1-8)
+      2. Wait for completion (3-5 min timeout)
+      3. If succeeded -> return video_url
+      4. If failed -> refund and return error
+
+  - name: wait_for_animation
+    given: Generation ID and timeout
+    when: Waiting for animation completion
+    then: |
+      Loop (max 5 minutes):
+        1. Get prediction status
+        2. Update progress
+        3. If succeeded -> return video_url
+        4. If failed -> return error
+        5. Sleep 3 seconds
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IMAGE PREPROCESSING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: validate_image
     given: Image URL
-    when: Validating image
-    then: Returns validation result
+    when: Validating input image
+    then: |
+      1. Fetch image headers (HEAD request)
+      2. Check Content-Type is image/*
+      3. Check Content-Length <= max_size
+      4. Download and check dimensions
+      5. Return ImageValidation
 
-  - name: get_supported_models
-    given: No parameters
-    when: Listing models
-    then: Returns list of model configs
+  - name: preprocess_image
+    given: ImageInfo and model requirements
+    when: Preparing image for model
+    then: |
+      1. If dimensions too large -> resize
+      2. If format not supported -> convert to PNG
+      3. Upload to temp storage
+      4. Return ProcessedImage with new URL
 
-  - name: notify_admin_server_issue
-    given: Error and user info
-    when: Server fails
-    then: Sends admin notification
+  - name: resize_image
+    given: Image URL and target dimensions
+    when: Image needs resizing
+    then: |
+      1. Download image
+      2. Calculate aspect-preserving dimensions
+      3. Resize using Lanczos
+      4. Upload resized image
+      5. Return new URL
+
+  - name: download_telegram_image
+    given: File ID
+    when: Getting image from Telegram
+    then: |
+      1. Call getFile API
+      2. Download from file_path
+      3. Upload to temp storage
+      4. Return public URL
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MODEL-SPECIFIC GENERATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: animate_with_stable_video
+    given: Request with StableVideoDiffusion
+    when: Using SVD model
+    then: |
+      Build StableVideoInput:
+        input_image: processed_image.url
+        motion_bucket_id: request.motion_bucket_id or 127
+        fps: request.fps or 7
+        cond_aug: 0.02
+        decoding_t: 14
+        seed: request.seed
+      
+      Call replicate with MODEL_STABLE_VIDEO
+
+  - name: animate_with_runway
+    given: Request with RunwayI2V
+    when: Using Runway I2V
+    then: |
+      Build input:
+        image: processed_image.url
+        prompt: request.motion_prompt or ""
+        duration: request.duration_seconds
+      
+      Call replicate with MODEL_RUNWAY_I2V
+
+  - name: animate_with_kling
+    given: Request with KlingI2V
+    when: Using Kling I2V
+    then: |
+      Build KlingInput:
+        image_url: processed_image.url
+        prompt: request.motion_prompt
+        duration: request.duration_seconds
+        cfg_scale: 0.5
+      
+      Call replicate with MODEL_KLING_I2V
+
+  - name: animate_with_luma
+    given: Request with LumaI2V
+    when: Using Luma I2V
+    then: |
+      Build input:
+        image: processed_image.url
+        prompt: request.motion_prompt
+        loop: false
+      
+      Call replicate with MODEL_LUMA_I2V
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COST CALCULATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: calculate_cost
+    given: Model and duration
+    when: Calculating animation cost
+    then: |
+      cost = MODEL_COSTS[model] * duration_seconds
+      Return cost in stars
+
+  - name: get_model_cost_per_second
+    given: I2VModelId
+    when: Getting model cost rate
+    then: |
+      StableVideoDiffusion: 15 stars/sec
+      StableVideoXT: 20 stars/sec
+      RunwayI2V: 25 stars/sec
+      KlingI2V: 20 stars/sec
+      LumaI2V: 18 stars/sec
+      AnimateDiff: 10 stars/sec
+      DynamiCrafter: 12 stars/sec
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MOTION PROMPT HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: validate_motion_prompt
+    given: Motion prompt string
+    when: Validating motion description
+    then: |
+      Checks:
+        - Length <= 500 characters
+        - Contains motion-related words (optional warning)
+        - No prohibited content
+      
+      Return: {valid: bool, warnings: list}
+
+  - name: enhance_motion_prompt
+    given: Basic motion prompt
+    when: Improving prompt quality
+    then: |
+      Add quality modifiers:
+        - "smooth motion"
+        - "natural movement"
+        - "high quality"
+      
+      Return enhanced prompt
+
+  - name: suggest_motion_prompts
+    given: Image analysis (optional)
+    when: Helping user with prompt
+    then: |
+      Common suggestions:
+        - "gentle breeze moving hair"
+        - "slowly turns head"
+        - "clouds drifting across sky"
+        - "water rippling"
+        - "leaves rustling"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_i2v_error
+    given: Error from processing
+    when: Animation failed
+    then: |
+      Parse error:
+        "image" -> InvalidImage
+        "size" -> ImageTooLarge/ImageTooSmall
+        "format" -> UnsupportedFormat
+        "NSFW" -> NSFWContent
+        "timeout" -> Timeout
+        else -> Unknown
+      
+      Return I2VError with details
+
+  - name: get_i2v_error_message
+    given: I2VError and language
+    when: Getting user-friendly message
+    then: |
+      InvalidImage:
+        RU: "Не удалось обработать изображение"
+        EN: "Could not process image"
+      
+      ImageTooSmall:
+        RU: "Изображение слишком маленькое. Минимум 512x512"
+        EN: "Image too small. Minimum 512x512"
+      
+      ImageTooLarge:
+        RU: "Изображение слишком большое. Максимум 10MB"
+        EN: "Image too large. Maximum 10MB"
+      
+      UnsupportedFormat:
+        RU: "Формат не поддерживается. Используйте JPG или PNG"
+        EN: "Format not supported. Use JPG or PNG"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # HISTORY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_user_animations
+    given: User ID and pagination
+    when: Fetching animation history
+    then: |
+      Query db for user's I2V generations
+      Order by created_at DESC
+      Return list of I2VGenerationRecord
+
+  - name: get_animation_by_id
+    given: Generation ID
+    when: Fetching specific animation
+    then: Return I2VGenerationRecord or null
 
 constants:
-  DEFAULT_DURATION: 8
-  MAX_DURATION: 30
-  DEFAULT_ASPECT_RATIO: "9:16"
-  SERVER_TIMEOUT_MS: 10000
+  # Model costs in stars per second
+  COST_STABLE_VIDEO: 15
+  COST_STABLE_VIDEO_XT: 20
+  COST_RUNWAY_I2V: 25
+  COST_KLING_I2V: 20
+  COST_LUMA_I2V: 18
+  COST_ANIMATE_DIFF: 10
+  COST_DYNAMICRAFTER: 12
+
+  # Duration limits
+  MIN_DURATION: 2
+  MAX_DURATION_SVD: 4
+  MAX_DURATION_RUNWAY: 10
+  MAX_DURATION_KLING: 5
+  DEFAULT_DURATION: 3
+
+  # Image requirements
+  MIN_IMAGE_SIZE: 512
+  MAX_IMAGE_SIZE: 2048
+  MAX_FILE_SIZE_MB: 10
+  SUPPORTED_FORMATS: ["jpg", "jpeg", "png", "webp"]
+
+  # Timeouts
+  GENERATION_TIMEOUT_MS: 300000
+  POLL_INTERVAL_MS: 3000
+
+  # Model versions
+  MODEL_STABLE_VIDEO: "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438"
+  MODEL_STABLE_VIDEO_XT: "stability-ai/stable-video-diffusion-img2vid-xt"
+  MODEL_RUNWAY_I2V: "runway/gen-3-alpha-turbo"
+  MODEL_KLING_I2V: "kling-ai/kling-image-to-video"
+  MODEL_LUMA_I2V: "luma/dream-machine"
+  MODEL_ANIMATE_DIFF: "lucataco/animate-diff"
+  MODEL_DYNAMICRAFTER: "cjwbw/dynamicrafter"
+
+  # Default parameters
+  DEFAULT_FPS: 7
+  DEFAULT_MOTION_BUCKET: 127
+  DEFAULT_COND_AUG: 0.02
+
+test_cases:
+  - name: test_create_service
+    input: {replicate: "valid", db: "valid"}
+    expected: {default_model: "StableVideoDiffusion"}
+
+  - name: test_validate_image_valid
+    input: {width: 1024, height: 768, format: "jpg", size_mb: 2}
+    expected: {valid: true}
+
+  - name: test_validate_image_too_small
+    input: {width: 256, height: 256}
+    expected: {valid: false, error: "ImageTooSmall"}
+
+  - name: test_validate_image_too_large
+    input: {size_mb: 15}
+    expected: {valid: false, error: "ImageTooLarge"}
+
+  - name: test_calculate_cost_svd_3s
+    input: {model: "StableVideoDiffusion", duration: 3}
+    expected: {cost: 45}
+
+  - name: test_calculate_cost_runway_5s
+    input: {model: "RunwayI2V", duration: 5}
+    expected: {cost: 125}
+
+  - name: test_validate_motion_prompt
+    input: {prompt: "hair blowing in the wind"}
+    expected: {valid: true}
+
+  - name: test_motion_prompt_too_long
+    input: {prompt: "x".repeat(600)}
+    expected: {valid: false, error: "max_length"}
+
+  - name: test_error_message_too_small
+    input: {error: "ImageTooSmall", lang: "ru"}
+    expected: {message: "Изображение слишком маленькое. Минимум 512x512"}
+
+  - name: test_preprocess_resize
+    input: {width: 4096, height: 4096, max: 2048}
+    expected: {was_resized: true, new_width: 2048}
