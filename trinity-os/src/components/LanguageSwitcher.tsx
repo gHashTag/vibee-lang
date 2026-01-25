@@ -17,8 +17,10 @@ const labels: Record<string, string> = {
   es: 'ES'
 }
 
+const LANGS = ['en', 'ru', 'de', 'zh', 'es']
+
 export default memo(function LanguageSwitcher() {
-  const { lang, setLang, availableLangs } = useI18n()
+  const { lang, setLang } = useI18n()
   const [open, setOpen] = useState(false)
 
   return (
@@ -28,14 +30,14 @@ export default memo(function LanguageSwitcher() {
         onClick={() => setOpen(!open)}
         aria-label="Select language"
       >
-        <span className="lang-flag">{flags[lang]}</span>
-        <span className="lang-code">{labels[lang]}</span>
+        <span className="lang-flag">{flags[lang] || '🌐'}</span>
+        <span className="lang-code">{labels[lang] || lang}</span>
         <span className="lang-arrow">{open ? '▲' : '▼'}</span>
       </button>
       
       {open && (
         <div className="lang-dropdown">
-          {availableLangs.filter(l => l !== lang).map(l => (
+          {LANGS.filter(l => l !== lang).map(l => (
             <button 
               key={l} 
               className="lang-option"
