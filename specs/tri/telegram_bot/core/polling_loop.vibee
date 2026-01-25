@@ -1,0 +1,258 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# POLLING LOOP - Long Polling Update Processor
+# ═══════════════════════════════════════════════════════════════════════════════
+# Continuously polls Telegram API for updates and dispatches them
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: polling_loop
+version: "1.0.0"
+language: zig
+module: polling_loop
+
+description: |
+  Long polling loop for Telegram Bot API.
+  Continuously fetches updates and dispatches them to handlers.
+  Handles connection errors, rate limits, and graceful shutdown.
+
+imports:
+  - telegram_client
+  - ../handlers/message_handler
+  - ../handlers/callback_handler
+
+types:
+  PollingConfig:
+    description: "Polling configuration"
+    fields:
+      timeout: Int
+      limit: Int
+      allowed_updates: List<String>
+      error_retry_delay_ms: Int
+      max_consecutive_errors: Int
+
+  PollingState:
+    description: "Current polling state"
+    fields:
+      offset: Int
+      is_running: Bool
+      consecutive_errors: Int
+      total_updates_processed: Int
+      last_update_time: Option<Timestamp>
+
+  PollingLoop:
+    description: "Main polling loop instance"
+    fields:
+      client: TelegramClient
+      config: PollingConfig
+      state: PollingState
+      message_handler: MessageHandler
+      callback_handler: CallbackHandler
+
+  UpdateBatch:
+    description: "Batch of updates from getUpdates"
+    fields:
+      updates: List<Update>
+      new_offset: Int
+
+  ProcessResult:
+    description: "Result of processing an update"
+    fields:
+      update_id: Int
+      success: Bool
+      handler_type: String
+      error: Option<String>
+      duration_ms: Int
+
+  PollingError:
+    description: "Polling error types"
+    variants:
+      - NetworkError
+      - TimeoutError
+      - RateLimited
+      - InvalidToken
+      - ServerError
+      - MaxErrorsReached
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: create_polling_loop
+    given: TelegramClient and handlers
+    when: Initializing polling
+    then: |
+      1. Create default PollingConfig
+      2. Initialize PollingState with offset=0
+      3. Attach handlers
+      4. Return PollingLoop
+
+  - name: start
+    given: PollingLoop
+    when: Starting polling
+    then: |
+      1. Set is_running = true
+      2. Log "Polling started"
+      3. Enter main loop
+      4. Return when stopped
+
+  - name: stop
+    given: PollingLoop
+    when: Stopping polling
+    then: |
+      1. Set is_running = false
+      2. Wait for current poll to complete
+      3. Log "Polling stopped"
+      4. Return final stats
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN LOOP
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: poll_once
+    given: PollingLoop
+    when: Fetching updates
+    then: |
+      1. Call getUpdates with current offset
+      2. If error -> handle_poll_error
+      3. If success -> process_batch
+      4. Update offset
+      5. Reset consecutive_errors
+
+  - name: run_loop
+    given: PollingLoop
+    when: Main loop running
+    then: |
+      while is_running:
+        1. poll_once()
+        2. If max_errors reached -> stop with error
+        3. Continue
+
+  - name: process_batch
+    given: PollingLoop and UpdateBatch
+    when: Processing updates
+    then: |
+      for each update in batch:
+        1. Dispatch to appropriate handler
+        2. Record ProcessResult
+        3. Increment total_updates_processed
+      Update offset to new_offset
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # UPDATE DISPATCH
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: dispatch_update
+    given: PollingLoop and Update
+    when: Routing update to handler
+    then: |
+      1. If update.message -> dispatch_message
+      2. If update.callback_query -> dispatch_callback
+      3. If update.edited_message -> dispatch_edited
+      4. Else -> log unknown update type
+
+  - name: dispatch_message
+    given: PollingLoop and Message
+    when: Handling message update
+    then: |
+      1. Extract MessageContext
+      2. Call message_handler.route_message
+      3. Return ProcessResult
+
+  - name: dispatch_callback
+    given: PollingLoop and CallbackQuery
+    when: Handling callback update
+    then: |
+      1. Parse callback data
+      2. Call callback_handler.handle_callback
+      3. Answer callback query
+      4. Return ProcessResult
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_poll_error
+    given: PollingLoop and error
+    when: getUpdates failed
+    then: |
+      1. Increment consecutive_errors
+      2. Log error with details
+      3. If NetworkError -> wait and retry
+      4. If RateLimited -> wait retry_after
+      5. If InvalidToken -> stop immediately
+      6. If max_errors -> stop with error
+
+  - name: calculate_backoff
+    given: consecutive_errors count
+    when: Calculating retry delay
+    then: |
+      delay = min(error_retry_delay_ms * 2^errors, 60000)
+      Return delay with jitter
+
+  - name: handle_handler_error
+    given: Update and handler error
+    when: Handler threw exception
+    then: |
+      1. Log error with update_id
+      2. Continue processing (don't stop loop)
+      3. Record failed ProcessResult
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STATISTICS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_stats
+    given: PollingLoop
+    when: Requesting statistics
+    then: |
+      Return:
+        - total_updates_processed
+        - consecutive_errors
+        - last_update_time
+        - uptime
+
+constants:
+  DEFAULT_TIMEOUT: 60
+  DEFAULT_LIMIT: 100
+  DEFAULT_ERROR_RETRY_MS: 1000
+  MAX_CONSECUTIVE_ERRORS: 10
+  MAX_BACKOFF_MS: 60000
+
+  ALLOWED_UPDATES:
+    - "message"
+    - "callback_query"
+    - "edited_message"
+
+test_cases:
+  - name: test_create_polling_loop
+    input: {client: "valid", handlers: "valid"}
+    expected: {offset: 0, is_running: false}
+
+  - name: test_poll_once_success
+    input: {updates: [{update_id: 1}, {update_id: 2}]}
+    expected: {offset: 3, processed: 2}
+
+  - name: test_dispatch_message
+    input: {update: {message: {text: "/start"}}}
+    expected: {handler: "message_handler"}
+
+  - name: test_dispatch_callback
+    input: {update: {callback_query: {data: "go_menu"}}}
+    expected: {handler: "callback_handler"}
+
+  - name: test_handle_network_error
+    input: {error: "NetworkError", consecutive: 2}
+    expected: {waits: true, retries: true}
+
+  - name: test_max_errors_stop
+    input: {consecutive_errors: 10}
+    expected: {stops: true, reason: "MaxErrorsReached"}
+
+  - name: test_rate_limit_backoff
+    input: {error_code: 429, retry_after: 30}
+    expected: {waits_ms: 30000}
+
+  - name: test_graceful_shutdown
+    input: {stop_requested: true}
+    expected: {completes_current_poll: true, returns_stats: true}

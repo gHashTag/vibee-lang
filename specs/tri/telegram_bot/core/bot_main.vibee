@@ -1,0 +1,247 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BOT MAIN - Entry Point for VIBEE Telegram Bot
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main entry point that initializes and runs the bot
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bot_main
+version: "1.0.0"
+language: zig
+module: bot_main
+
+description: |
+  Main entry point for VIBEE Telegram Bot.
+  Responsibilities:
+  - Load configuration from environment
+  - Initialize all services (DB, AI clients)
+  - Register handlers and middleware
+  - Start polling loop
+  - Handle graceful shutdown
+
+imports:
+  - bot
+  - supabase_client
+  - openai_client
+  - replicate_client
+  - elevenlabs_client
+  - ../handlers/message_handler
+  - ../handlers/callback_handler
+  - ../middleware/auth_middleware
+  - ../middleware/balance_middleware
+
+types:
+  AppConfig:
+    description: "Application configuration loaded from environment"
+    fields:
+      bot_token: String
+      bot_name: String
+      supabase_url: String
+      supabase_key: String
+      openai_key: Option<String>
+      replicate_token: Option<String>
+      elevenlabs_key: Option<String>
+      is_dev: Bool
+      log_level: String
+
+  AppServices:
+    description: "Initialized service clients"
+    fields:
+      db: SupabaseClient
+      openai: Option<OpenAIClient>
+      replicate: Option<ReplicateClient>
+      elevenlabs: Option<ElevenLabsClient>
+
+  Application:
+    description: "Main application instance"
+    fields:
+      config: AppConfig
+      services: AppServices
+      bot: BotInstance
+      is_running: Bool
+      started_at: Option<Timestamp>
+      shutdown_requested: Bool
+
+  StartupResult:
+    description: "Result of application startup"
+    fields:
+      success: Bool
+      app: Option<Application>
+      error: Option<String>
+
+  ShutdownReason:
+    description: "Reason for shutdown"
+    variants:
+      - UserRequested
+      - SignalReceived
+      - FatalError
+      - Timeout
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CONFIGURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: load_config
+    given: Environment variables
+    when: Application starts
+    then: |
+      1. Read BOT_TOKEN (required)
+      2. Read BOT_NAME (required)
+      3. Read SUPABASE_URL (required)
+      4. Read SUPABASE_SERVICE_KEY (required)
+      5. Read optional AI keys
+      6. Return AppConfig or error
+
+  - name: validate_config
+    given: AppConfig
+    when: Validating configuration
+    then: |
+      1. Check all required fields present
+      2. Validate token format
+      3. Validate URLs
+      4. Return validation result
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INITIALIZATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: init_services
+    given: AppConfig
+    when: Initializing services
+    then: |
+      1. Connect to Supabase
+      2. Initialize OpenAI client (if key present)
+      3. Initialize Replicate client (if token present)
+      4. Initialize ElevenLabs client (if key present)
+      5. Return AppServices
+
+  - name: init_bot
+    given: AppConfig
+    when: Creating bot instance
+    then: |
+      1. Create BotConfig from AppConfig
+      2. Create BotInstance
+      3. Return bot
+
+  - name: register_handlers
+    given: Application
+    when: Setting up message handlers
+    then: |
+      1. Register /start command
+      2. Register /menu command
+      3. Register /balance command
+      4. Register /help command
+      5. Register text message handler
+      6. Register photo handler
+      7. Register callback query handler
+
+  - name: register_middleware
+    given: Application
+    when: Setting up middleware
+    then: |
+      1. Register auth middleware (first)
+      2. Register balance middleware
+      3. Register logging middleware
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: start
+    given: Nothing
+    when: main() called
+    then: |
+      1. Load config
+      2. Validate config
+      3. Init services
+      4. Init bot
+      5. Register handlers
+      6. Register middleware
+      7. Start polling loop
+      8. Return StartupResult
+
+  - name: run
+    given: Application
+    when: Bot is running
+    then: |
+      1. Log startup message
+      2. Enter polling loop
+      3. Process updates until shutdown
+      4. Return exit code
+
+  - name: shutdown
+    given: Application and ShutdownReason
+    when: Shutdown requested
+    then: |
+      1. Set shutdown_requested = true
+      2. Stop polling loop
+      3. Close DB connections
+      4. Log shutdown reason
+      5. Exit cleanly
+
+  - name: handle_signal
+    given: OS signal (SIGINT, SIGTERM)
+    when: Signal received
+    then: |
+      1. Log signal received
+      2. Call shutdown with SignalReceived
+      3. Wait for graceful shutdown
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN ENTRY POINT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: main
+    given: Command line arguments
+    when: Program executed
+    then: |
+      1. Parse arguments
+      2. Call start()
+      3. If success, call run()
+      4. On exit, call shutdown()
+      5. Return exit code
+
+constants:
+  EXIT_SUCCESS: 0
+  EXIT_CONFIG_ERROR: 1
+  EXIT_INIT_ERROR: 2
+  EXIT_RUNTIME_ERROR: 3
+  
+  DEFAULT_LOG_LEVEL: "info"
+  SHUTDOWN_TIMEOUT_MS: 5000
+
+test_cases:
+  - name: test_load_config_success
+    input: |
+      BOT_TOKEN=123:ABC
+      BOT_NAME=test_bot
+      SUPABASE_URL=https://test.supabase.co
+      SUPABASE_SERVICE_KEY=key123
+    expected: {success: true}
+
+  - name: test_load_config_missing_token
+    input: |
+      BOT_NAME=test_bot
+    expected: {success: false, error: "BOT_TOKEN required"}
+
+  - name: test_validate_config_invalid_token
+    input: {bot_token: "invalid"}
+    expected: {valid: false, error: "Invalid token format"}
+
+  - name: test_startup_sequence
+    input: {valid_config: true}
+    expected: |
+      1. Config loaded
+      2. Services initialized
+      3. Bot created
+      4. Handlers registered
+      5. Polling started
+
+  - name: test_graceful_shutdown
+    input: {signal: "SIGINT"}
+    expected: |
+      1. Shutdown requested
+      2. Polling stopped
+      3. Connections closed
+      4. Exit code 0

@@ -1,0 +1,307 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATE MANAGER - User Session and State Management
+# ═══════════════════════════════════════════════════════════════════════════════
+# Manages user sessions, navigation state, and scene data
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: state_manager
+version: "1.0.0"
+language: zig
+module: state_manager
+
+description: |
+  Manages user state for Telegram bot.
+  Tracks:
+  - Current menu/scene
+  - Navigation history
+  - Scene-specific data (prompts, selected models)
+  - User preferences (language)
+  
+  Uses in-memory storage with optional DB persistence.
+
+imports:
+  - ../navigation/unified_navigation
+  - ../db/user_repository
+
+types:
+  UserSession:
+    description: "Complete user session state"
+    fields:
+      chat_id: Int
+      user_id: Int
+      username: Option<String>
+      language: String
+      current_menu: String
+      current_scene: Option<String>
+      scene_data: Option<SceneData>
+      navigation_stack: List<String>
+      last_activity: Timestamp
+      created_at: Timestamp
+
+  SceneData:
+    description: "Data specific to current scene"
+    fields:
+      prompt: Option<String>
+      photo_file_id: Option<String>
+      selected_model: Option<String>
+      selected_size: Option<String>
+      step: Int
+      extra: Option<Object>
+
+  StateManager:
+    description: "Main state manager instance"
+    fields:
+      sessions: Map<Int, UserSession>
+      db: Option<UserRepository>
+      session_timeout_ms: Int
+
+  SessionUpdate:
+    description: "Partial session update"
+    fields:
+      menu: Option<String>
+      scene: Option<String>
+      scene_data: Option<SceneData>
+      language: Option<String>
+
+  NavigationAction:
+    description: "Navigation action types"
+    variants:
+      - Push
+      - Pop
+      - Replace
+      - Reset
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SESSION LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: create_state_manager
+    given: Optional UserRepository
+    when: Initializing state manager
+    then: |
+      1. Create empty sessions map
+      2. Attach DB if provided
+      3. Set default timeout
+      4. Return StateManager
+
+  - name: get_session
+    given: StateManager and chat_id
+    when: Getting user session
+    then: |
+      1. Check in-memory cache
+      2. If not found and DB exists -> load from DB
+      3. If not found -> create_default_session
+      4. Update last_activity
+      5. Return UserSession
+
+  - name: create_default_session
+    given: chat_id and user info
+    when: Creating new session
+    then: |
+      Return UserSession:
+        - language: "ru"
+        - current_menu: "main"
+        - current_scene: null
+        - navigation_stack: []
+        - created_at: now()
+
+  - name: update_session
+    given: StateManager, chat_id, and SessionUpdate
+    when: Updating session
+    then: |
+      1. Get current session
+      2. Apply updates
+      3. Update last_activity
+      4. Save to cache
+      5. If DB exists -> persist async
+
+  - name: delete_session
+    given: StateManager and chat_id
+    when: Clearing session
+    then: |
+      1. Remove from cache
+      2. If DB exists -> delete from DB
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MENU NAVIGATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: set_menu
+    given: StateManager, chat_id, and menu_name
+    when: Changing menu
+    then: |
+      1. Push current menu to stack
+      2. Set current_menu = menu_name
+      3. Clear current_scene
+      4. Update session
+
+  - name: go_back
+    given: StateManager and chat_id
+    when: User presses back
+    then: |
+      1. Pop from navigation_stack
+      2. If empty -> set "main"
+      3. Set current_menu = popped value
+      4. Clear current_scene
+      5. Update session
+
+  - name: go_to_main
+    given: StateManager and chat_id
+    when: Returning to main menu
+    then: |
+      1. Clear navigation_stack
+      2. Set current_menu = "main"
+      3. Clear current_scene
+      4. Update session
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCENE MANAGEMENT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: enter_scene
+    given: StateManager, chat_id, and scene_name
+    when: Entering a wizard scene
+    then: |
+      1. Set current_scene = scene_name
+      2. Initialize SceneData with step=0
+      3. Update session
+
+  - name: exit_scene
+    given: StateManager and chat_id
+    when: Exiting scene
+    then: |
+      1. Clear current_scene
+      2. Clear scene_data
+      3. Update session
+
+  - name: update_scene_data
+    given: StateManager, chat_id, and SceneData updates
+    when: Updating scene state
+    then: |
+      1. Merge with existing scene_data
+      2. Update session
+
+  - name: advance_scene_step
+    given: StateManager and chat_id
+    when: Moving to next step
+    then: |
+      1. Increment scene_data.step
+      2. Update session
+
+  - name: set_scene_prompt
+    given: StateManager, chat_id, and prompt
+    when: User enters prompt
+    then: |
+      1. Set scene_data.prompt = prompt
+      2. Update session
+
+  - name: set_scene_photo
+    given: StateManager, chat_id, and file_id
+    when: User sends photo
+    then: |
+      1. Set scene_data.photo_file_id = file_id
+      2. Update session
+
+  - name: set_scene_model
+    given: StateManager, chat_id, and model_id
+    when: User selects model
+    then: |
+      1. Set scene_data.selected_model = model_id
+      2. Update session
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LANGUAGE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: set_language
+    given: StateManager, chat_id, and language_code
+    when: User changes language
+    then: |
+      1. Validate language_code (ru/en)
+      2. Set session.language = language_code
+      3. Update session
+
+  - name: get_language
+    given: StateManager and chat_id
+    when: Getting user language
+    then: Return session.language or "ru"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLEANUP
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: cleanup_expired
+    given: StateManager
+    when: Periodic cleanup
+    then: |
+      1. Find sessions older than timeout
+      2. Remove from cache
+      3. Return count of removed
+
+  - name: get_active_sessions_count
+    given: StateManager
+    when: Getting stats
+    then: Return sessions.size()
+
+constants:
+  DEFAULT_LANGUAGE: "ru"
+  DEFAULT_MENU: "main"
+  SESSION_TIMEOUT_MS: 3600000
+  
+  SUPPORTED_LANGUAGES:
+    - "ru"
+    - "en"
+
+  MENUS:
+    - "main"
+    - "photo"
+    - "video"
+    - "avatar"
+    - "voice"
+    - "settings"
+
+  SCENES:
+    - "neuro_photo"
+    - "image_to_video"
+    - "text_to_video"
+    - "digital_avatar"
+    - "voice_avatar"
+    - "text_to_speech"
+    - "image_to_prompt"
+    - "face_swap"
+    - "lip_sync"
+
+test_cases:
+  - name: test_create_default_session
+    input: {chat_id: 12345}
+    expected: {language: "ru", menu: "main", scene: null}
+
+  - name: test_set_menu_pushes_stack
+    input: {current: "main", new: "photo"}
+    expected: {stack: ["main"], menu: "photo"}
+
+  - name: test_go_back_pops_stack
+    input: {stack: ["main", "photo"], menu: "video"}
+    expected: {stack: ["main"], menu: "photo"}
+
+  - name: test_go_back_empty_stack
+    input: {stack: [], menu: "photo"}
+    expected: {stack: [], menu: "main"}
+
+  - name: test_enter_scene
+    input: {scene: "neuro_photo"}
+    expected: {scene: "neuro_photo", step: 0}
+
+  - name: test_set_scene_prompt
+    input: {prompt: "a cat in space"}
+    expected: {scene_data: {prompt: "a cat in space"}}
+
+  - name: test_language_switch
+    input: {current: "ru", new: "en"}
+    expected: {language: "en"}
+
+  - name: test_cleanup_expired
+    input: {sessions: 100, expired: 20}
+    expected: {removed: 20, remaining: 80}

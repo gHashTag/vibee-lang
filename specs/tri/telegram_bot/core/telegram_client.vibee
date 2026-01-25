@@ -1,0 +1,321 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TELEGRAM CLIENT - HTTP Client for Telegram Bot API
+# ═══════════════════════════════════════════════════════════════════════════════
+# Low-level HTTP client for Telegram Bot API calls
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: telegram_client
+version: "1.0.0"
+language: zig
+module: telegram_client
+
+description: |
+  HTTP client for Telegram Bot API.
+  Handles all API calls: getUpdates, sendMessage, sendPhoto, etc.
+  Implements retry logic and error handling.
+
+imports:
+  - ../interfaces/telegram
+
+types:
+  TelegramClient:
+    description: "Telegram API HTTP client"
+    fields:
+      token: String
+      api_base: String
+      timeout_ms: Int
+      max_retries: Int
+
+  ApiResponse:
+    description: "Generic Telegram API response"
+    fields:
+      ok: Bool
+      result: Option<Object>
+      error_code: Option<Int>
+      description: Option<String>
+
+  SendMessageParams:
+    description: "Parameters for sendMessage"
+    fields:
+      chat_id: Int
+      text: String
+      parse_mode: Option<String>
+      reply_markup: Option<String>
+      disable_notification: Bool
+
+  SendPhotoParams:
+    description: "Parameters for sendPhoto"
+    fields:
+      chat_id: Int
+      photo: String
+      caption: Option<String>
+      parse_mode: Option<String>
+      reply_markup: Option<String>
+
+  SendVideoParams:
+    description: "Parameters for sendVideo"
+    fields:
+      chat_id: Int
+      video: String
+      caption: Option<String>
+      duration: Option<Int>
+      width: Option<Int>
+      height: Option<Int>
+
+  GetUpdatesParams:
+    description: "Parameters for getUpdates (long polling)"
+    fields:
+      offset: Option<Int>
+      limit: Int
+      timeout: Int
+      allowed_updates: List<String>
+
+  Update:
+    description: "Telegram Update object"
+    fields:
+      update_id: Int
+      message: Option<Message>
+      callback_query: Option<CallbackQuery>
+      edited_message: Option<Message>
+
+  Message:
+    description: "Telegram Message object"
+    fields:
+      message_id: Int
+      from: Option<User>
+      chat: Chat
+      date: Int
+      text: Option<String>
+      photo: Option<List<PhotoSize>>
+      voice: Option<Voice>
+      video: Option<Video>
+      reply_markup: Option<Object>
+
+  CallbackQuery:
+    description: "Telegram CallbackQuery object"
+    fields:
+      id: String
+      from: User
+      message: Option<Message>
+      data: Option<String>
+
+  User:
+    description: "Telegram User object"
+    fields:
+      id: Int
+      is_bot: Bool
+      first_name: String
+      last_name: Option<String>
+      username: Option<String>
+      language_code: Option<String>
+
+  Chat:
+    description: "Telegram Chat object"
+    fields:
+      id: Int
+      type: String
+      title: Option<String>
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+
+  PhotoSize:
+    description: "Telegram PhotoSize object"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      file_size: Option<Int>
+
+  Voice:
+    description: "Telegram Voice object"
+    fields:
+      file_id: String
+      file_unique_id: String
+      duration: Int
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  Video:
+    description: "Telegram Video object"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      duration: Int
+      file_size: Option<Int>
+
+  File:
+    description: "Telegram File object"
+    fields:
+      file_id: String
+      file_unique_id: String
+      file_size: Option<Int>
+      file_path: Option<String>
+
+  ApiError:
+    description: "API error details"
+    fields:
+      code: Int
+      message: String
+      retry_after: Option<Int>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: create_client
+    given: Bot token
+    when: Initializing client
+    then: |
+      1. Validate token format
+      2. Set API base URL
+      3. Set default timeout
+      4. Return TelegramClient
+
+  - name: build_url
+    given: Method name
+    when: Building API URL
+    then: Return https://api.telegram.org/bot{token}/{method}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CORE API METHODS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_me
+    given: TelegramClient
+    when: Getting bot info
+    then: Return User object for bot
+
+  - name: get_updates
+    given: TelegramClient and GetUpdatesParams
+    when: Polling for updates
+    then: |
+      1. Call getUpdates with long polling
+      2. Parse response
+      3. Return List<Update>
+
+  - name: send_message
+    given: TelegramClient and SendMessageParams
+    when: Sending text message
+    then: |
+      1. Build request body
+      2. POST to sendMessage
+      3. Return Message or error
+
+  - name: send_photo
+    given: TelegramClient and SendPhotoParams
+    when: Sending photo
+    then: |
+      1. Build multipart or URL request
+      2. POST to sendPhoto
+      3. Return Message or error
+
+  - name: send_video
+    given: TelegramClient and SendVideoParams
+    when: Sending video
+    then: |
+      1. Build request
+      2. POST to sendVideo
+      3. Return Message or error
+
+  - name: answer_callback_query
+    given: TelegramClient, callback_id, and optional text
+    when: Answering callback
+    then: |
+      1. POST to answerCallbackQuery
+      2. Return success status
+
+  - name: edit_message_text
+    given: TelegramClient, chat_id, message_id, new_text
+    when: Editing message
+    then: |
+      1. POST to editMessageText
+      2. Return updated Message
+
+  - name: delete_message
+    given: TelegramClient, chat_id, message_id
+    when: Deleting message
+    then: |
+      1. POST to deleteMessage
+      2. Return success status
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FILE OPERATIONS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_file
+    given: TelegramClient and file_id
+    when: Getting file info
+    then: |
+      1. POST to getFile
+      2. Return File with file_path
+
+  - name: download_file
+    given: TelegramClient and file_path
+    when: Downloading file content
+    then: |
+      1. Build download URL
+      2. GET file content
+      3. Return bytes
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ERROR HANDLING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_api_error
+    given: ApiResponse with error
+    when: API returns error
+    then: |
+      1. Parse error code
+      2. Check if retryable (429, 5xx)
+      3. Return ApiError
+
+  - name: retry_request
+    given: Request and retry count
+    when: Request failed with retryable error
+    then: |
+      1. Wait exponential backoff
+      2. Retry request
+      3. Return result or final error
+
+constants:
+  API_BASE: "https://api.telegram.org"
+  DEFAULT_TIMEOUT_MS: 30000
+  LONG_POLL_TIMEOUT: 60
+  MAX_RETRIES: 3
+  RETRY_BASE_DELAY_MS: 1000
+
+  # Parse modes
+  PARSE_MODE_HTML: "HTML"
+  PARSE_MODE_MARKDOWN: "MarkdownV2"
+
+  # Update types
+  UPDATE_MESSAGE: "message"
+  UPDATE_CALLBACK: "callback_query"
+  UPDATE_EDITED: "edited_message"
+
+test_cases:
+  - name: test_create_client
+    input: {token: "123:ABC"}
+    expected: {api_base: "https://api.telegram.org/bot123:ABC"}
+
+  - name: test_send_message
+    input: {chat_id: 12345, text: "Hello"}
+    expected: {method: "sendMessage", ok: true}
+
+  - name: test_get_updates_long_poll
+    input: {timeout: 60, offset: 100}
+    expected: {blocks_for: 60, returns: "List<Update>"}
+
+  - name: test_retry_on_429
+    input: {error_code: 429, retry_after: 5}
+    expected: {waits: 5000, retries: true}
+
+  - name: test_download_file
+    input: {file_path: "photos/file_123.jpg"}
+    expected: {url: "https://api.telegram.org/file/bot{token}/photos/file_123.jpg"}
