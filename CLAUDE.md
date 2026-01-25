@@ -115,7 +115,7 @@ After self-criticism - propose 3 options from Tech Tree for next iteration:
 For EVERY task execute at minimum these links:
 
 ```bash
-# [5] SPEC CREATE
+# [5] SPEC CREATE - For SOFTWARE (Zig)
 cat > specs/tri/feature.vibee << 'EOF'
 name: feature
 version: "1.0.0"
@@ -134,11 +134,33 @@ behaviors:
     then: Result
 EOF
 
+# [5] SPEC CREATE - For HARDWARE (Verilog/FPGA)
+cat > specs/tri/feature_fpga.vibee << 'EOF'
+name: feature_fpga
+version: "1.0.0"
+language: varlog  # ← THIS GENERATES .v VERILOG!
+module: feature_fpga
+
+types:
+  DataWord:
+    fields:
+      value: Int
+    width: 32
+
+behaviors:
+  - name: process_data
+    given: Input data word
+    when: Clock edge
+    then: Output processed result
+EOF
+
 # [6] CODE GENERATE
-./bin/vibee gen specs/tri/feature.vibee
+./bin/vibee gen specs/tri/feature.vibee        # → trinity/output/feature.zig
+./bin/vibee gen specs/tri/feature_fpga.vibee   # → trinity/output/fpga/feature_fpga.v
 
 # [7] TEST RUN
 zig test trinity/output/feature.zig
+# For Verilog: iverilog -o test trinity/output/fpga/feature_fpga.v && vvp test
 
 # [14] TOXIC VERDICT
 # Write harsh self-criticism!
@@ -155,6 +177,16 @@ zig test trinity/output/feature.zig
 
 ## ⛔ FORBIDDEN
 
+### 🚫 ANTI-PATTERN #1: WRITING CODE MANUALLY
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  ❌ WRITING .zig CODE MANUALLY IS AN ANTI-PATTERN!               ║
+║  ❌ WRITING .v CODE MANUALLY IS AN ANTI-PATTERN!                 ║
+║  ❌ ALL CODE MUST BE GENERATED FROM .vibee SPECIFICATIONS!       ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
 ### NEVER create manually:
 
 | Forbidden | Reason |
@@ -163,15 +195,36 @@ zig test trinity/output/feature.zig
 | `*.css` | Legacy |
 | `*.js` | Legacy |
 | `*.ts` | Legacy |
-| `*.zig` in `trinity/output/` | Auto-generated! |
+| `*.zig` | **ANTI-PATTERN!** Generate from .vibee |
+| `*.v` | **ANTI-PATTERN!** Generate from .vibee (language: varlog) |
+| `*.py` | **ANTI-PATTERN!** Generate from .vibee |
+
+### CORRECT WORKFLOW:
+
+```bash
+# For Zig code:
+specs/tri/feature.vibee (language: zig) → ./bin/vibee gen → trinity/output/feature.zig
+
+# For Verilog/FPGA code:
+specs/tri/feature.vibee (language: varlog) → ./bin/vibee gen → trinity/output/fpga/feature.v
+```
 
 ### ALLOWED to edit:
 
 | Allowed | Description |
 |---------|-------------|
-| `specs/tri/*.vibee` | Specifications |
-| `src/vibeec/*.zig` | Compiler |
+| `specs/tri/*.vibee` | Specifications (SOURCE OF TRUTH) |
+| `src/vibeec/*.zig` | Compiler source ONLY |
 | `docs/*.md` | Documentation |
+
+### NEVER EDIT (auto-generated):
+
+| Never Edit | Reason |
+|------------|--------|
+| `trinity/output/*.zig` | Generated from .vibee |
+| `trinity/output/fpga/*.v` | Generated from .vibee (language: varlog) |
+| `generated/*.zig` | Generated from .vibee |
+| `generated/*.v` | Generated from .vibee |
 
 ---
 

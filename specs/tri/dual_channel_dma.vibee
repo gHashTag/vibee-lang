@@ -1,0 +1,94 @@
+name: dual_channel_dma
+version: "2.0.0"
+language: zig
+module: dual_channel_dma
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE FPGA - Dual-Channel DMA Engine
+# ═══════════════════════════════════════════════════════════════════════════════
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+#
+# Характеристики:
+#   - 2 независимых DMA канала
+#   - Channel 0: Weight loading (приоритет)
+#   - Channel 1: Input/Output transfers
+#   - Суммарная bandwidth: 30.8 GB/s
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  DmaConfig:
+    fields:
+      axi_data_width: Int
+      axi_addr_width: Int
+      buffer_depth: Int
+      max_burst_len: Int
+
+  DmaChannel:
+    fields:
+      id: Int
+      src_addr: Int
+      dst_addr: Int
+      transfer_len: Int
+      mode: Int
+      busy: Bool
+      done: Bool
+      bytes_transferred: Int
+
+  DualDmaState:
+    fields:
+      channel0: Object
+      channel1: Object
+      arbiter_grant: Int
+      total_bandwidth: Float
+
+  DmaTransfer:
+    fields:
+      channel_id: Int
+      address: Int
+      length: Int
+      direction: Int
+      priority: Int
+
+  DmaMetrics:
+    fields:
+      ch0_bytes: Int
+      ch1_bytes: Int
+      total_cycles: Int
+      effective_bandwidth: Float
+
+behaviors:
+  - name: init_dual_dma
+    given: DmaConfig with axi_data_width=512, buffer_depth=64
+    when: Initialize dual-channel DMA engine
+    then: Both channels idle, arbitration ready
+
+  - name: start_weight_transfer
+    given: Channel 0 idle, weight address and length
+    when: Start weight loading with high priority
+    then: Channel 0 busy, burst transfers initiated
+
+  - name: start_io_transfer
+    given: Channel 1 idle, I/O address and length
+    when: Start input/output transfer
+    then: Channel 1 busy, transfers initiated
+
+  - name: arbitrate_channels
+    given: Both channels requesting AXI bus
+    when: Arbitration decision needed
+    then: Channel 0 wins (weight priority)
+
+  - name: parallel_transfer
+    given: Both channels active
+    when: Concurrent read operations
+    then: 2x bandwidth achieved (30.8 GB/s)
+
+  - name: complete_transfer
+    given: All beats transferred
+    when: Last beat received/sent
+    then: Channel done, bytes_transferred updated
+
+  - name: calculate_bandwidth
+    given: Transfer complete, cycle count known
+    when: Metrics requested
+    then: Effective bandwidth = bytes / (cycles / clock_freq)

@@ -1,0 +1,465 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET PIPELINED LAYER - Full Layer with 3-Stage Pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete BitNet layer implementation with:
+# - 3-stage pipeline (Fetch → Compute → Writeback)
+# - BRAM interface for weight storage
+# - Layer sequencer FSM for large vectors
+# - Accumulator for input_size > 27
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_pipelined_layer
+version: "1.0.0"
+language: varlog
+module: bitnet_pipelined_layer
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 3-Stage Pipeline:
+#
+#   Stage 1: FETCH
+#   - Read weight chunk from BRAM
+#   - Read input chunk from input buffer
+#   - Latency: 1 cycle
+#
+#   Stage 2: COMPUTE
+#   - trit27_parallel_multiply
+#   - adder_tree_27
+#   - Accumulate partial sum
+#   - Latency: 1 cycle (combinational SIMD)
+#
+#   Stage 3: WRITEBACK
+#   - Apply activation function
+#   - Write output to output buffer
+#   - Latency: 1 cycle
+#
+# Throughput: 1 dot product per cycle (after pipeline fill)
+# Total latency: 3 cycles per output neuron
+#
+# For input_size > 27:
+#   - Multiple chunks accumulated
+#   - chunks = ceil(input_size / 27)
+#   - Total cycles per neuron = 3 + (chunks - 1)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  simd_width: 27
+  pipeline_depth: 3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Pipeline stage registers
+  PipelineStage1:
+    fields:
+      valid: Bool
+      input_chunk: Int
+      weight_addr: Int
+      neuron_id: Int
+      chunk_id: Int
+      is_last_chunk: Bool
+    width: 96
+
+  PipelineStage2:
+    fields:
+      valid: Bool
+      input_chunk: Int
+      weight_chunk: Int
+      neuron_id: Int
+      chunk_id: Int
+      is_last_chunk: Bool
+      accumulator: Int
+    width: 144
+
+  PipelineStage3:
+    fields:
+      valid: Bool
+      neuron_id: Int
+      pre_activation: Int
+      is_final: Bool
+    width: 48
+
+  # Layer configuration
+  LayerConfig:
+    fields:
+      input_size: Int
+      output_size: Int
+      num_chunks: Int
+      activation_threshold: Int
+      weight_base_addr: Int
+    width: 80
+
+  # BRAM interface
+  BramReadPort:
+    fields:
+      addr: Int
+      data: Int
+      enable: Bool
+    width: 72
+
+  BramWritePort:
+    fields:
+      addr: Int
+      data: Int
+      enable: Bool
+      write_enable: Bool
+    width: 73
+
+  # Sequencer state
+  SequencerState:
+    fields:
+      state: Int
+      current_neuron: Int
+      current_chunk: Int
+      cycles_remaining: Int
+    width: 48
+    states: "IDLE=0, RUNNING=1, FLUSH=2, DONE=3"
+
+  # Output buffer entry
+  OutputEntry:
+    fields:
+      neuron_id: Int
+      value: Int
+      valid: Bool
+    width: 24
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BRAM WEIGHT STORAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT BRAM - Dual-port BRAM for weight storage
+  # ───────────────────────────────────────────────────────────────────────────
+  # Organization:
+  #   - Each word: 54 bits (27 trits)
+  #   - Address = neuron_id * num_chunks + chunk_id
+  #   - Depth: configurable (e.g., 4096 words = 4096 * 27 = 110K weights)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_bram
+    given: Read address and optional write data
+    when: Memory access needed
+    then: Return weight chunk or acknowledge write
+    implementation: |
+      // Xilinx BRAM primitive wrapper
+      // Single read port for pipeline
+      // Optional write port for weight loading
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT ADDRESS CALCULATOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_addr_calc
+    given: Neuron ID, chunk ID, and base address
+    when: Weight fetch needed
+    then: Return BRAM address
+    implementation: |
+      // addr = base_addr + neuron_id * num_chunks + chunk_id
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE STAGE 1: FETCH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # FETCH STAGE - Read weights and inputs
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: pipeline_stage1_fetch
+    given: Sequencer commands and input buffer
+    when: Pipeline stage 1 active
+    then: Output weight address and pass input chunk to stage 2
+    implementation: |
+      // Register: stage1_reg
+      // - Capture input chunk from input buffer
+      // - Calculate weight BRAM address
+      // - Pass neuron_id, chunk_id, is_last_chunk
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE STAGE 2: COMPUTE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # COMPUTE STAGE - SIMD multiply + accumulate
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: pipeline_stage2_compute
+    given: Input chunk, weight chunk from BRAM, accumulator
+    when: Pipeline stage 2 active
+    then: Output partial sum or final pre-activation
+    implementation: |
+      // 1. trit27_parallel_multiply(input, weights)
+      // 2. adder_tree_27(products) → partial_sum
+      // 3. accumulator += partial_sum
+      // 4. If is_last_chunk: output pre_activation = accumulator
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ACCUMULATOR - For multi-chunk dot products
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: pipeline_accumulator
+    given: Partial sum and accumulator state
+    when: Accumulation needed
+    then: Return updated accumulator
+    implementation: |
+      // Per-neuron accumulator
+      // Reset on first chunk, accumulate on subsequent chunks
+      // Output on last chunk
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE STAGE 3: WRITEBACK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WRITEBACK STAGE - Activation and output
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: pipeline_stage3_writeback
+    given: Pre-activation value and threshold
+    when: Pipeline stage 3 active
+    then: Apply activation and write to output buffer
+    implementation: |
+      // 1. bitnet_activation(pre_act, threshold) → output_trit
+      // 2. Write to output buffer at neuron_id
+      // 3. Signal completion
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LAYER SEQUENCER FSM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # SEQUENCER - Controls layer execution
+  # ───────────────────────────────────────────────────────────────────────────
+  # States:
+  #   IDLE: Waiting for start signal
+  #   RUNNING: Processing neurons and chunks
+  #   FLUSH: Draining pipeline
+  #   DONE: Layer complete
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: layer_sequencer
+    given: Layer configuration and start signal
+    when: Layer execution requested
+    then: Sequence through all neurons and chunks
+    implementation: |
+      // State machine:
+      // IDLE → RUNNING (on start)
+      // RUNNING: for each neuron, for each chunk, issue fetch
+      // RUNNING → FLUSH (when all fetches issued)
+      // FLUSH → DONE (when pipeline drained)
+      // DONE → IDLE (on acknowledge)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CHUNK COUNTER - Tracks chunks within neuron
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: chunk_counter
+    given: Num chunks and reset signal
+    when: Chunk tracking needed
+    then: Return current chunk and is_last flag
+    implementation: |
+      // Counts 0 to num_chunks-1
+      // Wraps and increments neuron counter
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # NEURON COUNTER - Tracks output neurons
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: neuron_counter
+    given: Output size and reset signal
+    when: Neuron tracking needed
+    then: Return current neuron and is_last flag
+    implementation: |
+      // Counts 0 to output_size-1
+      // Signals completion when done
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INPUT/OUTPUT BUFFERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # INPUT BUFFER - Stores input vector
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: input_buffer
+    given: Input data from host
+    when: Input storage needed
+    then: Provide input chunks to pipeline
+    implementation: |
+      // Organized as 54-bit words (27 trits each)
+      // Indexed by chunk_id
+      // Loaded before layer execution
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # OUTPUT BUFFER - Stores output vector
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: output_buffer
+    given: Output trits from pipeline
+    when: Output storage needed
+    then: Accumulate outputs for host read
+    implementation: |
+      // Organized as 2-bit words (1 trit each)
+      // Indexed by neuron_id
+      // Read by host after layer completion
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL PIPELINED LAYER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BITNET PIPELINED LAYER TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bitnet_layer_top
+    given: Layer config, input buffer, weight BRAM
+    when: Layer execution started
+    then: Produce output buffer with all neuron activations
+    implementation: |
+      // Instantiate:
+      // - layer_sequencer
+      // - pipeline_stage1_fetch
+      // - pipeline_stage2_compute (with SIMD unit)
+      // - pipeline_stage3_writeback
+      // - input_buffer
+      // - output_buffer
+      // - weight_bram
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # HOST INTERFACE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: host_interface
+    given: AXI-Lite or simple bus commands
+    when: Host communication needed
+    then: Handle config, input load, output read, weight load
+    implementation: |
+      // Registers:
+      // - CONFIG: input_size, output_size, threshold
+      // - STATUS: busy, done, error
+      // - INPUT_DATA: write input chunks
+      // - OUTPUT_DATA: read output trits
+      // - WEIGHT_DATA: write weight chunks
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Single neuron, single chunk
+  - name: test_single_neuron_single_chunk
+    input: {input_size: 27, output_size: 1, input: "all +1", weights: "all +1"}
+    expected: {output: "+1", cycles: 3}
+
+  # Single neuron, multiple chunks
+  - name: test_single_neuron_multi_chunk
+    input: {input_size: 81, output_size: 1, input: "all +1", weights: "all +1"}
+    expected: {output: "+1", cycles: 5}
+
+  # Multiple neurons, single chunk
+  - name: test_multi_neuron_single_chunk
+    input: {input_size: 27, output_size: 4, input: "all +1", weights: "varied"}
+    expected: {outputs: 4, cycles: 7}
+
+  # Pipeline throughput test
+  - name: test_pipeline_throughput
+    input: {input_size: 27, output_size: 100}
+    expected: {throughput: "1 neuron per cycle after fill"}
+
+  # Accumulator test
+  - name: test_accumulator_overflow
+    input: {input_size: 270, output_size: 1, input: "all +1", weights: "all +1"}
+    expected: {pre_activation: 270, output: "+1"}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  pipeline_registers: "~300 FFs"
+  simd_unit: "~310 LUTs"
+  accumulator: "~50 LUTs"
+  sequencer_fsm: "~100 LUTs"
+  counters: "~50 LUTs"
+  weight_bram: "1 BRAM36 per 512 rows"
+  input_buffer: "1 BRAM18 for 256 chunks"
+  output_buffer: "1 BRAM18 for 4K neurons"
+  total_luts: "<1000 LUTs"
+  total_bram: "2-4 BRAM36"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  clock_frequency: ">300MHz"
+  pipeline_latency: "3 cycles"
+  throughput: "1 output per cycle (steady state)"
+  
+  # Example: 768-input, 768-output layer (typical transformer)
+  # chunks_per_neuron = ceil(768/27) = 29
+  # cycles_per_neuron = 3 + 28 = 31
+  # total_cycles = 768 * 31 = 23,808
+  # at 300MHz: 79.4 μs per layer
+  
+  layer_768x768_latency_us: "<80"
+  
+  # BitNet-1.58B has ~40 layers
+  # Total inference: 40 * 80μs = 3.2ms
+  # Target: <10ms per token ✓
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DIAGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+architecture: |
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                    BITNET PIPELINED LAYER                                   │
+  │                   3-Stage Pipeline Architecture                             │
+  ├─────────────────────────────────────────────────────────────────────────────┤
+  │                                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      HOST INTERFACE                                 │   │
+  │  │  CONFIG | STATUS | INPUT_DATA | OUTPUT_DATA | WEIGHT_DATA           │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │       │         │           │              │              │                 │
+  │       ▼         │           ▼              ▼              ▼                 │
+  │  ┌─────────┐    │    ┌───────────┐  ┌───────────┐  ┌───────────┐          │
+  │  │SEQUENCER│    │    │  INPUT    │  │  OUTPUT   │  │  WEIGHT   │          │
+  │  │   FSM   │    │    │  BUFFER   │  │  BUFFER   │  │   BRAM    │          │
+  │  └─────────┘    │    └───────────┘  └───────────┘  └───────────┘          │
+  │       │         │           │              ▲              │                 │
+  │       │         │           │              │              │                 │
+  │       ▼         │           ▼              │              ▼                 │
+  │  ════════════════════════════════════════════════════════════════════════  │
+  │  ║                    3-STAGE PIPELINE                                  ║  │
+  │  ════════════════════════════════════════════════════════════════════════  │
+  │                                                                             │
+  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐            │
+  │  │   STAGE 1       │  │   STAGE 2       │  │   STAGE 3       │            │
+  │  │   FETCH         │─▶│   COMPUTE       │─▶│   WRITEBACK     │            │
+  │  │                 │  │                 │  │                 │            │
+  │  │ • Read input    │  │ • SIMD multiply │  │ • Activation    │            │
+  │  │ • Calc weight   │  │ • Adder tree    │  │ • Write output  │            │
+  │  │   address       │  │ • Accumulate    │  │                 │            │
+  │  │                 │  │                 │  │                 │            │
+  │  │ Latency: 1 cyc  │  │ Latency: 1 cyc  │  │ Latency: 1 cyc  │            │
+  │  └─────────────────┘  └─────────────────┘  └─────────────────┘            │
+  │           │                   │                    │                       │
+  │           │                   ▼                    │                       │
+  │           │         ┌─────────────────┐            │                       │
+  │           │         │  ACCUMULATOR    │            │                       │
+  │           │         │  (per neuron)   │            │                       │
+  │           │         └─────────────────┘            │                       │
+  │           │                                        │                       │
+  │  ════════════════════════════════════════════════════════════════════════  │
+  │                                                                             │
+  │  Throughput: 1 output neuron per cycle (steady state)                      │
+  │  Latency: 3 cycles + (chunks-1) per neuron                                 │
+  │                                                                             │
+  │  φ² + 1/φ² = 3 | PHOENIX = 999 | Pipeline Depth = 3                        │
+  └─────────────────────────────────────────────────────────────────────────────┘

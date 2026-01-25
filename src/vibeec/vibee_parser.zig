@@ -19,6 +19,7 @@ const ArrayList = std.ArrayList;
 pub const VibeeSpec = struct {
     name: []const u8,
     version: []const u8,
+    language: []const u8, // Target language: zig, verilog, python, etc.
     author: []const u8,
     license: []const u8,
     targets: ArrayList([]const u8),
@@ -34,6 +35,7 @@ pub const VibeeSpec = struct {
         return VibeeSpec{
             .name = "",
             .version = "",
+            .language = "zig", // Default to Zig
             .author = "",
             .license = "",
             .targets = ArrayList([]const u8).init(allocator),
@@ -235,6 +237,10 @@ pub const VibeeParser = struct {
             } else if (std.mem.eql(u8, key, "version")) {
                 self.skipInlineWhitespace();
                 spec.version = self.readQuotedValue();
+                self.skipToNextLine();
+            } else if (std.mem.eql(u8, key, "language")) {
+                self.skipInlineWhitespace();
+                spec.language = self.readValue();
                 self.skipToNextLine();
             } else if (std.mem.eql(u8, key, "author")) {
                 self.skipInlineWhitespace();

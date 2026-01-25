@@ -44,6 +44,14 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 
 ## ⛔ CRITICAL PROHIBITIONS
 
+### 🚫 ANTI-PATTERN #1: WRITING .zig CODE MANUALLY
+
+```
+❌ NEVER write .zig code directly - this is an ANTI-PATTERN!
+❌ ALL .zig code MUST be GENERATED from .vibee specifications
+❌ The only exception: src/vibeec/*.zig (compiler source code)
+```
+
 ### NEVER CREATE THESE FILE TYPES MANUALLY:
 
 ```
@@ -53,8 +61,9 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 ❌ .ts files
 ❌ .jsx files
 ❌ .tsx files
-❌ .zig files in trinity/output/ (ONLY GENERATED)
+❌ .zig files - ANTI-PATTERN! Use .vibee → gen → .zig
 ❌ .py files (ONLY GENERATED)
+❌ .v files - ANTI-PATTERN! Use .vibee (language: varlog) → gen → .v
 ```
 
 ### WHY?
@@ -62,13 +71,37 @@ This document provides guidelines for AI agents working on the VIBEE project. Al
 VIBEE uses specification-first development:
 
 ```
-specs/*.vibee → vibee gen → trinity/output/*.zig
+specs/*.vibee (language: zig)    → vibee gen → trinity/output/*.zig
+specs/*.vibee (language: varlog) → vibee gen → trinity/output/fpga/*.v
+```
+
+### CORRECT WORKFLOW:
+
+```bash
+# 1. Create specification (NOT code!)
+cat > specs/tri/my_feature.vibee << 'EOF'
+name: my_feature
+version: "1.0.0"
+language: varlog  # For FPGA/Verilog
+# OR
+language: zig     # For software
+module: my_feature
+...
+EOF
+
+# 2. Generate code (NEVER write it manually!)
+./bin/vibee gen specs/tri/my_feature.vibee
+
+# 3. Test generated code
+zig test trinity/output/my_feature.zig
+# OR for Verilog:
+iverilog trinity/output/fpga/my_feature.v
 ```
 
 ### ALLOWED TO EDIT:
 
 ```
-src/vibeec/*.zig - Compiler source code
+src/vibeec/*.zig - Compiler source code ONLY
 specs/tri/*.vibee - Specifications (NO manual code blocks!)
 docs/*.md - Documentation
 ```
@@ -77,6 +110,8 @@ docs/*.md - Documentation
 
 ```
 trinity/output/*.zig - Generated code (will be overwritten)
+trinity/output/fpga/*.v - Generated Verilog (will be overwritten)
+generated/*.zig - Generated code (will be overwritten)
 ```
 
 ---

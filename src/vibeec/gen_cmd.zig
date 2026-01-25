@@ -11,6 +11,7 @@
 const std = @import("std");
 const vibee_parser = @import("vibee_parser.zig");
 const zig_codegen = @import("zig_codegen.zig");
+const verilog_codegen = @import("verilog_codegen.zig");
 const coptic_parser = @import("coptic_parser_real.zig");
 const coptic_interpreter = @import("coptic_interpreter.zig");
 const bytecode_compiler = @import("bytecode_compiler.zig");
@@ -38,11 +39,15 @@ pub fn main() !void {
         }
         
         const input_path = args[2];
+        
+        // Detect language from file content
+        const language = detectLanguage(allocator, input_path) catch "zig";
+        
         var derived_path: ?[]const u8 = null;
         defer if (derived_path) |p| allocator.free(p);
         
         const output_path = if (args.len > 3) args[3] else blk: {
-            derived_path = deriveOutputPath(allocator, input_path) catch {
+            derived_path = deriveOutputPath(allocator, input_path, language) catch {
                 std.debug.print("Error: Could not derive output path\n", .{});
                 return;
             };
@@ -205,12 +210,44 @@ fn printKoscheiStatus() void {
     , .{});
 }
 
-fn deriveOutputPath(allocator: std.mem.Allocator, input_path: []const u8) ![]const u8 {
-    // specs/phi_core.vibee -> generated/phi_core.zig
+fn detectLanguage(allocator: std.mem.Allocator, input_path: []const u8) ![]const u8 {
+    const file = try std.fs.cwd().openFile(input_path, .{});
+    defer file.close();
+    
+    const content = try file.readToEndAlloc(allocator, 64 * 1024); // Read first 64KB
+    defer allocator.free(content);
+    
+    // Look for "language:" line
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 9 and std.mem.eql(u8, trimmed[0..9], "language:")) {
+            const value = std.mem.trim(u8, trimmed[9..], " \t\"");
+            if (value.len > 0) {
+                return try allocator.dupe(u8, value);
+            }
+        }
+    }
+    
+    return "zig"; // Default
+}
+
+fn deriveOutputPath(allocator: std.mem.Allocator, input_path: []const u8, language: []const u8) ![]const u8 {
+    // specs/phi_core.vibee -> generated/phi_core.zig or .v
     const basename = std.fs.path.basename(input_path);
     const stem = std.fs.path.stem(basename);
     
-    return try std.fmt.allocPrint(allocator, "generated/{s}.zig", .{stem});
+    const ext = if (std.mem.eql(u8, language, "verilog") or std.mem.eql(u8, language, "varlog"))
+        "v"
+    else
+        "zig";
+    
+    const dir = if (std.mem.eql(u8, language, "verilog") or std.mem.eql(u8, language, "varlog"))
+        "trinity/output/fpga"
+    else
+        "generated";
+    
+    return try std.fmt.allocPrint(allocator, "{s}/{s}.{s}", .{dir, stem, ext});
 }
 
 fn generateCode(allocator: std.mem.Allocator, input_path: []const u8, output_path: []const u8) !void {
@@ -241,18 +278,14 @@ fn generateCode(allocator: std.mem.Allocator, input_path: []const u8, output_pat
     defer spec.deinit();
     
     std.debug.print("  ✓ Parsed specification: {s} v{s}\n", .{ spec.name, spec.version });
+    std.debug.print("    - Language: {s}\n", .{spec.language});
     std.debug.print("    - Constants: {d}\n", .{spec.constants.items.len});
     std.debug.print("    - Types: {d}\n", .{spec.types.items.len});
     std.debug.print("    - Patterns: {d}\n", .{spec.creation_patterns.items.len});
     std.debug.print("    - Behaviors: {d}\n", .{spec.behaviors.items.len});
     
-    // Генерируем Zig код
-    var codegen = zig_codegen.ZigCodeGen.init(allocator);
-    defer codegen.deinit();
-    
-    const output = try codegen.generate(&spec);
-    
-    std.debug.print("  ✓ Generated {d} bytes of Zig code\n", .{output.len});
+    // Generate code based on target language
+    var lang_name: []const u8 = "Zig";
     
     // Создаём директорию если нужно
     const dir_path = std.fs.path.dirname(output_path) orelse ".";
@@ -262,7 +295,21 @@ fn generateCode(allocator: std.mem.Allocator, input_path: []const u8, output_pat
     const out_file = try std.fs.cwd().createFile(output_path, .{});
     defer out_file.close();
     
-    try out_file.writeAll(output);
+    if (std.mem.eql(u8, spec.language, "verilog") or std.mem.eql(u8, spec.language, "varlog")) {
+        // Generate Verilog for FPGA
+        const output = try verilog_codegen.generateVerilog(allocator, &spec);
+        defer allocator.free(output);
+        lang_name = "Verilog";
+        std.debug.print("  ✓ Generated {d} bytes of {s} code\n", .{output.len, lang_name});
+        try out_file.writeAll(output);
+    } else {
+        // Default to Zig
+        var codegen = zig_codegen.ZigCodeGen.init(allocator);
+        defer codegen.deinit();
+        const output = try codegen.generate(&spec);
+        std.debug.print("  ✓ Generated {d} bytes of {s} code\n", .{output.len, lang_name});
+        try out_file.writeAll(output);
+    }
     
     std.debug.print("  ✓ Written to {s}\n", .{output_path});
     std.debug.print("\n", .{});
@@ -443,7 +490,7 @@ fn runCode(allocator: std.mem.Allocator, source: []const u8) !void {
     std.debug.print("\n", .{});
 
     // Parse
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch |err| {
         std.debug.print("  ❌ Parse error: {any}\n", .{err});
         return;
@@ -501,6 +548,9 @@ fn runCode(allocator: std.mem.Allocator, source: []const u8) !void {
             std.debug.print("]\n", .{});
         },
         .object_val => |v| std.debug.print("<object({d})>\n", .{v.count}),
+        .tryte_array_val => |v| std.debug.print("<tryte_array({d})>\n", .{v.len}),
+        .trit_val => |v| std.debug.print("<trit({d})>\n", .{v}),
+        .tryte_val => |v| std.debug.print("<tryte({d})>\n", .{v}),
         .closure_val => |v| std.debug.print("<closure@{d}>\n", .{v.func_addr}),
     }
 
@@ -526,7 +576,7 @@ fn runBenchmark(allocator: std.mem.Allocator) !void {
         std.debug.print("  Test: {s}\n", .{source});
 
         // Interpreter
-        var parser1 = coptic_parser.Parser.init(source, allocator);
+        var parser1 = coptic_parser.Parser.init(allocator, source);
         var ast1 = try parser1.parseProgram();
         defer ast1.deinit();
 
@@ -539,7 +589,7 @@ fn runBenchmark(allocator: std.mem.Allocator) !void {
         const interp_ns: u64 = @intCast(interp_end - interp_start);
 
         // VM
-        var parser2 = coptic_parser.Parser.init(source, allocator);
+        var parser2 = coptic_parser.Parser.init(allocator, source);
         var ast2 = try parser2.parseProgram();
         defer ast2.deinit();
 

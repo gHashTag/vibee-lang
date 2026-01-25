@@ -1,0 +1,538 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI HOST INTERFACE - Connect FPGA to Host System
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete host interface with:
+# - AXI-Lite register bank for control/status
+# - AXI4 DMA for high-bandwidth data transfer
+# - Interrupt controller for async completion
+# - Memory-mapped interface for PCIe/SoC integration
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: axi_host_interface
+version: "1.0.0"
+language: varlog
+module: axi_host_interface
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI INTERFACE OVERVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Two AXI interfaces:
+#
+# 1. AXI-Lite Slave (Control/Status)
+#    - 32-bit data width
+#    - Simple read/write for registers
+#    - Low latency for control operations
+#
+# 2. AXI4 Master (DMA)
+#    - 64/128/256-bit data width
+#    - Burst transfers for weights/activations
+#    - High bandwidth for data movement
+#
+# Register Map (AXI-Lite):
+#   0x00: CTRL     - Control register
+#   0x04: STATUS   - Status register
+#   0x08: IRQ_EN   - Interrupt enable
+#   0x0C: IRQ_STAT - Interrupt status
+#   0x10: NUM_LAYERS
+#   0x14: NEURONS_PER_LAYER
+#   0x18: CHUNKS_PER_NEURON
+#   0x1C: THRESHOLD
+#   0x20: WEIGHT_ADDR_LO
+#   0x24: WEIGHT_ADDR_HI
+#   0x28: INPUT_ADDR_LO
+#   0x2C: INPUT_ADDR_HI
+#   0x30: OUTPUT_ADDR_LO
+#   0x34: OUTPUT_ADDR_HI
+#   0x38: CYCLE_COUNT_LO
+#   0x3C: CYCLE_COUNT_HI
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  axi_data_width: 64
+  axi_addr_width: 32
+  reg_addr_width: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Control register bits
+  CtrlReg:
+    fields:
+      start: Bool
+      reset: Bool
+      dma_enable: Bool
+      irq_enable: Bool
+    width: 32
+    bit_map: "0=start, 1=reset, 2=dma_enable, 3=irq_enable"
+
+  # Status register bits
+  StatusReg:
+    fields:
+      busy: Bool
+      done: Bool
+      error: Bool
+      dma_busy: Bool
+      current_layer: Int
+    width: 32
+    bit_map: "0=busy, 1=done, 2=error, 3=dma_busy, 8:15=current_layer"
+
+  # Interrupt register bits
+  IrqReg:
+    fields:
+      inference_done: Bool
+      dma_done: Bool
+      error: Bool
+    width: 32
+    bit_map: "0=inference_done, 1=dma_done, 2=error"
+
+  # AXI-Lite write channel
+  AxiLiteAW:
+    fields:
+      awaddr: Int
+      awvalid: Bool
+    width: 40
+
+  # AXI-Lite write data
+  AxiLiteW:
+    fields:
+      wdata: Int
+      wstrb: Int
+      wvalid: Bool
+    width: 40
+
+  # AXI-Lite write response
+  AxiLiteB:
+    fields:
+      bresp: Int
+      bvalid: Bool
+    width: 4
+
+  # AXI-Lite read address
+  AxiLiteAR:
+    fields:
+      araddr: Int
+      arvalid: Bool
+    width: 40
+
+  # AXI-Lite read data
+  AxiLiteR:
+    fields:
+      rdata: Int
+      rresp: Int
+      rvalid: Bool
+    width: 36
+
+  # DMA descriptor
+  DmaDescriptor:
+    fields:
+      src_addr: Int
+      dst_addr: Int
+      length: Int
+      direction: Int
+      last: Bool
+    width: 128
+    direction_values: "0=MEM_TO_FPGA, 1=FPGA_TO_MEM"
+
+  # DMA status
+  DmaStatus:
+    fields:
+      busy: Bool
+      done: Bool
+      error: Bool
+      bytes_transferred: Int
+    width: 64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI-LITE SLAVE (CONTROL/STATUS REGISTERS)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # AXI-LITE SLAVE TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: axi_lite_slave
+    given: AXI-Lite bus signals from host
+    when: Register access needed
+    then: Handle read/write to control/status registers
+    implementation: |
+      // Full AXI-Lite slave protocol
+      // Supports 32-bit aligned accesses
+      // Single-cycle response for reads
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # REGISTER BANK
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: register_bank
+    given: Address and write data
+    when: Register access
+    then: Read or write specified register
+    implementation: |
+      // 16 registers × 32 bits = 64 bytes
+      // Address decode: addr[5:2] selects register
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WRITE CHANNEL HANDLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: axi_write_handler
+    given: AW and W channel signals
+    when: Write transaction
+    then: Write to register and respond on B channel
+    implementation: |
+      // Wait for both AWVALID and WVALID
+      // Write data to register
+      // Respond with BVALID, BRESP=OKAY
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # READ CHANNEL HANDLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: axi_read_handler
+    given: AR channel signals
+    when: Read transaction
+    then: Read register and respond on R channel
+    implementation: |
+      // Wait for ARVALID
+      // Read register at address
+      // Respond with RVALID, RDATA, RRESP=OKAY
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DMA CONTROLLER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DMA CONTROLLER TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: dma_controller
+    given: DMA descriptor and start signal
+    when: Data transfer needed
+    then: Execute AXI4 burst transfers
+    implementation: |
+      // Supports scatter-gather DMA
+      // Configurable burst length
+      // Handles both directions
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DMA READ ENGINE (Memory to FPGA)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: dma_read_engine
+    given: Source address and length
+    when: Read from host memory
+    then: Issue AXI4 read bursts and write to FPGA BRAM
+    implementation: |
+      // AXI4 read channel master
+      // Burst length up to 256 beats
+      // Handles 4KB boundary crossing
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DMA WRITE ENGINE (FPGA to Memory)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: dma_write_engine
+    given: Destination address and data
+    when: Write to host memory
+    then: Issue AXI4 write bursts from FPGA BRAM
+    implementation: |
+      // AXI4 write channel master
+      // Burst length up to 256 beats
+      // Handles write responses
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DMA DESCRIPTOR QUEUE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: dma_desc_queue
+    given: Descriptors from host
+    when: Scatter-gather DMA
+    then: Queue and execute descriptors in order
+    implementation: |
+      // FIFO for descriptors
+      // Supports chained transfers
+      // Interrupt on completion
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERRUPT CONTROLLER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # INTERRUPT CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: interrupt_controller
+    given: Event signals from engine
+    when: Interrupt condition met
+    then: Assert interrupt to host
+    implementation: |
+      // Level-sensitive interrupt output
+      // Maskable interrupt sources
+      // Clear-on-read status
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # INTERRUPT AGGREGATOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: irq_aggregator
+    given: Multiple interrupt sources
+    when: Any source active
+    then: Generate single interrupt to host
+    implementation: |
+      // OR of all enabled interrupt sources
+      // Priority encoding optional
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL HOST INTERFACE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # HOST INTERFACE TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: host_interface_top
+    given: AXI buses and engine interface
+    when: Host communication needed
+    then: Bridge between host and BitNet engine
+    implementation: |
+      // Instantiate:
+      // - axi_lite_slave (control/status)
+      // - dma_controller (data transfer)
+      // - interrupt_controller
+      // Connect to bitnet_engine_top
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ENGINE INTERFACE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: engine_interface
+    given: Register values and DMA data
+    when: Engine control needed
+    then: Translate host commands to engine signals
+    implementation: |
+      // Map registers to engine ports
+      // Handle start/stop/reset
+      // Route DMA data to/from buffers
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Register access tests
+  - name: test_reg_write_read
+    input: {addr: 0x10, wdata: 40}
+    expected: {rdata: 40}
+
+  - name: test_ctrl_start
+    input: {addr: 0x00, wdata: 0x01}
+    expected: {engine_start: true}
+
+  - name: test_status_read
+    input: {addr: 0x04, engine_busy: true}
+    expected: {rdata: 0x01}
+
+  # DMA tests
+  - name: test_dma_read
+    input: {src: 0x1000, len: 256, dir: "MEM_TO_FPGA"}
+    expected: {bytes_transferred: 256, done: true}
+
+  - name: test_dma_write
+    input: {dst: 0x2000, len: 128, dir: "FPGA_TO_MEM"}
+    expected: {bytes_transferred: 128, done: true}
+
+  # Interrupt tests
+  - name: test_irq_inference_done
+    input: {inference_done: true, irq_en: 0x01}
+    expected: {irq_out: true}
+
+  - name: test_irq_masked
+    input: {inference_done: true, irq_en: 0x00}
+    expected: {irq_out: false}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  axi_lite_slave: "~300 LUTs, ~200 FFs"
+  register_bank: "~100 LUTs, ~512 FFs (16 regs)"
+  dma_controller: "~800 LUTs, ~400 FFs"
+  dma_read_engine: "~400 LUTs"
+  dma_write_engine: "~400 LUTs"
+  interrupt_ctrl: "~50 LUTs, ~20 FFs"
+  total: "<2000 LUTs, <1200 FFs"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  axi_lite_latency: "2 cycles (read), 1 cycle (write)"
+  dma_bandwidth: ">10 GB/s (256-bit @ 300MHz)"
+  interrupt_latency: "<10 cycles"
+  
+  # Weight loading (200MB model)
+  weight_load_time: "<20ms @ 10GB/s"
+  
+  # Input/output transfer (768 tokens × 2 bits)
+  io_transfer_time: "<1μs"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGISTER MAP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+register_map:
+  - addr: 0x00
+    name: CTRL
+    access: RW
+    bits:
+      - {bit: 0, name: START, desc: "Write 1 to start inference"}
+      - {bit: 1, name: RESET, desc: "Write 1 to reset engine"}
+      - {bit: 2, name: DMA_EN, desc: "Enable DMA transfers"}
+      - {bit: 3, name: IRQ_EN, desc: "Global interrupt enable"}
+
+  - addr: 0x04
+    name: STATUS
+    access: RO
+    bits:
+      - {bit: 0, name: BUSY, desc: "Engine is running"}
+      - {bit: 1, name: DONE, desc: "Inference complete"}
+      - {bit: 2, name: ERROR, desc: "Error occurred"}
+      - {bit: 3, name: DMA_BUSY, desc: "DMA in progress"}
+      - {bits: "15:8", name: LAYER, desc: "Current layer number"}
+
+  - addr: 0x08
+    name: IRQ_EN
+    access: RW
+    bits:
+      - {bit: 0, name: DONE_EN, desc: "Enable done interrupt"}
+      - {bit: 1, name: DMA_EN, desc: "Enable DMA interrupt"}
+      - {bit: 2, name: ERR_EN, desc: "Enable error interrupt"}
+
+  - addr: 0x0C
+    name: IRQ_STAT
+    access: RC
+    bits:
+      - {bit: 0, name: DONE, desc: "Inference done (clear on read)"}
+      - {bit: 1, name: DMA, desc: "DMA done (clear on read)"}
+      - {bit: 2, name: ERR, desc: "Error (clear on read)"}
+
+  - addr: 0x10
+    name: NUM_LAYERS
+    access: RW
+    desc: "Number of layers (1-64)"
+
+  - addr: 0x14
+    name: NEURONS
+    access: RW
+    desc: "Neurons per layer"
+
+  - addr: 0x18
+    name: CHUNKS
+    access: RW
+    desc: "Chunks per neuron"
+
+  - addr: 0x1C
+    name: THRESHOLD
+    access: RW
+    desc: "Activation threshold"
+
+  - addr: 0x20
+    name: WEIGHT_ADDR_LO
+    access: RW
+    desc: "Weight base address [31:0]"
+
+  - addr: 0x24
+    name: WEIGHT_ADDR_HI
+    access: RW
+    desc: "Weight base address [63:32]"
+
+  - addr: 0x28
+    name: INPUT_ADDR_LO
+    access: RW
+    desc: "Input buffer address [31:0]"
+
+  - addr: 0x2C
+    name: INPUT_ADDR_HI
+    access: RW
+    desc: "Input buffer address [63:32]"
+
+  - addr: 0x30
+    name: OUTPUT_ADDR_LO
+    access: RW
+    desc: "Output buffer address [31:0]"
+
+  - addr: 0x34
+    name: OUTPUT_ADDR_HI
+    access: RW
+    desc: "Output buffer address [63:32]"
+
+  - addr: 0x38
+    name: CYCLES_LO
+    access: RO
+    desc: "Cycle count [31:0]"
+
+  - addr: 0x3C
+    name: CYCLES_HI
+    access: RO
+    desc: "Cycle count [63:32]"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DIAGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+architecture: |
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                        AXI HOST INTERFACE                                   │
+  │                   Connect FPGA to Host System                               │
+  ├─────────────────────────────────────────────────────────────────────────────┤
+  │                                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                         HOST (CPU/PCIe)                             │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │           │ AXI-Lite                              │ AXI4 (DMA)              │
+  │           │ (Control)                             │ (Data)                  │
+  │           ▼                                       ▼                         │
+  │  ┌──────────────────────┐              ┌──────────────────────┐            │
+  │  │   AXI-LITE SLAVE     │              │   DMA CONTROLLER     │            │
+  │  │                      │              │                      │            │
+  │  │ ┌──────────────────┐ │              │ ┌──────────────────┐ │            │
+  │  │ │  REGISTER BANK   │ │              │ │  READ ENGINE     │ │            │
+  │  │ │                  │ │              │ │  (Mem→FPGA)      │ │            │
+  │  │ │ CTRL     0x00    │ │              │ └──────────────────┘ │            │
+  │  │ │ STATUS   0x04    │ │              │ ┌──────────────────┐ │            │
+  │  │ │ IRQ_EN   0x08    │ │              │ │  WRITE ENGINE    │ │            │
+  │  │ │ IRQ_STAT 0x0C    │ │              │ │  (FPGA→Mem)      │ │            │
+  │  │ │ CONFIG   0x10-1C │ │              │ └──────────────────┘ │            │
+  │  │ │ ADDRS    0x20-34 │ │              │ ┌──────────────────┐ │            │
+  │  │ │ CYCLES   0x38-3C │ │              │ │  DESC QUEUE      │ │            │
+  │  │ └──────────────────┘ │              │ └──────────────────┘ │            │
+  │  └──────────────────────┘              └──────────────────────┘            │
+  │           │                                       │                         │
+  │           │ Control                               │ Data                    │
+  │           ▼                                       ▼                         │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      ENGINE INTERFACE                               │   │
+  │  │              Bridge between host and BitNet engine                  │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                              │                                              │
+  │                              ▼                                              │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                    BITNET ENGINE TOP                                │   │
+  │  │              (Multi-layer inference engine)                         │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                              │                                              │
+  │                              ▼                                              │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                   INTERRUPT CONTROLLER                              │   │
+  │  │              IRQ ──────────────────────────────────────► HOST       │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                                                                             │
+  │  φ² + 1/φ² = 3 | PHOENIX = 999 | AXI4 @ 300MHz                             │
+  └─────────────────────────────────────────────────────────────────────────────┘

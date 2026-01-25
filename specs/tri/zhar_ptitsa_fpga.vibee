@@ -1,0 +1,424 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЖАР-ПТИЦА FPGA - Hardware Accelerated Browser Agent
+# ═══════════════════════════════════════════════════════════════════════════════
+# Silicon-level acceleration for WebArena benchmark
+# Target: 10x faster perception, 5x faster inference
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: zhar_ptitsa_fpga
+version: "1.0.0"
+language: varlog
+module: ⲍⲁⲣ_ⲡⲧⲓⲧⲥⲁ_ⲫⲡⲅⲁ
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS (IEEE 754 Double Precision)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  phi_squared: 2.618033988749895
+  phi_inv_squared: 0.381966011250105
+  trinity: 3.0
+  phoenix: 999
+  # Performance targets
+  perception_latency_us: 100
+  inference_latency_us: 500
+  action_latency_us: 50
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FPGA DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Ternary Trit for BitNet acceleration
+  Trit:
+    fields:
+      value: Int
+    encoding: "2-bit: 00=-1, 01=0, 10=+1, 11=reserved"
+
+  # 27-trit vector for SIMD (3^3 = 27)
+  TritVector27:
+    fields:
+      trits: List<Int>
+    width: 54
+
+  # Screenshot pixel data (RGB565 for efficiency)
+  PixelRGB565:
+    fields:
+      red: Int
+      green: Int
+      blue: Int
+    width: 16
+
+  # Bounding box for element detection
+  BoundingBox:
+    fields:
+      x: Int
+      y: Int
+      width: Int
+      height: Int
+    width: 64
+
+  # Element feature vector (compressed)
+  ElementFeature:
+    fields:
+      element_id: Int
+      feature_hash: Int
+      is_clickable: Bool
+      is_input: Bool
+      confidence: Int
+    width: 48
+
+  # Action command to browser
+  ActionCommand:
+    fields:
+      action_type: Int
+      element_id: Int
+      param1: Int
+      param2: Int
+    width: 64
+
+  # Reasoning state (compressed)
+  ReasoningState:
+    fields:
+      goal_hash: Int
+      progress: Int
+      confidence: Int
+      next_action: Int
+    width: 64
+
+  # Memory entry for working memory
+  MemoryEntry:
+    fields:
+      timestamp: Int
+      observation_hash: Int
+      action_taken: Int
+      result: Int
+    width: 96
+
+  # DMA descriptor for host communication
+  DMADescriptor:
+    fields:
+      src_addr: Int
+      dst_addr: Int
+      length: Int
+      flags: Int
+    width: 128
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERCEPTION ACCELERATOR MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Screenshot preprocessing pipeline
+  - name: preprocess_screenshot
+    given: Raw screenshot data via DMA (1280x720 RGB565)
+    when: New frame received from browser
+    then: Output normalized feature map in <1ms
+
+  # Element detection using hardware convolution
+  - name: detect_elements_hw
+    given: Preprocessed feature map
+    when: Element detection triggered
+    then: Output list of BoundingBox with confidence scores
+
+  # OCR acceleration for text extraction
+  - name: extract_text_hw
+    given: Region of interest from screenshot
+    when: Text extraction needed
+    then: Output character codes via hardware OCR
+
+  # Element matching against known patterns
+  - name: match_element_pattern
+    given: ElementFeature and pattern database
+    when: Pattern matching requested
+    then: Output best match with similarity score
+
+  # Accessibility tree parsing acceleration
+  - name: parse_a11y_tree_hw
+    given: Serialized accessibility tree
+    when: Tree parsing needed
+    then: Output structured element list in hardware format
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REASONING ACCELERATOR MODULE (BitNet Ternary)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # Ternary matrix multiply for BitNet inference
+  - name: ternary_matmul
+    given: Input vector and ternary weight matrix
+    when: Matrix multiply requested
+    then: Output result vector using only add/sub (no multiply)
+
+  # Attention mechanism acceleration
+  - name: compute_attention_hw
+    given: Query, Key, Value matrices
+    when: Attention computation needed
+    then: Output attention-weighted values
+
+  # Goal embedding lookup
+  - name: lookup_goal_embedding
+    given: Goal hash
+    when: Goal context needed
+    then: Output goal embedding vector from BRAM
+
+  # Action scoring using ternary network
+  - name: score_actions_hw
+    given: State embedding and action candidates
+    when: Action ranking needed
+    then: Output ranked actions with confidence
+
+  # Chain-of-thought state machine
+  - name: reasoning_fsm
+    given: Current state and observation
+    when: Reasoning step triggered
+    then: Output next state and action decision
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACTION EXECUTION MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # Generate click coordinates
+  - name: compute_click_coords
+    given: BoundingBox of target element
+    when: Click action selected
+    then: Output center coordinates with jitter
+
+  # Generate typing sequence
+  - name: generate_keystrokes
+    given: Text string to type
+    when: Type action selected
+    then: Output keystroke sequence with timing
+
+  # Scroll amount calculation
+  - name: compute_scroll_amount
+    given: Target element position and viewport
+    when: Scroll needed
+    then: Output scroll delta
+
+  # Action verification
+  - name: verify_action_hw
+    given: Expected state change and new observation
+    when: Verification needed
+    then: Output match score
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMORY CONTROLLER MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # Working memory write
+  - name: memory_write
+    given: MemoryEntry to store
+    when: Memory update triggered
+    then: Store in circular buffer BRAM
+
+  # Working memory read
+  - name: memory_read
+    given: Query hash
+    when: Memory retrieval needed
+    then: Output matching entries
+
+  # Memory compression
+  - name: compress_history
+    given: Full history buffer
+    when: Compression needed
+    then: Output compressed summary
+
+  # Pattern database lookup
+  - name: pattern_db_lookup
+    given: Site ID and pattern type
+    when: Site knowledge needed
+    then: Output site-specific patterns
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HOST INTERFACE MODULE (PCIe/AXI)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # DMA transfer from host
+  - name: dma_read
+    given: DMADescriptor
+    when: Host sends data
+    then: Transfer data to FPGA BRAM
+
+  # DMA transfer to host
+  - name: dma_write
+    given: DMADescriptor and data
+    when: FPGA sends results
+    then: Transfer data to host memory
+
+  # Command queue processing
+  - name: process_command
+    given: Command from host
+    when: New command received
+    then: Execute and return result
+
+  # Interrupt generation
+  - name: generate_interrupt
+    given: Event type
+    when: Async event occurs
+    then: Signal host via interrupt
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL AGENT CONTROLLER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # Main agent loop (hardware state machine)
+  - name: agent_fsm
+    given: Task configuration
+    when: Task execution started
+    then: Run perception-reasoning-action loop
+
+  # Task completion detection
+  - name: detect_completion
+    given: Goal criteria and current state
+    when: Completion check needed
+    then: Output completion status
+
+  # Error recovery
+  - name: handle_error
+    given: Error type
+    when: Error detected
+    then: Apply recovery strategy
+
+  # Benchmark mode
+  - name: benchmark_mode
+    given: Task batch
+    when: Benchmark started
+    then: Execute all tasks and collect metrics
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  - name: test_ternary_matmul
+    input: {vector: [1,0,-1], weights: [[1,-1,0],[0,1,-1]]}
+    expected: {result: [1,-1]}
+
+  - name: test_element_detection
+    input: {screenshot: "test_frame"}
+    expected: {elements_found: ">0", latency_us: "<1000"}
+
+  - name: test_action_scoring
+    input: {state: "login_page", candidates: ["click_login", "type_user"]}
+    expected: {top_action: "type_user", confidence: ">0.8"}
+
+  - name: test_dma_transfer
+    input: {size: 1024, direction: "host_to_fpga"}
+    expected: {success: true, bandwidth_gbps: ">1.0"}
+
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FPGA RESOURCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_targets:
+  target_fpga: "Xilinx VCU118 or Intel Stratix 10"
+  lut_usage: "<40%"
+  bram_usage: "<60%"
+  dsp_usage: "<20%"
+  clock_frequency: ">250MHz"
+  power_consumption: "<30W"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  screenshot_preprocess: "<1ms"
+  element_detection: "<5ms"
+  reasoning_inference: "<10ms"
+  action_generation: "<1ms"
+  total_step_latency: "<20ms"
+  speedup_vs_gpu: "5x"
+  speedup_vs_cpu: "50x"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DIAGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+architecture: |
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                    ЖАР-ПТИЦА FPGA ACCELERATOR                               │
+  │                   Silicon-Level Browser Agent                               │
+  ├─────────────────────────────────────────────────────────────────────────────┤
+  │                                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      HOST INTERFACE (PCIe Gen3 x8)                  │   │
+  │  │                         8 GB/s bidirectional                        │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                                    │                                        │
+  │                    ┌───────────────┼───────────────┐                        │
+  │                    ▼               ▼               ▼                        │
+  │  ┌─────────────────────┐ ┌─────────────────┐ ┌─────────────────────┐       │
+  │  │    PERCEPTION       │ │   REASONING     │ │     ACTION          │       │
+  │  │    ACCELERATOR      │ │   ACCELERATOR   │ │     GENERATOR       │       │
+  │  │                     │ │                 │ │                     │       │
+  │  │ • Screenshot proc   │ │ • BitNet infer  │ │ • Click coords      │       │
+  │  │ • Element detect    │ │ • Attention HW  │ │ • Keystroke gen     │       │
+  │  │ • OCR engine        │ │ • Goal lookup   │ │ • Scroll calc       │       │
+  │  │ • Pattern match     │ │ • Action score  │ │ • Verification      │       │
+  │  │                     │ │                 │ │                     │       │
+  │  │ Latency: <5ms       │ │ Latency: <10ms  │ │ Latency: <1ms       │       │
+  │  └─────────────────────┘ └─────────────────┘ └─────────────────────────┘   │
+  │                    │               │               │                        │
+  │                    └───────────────┼───────────────┘                        │
+  │                                    ▼                                        │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      MEMORY CONTROLLER                              │   │
+  │  │  • Working Memory (BRAM): 4MB                                       │   │
+  │  │  • Pattern Database (BRAM): 2MB                                     │   │
+  │  │  • Weight Storage (HBM/DDR): 1GB                                    │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                                    │                                        │
+  │                                    ▼                                        │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      AGENT FSM CONTROLLER                           │   │
+  │  │  State: IDLE → PERCEIVE → REASON → ACT → VERIFY → (loop/done)       │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                                                                             │
+  │  φ² + 1/φ² = 3 | PHOENIX = 999 | Total Step: <20ms | 50x CPU speedup       │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEBARENA ACCELERATION STRATEGY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+webarena_strategy:
+  bottleneck_analysis:
+    - "OpenAI Operator: 100ms+ per screenshot analysis"
+    - "Our target: <20ms total step latency"
+    - "5x faster = more exploration within time budget"
+  
+  acceleration_points:
+    - name: "Screenshot Preprocessing"
+      current: "50ms (GPU)"
+      target: "<1ms (FPGA)"
+      speedup: "50x"
+    
+    - name: "Element Detection"
+      current: "30ms (GPU)"
+      target: "<5ms (FPGA)"
+      speedup: "6x"
+    
+    - name: "LLM Inference"
+      current: "500ms (API)"
+      target: "<10ms (BitNet FPGA)"
+      speedup: "50x"
+    
+    - name: "Action Generation"
+      current: "10ms (CPU)"
+      target: "<1ms (FPGA)"
+      speedup: "10x"
+
+  expected_impact:
+    - "More steps per task within time limit"
+    - "Better exploration of action space"
+    - "Faster recovery from errors"
+    - "Target: 75%+ WebArena (vs 58.1% Operator)"

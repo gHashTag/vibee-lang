@@ -1,0 +1,502 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET MULTI-LAYER INFERENCE ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete BitNet model inference with:
+# - Layer chaining with double buffering
+# - Weight prefetching for zero-stall execution
+# - Multi-layer sequencer FSM
+# - Support for 40+ layer models (BitNet-1.58B)
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_multilayer_engine
+version: "1.0.0"
+language: varlog
+module: bitnet_multilayer_engine
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-LAYER ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Double Buffering Strategy:
+#
+#   Buffer A ──► Layer N compute ──► Buffer B
+#   Buffer B ──► Layer N+1 compute ──► Buffer A
+#
+# While layer N computes, layer N+1 weights are prefetched.
+# Zero stall between layers (except first and last).
+#
+# Weight Memory Organization:
+#   - External DDR/HBM for full model weights
+#   - On-chip BRAM for current layer weights
+#   - Prefetch next layer while current executes
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  max_layers: 64
+  max_neurons_per_layer: 4096
+  simd_width: 27
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Model configuration
+  ModelConfig:
+    fields:
+      num_layers: Int
+      layer_sizes: List<Int>
+      activation_thresholds: List<Int>
+      weight_base_addrs: List<Int>
+    width: 256
+
+  # Layer descriptor
+  LayerDescriptor:
+    fields:
+      layer_id: Int
+      input_size: Int
+      output_size: Int
+      num_chunks: Int
+      weight_addr: Int
+      threshold: Int
+    width: 96
+
+  # Double buffer state
+  DoubleBufferState:
+    fields:
+      active_buffer: Int
+      buffer_a_valid: Bool
+      buffer_b_valid: Bool
+      buffer_a_layer: Int
+      buffer_b_layer: Int
+    width: 16
+
+  # Prefetch state
+  PrefetchState:
+    fields:
+      prefetch_active: Bool
+      prefetch_layer: Int
+      prefetch_addr: Int
+      prefetch_count: Int
+      prefetch_done: Bool
+    width: 64
+
+  # Engine state
+  EngineState:
+    fields:
+      state: Int
+      current_layer: Int
+      layers_completed: Int
+      total_cycles: Int
+    width: 64
+    states: "IDLE=0, INIT=1, RUNNING=2, LAYER_DONE=3, PREFETCH=4, COMPLETE=5"
+
+  # External memory interface
+  ExtMemRequest:
+    fields:
+      addr: Int
+      length: Int
+      is_read: Bool
+      tag: Int
+    width: 80
+
+  # External memory response
+  ExtMemResponse:
+    fields:
+      data: Int
+      tag: Int
+      valid: Bool
+      last: Bool
+    width: 72
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DOUBLE BUFFER MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # ACTIVATION BUFFER A - Stores layer activations
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: activation_buffer_a
+    given: Write from layer output or read for next layer input
+    when: Buffer A access needed
+    then: Store/retrieve activation trits
+    implementation: |
+      // BRAM: 4096 × 2 bits = 8Kb
+      // Stores output of even layers, input to odd layers
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ACTIVATION BUFFER B - Stores layer activations
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: activation_buffer_b
+    given: Write from layer output or read for next layer input
+    when: Buffer B access needed
+    then: Store/retrieve activation trits
+    implementation: |
+      // BRAM: 4096 × 2 bits = 8Kb
+      // Stores output of odd layers, input to even layers
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DOUBLE BUFFER CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: double_buffer_ctrl
+    given: Current layer and buffer state
+    when: Buffer swap needed
+    then: Switch active buffer and update state
+    implementation: |
+      // Ping-pong between buffers
+      // Even layers: read A, write B
+      // Odd layers: read B, write A
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEIGHT PREFETCHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT PREFETCH CONTROLLER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_prefetch_ctrl
+    given: Next layer descriptor and external memory interface
+    when: Prefetch initiated
+    then: Stream weights from DDR to on-chip BRAM
+    implementation: |
+      // Start prefetch when current layer begins
+      // DMA from DDR to weight BRAM
+      // Double-buffered weight storage
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT BRAM BANK A
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_bram_a
+    given: Weight data from prefetch or read from compute
+    when: Weight bank A access
+    then: Store/retrieve weight chunks
+    implementation: |
+      // BRAM: 4096 × 54 bits for current layer weights
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT BRAM BANK B
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_bram_b
+    given: Weight data from prefetch or read from compute
+    when: Weight bank B access
+    then: Store/retrieve weight chunks
+    implementation: |
+      // BRAM: 4096 × 54 bits for next layer weights (prefetch)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT BANK SELECTOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_bank_select
+    given: Current layer ID
+    when: Weight access needed
+    then: Route to correct weight bank
+    implementation: |
+      // Even layers use bank A, odd layers use bank B
+      // While computing, prefetch to other bank
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-LAYER SEQUENCER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # MULTI-LAYER SEQUENCER FSM
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: multilayer_sequencer
+    given: Model config and start signal
+    when: Inference requested
+    then: Sequence through all layers
+    implementation: |
+      // States:
+      // IDLE: Wait for start
+      // INIT: Load first layer weights, prepare input
+      // RUNNING: Execute current layer
+      // LAYER_DONE: Swap buffers, start prefetch
+      // PREFETCH: Wait for weight prefetch (if needed)
+      // COMPLETE: Signal done
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LAYER DESCRIPTOR LOADER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: layer_desc_loader
+    given: Layer ID and model config
+    when: Layer descriptor needed
+    then: Return LayerDescriptor for specified layer
+    implementation: |
+      // Look up layer parameters from config ROM
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LAYER COMPLETION DETECTOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: layer_complete_detect
+    given: Layer done signal from compute unit
+    when: Layer completion check
+    then: Signal layer done and trigger next layer
+    implementation: |
+      // Monitor bitnet_layer_top done signal
+      // Increment layer counter
+      // Check if all layers complete
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTERNAL MEMORY INTERFACE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DDR/HBM CONTROLLER INTERFACE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: ext_mem_interface
+    given: Memory requests from prefetch controller
+    when: External memory access needed
+    then: Issue AXI transactions to DDR/HBM
+    implementation: |
+      // AXI4 master interface
+      // Burst transfers for weight prefetch
+      // 256-bit data width for bandwidth
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DMA ENGINE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: dma_engine
+    given: Source address, destination, and length
+    when: Bulk transfer needed
+    then: Stream data from DDR to BRAM
+    implementation: |
+      // Scatter-gather DMA
+      // Handles weight prefetch
+      // Handles input/output transfer
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BITNET INFERENCE ENGINE TOP
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bitnet_engine_top
+    given: Model config, input data, start signal
+    when: Full model inference requested
+    then: Execute all layers and produce final output
+    implementation: |
+      // Instantiate:
+      // - multilayer_sequencer
+      // - double_buffer_ctrl
+      // - weight_prefetch_ctrl
+      // - bitnet_layer_top (compute unit)
+      // - activation_buffer_a, activation_buffer_b
+      // - weight_bram_a, weight_bram_b
+      // - ext_mem_interface
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # INPUT LOADER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: input_loader
+    given: Input data from host
+    when: Inference start
+    then: Load input to first activation buffer
+    implementation: |
+      // DMA input tokens to activation buffer
+      // Convert to ternary if needed
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # OUTPUT EXTRACTOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: output_extractor
+    given: Final layer output in activation buffer
+    when: Inference complete
+    then: Extract and format output for host
+    implementation: |
+      // Read final activations
+      // Apply softmax or argmax if needed
+      // DMA to host memory
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE MONITORING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CYCLE COUNTER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: cycle_counter
+    given: Clock and reset
+    when: Performance monitoring
+    then: Count total inference cycles
+    implementation: |
+      // 64-bit cycle counter
+      // Reset on inference start
+      // Read on inference complete
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LAYER LATENCY TRACKER
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: layer_latency_tracker
+    given: Layer start/end signals
+    when: Per-layer profiling
+    then: Record cycles per layer
+    implementation: |
+      // Array of latency counters
+      // One per layer
+      // For performance analysis
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Single layer test
+  - name: test_single_layer
+    input: {num_layers: 1, input_size: 768, output_size: 768}
+    expected: {cycles: "<25000", output_valid: true}
+
+  # Two layer test (double buffer)
+  - name: test_two_layers
+    input: {num_layers: 2, sizes: [768, 768, 768]}
+    expected: {buffer_swaps: 1, prefetch_overlap: true}
+
+  # Full model test (40 layers)
+  - name: test_full_model
+    input: {num_layers: 40, sizes: "768 each"}
+    expected: {total_cycles: "<1000000", latency_ms: "<3.5"}
+
+  # Prefetch timing test
+  - name: test_prefetch_timing
+    input: {layer_size: 768, prefetch_bandwidth: "10GB/s"}
+    expected: {prefetch_cycles: "<layer_cycles"}
+
+  # Double buffer correctness
+  - name: test_double_buffer
+    input: {pattern: "alternating"}
+    expected: {no_data_corruption: true}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  # Compute
+  simd_unit: "~310 LUTs"
+  pipeline_regs: "~300 FFs"
+  sequencer_fsm: "~200 LUTs"
+  
+  # Memory
+  activation_buffer_a: "1 BRAM36 (4K × 2b)"
+  activation_buffer_b: "1 BRAM36 (4K × 2b)"
+  weight_bram_a: "4 BRAM36 (4K × 54b)"
+  weight_bram_b: "4 BRAM36 (4K × 54b)"
+  
+  # Control
+  prefetch_ctrl: "~150 LUTs"
+  double_buffer_ctrl: "~100 LUTs"
+  dma_engine: "~500 LUTs"
+  
+  # Total
+  total_luts: "<2000 LUTs"
+  total_bram: "10 BRAM36"
+  total_ffs: "<1000 FFs"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  clock_frequency: ">300MHz"
+  
+  # Per-layer performance
+  layer_768x768_cycles: "~24000"
+  layer_768x768_latency_us: "~80"
+  
+  # Full model (BitNet-1.58B, 40 layers)
+  total_layers: 40
+  total_cycles: "~960000"
+  total_latency_ms: "~3.2"
+  
+  # Memory bandwidth
+  weight_prefetch_bw: ">5 GB/s"
+  ddr_bandwidth_required: "~2 GB/s"
+  
+  # Efficiency
+  compute_utilization: ">90%"
+  memory_stall_ratio: "<5%"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DIAGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+architecture: |
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                    BITNET MULTI-LAYER INFERENCE ENGINE                      │
+  │                      Full Model Execution Pipeline                          │
+  ├─────────────────────────────────────────────────────────────────────────────┤
+  │                                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                    EXTERNAL MEMORY (DDR/HBM)                        │   │
+  │  │                    Full model weights (~200MB)                      │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                              │ AXI4                                         │
+  │                              ▼                                              │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      DMA / PREFETCH ENGINE                          │   │
+  │  │              Stream weights while computing                         │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                    │                           │                            │
+  │                    ▼                           ▼                            │
+  │  ┌──────────────────────┐       ┌──────────────────────┐                   │
+  │  │   WEIGHT BRAM A      │       │   WEIGHT BRAM B      │                   │
+  │  │   (Current Layer)    │       │   (Next Layer)       │                   │
+  │  │   4K × 54b           │       │   4K × 54b           │                   │
+  │  └──────────────────────┘       └──────────────────────┘                   │
+  │            │                               │                                │
+  │            └───────────┬───────────────────┘                                │
+  │                        ▼                                                    │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                    WEIGHT BANK SELECTOR                             │   │
+  │  │              Even layers → A, Odd layers → B                        │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                        │                                                    │
+  │                        ▼                                                    │
+  │  ════════════════════════════════════════════════════════════════════════  │
+  │  ║                    COMPUTE PIPELINE                                  ║  │
+  │  ║                                                                      ║  │
+  │  ║  ┌────────────┐    ┌────────────┐    ┌────────────┐                 ║  │
+  │  ║  │  STAGE 1   │───▶│  STAGE 2   │───▶│  STAGE 3   │                 ║  │
+  │  ║  │  FETCH     │    │  COMPUTE   │    │  WRITEBACK │                 ║  │
+  │  ║  └────────────┘    └────────────┘    └────────────┘                 ║  │
+  │  ║                                                                      ║  │
+  │  ════════════════════════════════════════════════════════════════════════  │
+  │                        │                                                    │
+  │            ┌───────────┴───────────┐                                        │
+  │            ▼                       ▼                                        │
+  │  ┌──────────────────────┐ ┌──────────────────────┐                         │
+  │  │  ACTIVATION BUF A    │ │  ACTIVATION BUF B    │                         │
+  │  │  (Even layer out)    │ │  (Odd layer out)     │                         │
+  │  │  4K × 2b             │ │  4K × 2b             │                         │
+  │  └──────────────────────┘ └──────────────────────┘                         │
+  │            │                       │                                        │
+  │            └───────────┬───────────┘                                        │
+  │                        ▼                                                    │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                  DOUBLE BUFFER CONTROLLER                           │   │
+  │  │           Ping-pong between A and B each layer                      │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                        │                                                    │
+  │                        ▼                                                    │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                  MULTI-LAYER SEQUENCER FSM                          │   │
+  │  │     IDLE → INIT → RUNNING → LAYER_DONE → ... → COMPLETE             │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                                                                             │
+  │  Performance: 40 layers × 80μs = 3.2ms per token                           │
+  │  φ² + 1/φ² = 3 | PHOENIX = 999 | Layers = 40                               │
+  └─────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,90 @@
+name: weight_cache
+version: "1.0.0"
+language: zig
+module: weight_cache
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE FPGA - Weight Cache (On-chip BRAM)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+#
+# Характеристики:
+#   - On-chip BRAM кэш для весов
+#   - LRU replacement policy
+#   - Prefetching для следующего слоя
+#   - Снижение DDR bandwidth требований
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CacheConfig:
+    fields:
+      cache_size_kb: Int
+      line_size: Int
+      associativity: Int
+      num_sets: Int
+
+  CacheLine:
+    fields:
+      tag: Int
+      data: List<Int>
+      valid: Bool
+      dirty: Bool
+      lru_counter: Int
+
+  CacheState:
+    fields:
+      hits: Int
+      misses: Int
+      evictions: Int
+      prefetch_hits: Int
+
+  WeightRequest:
+    fields:
+      layer_id: Int
+      neuron_id: Int
+      chunk_id: Int
+      address: Int
+
+  CacheMetrics:
+    fields:
+      hit_rate: Float
+      miss_rate: Float
+      bandwidth_saved: Float
+      latency_reduction: Float
+
+behaviors:
+  - name: init_cache
+    given: CacheConfig with cache_size_kb=32, line_size=64
+    when: Initialize weight cache
+    then: All lines invalid, LRU counters reset
+
+  - name: lookup_weight
+    given: WeightRequest with layer_id, neuron_id
+    when: Weight lookup requested
+    then: Return hit/miss, data if hit
+
+  - name: cache_hit
+    given: Valid cache line with matching tag
+    when: Weight found in cache
+    then: Return data, update LRU, increment hits
+
+  - name: cache_miss
+    given: No valid line with matching tag
+    when: Weight not in cache
+    then: Fetch from DDR, allocate line, increment misses
+
+  - name: evict_lru
+    given: Cache set full, new line needed
+    when: Eviction required
+    then: Evict least recently used line
+
+  - name: prefetch_next_layer
+    given: Current layer processing, next layer known
+    when: Prefetch opportunity detected
+    then: Background fetch of next layer weights
+
+  - name: calculate_hit_rate
+    given: hits and misses counters
+    when: Metrics requested
+    then: hit_rate = hits / (hits + misses)

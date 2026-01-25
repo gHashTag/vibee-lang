@@ -1,0 +1,440 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET SIMD CORE - 27-way Parallel Ternary Operations
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hardware acceleration for BitNet inference
+# 27 parallel trit operations per cycle (3^3 = 27)
+# Key insight: Ternary multiply = sign comparison only!
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_simd_core
+version: "1.0.0"
+language: varlog
+module: bitnet_simd_core
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# BitNet uses ternary weights {-1, 0, +1} which means:
+# - Matrix multiply becomes ADD/SUB only (no actual multiply!)
+# - Weight storage: 2 bits per weight (vs 16-32 bits for FP)
+# - 8-16x memory bandwidth reduction
+# - Massive parallelism possible
+#
+# Our SIMD unit processes 27 trits in parallel:
+# - 27 = 3^3 (sacred number)
+# - 54 bits total (27 trits × 2 bits)
+# - One dot product per cycle with adder tree
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  simd_width: 27
+  trit_bits: 2
+  vector_bits: 54
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Single trit (2 bits)
+  Trit:
+    fields:
+      value: Int
+    width: 2
+    encoding: "00=-1, 01=0, 10=+1"
+
+  # 27-trit SIMD vector (54 bits)
+  Trit27:
+    fields:
+      trits: List<Int>
+    width: 54
+    description: "27 parallel trits for SIMD operations"
+
+  # Accumulator for dot product (wider to prevent overflow)
+  Accumulator:
+    fields:
+      value: Int
+    width: 16
+    range: "-13122 to +13122"
+
+  # BitNet layer configuration
+  LayerConfig:
+    fields:
+      input_size: Int
+      output_size: Int
+      has_bias: Bool
+    width: 32
+
+  # Adder tree intermediate result
+  AdderTreeNode:
+    fields:
+      sum: Int
+      level: Int
+    width: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIMD PARALLEL OPERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 PARALLEL NOT
+  # ───────────────────────────────────────────────────────────────────────────
+  # Apply NOT to all 27 trits simultaneously
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_not
+    given: Trit27 input vector A
+    when: Parallel negation needed
+    then: Return Trit27 with all trits negated
+    implementation: |
+      // 27 parallel trit_not instances
+      // Latency: 1 cycle (combinational)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 PARALLEL AND
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_and
+    given: Two Trit27 vectors A and B
+    when: Parallel Kleene AND needed
+    then: Return element-wise minimum
+    implementation: |
+      // 27 parallel trit_and instances
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 PARALLEL OR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_or
+    given: Two Trit27 vectors A and B
+    when: Parallel Kleene OR needed
+    then: Return element-wise maximum
+    implementation: |
+      // 27 parallel trit_or instances
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 PARALLEL ADD
+  # ───────────────────────────────────────────────────────────────────────────
+  # Element-wise addition of two 27-trit vectors
+  # No carry between elements (independent additions)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_parallel_add
+    given: Two Trit27 vectors A and B
+    when: Element-wise addition needed
+    then: Return Trit27 sum (with per-element carry flags)
+    implementation: |
+      // 27 parallel trit_half_adder instances
+      // Each element independent (no ripple)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 PARALLEL MULTIPLY (BitNet Core!)
+  # ───────────────────────────────────────────────────────────────────────────
+  # This is the KEY operation for BitNet:
+  # - Ternary multiply is just sign comparison
+  # - No actual multiplier hardware needed!
+  # - Result is {-1, 0, +1} for each element
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_parallel_multiply
+    given: Two Trit27 vectors A (input) and B (weights)
+    when: Element-wise multiply for dot product
+    then: Return Trit27 products (sign-only logic)
+    implementation: |
+      // 27 parallel trit_multiply instances
+      // Each: result = (a_zero || b_zero) ? 0 : (same_sign ? +1 : -1)
+      // NO ACTUAL MULTIPLIERS - just logic gates!
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ADDER TREE - Reduce 27 trits to single sum
+  # ───────────────────────────────────────────────────────────────────────────
+  # Tree structure for parallel reduction:
+  # Level 0: 27 inputs
+  # Level 1: 9 partial sums (groups of 3)
+  # Level 2: 3 partial sums (groups of 3)
+  # Level 3: 1 final sum
+  #
+  # Total latency: 3 cycles (pipelined) or 1 cycle (combinational)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: adder_tree_27
+    given: 27 trit values to sum
+    when: Reduction for dot product
+    then: Return signed sum in range [-27, +27]
+    implementation: |
+      // Level 1: 9 groups of 3 → 9 sums (range: -3 to +3 each)
+      // Level 2: 3 groups of 3 → 3 sums (range: -9 to +9 each)
+      // Level 3: 1 group of 3 → 1 sum (range: -27 to +27)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 DOT PRODUCT (Complete BitNet MAC)
+  # ───────────────────────────────────────────────────────────────────────────
+  # Full dot product: multiply + reduce
+  # This is ONE ROW of matrix multiply
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_dot_product
+    given: Input vector A (Trit27) and weight vector B (Trit27)
+    when: Single dot product needed
+    then: Return scalar sum in range [-27, +27]
+    implementation: |
+      // Step 1: trit27_parallel_multiply(A, B) → products
+      // Step 2: adder_tree_27(products) → sum
+      // Total: 27 sign comparisons + adder tree
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # TRIT27 ACCUMULATE (MAC with accumulator)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: trit27_accumulate
+    given: Trit27 input, Trit27 weights, and current accumulator
+    when: Multiply-accumulate for large vectors
+    then: Return updated accumulator
+    implementation: |
+      // acc_new = acc_old + trit27_dot_product(input, weights)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET LAYER OPERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BITNET MATMUL ROW
+  # ───────────────────────────────────────────────────────────────────────────
+  # Compute one output neuron: dot(input, weight_row)
+  # For input_size > 27, accumulate multiple chunks
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bitnet_matmul_row
+    given: Input vector and one row of weight matrix
+    when: Single output neuron computation
+    then: Return pre-activation value
+    implementation: |
+      // For each 27-element chunk:
+      //   acc += trit27_dot_product(input_chunk, weight_chunk)
+      // Return final accumulator
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BITNET ACTIVATION (Ternary ReLU)
+  # ───────────────────────────────────────────────────────────────────────────
+  # Clamp to {-1, 0, +1} based on thresholds
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bitnet_activation
+    given: Pre-activation value (signed integer)
+    when: Activation function needed
+    then: Return trit {-1, 0, +1}
+    implementation: |
+      // if (value > threshold_pos) return +1
+      // if (value < threshold_neg) return -1
+      // else return 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # BITNET LAYER (Full layer computation)
+  # ───────────────────────────────────────────────────────────────────────────
+  # Compute all output neurons for one layer
+  # Parallelism: multiple rows computed simultaneously
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: bitnet_layer
+    given: Input tensor and weight matrix
+    when: Full layer forward pass
+    then: Return output tensor
+    implementation: |
+      // For each output neuron (can parallelize):
+      //   pre_act = bitnet_matmul_row(input, weights[row])
+      //   output[row] = bitnet_activation(pre_act)
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WEIGHT MEMORY INTERFACE
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: weight_bram_read
+    given: Row address and column offset
+    when: Weight fetch needed
+    then: Return Trit27 weight chunk from BRAM
+    implementation: |
+      // BRAM organized as 54-bit words (27 trits each)
+      // Single-cycle read latency
+
+  - name: weight_bram_write
+    given: Address and Trit27 data
+    when: Weight update (training or loading)
+    then: Write to BRAM
+    implementation: |
+      // For model loading from host
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE CONTROL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+  - name: simd_pipeline_ctrl
+    given: Operation request
+    when: Pipeline management needed
+    then: Control data flow through SIMD units
+    implementation: |
+      // 3-stage pipeline:
+      // Stage 1: Fetch weights from BRAM
+      // Stage 2: Parallel multiply
+      // Stage 3: Adder tree reduction
+
+  - name: layer_sequencer
+    given: Layer configuration
+    when: Layer execution started
+    then: Sequence through all output neurons
+    implementation: |
+      // State machine for layer computation
+      // Handles input_size > 27 with accumulation
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Parallel multiply tests
+  - name: test_trit27_multiply_all_positive
+    input: {a: "all +1", b: "all +1"}
+    expected: {result: "all +1"}
+
+  - name: test_trit27_multiply_mixed
+    input: {a: "alternating +1,-1", b: "all +1"}
+    expected: {result: "alternating +1,-1"}
+
+  - name: test_trit27_multiply_with_zeros
+    input: {a: "all +1", b: "all 0"}
+    expected: {result: "all 0"}
+
+  # Dot product tests
+  - name: test_dot_product_max
+    input: {a: "all +1", b: "all +1"}
+    expected: {sum: 27}
+
+  - name: test_dot_product_min
+    input: {a: "all +1", b: "all -1"}
+    expected: {sum: -27}
+
+  - name: test_dot_product_zero
+    input: {a: "all +1", b: "all 0"}
+    expected: {sum: 0}
+
+  - name: test_dot_product_cancel
+    input: {a: "13x(+1), 14x(-1)", b: "all +1"}
+    expected: {sum: -1}
+
+  # Adder tree tests
+  - name: test_adder_tree_all_positive
+    input: {values: "27x(+1)"}
+    expected: {sum: 27}
+
+  - name: test_adder_tree_mixed
+    input: {values: "9x(+1), 9x(0), 9x(-1)"}
+    expected: {sum: 0}
+
+  # Activation tests
+  - name: test_activation_positive
+    input: {value: 10, threshold: 5}
+    expected: {result: "+1"}
+
+  - name: test_activation_negative
+    input: {value: -10, threshold: 5}
+    expected: {result: "-1"}
+
+  - name: test_activation_zero
+    input: {value: 2, threshold: 5}
+    expected: {result: "0"}
+
+  # Golden identity
+  - name: test_golden_identity
+    input: {phi: 1.618033988749895}
+    expected: {phi_sq_plus_inv_sq: 3.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource_estimates:
+  trit27_parallel_multiply: "27 × 4 LUTs = 108 LUTs"
+  adder_tree_27: "~200 LUTs (3-level tree)"
+  trit27_dot_product: "~310 LUTs total"
+  weight_bram: "1 BRAM36 per 512 weight rows"
+  full_simd_unit: "<1000 LUTs"
+  
+  # For reference: Xilinx VCU118 has 1,182,240 LUTs
+  # We can fit ~1000 SIMD units = 27,000 parallel ops/cycle!
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance_targets:
+  clock_frequency: ">300MHz"
+  dot_product_latency: "3 cycles (pipelined)"
+  dot_product_throughput: "1 per cycle (after pipeline fill)"
+  ops_per_cycle: "27 trit-ops"
+  ops_per_second_300mhz: "8.1 billion trit-ops/sec"
+  
+  # BitNet-1.58B model comparison:
+  # - 1.58B parameters = 1.58B trits
+  # - At 8.1B ops/sec: ~200ms per token
+  # - With 100 SIMD units: ~2ms per token
+  # - Target: <10ms per token for real-time
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DIAGRAM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+architecture: |
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                      BITNET SIMD CORE                                       │
+  │                   27-way Parallel Ternary Unit                              │
+  ├─────────────────────────────────────────────────────────────────────────────┤
+  │                                                                             │
+  │  INPUT VECTOR (Trit27)          WEIGHT VECTOR (Trit27)                      │
+  │  ┌─┬─┬─┬─┬─┬─┬─┬─┬─┐           ┌─┬─┬─┬─┬─┬─┬─┬─┬─┐                         │
+  │  │0│1│2│3│4│...  │26│           │0│1│2│3│4│...  │26│                         │
+  │  └─┴─┴─┴─┴─┴─┴─┴─┴─┘           └─┴─┴─┴─┴─┴─┴─┴─┴─┘                         │
+  │    │ │ │ │ │     │               │ │ │ │ │     │                            │
+  │    ▼ ▼ ▼ ▼ ▼     ▼               ▼ ▼ ▼ ▼ ▼     ▼                            │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │              27× PARALLEL TRIT MULTIPLY                             │   │
+  │  │   (Sign comparison only - NO actual multipliers!)                   │   │
+  │  │   result[i] = (a[i]==0 || b[i]==0) ? 0 : (sign_match ? +1 : -1)     │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                              │                                              │
+  │                              ▼                                              │
+  │  ┌─────────────────────────────────────────────────────────────────────┐   │
+  │  │                      ADDER TREE (3 levels)                          │   │
+  │  │                                                                     │   │
+  │  │   Level 1: [0-2]→s0 [3-5]→s1 ... [24-26]→s8  (9 sums, range ±3)    │   │
+  │  │   Level 2: [s0-s2]→t0 [s3-s5]→t1 [s6-s8]→t2  (3 sums, range ±9)    │   │
+  │  │   Level 3: [t0-t2]→final                      (1 sum, range ±27)    │   │
+  │  │                                                                     │   │
+  │  └─────────────────────────────────────────────────────────────────────┘   │
+  │                              │                                              │
+  │                              ▼                                              │
+  │                    ┌─────────────────┐                                      │
+  │                    │  DOT PRODUCT    │                                      │
+  │                    │  Range: -27..+27│                                      │
+  │                    └─────────────────┘                                      │
+  │                              │                                              │
+  │                              ▼                                              │
+  │                    ┌─────────────────┐                                      │
+  │                    │  ACCUMULATOR    │──┐                                   │
+  │                    │  (for large     │  │ (loop for input_size > 27)        │
+  │                    │   vectors)      │◀─┘                                   │
+  │                    └─────────────────┘                                      │
+  │                              │                                              │
+  │                              ▼                                              │
+  │                    ┌─────────────────┐                                      │
+  │                    │  ACTIVATION     │                                      │
+  │                    │  (Ternary ReLU) │                                      │
+  │                    └─────────────────┘                                      │
+  │                              │                                              │
+  │                              ▼                                              │
+  │                    ┌─────────────────┐                                      │
+  │                    │  OUTPUT TRIT    │                                      │
+  │                    │  {-1, 0, +1}    │                                      │
+  │                    └─────────────────┘                                      │
+  │                                                                             │
+  │  Throughput: 1 dot product per cycle (pipelined)                           │
+  │  Latency: 3 cycles                                                         │
+  │  Resources: ~310 LUTs per SIMD unit                                        │
+  │                                                                             │
+  │  φ² + 1/φ² = 3 | PHOENIX = 999 | 27 = 3³                                   │
+  └─────────────────────────────────────────────────────────────────────────────┘
