@@ -10,6 +10,18 @@ const visualizations = [
   { id: 'entanglement', icon: '🔗', title: 'Entanglement', desc: 'Correlated quantum pairs', color: '#f6f' },
   { id: 'vortex', icon: '🌀', title: 'Vortex Field', desc: 'Spiral dynamics', color: '#fa0' },
   { id: 'photon-beam', icon: '💫', title: 'Photon Beam', desc: 'Light propagation', color: '#ff6' },
+  { id: 'consciousness', icon: '👁️', title: 'Consciousness', desc: 'Awareness field simulation', color: '#a6f' },
+  { id: 'trinity', icon: '🔺', title: 'Trinity Core', desc: 'Ternary computing', color: '#0e9' },
+  { id: 'multiverse', icon: '🌌', title: 'Multiverse', desc: 'Parallel realities', color: '#48f' },
+  { id: 'zhar-ptitsa', icon: '🔥', title: 'Zhar-Ptitsa', desc: 'Phoenix firebird', color: '#f80' },
+  { id: 'matryoshka', icon: '🪆', title: 'Matryoshka', desc: 'Nested quantum states', color: '#e4a' },
+  { id: 'supremacy', icon: '⚡', title: 'Supremacy', desc: 'Quantum advantage', color: '#f44' },
+  { id: 'encryption', icon: '🔐', title: 'Encryption', desc: 'Post-quantum crypto', color: '#0cf' },
+  { id: 'tsp', icon: '🗺️', title: 'TSP Solver', desc: 'Route optimization', color: '#4a4' },
+  { id: 'neuromorphic', icon: '🧬', title: 'Neuromorphic', desc: 'Brain computing', color: '#c4f' },
+  { id: 'quantum-life', icon: '🦠', title: 'Quantum Life', desc: 'Biology simulation', color: '#0fa' },
+  { id: 'bogatyri', icon: '⚔️', title: 'Bogatyri 33', desc: 'Three heroes', color: '#48f' },
+  { id: 'llm-architecture', icon: '🏗️', title: 'LLM Architecture', desc: 'Neural language', color: '#48f' },
 ];
 
 export default function VisualizationsPage() {
