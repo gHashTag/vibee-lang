@@ -279,7 +279,7 @@ fn profileVM(path: []const u8, allocator: std.mem.Allocator) !void {
     };
     defer allocator.free(source);
 
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch {
         std.debug.print("Parse error\n", .{});
         return;
@@ -331,7 +331,7 @@ fn runFastVM(path: []const u8, allocator: std.mem.Allocator) !void {
     defer allocator.free(source);
 
     // Parse
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch {
         std.debug.print("Parse error\n", .{});
         return;
@@ -406,7 +406,7 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
 
     // Measure parse time
     const parse_start = std.time.nanoTimestamp();
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch |err| {
         printError("Parse error");
         std.debug.print("  Error: {}\n", .{err});
@@ -519,7 +519,7 @@ fn checkFile(path: []const u8, allocator: std.mem.Allocator) !void {
     }
 
     // Parser check
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch {
         printError("Parse error");
         return;
@@ -576,7 +576,7 @@ fn parseFile(path: []const u8, allocator: std.mem.Allocator) !void {
     };
     defer allocator.free(source);
 
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = parser.parseProgram() catch |err| {
         printError("Parse error");
         std.debug.print("  Error: {}\n", .{err});

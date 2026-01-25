@@ -64,6 +64,153 @@ pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !Ar
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// BEHAVIOR-SIGNAL VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ValidationWarning = struct {
+    behavior_name: []const u8,
+    clause: []const u8,
+    referenced_signal: []const u8,
+    message: []const u8,
+};
+
+/// Standard signals always available
+const standard_signals = [_][]const u8{
+    "clk", "rst_n", "data_in", "valid_in", "data_out", "valid_out", "ready", "state",
+};
+
+/// Common signals added as fallback
+const common_signals = [_][]const u8{
+    "running", "active", "overflow", "done", "flag", "count",
+};
+
+/// Signal keywords to look for in behavior text
+const signal_keywords = [_]struct { keyword: []const u8, signal: []const u8 }{
+    .{ .keyword = "running", .signal = "running" },
+    .{ .keyword = "active", .signal = "active" },
+    .{ .keyword = "valid", .signal = "valid_in" },
+    .{ .keyword = "ready", .signal = "ready" },
+    .{ .keyword = "reset", .signal = "rst_n" },
+    .{ .keyword = "count", .signal = "count" },
+    .{ .keyword = "counter", .signal = "count" },
+    .{ .keyword = "overflow", .signal = "overflow" },
+    .{ .keyword = "full", .signal = "full" },
+    .{ .keyword = "empty", .signal = "empty" },
+    .{ .keyword = "idle", .signal = "state" },
+    .{ .keyword = "process", .signal = "state" },
+    .{ .keyword = "done", .signal = "done" },
+    .{ .keyword = "flag", .signal = "flag" },
+    .{ .keyword = "output", .signal = "data_out" },
+    .{ .keyword = "input", .signal = "data_in" },
+    .{ .keyword = "depth", .signal = "depth" },
+    .{ .keyword = "width", .signal = "width" },
+};
+
+/// Extract signal references from behavior text
+pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayList([]const u8) {
+    var refs = ArrayList([]const u8).init(allocator);
+    
+    for (signal_keywords) |kw| {
+        if (containsIgnoreCase(text, kw.keyword)) {
+            // Check if already added
+            var exists = false;
+            for (refs.items) |r| {
+                if (std.mem.eql(u8, r, kw.signal)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                try refs.append(kw.signal);
+            }
+        }
+    }
+    
+    return refs;
+}
+
+/// Check if a signal exists in available signals
+fn signalExists(signal: []const u8, extracted: []const ExtractedSignal) bool {
+    // Check standard signals
+    for (standard_signals) |s| {
+        if (std.mem.eql(u8, signal, s)) return true;
+    }
+    
+    // Check common signals
+    for (common_signals) |s| {
+        if (std.mem.eql(u8, signal, s)) return true;
+    }
+    
+    // Check extracted signals from types
+    for (extracted) |sig| {
+        if (std.mem.eql(u8, signal, sig.name)) return true;
+    }
+    
+    return false;
+}
+
+/// Validate all behaviors against available signals
+pub fn validateBehaviorSignals(
+    behaviors: []const Behavior,
+    extracted: []const ExtractedSignal,
+    allocator: Allocator,
+) !ArrayList(ValidationWarning) {
+    var warnings = ArrayList(ValidationWarning).init(allocator);
+    
+    for (behaviors) |behavior| {
+        // Check given clause
+        var given_refs = try extractSignalReferences(behavior.given, allocator);
+        defer given_refs.deinit();
+        
+        for (given_refs.items) |ref| {
+            if (!signalExists(ref, extracted)) {
+                try warnings.append(ValidationWarning{
+                    .behavior_name = behavior.name,
+                    .clause = "given",
+                    .referenced_signal = ref,
+                    .message = "Signal not found in types or standard signals",
+                });
+            }
+        }
+        
+        // Check then clause
+        var then_refs = try extractSignalReferences(behavior.then, allocator);
+        defer then_refs.deinit();
+        
+        for (then_refs.items) |ref| {
+            if (!signalExists(ref, extracted)) {
+                try warnings.append(ValidationWarning{
+                    .behavior_name = behavior.name,
+                    .clause = "then",
+                    .referenced_signal = ref,
+                    .message = "Signal not found in types or standard signals",
+                });
+            }
+        }
+    }
+    
+    return warnings;
+}
+
+/// Print validation warnings
+pub fn printValidationWarnings(warnings: []const ValidationWarning) void {
+    if (warnings.len == 0) {
+        std.debug.print("  ✓ All behavior signals validated\n", .{});
+        return;
+    }
+    
+    std.debug.print("  ⚠ Validation warnings ({d}):\n", .{warnings.len});
+    for (warnings) |w| {
+        std.debug.print("    - Behavior '{s}' ({s}): signal '{s}' - {s}\n", .{
+            w.behavior_name,
+            w.clause,
+            w.referenced_signal,
+            w.message,
+        });
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // VERILOG CODE BUILDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -128,419 +275,6 @@ pub const VerilogBuilder = struct {
 // ═══════════════════════════════════════════════════════════════════════════════
 // VERILOG CODE GENERATOR
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/// Signal information with inferred width from Verilog literals
-/// Width inference: mode == 2'b00 → mode is 2-bit, count == 8'hFF → count is 8-bit
-const SignalInfo = struct {
-    name: []const u8,
-    inferred_width: u32, // 0 = unknown (default to 1-bit)
-};
-
-/// Extract signal identifiers from Verilog condition expression with width inference
-/// Parses patterns like: sig == N'bXX, sig == N'hXX, sig == N'dXX
-/// Returns list of unique signals with inferred widths
-fn extractSignalsFromCondition(allocator: Allocator, condition: []const u8) !ArrayList(SignalInfo) {
-    var signals = ArrayList(SignalInfo).init(allocator);
-    
-    // Verilog keywords and operators to skip
-    const keywords = [_][]const u8{
-        "if", "else", "begin", "end", "case", "endcase", "default",
-        "and", "or", "not", "xor", "nand", "nor", "xnor",
-        "posedge", "negedge", "always", "assign", "wire", "reg",
-    };
-    
-    var i: usize = 0;
-    while (i < condition.len) {
-        // Skip whitespace and operators
-        while (i < condition.len and !isIdentifierStart(condition[i])) {
-            i += 1;
-        }
-        
-        if (i >= condition.len) break;
-        
-        // Extract identifier
-        const start = i;
-        while (i < condition.len and isIdentifierChar(condition[i])) {
-            i += 1;
-        }
-        
-        const ident = condition[start..i];
-        
-        // Skip if empty, keyword, or numeric literal
-        if (ident.len == 0) continue;
-        if (isNumericLiteral(ident)) continue;
-        if (isKeyword(ident, &keywords)) continue;
-        
-        // Check for bit slice [N:M] or [N] after identifier
-        var slice_width: u32 = 0;
-        var ident_end_for_context = i;
-        if (i < condition.len and condition[i] == '[') {
-            slice_width = parseBitSlice(condition, i);
-            // Skip past the slice for next iteration
-            while (i < condition.len and condition[i] != ']') {
-                i += 1;
-            }
-            if (i < condition.len) {
-                i += 1; // skip ']'
-                ident_end_for_context = i;
-            }
-        }
-        
-        // Try to infer width from comparison with Verilog literal
-        // Pattern: ident == N'bXX or ident == N'hXX or ident == N'dXX
-        const literal_width = inferWidthFromContext(condition, start, ident_end_for_context);
-        
-        // Use maximum of slice width and literal width
-        const inferred_width = @max(slice_width, literal_width);
-        
-        // Check if already in list, update width if new one is larger
-        var found = false;
-        for (signals.items) |*sig| {
-            if (std.mem.eql(u8, sig.name, ident)) {
-                found = true;
-                // Keep the larger width (more specific inference)
-                if (inferred_width > sig.inferred_width) {
-                    sig.inferred_width = inferred_width;
-                }
-                break;
-            }
-        }
-        
-        if (!found) {
-            try signals.append(SignalInfo{
-                .name = ident,
-                .inferred_width = inferred_width,
-            });
-        }
-    }
-    
-    return signals;
-}
-
-/// Infer signal width from comparison context (bidirectional)
-/// Looks for patterns like: sig == 2'b00, 2'b00 == sig, sig != 8'hFF, 8'hFF != sig
-fn inferWidthFromContext(condition: []const u8, ident_start: usize, ident_end: usize) u32 {
-    // 1. Try forward: sig == N'bXX
-    const forward_width = inferWidthForward(condition, ident_end);
-    if (forward_width > 0) return forward_width;
-    
-    // 2. Try backward: N'bXX == sig
-    return inferWidthBackward(condition, ident_start);
-}
-
-/// Forward inference: sig == N'bXX (literal AFTER identifier)
-fn inferWidthForward(condition: []const u8, ident_end: usize) u32 {
-    var i = ident_end;
-    
-    // Skip whitespace
-    while (i < condition.len and (condition[i] == ' ' or condition[i] == '\t')) {
-        i += 1;
-    }
-    
-    // Check for comparison operators: ==, !=, ===, !==, <, >, <=, >=
-    if (i >= condition.len) return 0;
-    
-    const is_comparison = blk: {
-        if (i + 1 < condition.len) {
-            if ((condition[i] == '=' and condition[i + 1] == '=') or
-                (condition[i] == '!' and condition[i + 1] == '=') or
-                (condition[i] == '<' and condition[i + 1] == '=') or
-                (condition[i] == '>' and condition[i + 1] == '='))
-            {
-                i += 2;
-                // Check for === or !==
-                if (i < condition.len and condition[i] == '=') {
-                    i += 1;
-                }
-                break :blk true;
-            }
-        }
-        if (condition[i] == '<' or condition[i] == '>') {
-            i += 1;
-            break :blk true;
-        }
-        break :blk false;
-    };
-    
-    if (!is_comparison) return 0;
-    
-    // Skip whitespace after operator
-    while (i < condition.len and (condition[i] == ' ' or condition[i] == '\t')) {
-        i += 1;
-    }
-    
-    // Parse Verilog literal: N'bXX, N'hXX, N'dXX, N'oXX
-    return parseVerilogLiteralWidth(condition, i);
-}
-
-/// Backward inference: N'bXX == sig (literal BEFORE identifier)
-fn inferWidthBackward(condition: []const u8, ident_start: usize) u32 {
-    if (ident_start == 0) return 0;
-    
-    var i = ident_start - 1;
-    
-    // Skip whitespace backward
-    while (i > 0 and (condition[i] == ' ' or condition[i] == '\t')) {
-        i -= 1;
-    }
-    
-    // Check for comparison operators backward: ==, !=, ===, !==
-    if (i < 1) return 0;
-    
-    var op_found = false;
-    if (condition[i] == '=') {
-        if (i >= 1 and (condition[i - 1] == '=' or condition[i - 1] == '!' or 
-                        condition[i - 1] == '<' or condition[i - 1] == '>')) {
-            // Check for === or !==
-            if (i >= 2 and condition[i - 1] == '=' and 
-                (condition[i - 2] == '=' or condition[i - 2] == '!')) {
-                i -= 3;
-            } else {
-                i -= 2;
-            }
-            op_found = true;
-        }
-    } else if (condition[i] == '<' or condition[i] == '>') {
-        i -= 1;
-        op_found = true;
-    }
-    
-    if (!op_found) return 0;
-    
-    // Skip whitespace backward
-    while (i > 0 and (condition[i] == ' ' or condition[i] == '\t')) {
-        i -= 1;
-    }
-    
-    // Now we should be at the end of a Verilog literal
-    // Find the start of the literal by looking for digits, then apostrophe, then width
-    return parseVerilogLiteralBackward(condition, i);
-}
-
-/// Parse Verilog literal backward from position i (pointing to last char of literal)
-/// Format: <width>'<base><value> e.g., 8'hFF, 2'b00
-fn parseVerilogLiteralBackward(condition: []const u8, end_pos: usize) u32 {
-    if (end_pos < 3) return 0; // Minimum: N'bV (4 chars)
-    
-    // Find apostrophe by scanning backward
-    var apos_pos: ?usize = null;
-    var scan = end_pos;
-    while (scan > 0) : (scan -= 1) {
-        if (condition[scan] == '\'') {
-            apos_pos = scan;
-            break;
-        }
-        // Stop if we hit something that can't be part of literal
-        if (condition[scan] == ' ' or condition[scan] == '\t' or
-            condition[scan] == '(' or condition[scan] == ')' or
-            condition[scan] == '&' or condition[scan] == '|')
-        {
-            break;
-        }
-    }
-    // Check position 0 too
-    if (apos_pos == null and scan == 0 and condition[0] == '\'') {
-        apos_pos = 0;
-    }
-    
-    if (apos_pos == null or apos_pos.? == 0) return 0;
-    
-    const apos = apos_pos.?;
-    
-    // Check base specifier after apostrophe
-    if (apos + 1 > end_pos) return 0;
-    const base = condition[apos + 1];
-    if (base != 'b' and base != 'B' and
-        base != 'h' and base != 'H' and
-        base != 'd' and base != 'D' and
-        base != 'o' and base != 'O')
-    {
-        return 0;
-    }
-    
-    // Parse width digits before apostrophe
-    const width_end = apos;
-    var i = apos - 1;
-    while (i > 0 and condition[i] >= '0' and condition[i] <= '9') {
-        i -= 1;
-    }
-    const width_start = if (condition[i] >= '0' and condition[i] <= '9') i else i + 1;
-    
-    if (width_start >= width_end) return 0;
-    
-    const width_str = condition[width_start..width_end];
-    return std.fmt.parseInt(u32, width_str, 10) catch 0;
-}
-
-/// Check if character is valid in Verilog literal value
-fn isVerilogValueChar(c: u8) bool {
-    return (c >= '0' and c <= '9') or
-           (c >= 'a' and c <= 'f') or
-           (c >= 'A' and c <= 'F') or
-           c == 'x' or c == 'X' or
-           c == 'z' or c == 'Z' or
-           c == '_';
-}
-
-/// Parse bit slice [N:M] or [N] and return minimum required width
-/// [7:0] -> 8, [15:8] -> 16, [31:16] -> 32, [7] -> 8
-fn parseBitSlice(condition: []const u8, start: usize) u32 {
-    if (start >= condition.len or condition[start] != '[') return 0;
-    
-    var i = start + 1; // skip '['
-    
-    // Skip whitespace
-    while (i < condition.len and (condition[i] == ' ' or condition[i] == '\t')) {
-        i += 1;
-    }
-    
-    // Parse first number (high index or single index)
-    const num1_start = i;
-    while (i < condition.len and condition[i] >= '0' and condition[i] <= '9') {
-        i += 1;
-    }
-    if (i == num1_start) return 0; // No number found
-    
-    const num1 = std.fmt.parseInt(u32, condition[num1_start..i], 10) catch return 0;
-    
-    // Skip whitespace
-    while (i < condition.len and (condition[i] == ' ' or condition[i] == '\t')) {
-        i += 1;
-    }
-    
-    // Check for ':' (range) or ']' (single bit)
-    if (i >= condition.len) return 0;
-    
-    if (condition[i] == ']') {
-        // Single bit access [N] -> width = N + 1
-        return num1 + 1;
-    }
-    
-    if (condition[i] != ':') return 0;
-    i += 1; // skip ':'
-    
-    // Skip whitespace
-    while (i < condition.len and (condition[i] == ' ' or condition[i] == '\t')) {
-        i += 1;
-    }
-    
-    // Parse second number (low index)
-    const num2_start = i;
-    while (i < condition.len and condition[i] >= '0' and condition[i] <= '9') {
-        i += 1;
-    }
-    if (i == num2_start) return 0;
-    
-    const num2 = std.fmt.parseInt(u32, condition[num2_start..i], 10) catch return 0;
-    
-    // Width = max(high, low) + 1
-    return @max(num1, num2) + 1;
-}
-
-/// Parse width from Verilog literal at position i
-/// Format: <width>'<base><value> where base is b, h, d, o (case insensitive)
-fn parseVerilogLiteralWidth(condition: []const u8, start: usize) u32 {
-    var i = start;
-    
-    // Parse width number
-    const width_start = i;
-    while (i < condition.len and condition[i] >= '0' and condition[i] <= '9') {
-        i += 1;
-    }
-    
-    if (i == width_start) return 0; // No width digits found
-    
-    // Check for apostrophe
-    if (i >= condition.len or condition[i] != '\'') return 0;
-    i += 1;
-    
-    // Check for base specifier (b, h, d, o - case insensitive)
-    if (i >= condition.len) return 0;
-    const base = condition[i];
-    if (base != 'b' and base != 'B' and
-        base != 'h' and base != 'H' and
-        base != 'd' and base != 'D' and
-        base != 'o' and base != 'O')
-    {
-        return 0;
-    }
-    
-    // Parse the width number
-    const width_str = condition[width_start .. i - 1]; // Exclude apostrophe
-    return std.fmt.parseInt(u32, width_str, 10) catch 0;
-}
-
-fn isIdentifierStart(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
-}
-
-fn isIdentifierChar(c: u8) bool {
-    return isIdentifierStart(c) or (c >= '0' and c <= '9');
-}
-
-fn isNumericLiteral(s: []const u8) bool {
-    if (s.len == 0) return false;
-    
-    // Check for Verilog numeric literals like 8'hFF, 2'b00, 32'd123
-    for (s) |c| {
-        if (c == '\'') return true;
-    }
-    
-    // Check for pure numbers
-    var all_digits = true;
-    for (s) |c| {
-        if (c < '0' or c > '9') {
-            all_digits = false;
-            break;
-        }
-    }
-    if (all_digits) return true;
-    
-    // Check for hex literals (hXX, hXXXX)
-    if (s.len >= 2 and s[0] == 'h') {
-        var is_hex = true;
-        for (s[1..]) |c| {
-            if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
-                is_hex = false;
-                break;
-            }
-        }
-        if (is_hex) return true;
-    }
-    
-    // Check for binary literals (bXX)
-    if (s.len >= 2 and s[0] == 'b') {
-        var is_bin = true;
-        for (s[1..]) |c| {
-            if (c != '0' and c != '1') {
-                is_bin = false;
-                break;
-            }
-        }
-        if (is_bin) return true;
-    }
-    
-    // Check for decimal literals (dXX)
-    if (s.len >= 2 and s[0] == 'd') {
-        var is_dec = true;
-        for (s[1..]) |c| {
-            if (c < '0' or c > '9') {
-                is_dec = false;
-                break;
-            }
-        }
-        if (is_dec) return true;
-    }
-    
-    return false;
-}
-
-fn isKeyword(s: []const u8, keywords: []const []const u8) bool {
-    for (keywords) |kw| {
-        if (std.mem.eql(u8, s, kw)) return true;
-    }
-    return false;
-}
 
 pub const VerilogCodeGen = struct {
     allocator: Allocator,
@@ -660,224 +394,14 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeFmt("module {s}_top (\n", .{spec.name});
         self.builder.incIndent();
         
-        // Extract signals from FSM transition conditions with inferred widths
-        var fsm_signals = ArrayList(SignalInfo).init(self.allocator);
-        defer fsm_signals.deinit();
-        
-        if (spec.fsms.items.len > 0) {
-            for (spec.fsms.items) |fsm| {
-                // Collect FSM state names to exclude them
-                var state_names = ArrayList([]const u8).init(self.allocator);
-                defer state_names.deinit();
-                for (fsm.states.items) |state| {
-                    try state_names.append(state);
-                }
-                
-                // Extract signals from each transition condition
-                for (fsm.transitions.items) |trans| {
-                    if (trans.condition.len > 0) {
-                        var extracted = try extractSignalsFromCondition(self.allocator, trans.condition);
-                        defer extracted.deinit();
-                        
-                        for (extracted.items) |sig_info| {
-                            // Skip if it's a state name
-                            var is_state = false;
-                            for (state_names.items) |state| {
-                                if (std.mem.eql(u8, sig_info.name, state)) {
-                                    is_state = true;
-                                    break;
-                                }
-                            }
-                            if (is_state) continue;
-                            
-                            // Skip if already in spec.signals
-                            var already_declared = false;
-                            for (spec.signals.items) |existing| {
-                                if (std.mem.eql(u8, sig_info.name, existing.name)) {
-                                    already_declared = true;
-                                    break;
-                                }
-                            }
-                            if (already_declared) continue;
-                            
-                            // Skip internal timer signals (generated by timer logic)
-                            if (std.mem.eql(u8, sig_info.name, "timer_expired") or
-                                std.mem.eql(u8, sig_info.name, "timer_count") or
-                                std.mem.eql(u8, sig_info.name, "timeout_value"))
-                            {
-                                continue;
-                            }
-                            
-                            // Check if already in fsm_signals, update width if larger
-                            var already_added = false;
-                            for (fsm_signals.items) |*existing| {
-                                if (std.mem.eql(u8, sig_info.name, existing.name)) {
-                                    already_added = true;
-                                    // Keep the larger inferred width
-                                    if (sig_info.inferred_width > existing.inferred_width) {
-                                        existing.inferred_width = sig_info.inferred_width;
-                                    }
-                                    break;
-                                }
-                            }
-                            if (already_added) continue;
-                            
-                            // Add to fsm_signals with inferred width
-                            try fsm_signals.append(sig_info);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Collect unique output signal names from FSM outputs with inferred widths
-        var fsm_output_signals = ArrayList(SignalInfo).init(self.allocator);
-        defer fsm_output_signals.deinit();
-        
-        if (spec.fsms.items.len > 0) {
-            for (spec.fsms.items) |fsm| {
-                for (fsm.outputs.items) |out| {
-                    var iter = out.signals.iterator();
-                    while (iter.next()) |entry| {
-                        const sig_name = entry.key_ptr.*;
-                        const sig_value = entry.value_ptr.*;
-                        
-                        // Infer width from value (e.g., "8'hFF" -> 8)
-                        const inferred_width = parseVerilogLiteralWidth(sig_value, 0);
-                        
-                        // Check if already added, update width if larger
-                        var found = false;
-                        for (fsm_output_signals.items) |*existing| {
-                            if (std.mem.eql(u8, existing.name, sig_name)) {
-                                found = true;
-                                if (inferred_width > existing.inferred_width) {
-                                    existing.inferred_width = inferred_width;
-                                }
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            try fsm_output_signals.append(SignalInfo{
-                                .name = sig_name,
-                                .inferred_width = inferred_width,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Check if we have custom signals defined
-        if (spec.signals.items.len > 0 or fsm_signals.items.len > 0 or fsm_output_signals.items.len > 0) {
-            // Count actual ports (exclude internal regs) + 2 for clk and rst_n + FSM outputs
-            var actual_port_count: usize = fsm_signals.items.len + fsm_output_signals.items.len + 2;
-            for (spec.signals.items) |sig| {
-                if (!std.mem.eql(u8, sig.direction, "reg") and !std.mem.eql(u8, sig.direction, "wire")) {
-                    actual_port_count += 1;
-                }
-            }
-            
-            // Generate ports from signals (only input/output/inout)
-            var port_idx: usize = 0;
-            
-            // Always generate clk and rst_n first
-            try self.builder.writeLine("input  wire        clk,");
-            try self.builder.writeLine("input  wire        rst_n,");
-            port_idx = 2;
-            
-            // Generate auto-extracted FSM signals as inputs with inferred widths
-            for (fsm_signals.items) |fsm_sig| {
-                port_idx += 1;
-                const is_last = (port_idx == actual_port_count);
-                
-                // Use inferred width from Verilog literals/slices, default to 1-bit scalar
-                const width = if (fsm_sig.inferred_width > 0) fsm_sig.inferred_width else 0;
-                
-                if (width > 0) {
-                    // Generate as vector [width-1:0] to support bit slicing
-                    const width_minus_1 = width - 1;
-                    if (is_last) {
-                        try self.builder.writeFmt("input  wire [{d}:0] {s}  // Auto-extracted from FSM (width inferred)\n", .{ width_minus_1, fsm_sig.name });
-                    } else {
-                        try self.builder.writeFmt("input  wire [{d}:0] {s},  // Auto-extracted from FSM (width inferred)\n", .{ width_minus_1, fsm_sig.name });
-                    }
-                } else {
-                    // Default 1-bit scalar (no bit slicing in condition)
-                    if (is_last) {
-                        try self.builder.writeFmt("input  wire        {s}  // Auto-extracted from FSM\n", .{fsm_sig.name});
-                    } else {
-                        try self.builder.writeFmt("input  wire        {s},  // Auto-extracted from FSM\n", .{fsm_sig.name});
-                    }
-                }
-            }
-            
-            // Generate FSM output signals as output ports with inferred widths
-            for (fsm_output_signals.items) |out_sig| {
-                port_idx += 1;
-                const is_last = (port_idx == actual_port_count);
-                const width = if (out_sig.inferred_width > 0) out_sig.inferred_width else 1;
-                
-                if (width > 1) {
-                    const width_minus_1 = width - 1;
-                    if (is_last) {
-                        try self.builder.writeFmt("output reg  [{d}:0] {s}  // Auto-generated from FSM outputs (width inferred)\n", .{ width_minus_1, out_sig.name });
-                    } else {
-                        try self.builder.writeFmt("output reg  [{d}:0] {s},  // Auto-generated from FSM outputs (width inferred)\n", .{ width_minus_1, out_sig.name });
-                    }
-                } else {
-                    if (is_last) {
-                        try self.builder.writeFmt("output reg         {s}  // Auto-generated from FSM outputs\n", .{out_sig.name});
-                    } else {
-                        try self.builder.writeFmt("output reg         {s},  // Auto-generated from FSM outputs\n", .{out_sig.name});
-                    }
-                }
-            }
-            
-            for (spec.signals.items) |sig| {
-                // Skip internal registers and wires - they're not ports
-                if (std.mem.eql(u8, sig.direction, "reg") or std.mem.eql(u8, sig.direction, "wire")) {
-                    continue;
-                }
-                
-                port_idx += 1;
-                const is_last = (port_idx == actual_port_count);
-                
-                // Determine port direction and type
-                const dir_str = if (std.mem.eql(u8, sig.direction, "input"))
-                    "input  wire"
-                else if (std.mem.eql(u8, sig.direction, "output"))
-                    "output reg "
-                else if (std.mem.eql(u8, sig.direction, "inout"))
-                    "inout  wire"
-                else
-                    "wire      ";
-                
-                // Generate width specifier
-                if (sig.width > 1) {
-                    const width_minus_1 = sig.width - 1;
-                    if (is_last) {
-                        try self.builder.writeFmt("{s} [{d}:0] {s}\n", .{ dir_str, width_minus_1, sig.name });
-                    } else {
-                        try self.builder.writeFmt("{s} [{d}:0] {s},\n", .{ dir_str, width_minus_1, sig.name });
-                    }
-                } else {
-                    if (is_last) {
-                        try self.builder.writeFmt("{s}        {s}\n", .{ dir_str, sig.name });
-                    } else {
-                        try self.builder.writeFmt("{s}        {s},\n", .{ dir_str, sig.name });
-                    }
-                }
-            }
-        } else {
-            // Standard FPGA ports (fallback)
-            try self.builder.writeLine("input  wire        clk,");
-            try self.builder.writeLine("input  wire        rst_n,");
-            try self.builder.writeLine("input  wire [31:0] data_in,");
-            try self.builder.writeLine("input  wire        valid_in,");
-            try self.builder.writeLine("output reg  [31:0] data_out,");
-            try self.builder.writeLine("output reg         valid_out,");
-            try self.builder.writeLine("output wire        ready");
-        }
+        // Standard FPGA ports
+        try self.builder.writeLine("input  wire        clk,");
+        try self.builder.writeLine("input  wire        rst_n,");
+        try self.builder.writeLine("input  wire [31:0] data_in,");
+        try self.builder.writeLine("input  wire        valid_in,");
+        try self.builder.writeLine("output reg  [31:0] data_out,");
+        try self.builder.writeLine("output reg         valid_out,");
+        try self.builder.writeLine("output wire        ready");
         
         self.builder.decIndent();
         try self.builder.writeLine(");");
@@ -885,105 +409,16 @@ pub const VerilogCodeGen = struct {
         
         self.builder.incIndent();
         
-        // Generate user constants as localparams
-        if (spec.constants.items.len > 0) {
-            try self.builder.writeLine("// User constants");
-            for (spec.constants.items) |constant| {
-                try self.builder.writeFmt("localparam {s} = 32'd{d};\n", .{ constant.name, constant.value });
-            }
-            try self.builder.newline();
-        }
+        // State machine
+        try self.builder.writeLine("// State machine");
+        try self.builder.writeLine("localparam IDLE    = 3'd0;");
+        try self.builder.writeLine("localparam PROCESS = 3'd1;");
+        try self.builder.writeLine("localparam DONE    = 3'd2;");
+        try self.builder.newline();
         
-        // Generate internal registers from signals
-        // Skip timer signals if FSM has timers (they'll be generated in timer logic)
-        const has_fsm_timers = spec.fsms.items.len > 0 and spec.fsms.items[0].timers.items.len > 0;
-        
-        if (spec.signals.items.len > 0) {
-            try self.builder.writeLine("// Internal registers");
-            for (spec.signals.items) |sig| {
-                if (std.mem.eql(u8, sig.direction, "reg")) {
-                    // Skip timer signals if FSM has timers
-                    if (has_fsm_timers) {
-                        if (std.mem.eql(u8, sig.name, "timer_count") or 
-                            std.mem.eql(u8, sig.name, "timer_expired")) {
-                            continue;
-                        }
-                    }
-                    
-                    if (sig.width > 1) {
-                        const width_minus_1 = sig.width - 1;
-                        if (sig.default_value) |def| {
-                            try self.builder.writeFmt("reg [{d}:0] {s} = {d}'d{d};\n", .{ width_minus_1, sig.name, sig.width, def });
-                        } else {
-                            try self.builder.writeFmt("reg [{d}:0] {s};\n", .{ width_minus_1, sig.name });
-                        }
-                    } else {
-                        if (sig.default_value) |def| {
-                            try self.builder.writeFmt("reg {s} = 1'b{d};\n", .{ sig.name, def });
-                        } else {
-                            try self.builder.writeFmt("reg {s};\n", .{ sig.name });
-                        }
-                    }
-                }
-            }
-            try self.builder.newline();
-        }
-        
-        // Generate FSM from spec if defined
-        // NOTE: All signals used in FSM transition conditions must be declared in the signals: section
-        // of the .vibee spec. The generator does not auto-declare signals from conditions.
-        if (spec.fsms.items.len > 0) {
-            for (spec.fsms.items) |fsm| {
-                try self.builder.writeFmt("// FSM: {s}\n", .{fsm.name});
-                try self.builder.writeLine("// NOTE: Ensure all signals in transition conditions are declared in signals: section");
-                
-                // Calculate state width based on encoding
-                const state_count = fsm.states.items.len;
-                const state_width: u32 = if (std.mem.eql(u8, fsm.encoding, "onehot"))
-                    @intCast(state_count)
-                else
-                    @intCast(std.math.log2_int(usize, state_count) + 1);
-                
-                // Generate state parameters
-                if (std.mem.eql(u8, fsm.encoding, "onehot")) {
-                    for (fsm.states.items, 0..) |state, i| {
-                        var one_hot: u64 = 1;
-                        one_hot <<= @intCast(i);
-                        try self.builder.writeFmt("localparam {s} = {d}'b", .{ state, state_width });
-                        // Write binary representation
-                        var j: u32 = state_width;
-                        while (j > 0) {
-                            j -= 1;
-                            const bit: u64 = (one_hot >> @intCast(j)) & 1;
-                            try self.builder.writeFmt("{d}", .{bit});
-                        }
-                        try self.builder.write(";\n");
-                    }
-                } else {
-                    // Binary encoding
-                    for (fsm.states.items, 0..) |state, i| {
-                        try self.builder.writeFmt("localparam {s} = {d}'d{d};\n", .{ state, state_width, i });
-                    }
-                }
-                try self.builder.newline();
-                
-                // State registers
-                try self.builder.writeFmt("reg [{d}:0] state;\n", .{state_width - 1});
-                try self.builder.writeFmt("reg [{d}:0] next_state;\n", .{state_width - 1});
-                try self.builder.newline();
-            }
-        } else {
-            // Default state machine
-            try self.builder.writeLine("// State machine");
-            try self.builder.writeLine("localparam IDLE    = 3'd0;");
-            try self.builder.writeLine("localparam PROCESS = 3'd1;");
-            try self.builder.writeLine("localparam DONE    = 3'd2;");
-            try self.builder.newline();
-            
-            try self.builder.writeLine("reg [2:0] state;");
-            try self.builder.writeLine("reg [2:0] next_state;");
-            try self.builder.newline();
-        }
+        try self.builder.writeLine("reg [2:0] state;");
+        try self.builder.writeLine("reg [2:0] next_state;");
+        try self.builder.newline();
         
         // Sacred constants instance
         try self.builder.writeLine("// Sacred constants");
@@ -1002,69 +437,9 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine(");");
         try self.builder.newline();
         
-        // Get initial state name
-        const initial_state = if (spec.fsms.items.len > 0) spec.fsms.items[0].initial_state else "IDLE";
-        
         // Ready signal
-        try self.builder.writeFmt("assign ready = (state == {s});\n", .{initial_state});
+        try self.builder.writeLine("assign ready = (state == IDLE);");
         try self.builder.newline();
-        
-        // Generate timer logic if FSM has timers
-        if (spec.fsms.items.len > 0 and spec.fsms.items[0].timers.items.len > 0) {
-            const fsm = spec.fsms.items[0];
-            
-            try self.builder.writeLine("// Timer logic");
-            try self.builder.writeLine("reg [31:0] timer_count;");
-            try self.builder.writeLine("wire timer_expired;");
-            try self.builder.writeLine("reg [31:0] timeout_value;");
-            try self.builder.newline();
-            
-            // Timeout value selection based on state
-            try self.builder.writeLine("// Timeout value per state");
-            try self.builder.writeLine("always @(*) begin");
-            self.builder.incIndent();
-            try self.builder.writeLine("case (state)");
-            self.builder.incIndent();
-            
-            for (fsm.timers.items) |timer| {
-                if (timer.timeout_constant.len > 0) {
-                    try self.builder.writeFmt("{s}: timeout_value = {s};\n", .{ timer.state, timer.timeout_constant });
-                } else {
-                    try self.builder.writeFmt("{s}: timeout_value = 32'd{d};\n", .{ timer.state, timer.timeout_value });
-                }
-            }
-            try self.builder.writeFmt("default: timeout_value = 32'd{d};\n", .{fsm.timers.items[0].timeout_value});
-            
-            self.builder.decIndent();
-            try self.builder.writeLine("endcase");
-            self.builder.decIndent();
-            try self.builder.writeLine("end");
-            try self.builder.newline();
-            
-            // Timer counter
-            try self.builder.writeLine("// Timer counter");
-            try self.builder.writeLine("always @(posedge clk or negedge rst_n) begin");
-            self.builder.incIndent();
-            try self.builder.writeLine("if (!rst_n)");
-            self.builder.incIndent();
-            try self.builder.writeLine("timer_count <= 32'd0;");
-            self.builder.decIndent();
-            try self.builder.writeLine("else if (state != next_state)");
-            self.builder.incIndent();
-            try self.builder.writeLine("timer_count <= 32'd0;  // Reset on state change");
-            self.builder.decIndent();
-            try self.builder.writeLine("else if (timer_count < timeout_value - 1)");
-            self.builder.incIndent();
-            try self.builder.writeLine("timer_count <= timer_count + 1;");
-            self.builder.decIndent();
-            self.builder.decIndent();
-            try self.builder.writeLine("end");
-            try self.builder.newline();
-            
-            // Timer expired signal
-            try self.builder.writeLine("assign timer_expired = (timer_count >= timeout_value - 1);");
-            try self.builder.newline();
-        }
         
         // State register
         try self.builder.writeLine("// State register");
@@ -1072,7 +447,7 @@ pub const VerilogCodeGen = struct {
         self.builder.incIndent();
         try self.builder.writeLine("if (!rst_n)");
         self.builder.incIndent();
-        try self.builder.writeFmt("state <= {s};\n", .{initial_state});
+        try self.builder.writeLine("state <= IDLE;");
         self.builder.decIndent();
         try self.builder.writeLine("else");
         self.builder.incIndent();
@@ -1082,143 +457,39 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("end");
         try self.builder.newline();
         
-        // Next state logic - generate from FSM if defined
+        // Next state logic
         try self.builder.writeLine("// Next state logic");
         try self.builder.writeLine("always @(*) begin");
         self.builder.incIndent();
         try self.builder.writeLine("next_state = state;");
         try self.builder.writeLine("case (state)");
         self.builder.incIndent();
-        
-        if (spec.fsms.items.len > 0) {
-            const fsm = spec.fsms.items[0];
-            
-            // Check if we have explicit transitions
-            if (fsm.transitions.items.len > 0) {
-                // Generate case with conditional transitions
-                for (fsm.states.items) |state| {
-                    try self.builder.writeFmt("{s}: begin\n", .{state});
-                    self.builder.incIndent();
-                    
-                    // Find all transitions from this state
-                    var has_transition = false;
-                    for (fsm.transitions.items) |trans| {
-                        if (std.mem.eql(u8, trans.from_state, state)) {
-                            if (trans.condition.len > 0) {
-                                try self.builder.writeFmt("if ({s}) next_state = {s};\n", .{ trans.condition, trans.to_state });
-                            } else {
-                                try self.builder.writeFmt("next_state = {s};\n", .{trans.to_state});
-                            }
-                            has_transition = true;
-                        }
-                    }
-                    
-                    if (!has_transition) {
-                        // Stay in current state if no transition defined
-                        try self.builder.writeFmt("next_state = {s};\n", .{state});
-                    }
-                    
-                    self.builder.decIndent();
-                    try self.builder.writeLine("end");
-                }
-            } else {
-                // Simple sequential state machine (fallback)
-                for (fsm.states.items, 0..) |state, i| {
-                    if (i + 1 < fsm.states.items.len) {
-                        try self.builder.writeFmt("{s}: next_state = {s};\n", .{ state, fsm.states.items[i + 1] });
-                    } else {
-                        try self.builder.writeFmt("{s}: next_state = {s};\n", .{ state, fsm.initial_state });
-                    }
-                }
-            }
-        } else {
-            try self.builder.writeLine("IDLE:    next_state = PROCESS;");
-            try self.builder.writeLine("PROCESS: next_state = DONE;");
-            try self.builder.writeLine("DONE:    next_state = IDLE;");
-        }
-        try self.builder.writeFmt("default: next_state = {s};\n", .{initial_state});
+        try self.builder.writeLine("IDLE:    if (valid_in) next_state = PROCESS;");
+        try self.builder.writeLine("PROCESS: next_state = DONE;");
+        try self.builder.writeLine("DONE:    next_state = IDLE;");
+        try self.builder.writeLine("default: next_state = IDLE;");
         self.builder.decIndent();
         try self.builder.writeLine("endcase");
         self.builder.decIndent();
         try self.builder.writeLine("end");
         try self.builder.newline();
         
-        // Output logic - simplified for custom signals
+        // Output logic
         try self.builder.writeLine("// Output logic");
         try self.builder.writeLine("always @(posedge clk or negedge rst_n) begin");
         self.builder.incIndent();
         try self.builder.writeLine("if (!rst_n) begin");
         self.builder.incIndent();
-        
-        // Reset output signals
-        if (spec.signals.items.len > 0) {
-            for (spec.signals.items) |sig| {
-                if (std.mem.eql(u8, sig.direction, "output")) {
-                    if (sig.default_value) |def| {
-                        if (sig.width > 1) {
-                            try self.builder.writeFmt("{s} <= {d}'d{d};\n", .{ sig.name, sig.width, def });
-                        } else {
-                            try self.builder.writeFmt("{s} <= 1'b{d};\n", .{ sig.name, def });
-                        }
-                    } else {
-                        if (sig.width > 1) {
-                            try self.builder.writeFmt("{s} <= {d}'d0;\n", .{ sig.name, sig.width });
-                        } else {
-                            try self.builder.writeFmt("{s} <= 1'b0;\n", .{ sig.name });
-                        }
-                    }
-                }
-            }
-        } else if (fsm_signals.items.len == 0 and fsm_output_signals.items.len == 0) {
-            // Only generate default outputs if no custom signals at all
-            try self.builder.writeLine("data_out  <= 32'd0;");
-            try self.builder.writeLine("valid_out <= 1'b0;");
-        } else {
-            // FSM signals or outputs present - just comment
-            try self.builder.writeLine("// No explicit output signals defined");
-        }
+        try self.builder.writeLine("data_out  <= 32'd0;");
+        try self.builder.writeLine("valid_out <= 1'b0;");
         self.builder.decIndent();
         try self.builder.writeLine("end else begin");
         self.builder.incIndent();
-        
-        // Generate output logic from FSM outputs if available
-        if (spec.fsms.items.len > 0 and spec.fsms.items[0].outputs.items.len > 0) {
-            const fsm = spec.fsms.items[0];
-            try self.builder.writeLine("// State-based output logic");
-            try self.builder.writeLine("case (state)");
-            self.builder.incIndent();
-            
-            for (fsm.outputs.items) |out| {
-                try self.builder.writeFmt("{s}: begin\n", .{out.state});
-                self.builder.incIndent();
-                // Generate assignments for all signals in this state
-                var iter = out.signals.iterator();
-                while (iter.next()) |entry| {
-                    try self.builder.writeFmt("{s} <= {s};\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-                }
-                self.builder.decIndent();
-                try self.builder.writeLine("end");
-            }
-            
-            // Default case - reset all outputs to 0
-            try self.builder.writeLine("default: begin");
-            self.builder.incIndent();
-            // Get all unique signal names from outputs
-            if (fsm.outputs.items.len > 0) {
-                var iter = fsm.outputs.items[0].signals.iterator();
-                while (iter.next()) |entry| {
-                    try self.builder.writeFmt("{s} <= 1'b0;\n", .{entry.key_ptr.*});
-                }
-            }
-            self.builder.decIndent();
-            try self.builder.writeLine("end");
-            
-            self.builder.decIndent();
-            try self.builder.writeLine("endcase");
-        } else {
-            try self.builder.writeLine("// State-based output logic (customize as needed)");
-        }
-        
+        try self.builder.writeLine("valid_out <= (state == DONE);");
+        try self.builder.writeLine("if (state == PROCESS)");
+        self.builder.incIndent();
+        try self.builder.writeLine("data_out <= data_in ^ phoenix; // XOR with sacred constant");
+        self.builder.decIndent();
         self.builder.decIndent();
         try self.builder.writeLine("end");
         self.builder.decIndent();
@@ -1584,14 +855,14 @@ pub const VerilogCodeGen = struct {
         self.builder.incIndent();
         try self.builder.writeLine("for (i = 0; i < 27; i = i + 1) begin : mult_gen");
         self.builder.incIndent();
-        try self.builder.writeLine("wire [1:0] ai = a[i*2+1 : i*2];");
-        try self.builder.writeLine("wire [1:0] bi = b[i*2+1 : i*2];");
+        try self.builder.writeLine("wire [1:0] ai = a[i*2 +: 2];  // Variable part-select with +: operator");
+        try self.builder.writeLine("wire [1:0] bi = b[i*2 +: 2];");
         try self.builder.writeLine("wire a_zero = (ai == TRIT_Z);");
         try self.builder.writeLine("wire b_zero = (bi == TRIT_Z);");
         try self.builder.writeLine("wire same_sign = (ai == bi);");
         try self.builder.newline();
         try self.builder.writeLine("// Ternary multiply: sign comparison only!");
-        try self.builder.writeLine("assign result[i*2+1 : i*2] = (a_zero || b_zero) ? TRIT_Z :");
+        try self.builder.writeLine("assign result[i*2 +: 2] = (a_zero || b_zero) ? TRIT_Z :");
         try self.builder.writeLine("                             same_sign ? TRIT_P : TRIT_N;");
         self.builder.decIndent();
         try self.builder.writeLine("end");
@@ -1628,7 +899,7 @@ pub const VerilogCodeGen = struct {
         self.builder.incIndent();
         try self.builder.writeLine("for (i = 0; i < 27; i = i + 1) begin : convert");
         self.builder.incIndent();
-        try self.builder.writeLine("wire [1:0] t = trits[i*2+1 : i*2];");
+        try self.builder.writeLine("wire [1:0] t = trits[i*2 +: 2];  // Variable part-select with +: operator");
         try self.builder.writeLine("assign val[i] = (t == TRIT_N) ? -2'sd1 :");
         try self.builder.writeLine("                (t == TRIT_P) ?  2'sd1 : 2'sd0;");
         self.builder.decIndent();
@@ -2493,6 +1764,17 @@ pub const VerilogCodeGen = struct {
         var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).init(self.allocator);
         defer extracted_signals.deinit();
         
+        // Validate behavior signals
+        var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning).init(self.allocator);
+        defer warnings.deinit();
+        
+        // Print warnings to stderr (visible during generation)
+        if (warnings.items.len > 0) {
+            std.debug.print("\n", .{});
+            printValidationWarnings(warnings.items);
+        }
+        
+        // Add validation comments to generated code
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// SYSTEMVERILOG ASSERTIONS (SVA)");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
@@ -2501,6 +1783,8 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("// φ² + 1/φ² = 3");
         try self.builder.newline();
         
+        // Wrap SVA module in `ifdef FORMAL for iverilog compatibility
+        try self.builder.writeLine("`ifdef FORMAL");
         try self.builder.writeFmt("module {s}_sva_checker (\n", .{spec.name});
         self.builder.incIndent();
         
@@ -2514,10 +1798,21 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("input wire        ready,");
         try self.builder.writeLine("input wire [2:0]  state,");
         
-        // Signals extracted from types
+        // Signals extracted from types (skip duplicates with standard signals)
+        const standard_sigs = [_][]const u8{ "clk", "rst_n", "data_in", "valid_in", "data_out", "valid_out", "ready", "state" };
         if (extracted_signals.items.len > 0) {
             try self.builder.writeLine("// Signals from spec types:");
             for (extracted_signals.items) |sig| {
+                // Skip if already declared as standard signal
+                var is_standard = false;
+                for (standard_sigs) |std_sig| {
+                    if (std.mem.eql(u8, sig.name, std_sig)) {
+                        is_standard = true;
+                        break;
+                    }
+                }
+                if (is_standard) continue;
+                
                 if (sig.is_bool) {
                     try self.builder.writeFmt("input wire        {s},\n", .{sig.name});
                 } else {
@@ -2528,8 +1823,8 @@ pub const VerilogCodeGen = struct {
         
         // Common signals - only add if not already in extracted
         try self.builder.writeLine("// Common SVA signals:");
-        const common_signals = [_][]const u8{ "running", "active", "overflow", "done", "flag" };
-        for (common_signals, 0..) |common, i| {
+        const fallback_signals = [_][]const u8{ "running", "active", "overflow", "done", "flag" };
+        for (fallback_signals, 0..) |common, i| {
             var exists = false;
             for (extracted_signals.items) |sig| {
                 if (std.mem.eql(u8, sig.name, common)) {
@@ -2538,7 +1833,7 @@ pub const VerilogCodeGen = struct {
                 }
             }
             if (!exists) {
-                const is_last = (i == common_signals.len - 1);
+                const is_last = (i == fallback_signals.len - 1);
                 try self.builder.writeFmt("input wire        {s}{s}\n", .{ common, if (is_last) "" else "," });
             }
         }
@@ -2638,6 +1933,7 @@ pub const VerilogCodeGen = struct {
         
         self.builder.decIndent();
         try self.builder.writeLine("endmodule");
+        try self.builder.writeLine("`endif // FORMAL");
         try self.builder.newline();
     }
     
@@ -2771,256 +2067,36 @@ pub const VerilogCodeGen = struct {
         
         self.builder.incIndent();
         
-        // Extract FSM signals for testbench with inferred widths (same logic as in writeTopModule)
-        var fsm_signals_tb = ArrayList(SignalInfo).init(self.allocator);
-        defer fsm_signals_tb.deinit();
-        
-        if (spec.fsms.items.len > 0) {
-            for (spec.fsms.items) |fsm| {
-                var state_names = ArrayList([]const u8).init(self.allocator);
-                defer state_names.deinit();
-                for (fsm.states.items) |state| {
-                    try state_names.append(state);
-                }
-                
-                for (fsm.transitions.items) |trans| {
-                    if (trans.condition.len > 0) {
-                        var extracted = try extractSignalsFromCondition(self.allocator, trans.condition);
-                        defer extracted.deinit();
-                        
-                        for (extracted.items) |sig_info| {
-                            var is_state = false;
-                            for (state_names.items) |state| {
-                                if (std.mem.eql(u8, sig_info.name, state)) {
-                                    is_state = true;
-                                    break;
-                                }
-                            }
-                            if (is_state) continue;
-                            
-                            var already_declared = false;
-                            for (spec.signals.items) |existing| {
-                                if (std.mem.eql(u8, sig_info.name, existing.name)) {
-                                    already_declared = true;
-                                    break;
-                                }
-                            }
-                            if (already_declared) continue;
-                            
-                            // Skip internal timer signals (generated by timer logic)
-                            if (std.mem.eql(u8, sig_info.name, "timer_expired") or
-                                std.mem.eql(u8, sig_info.name, "timer_count") or
-                                std.mem.eql(u8, sig_info.name, "timeout_value"))
-                            {
-                                continue;
-                            }
-                            
-                            var already_added = false;
-                            for (fsm_signals_tb.items) |*existing| {
-                                if (std.mem.eql(u8, sig_info.name, existing.name)) {
-                                    already_added = true;
-                                    // Keep the larger inferred width
-                                    if (sig_info.inferred_width > existing.inferred_width) {
-                                        existing.inferred_width = sig_info.inferred_width;
-                                    }
-                                    break;
-                                }
-                            }
-                            if (already_added) continue;
-                            
-                            try fsm_signals_tb.append(sig_info);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Collect FSM output signals for testbench with inferred widths
-        var fsm_output_signals_tb = ArrayList(SignalInfo).init(self.allocator);
-        defer fsm_output_signals_tb.deinit();
-        
-        if (spec.fsms.items.len > 0) {
-            for (spec.fsms.items) |fsm| {
-                for (fsm.outputs.items) |out| {
-                    var iter = out.signals.iterator();
-                    while (iter.next()) |entry| {
-                        const sig_name = entry.key_ptr.*;
-                        const sig_value = entry.value_ptr.*;
-                        const inferred_width = parseVerilogLiteralWidth(sig_value, 0);
-                        
-                        var found = false;
-                        for (fsm_output_signals_tb.items) |*existing| {
-                            if (std.mem.eql(u8, existing.name, sig_name)) {
-                                found = true;
-                                if (inferred_width > existing.inferred_width) {
-                                    existing.inferred_width = inferred_width;
-                                }
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            try fsm_output_signals_tb.append(SignalInfo{
-                                .name = sig_name,
-                                .inferred_width = inferred_width,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Testbench signals - generate from spec signals
+        // Testbench signals
         try self.builder.writeLine("// Testbench signals");
-        
-        // First, generate auto-extracted FSM signals as regs with inferred widths
-        if (fsm_signals_tb.items.len > 0) {
-            try self.builder.writeLine("// Auto-extracted FSM control signals (widths inferred from literals)");
-            for (fsm_signals_tb.items) |fsm_sig| {
-                const width = if (fsm_sig.inferred_width > 0) fsm_sig.inferred_width else 0;
-                if (width > 0) {
-                    const width_minus_1 = width - 1;
-                    try self.builder.writeFmt("reg  [{d}:0] {s};\n", .{ width_minus_1, fsm_sig.name });
-                } else {
-                    try self.builder.writeFmt("reg         {s};\n", .{fsm_sig.name});
-                }
-            }
-        }
-        
-        // Generate FSM output signals as wires in testbench with inferred widths
-        if (fsm_output_signals_tb.items.len > 0) {
-            try self.builder.writeLine("// FSM output signals");
-            for (fsm_output_signals_tb.items) |out_sig| {
-                const width = if (out_sig.inferred_width > 0) out_sig.inferred_width else 1;
-                if (width > 1) {
-                    const width_minus_1 = width - 1;
-                    try self.builder.writeFmt("wire [{d}:0] {s};\n", .{ width_minus_1, out_sig.name });
-                } else {
-                    try self.builder.writeFmt("wire        {s};\n", .{out_sig.name});
-                }
-            }
-        }
-        
-        if (spec.signals.items.len > 0) {
-            for (spec.signals.items) |sig| {
-                // Skip internal regs/wires
-                if (std.mem.eql(u8, sig.direction, "reg") or std.mem.eql(u8, sig.direction, "wire")) {
-                    continue;
-                }
-                
-                // Inputs become regs, outputs become wires in testbench
-                const tb_type = if (std.mem.eql(u8, sig.direction, "input")) "reg " else "wire";
-                
-                if (sig.width > 1) {
-                    const width_minus_1 = sig.width - 1;
-                    try self.builder.writeFmt("{s} [{d}:0] {s};\n", .{ tb_type, width_minus_1, sig.name });
-                } else {
-                    try self.builder.writeFmt("{s}        {s};\n", .{ tb_type, sig.name });
-                }
-            }
-        }
-        
-        // Always generate clk and rst_n for testbench
-        if (fsm_signals_tb.items.len > 0 or spec.signals.items.len > 0 or fsm_output_signals_tb.items.len > 0) {
-            // Add clk and rst_n if not already declared
-            try self.builder.writeLine("// Clock and reset");
-            try self.builder.writeLine("reg         clk;");
-            try self.builder.writeLine("reg         rst_n;");
-        } else {
-            // Default signals when no custom signals
-            try self.builder.writeLine("reg         clk;");
-            try self.builder.writeLine("reg         rst_n;");
-            try self.builder.writeLine("reg  [31:0] data_in;");
-            try self.builder.writeLine("reg         valid_in;");
-            try self.builder.writeLine("wire [31:0] data_out;");
-            try self.builder.writeLine("wire        valid_out;");
-            try self.builder.writeLine("wire        ready;");
-        }
+        try self.builder.writeLine("reg         clk;");
+        try self.builder.writeLine("reg         rst_n;");
+        try self.builder.writeLine("reg  [31:0] data_in;");
+        try self.builder.writeLine("reg         valid_in;");
+        try self.builder.writeLine("wire [31:0] data_out;");
+        try self.builder.writeLine("wire        valid_out;");
+        try self.builder.writeLine("wire        ready;");
         try self.builder.newline();
         
         // DUT instantiation
         try self.builder.writeLine("// DUT instantiation");
         try self.builder.writeFmt("{s}_top dut (\n", .{spec.name});
         self.builder.incIndent();
-        
-        if (spec.signals.items.len > 0 or fsm_signals_tb.items.len > 0 or fsm_output_signals_tb.items.len > 0) {
-            // Always connect clk and rst_n first
-            try self.builder.writeLine(".clk(clk),");
-            try self.builder.writeLine(".rst_n(rst_n),");
-            
-            var port_count: usize = 0;
-            var actual_ports: usize = fsm_signals_tb.items.len + fsm_output_signals_tb.items.len;
-            
-            // Count actual ports
-            for (spec.signals.items) |sig| {
-                if (!std.mem.eql(u8, sig.direction, "reg") and !std.mem.eql(u8, sig.direction, "wire")) {
-                    actual_ports += 1;
-                }
-            }
-            
-            // Connect auto-extracted FSM input signals
-            for (fsm_signals_tb.items) |fsm_sig| {
-                port_count += 1;
-                const is_last = (port_count == actual_ports);
-                
-                if (is_last) {
-                    try self.builder.writeFmt(".{s}({s})\n", .{ fsm_sig.name, fsm_sig.name });
-                } else {
-                    try self.builder.writeFmt(".{s}({s}),\n", .{ fsm_sig.name, fsm_sig.name });
-                }
-            }
-            
-            // Connect FSM output signals
-            for (fsm_output_signals_tb.items) |out_sig| {
-                port_count += 1;
-                const is_last = (port_count == actual_ports);
-                
-                if (is_last) {
-                    try self.builder.writeFmt(".{s}({s})\n", .{ out_sig.name, out_sig.name });
-                } else {
-                    try self.builder.writeFmt(".{s}({s}),\n", .{ out_sig.name, out_sig.name });
-                }
-            }
-            
-            for (spec.signals.items) |sig| {
-                if (std.mem.eql(u8, sig.direction, "reg") or std.mem.eql(u8, sig.direction, "wire")) {
-                    continue;
-                }
-                port_count += 1;
-                const is_last = (port_count == actual_ports);
-                
-                if (is_last) {
-                    try self.builder.writeFmt(".{s}({s})\n", .{ sig.name, sig.name });
-                } else {
-                    try self.builder.writeFmt(".{s}({s}),\n", .{ sig.name, sig.name });
-                }
-            }
-        } else {
-            try self.builder.writeLine(".clk(clk),");
-            try self.builder.writeLine(".rst_n(rst_n),");
-            try self.builder.writeLine(".data_in(data_in),");
-            try self.builder.writeLine(".valid_in(valid_in),");
-            try self.builder.writeLine(".data_out(data_out),");
-            try self.builder.writeLine(".valid_out(valid_out),");
-            try self.builder.writeLine(".ready(ready)");
-        }
+        try self.builder.writeLine(".clk(clk),");
+        try self.builder.writeLine(".rst_n(rst_n),");
+        try self.builder.writeLine(".data_in(data_in),");
+        try self.builder.writeLine(".valid_in(valid_in),");
+        try self.builder.writeLine(".data_out(data_out),");
+        try self.builder.writeLine(".valid_out(valid_out),");
+        try self.builder.writeLine(".ready(ready)");
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
         
         // Clock generation
-        try self.builder.writeLine("// Clock generation (100 MHz = 10ns period)");
+        try self.builder.writeLine("// Clock generation (100 MHz)");
         try self.builder.writeLine("initial clk = 0;");
         try self.builder.writeLine("always #5 clk = ~clk;");
-        try self.builder.newline();
-        
-        // VCD dump for waveform viewing
-        try self.builder.writeLine("// VCD waveform dump");
-        try self.builder.writeLine("initial begin");
-        self.builder.incIndent();
-        try self.builder.writeFmt("$dumpfile(\"{s}.vcd\");\n", .{spec.name});
-        try self.builder.writeFmt("$dumpvars(0, {s}_tb);\n", .{spec.name});
-        self.builder.decIndent();
-        try self.builder.writeLine("end");
         try self.builder.newline();
         
         // Test sequence
@@ -3032,106 +2108,37 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("$display(\"═══════════════════════════════════════════════════════════════\");");
         try self.builder.newline();
         
-        // Initialize all input signals
         try self.builder.writeLine("// Initialize");
-        
-        // Initialize auto-extracted FSM signals
-        if (fsm_signals_tb.items.len > 0) {
-            try self.builder.writeLine("// Auto-extracted FSM control signals");
-            for (fsm_signals_tb.items) |fsm_sig| {
-                try self.builder.writeFmt("{s} = 0;\n", .{fsm_sig.name});
-            }
-        }
-        
-        if (spec.signals.items.len > 0) {
-            for (spec.signals.items) |sig| {
-                if (std.mem.eql(u8, sig.direction, "input")) {
-                    if (std.mem.eql(u8, sig.name, "rst_n")) {
-                        try self.builder.writeLine("rst_n = 0;");
-                    } else if (sig.width > 1) {
-                        try self.builder.writeFmt("{s} = {d}'d0;\n", .{ sig.name, sig.width });
-                    } else {
-                        try self.builder.writeFmt("{s} = 0;\n", .{ sig.name });
-                    }
-                }
-            }
-        } else if (fsm_signals_tb.items.len == 0 and fsm_output_signals_tb.items.len == 0) {
-            try self.builder.writeLine("rst_n = 0;");
-            try self.builder.writeLine("data_in = 32'd0;");
-            try self.builder.writeLine("valid_in = 0;");
-        } else {
-            try self.builder.writeLine("rst_n = 0;");
-        }
+        try self.builder.writeLine("rst_n = 0;");
+        try self.builder.writeLine("data_in = 32'd0;");
+        try self.builder.writeLine("valid_in = 0;");
         try self.builder.writeLine("#20;");
         try self.builder.newline();
         
         try self.builder.writeLine("// Release reset");
         try self.builder.writeLine("rst_n = 1;");
-        try self.builder.writeLine("$display(\"Reset released at time %0t\", $time);");
         try self.builder.writeLine("#10;");
         try self.builder.newline();
         
-        // Generate FSM-specific test if FSM exists
-        if (spec.fsms.items.len > 0 and spec.fsms.items[0].timers.items.len > 0) {
-            const fsm = spec.fsms.items[0];
-            
-            try self.builder.writeLine("// FSM state monitoring");
-            try self.builder.writeLine("$display(\"Starting FSM simulation...\");");
-            try self.builder.writeLine("$display(\"Initial state: %s\", dut.state);");
-            try self.builder.newline();
-            
-            // Calculate total simulation time based on timers
-            // Use scaled down values for simulation (divide by 1000)
-            try self.builder.writeLine("// Run through complete FSM cycle");
-            try self.builder.writeLine("// Note: Using scaled time for simulation");
-            
-            for (fsm.states.items) |state| {
-                try self.builder.writeFmt("$display(\"Waiting for state {s}...\");\n", .{state});
-                try self.builder.writeFmt("wait(dut.state == dut.{s});\n", .{state});
-                try self.builder.writeFmt("$display(\"  -> Entered {s} at time %0t\", $time);\n", .{state});
-                
-                // Check outputs if available
-                if (fsm.outputs.items.len > 0) {
-                    try self.builder.writeLine("$display(\"     Outputs: red=%b yellow=%b green=%b\", red_light, yellow_light, green_light);");
-                }
-                
-                try self.builder.writeLine("#100; // Small delay before next state check");
-            }
-            
-            try self.builder.newline();
-            try self.builder.writeLine("// Wait for one more cycle to verify loop");
-            try self.builder.writeFmt("wait(dut.state == dut.{s});\n", .{fsm.initial_state});
-            try self.builder.writeLine("$display(\"FSM completed full cycle!\");");
-            try self.builder.newline();
-            
-            // Test pedestrian button if it exists
-            var has_pedestrian = false;
-            for (spec.signals.items) |sig| {
-                if (std.mem.eql(u8, sig.name, "pedestrian_button")) {
-                    has_pedestrian = true;
-                    break;
-                }
-            }
-            
-            if (has_pedestrian) {
-                try self.builder.writeLine("// Test pedestrian button interrupt");
-                try self.builder.writeLine("$display(\"Testing pedestrian button...\");");
-                try self.builder.writeLine("wait(dut.state == dut.GREEN);");
-                try self.builder.writeLine("#50;");
-                try self.builder.writeLine("pedestrian_button = 1;");
-                try self.builder.writeLine("$display(\"  Pedestrian button pressed at time %0t\", $time);");
-                try self.builder.writeLine("#20;");
-                try self.builder.writeLine("pedestrian_button = 0;");
-                try self.builder.writeLine("wait(dut.state == dut.YELLOW);");
-                try self.builder.writeLine("$display(\"  -> Transition to YELLOW confirmed!\");");
-                try self.builder.newline();
-            }
-        } else {
-            try self.builder.writeLine("// Test 1: Basic operation");
-            try self.builder.writeLine("$display(\"Test 1: Basic operation\");");
-            try self.builder.writeLine("#100;");
-            try self.builder.newline();
-        }
+        try self.builder.writeLine("// Test 1: Basic operation");
+        try self.builder.writeLine("$display(\"Test 1: Basic operation\");");
+        try self.builder.writeLine("data_in = 32'h12345678;");
+        try self.builder.writeLine("valid_in = 1;");
+        try self.builder.writeLine("@(posedge clk);  // Wait for state transition");
+        try self.builder.writeLine("valid_in = 0;");
+        try self.builder.writeLine("repeat(5) @(posedge clk);  // Wait for state machine to complete");
+        try self.builder.newline();
+        
+        try self.builder.writeLine("// Check output (valid_out or data changed)");
+        try self.builder.writeLine("if (valid_out || data_out != 32'd0)");
+        self.builder.incIndent();
+        try self.builder.writeLine("$display(\"  PASS: Output valid=%b, data = %h\", valid_out, data_out);");
+        self.builder.decIndent();
+        try self.builder.writeLine("else");
+        self.builder.incIndent();
+        try self.builder.writeLine("$display(\"  FAIL: Output not valid\");");
+        self.builder.decIndent();
+        try self.builder.newline();
         
         try self.builder.writeLine("// Golden identity verification");
         try self.builder.writeLine("$display(\"Golden Identity: φ² + 1/φ² = 3 ✓\");");
@@ -3139,8 +2146,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.newline();
         
         try self.builder.writeLine("$display(\"═══════════════════════════════════════════════════════════════\");");
-        try self.builder.writeLine("$display(\"Simulation complete at time %0t\", $time);");
-        try self.builder.writeFmt("$display(\"VCD file generated: {s}.vcd\");\n", .{spec.name});
+        try self.builder.writeLine("$display(\"Testbench complete\");");
         try self.builder.writeLine("$finish;");
         self.builder.decIndent();
         try self.builder.writeLine("end");
@@ -3201,490 +2207,6 @@ pub fn generateVerilog(allocator: Allocator, spec: *const VibeeSpec) ![]const u8
     
     const output = try codegen.generate(spec);
     return try allocator.dupe(u8, output);
-}
-
-/// Генерация Xilinx XDC constraints файла
-pub fn generateXDC(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
-    var builder = VerilogBuilder.init(allocator);
-    defer builder.deinit();
-    
-    // Header
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeFmt("# {s} - Xilinx Design Constraints (XDC)\n", .{spec.name});
-    try builder.writeLine("# Generated by VIBEE - φ² + 1/φ² = 3");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    // Clock constraint
-    var clock_freq: f64 = 50_000_000.0; // Default 50 MHz
-    for (spec.constants.items) |constant| {
-        if (std.mem.eql(u8, constant.name, "CLOCK_FREQ")) {
-            clock_freq = constant.value;
-            break;
-        }
-    }
-    const clock_period_ns: i64 = @intFromFloat(1_000_000_000.0 / clock_freq);
-    const clock_freq_mhz: i64 = @intFromFloat(clock_freq / 1_000_000.0);
-    
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# CLOCK CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("# Clock period: {d} ns ({d} MHz)\n", .{ clock_period_ns, clock_freq_mhz });
-    try builder.writeFmt("create_clock -period {d} -name sys_clk [get_ports clk]\n", .{clock_period_ns});
-    try builder.newline();
-    
-    // Input/Output delays
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# I/O TIMING CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    const setup_time: i64 = @divTrunc(clock_period_ns, 10); // 10% of period
-    const hold_time: i64 = @divTrunc(clock_period_ns, 20); // 5% of period
-    
-    // Input delays
-    try builder.writeLine("# Input delays (relative to clock)");
-    for (spec.signals.items) |sig| {
-        if (std.mem.eql(u8, sig.direction, "input")) {
-            if (!std.mem.eql(u8, sig.name, "clk")) {
-                try builder.writeFmt("set_input_delay -clock sys_clk -max {d} [get_ports {s}]\n", .{ setup_time, sig.name });
-                try builder.writeFmt("set_input_delay -clock sys_clk -min {d} [get_ports {s}]\n", .{ hold_time, sig.name });
-            }
-        }
-    }
-    try builder.newline();
-    
-    // Output delays
-    try builder.writeLine("# Output delays (relative to clock)");
-    for (spec.signals.items) |sig| {
-        if (std.mem.eql(u8, sig.direction, "output")) {
-            try builder.writeFmt("set_output_delay -clock sys_clk -max {d} [get_ports {s}]\n", .{ setup_time, sig.name });
-            try builder.writeFmt("set_output_delay -clock sys_clk -min {d} [get_ports {s}]\n", .{ hold_time, sig.name });
-        }
-    }
-    try builder.newline();
-    
-    // False paths for async signals
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# FALSE PATHS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("# Reset is asynchronous");
-    try builder.writeLine("set_false_path -from [get_ports rst_n]");
-    try builder.newline();
-    
-    // Pin assignments placeholder
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# PIN ASSIGNMENTS (customize for your board)");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("# Example for Artix-7 (uncomment and modify):");
-    try builder.writeLine("# set_property PACKAGE_PIN W5 [get_ports clk]");
-    try builder.writeLine("# set_property IOSTANDARD LVCMOS33 [get_ports clk]");
-    try builder.newline();
-    
-    for (spec.signals.items) |sig| {
-        if (std.mem.eql(u8, sig.direction, "reg") or std.mem.eql(u8, sig.direction, "wire")) {
-            continue;
-        }
-        try builder.writeFmt("# set_property PACKAGE_PIN ?? [get_ports {s}]\n", .{sig.name});
-        try builder.writeFmt("# set_property IOSTANDARD LVCMOS33 [get_ports {s}]\n", .{sig.name});
-    }
-    try builder.newline();
-    
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# END OF CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    
-    return try allocator.dupe(u8, builder.getOutput());
-}
-
-/// Генерация Intel/Altera SDC constraints файла
-pub fn generateSDC(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
-    var builder = VerilogBuilder.init(allocator);
-    defer builder.deinit();
-    
-    // Header
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeFmt("# {s} - Synopsys Design Constraints (SDC)\n", .{spec.name});
-    try builder.writeLine("# For Intel/Altera Quartus");
-    try builder.writeLine("# Generated by VIBEE - φ² + 1/φ² = 3");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    // Clock constraint
-    var clock_freq: f64 = 50_000_000.0; // Default 50 MHz
-    for (spec.constants.items) |constant| {
-        if (std.mem.eql(u8, constant.name, "CLOCK_FREQ")) {
-            clock_freq = constant.value;
-            break;
-        }
-    }
-    const clock_period_ns: i64 = @intFromFloat(1_000_000_000.0 / clock_freq);
-    const clock_freq_mhz: i64 = @intFromFloat(clock_freq / 1_000_000.0);
-    
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# CLOCK CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("# Clock frequency: {d} MHz (period: {d} ns)\n", .{ clock_freq_mhz, clock_period_ns });
-    try builder.writeFmt("create_clock -name \"sys_clk\" -period {d} [get_ports {{clk}}]\n", .{clock_period_ns});
-    try builder.newline();
-    
-    // Derive PLL clocks
-    try builder.writeLine("# Derive PLL clocks (if using PLL)");
-    try builder.writeLine("derive_pll_clocks");
-    try builder.newline();
-    
-    // Clock uncertainty
-    try builder.writeLine("# Clock uncertainty");
-    try builder.writeLine("derive_clock_uncertainty");
-    try builder.newline();
-    
-    // Input/Output delays
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# I/O TIMING CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    const setup_time_sdc: i64 = @divTrunc(clock_period_ns, 10);
-    const hold_time_sdc: i64 = @divTrunc(clock_period_ns, 20);
-    
-    // Input delays
-    try builder.writeLine("# Input delays");
-    for (spec.signals.items) |sig| {
-        if (std.mem.eql(u8, sig.direction, "input")) {
-            if (!std.mem.eql(u8, sig.name, "clk")) {
-                try builder.writeFmt("set_input_delay -clock sys_clk -max {d} [get_ports {{{s}}}]\n", .{ setup_time_sdc, sig.name });
-                try builder.writeFmt("set_input_delay -clock sys_clk -min {d} [get_ports {{{s}}}]\n", .{ hold_time_sdc, sig.name });
-            }
-        }
-    }
-    try builder.newline();
-    
-    // Output delays
-    try builder.writeLine("# Output delays");
-    for (spec.signals.items) |sig| {
-        if (std.mem.eql(u8, sig.direction, "output")) {
-            try builder.writeFmt("set_output_delay -clock sys_clk -max {d} [get_ports {{{s}}}]\n", .{ setup_time_sdc, sig.name });
-            try builder.writeFmt("set_output_delay -clock sys_clk -min {d} [get_ports {{{s}}}]\n", .{ hold_time_sdc, sig.name });
-        }
-    }
-    try builder.newline();
-    
-    // False paths
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# FALSE PATHS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("# Asynchronous reset");
-    try builder.writeLine("set_false_path -from [get_ports {rst_n}]");
-    try builder.newline();
-    
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# END OF CONSTRAINTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    
-    return try allocator.dupe(u8, builder.getOutput());
-}
-
-/// Генерация Vivado TCL скрипта для синтеза и имплементации
-pub fn generateVivadoTCL(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
-    var builder = VerilogBuilder.init(allocator);
-    defer builder.deinit();
-    
-    // Header
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeFmt("# {s} - Vivado Build Script\n", .{spec.name});
-    try builder.writeLine("# Generated by VIBEE - φ² + 1/φ² = 3");
-    try builder.writeLine("# Usage: vivado -mode batch -source build.tcl");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    // Project settings
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# PROJECT SETTINGS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("set project_name \"{s}\"\n", .{spec.name});
-    try builder.writeLine("set part_number \"xc7a35tcpg236-1\"  ;# Artix-7 (modify for your board)");
-    try builder.writeLine("set top_module \"${project_name}_top\"");
-    try builder.newline();
-    
-    // Create project
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# CREATE PROJECT");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("create_project ${project_name} ./vivado_project -part ${part_number} -force");
-    try builder.writeLine("set_property target_language Verilog [current_project]");
-    try builder.newline();
-    
-    // Add sources
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# ADD SOURCE FILES");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("add_files -norecurse {s}.v\n", .{spec.name});
-    try builder.writeFmt("add_files -fileset constrs_1 -norecurse {s}.xdc\n", .{spec.name});
-    try builder.writeLine("update_compile_order -fileset sources_1");
-    try builder.newline();
-    
-    // Synthesis
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# SYNTHESIS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("puts \"Starting synthesis...\"");
-    try builder.writeLine("launch_runs synth_1 -jobs 4");
-    try builder.writeLine("wait_on_run synth_1");
-    try builder.newline();
-    try builder.writeLine("if {[get_property PROGRESS [get_runs synth_1]] != \"100%\"} {");
-    try builder.writeLine("    puts \"ERROR: Synthesis failed!\"");
-    try builder.writeLine("    exit 1");
-    try builder.writeLine("}");
-    try builder.writeLine("puts \"Synthesis complete.\"");
-    try builder.newline();
-    
-    // Implementation
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# IMPLEMENTATION");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("puts \"Starting implementation...\"");
-    try builder.writeLine("launch_runs impl_1 -jobs 4");
-    try builder.writeLine("wait_on_run impl_1");
-    try builder.newline();
-    try builder.writeLine("if {[get_property PROGRESS [get_runs impl_1]] != \"100%\"} {");
-    try builder.writeLine("    puts \"ERROR: Implementation failed!\"");
-    try builder.writeLine("    exit 1");
-    try builder.writeLine("}");
-    try builder.writeLine("puts \"Implementation complete.\"");
-    try builder.newline();
-    
-    // Generate bitstream
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# GENERATE BITSTREAM");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("puts \"Generating bitstream...\"");
-    try builder.writeLine("launch_runs impl_1 -to_step write_bitstream -jobs 4");
-    try builder.writeLine("wait_on_run impl_1");
-    try builder.newline();
-    try builder.writeFmt("file copy -force ./vivado_project/{s}.runs/impl_1/${{top_module}}.bit ./{s}.bit\n", .{ spec.name, spec.name });
-    try builder.writeFmt("puts \"Bitstream generated: {s}.bit\"\n", .{spec.name});
-    try builder.newline();
-    
-    // Reports
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# GENERATE REPORTS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("open_run impl_1");
-    try builder.writeFmt("report_utilization -file {s}_utilization.rpt\n", .{spec.name});
-    try builder.writeFmt("report_timing_summary -file {s}_timing.rpt\n", .{spec.name});
-    try builder.writeFmt("report_power -file {s}_power.rpt\n", .{spec.name});
-    try builder.newline();
-    
-    try builder.writeLine("puts \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.writeLine("puts \"BUILD COMPLETE - φ² + 1/φ² = 3\"");
-    try builder.writeLine("puts \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.writeLine("exit 0");
-    
-    return try allocator.dupe(u8, builder.getOutput());
-}
-
-/// Генерация Quartus TCL скрипта
-pub fn generateQuartusTCL(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
-    var builder = VerilogBuilder.init(allocator);
-    defer builder.deinit();
-    
-    // Header
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeFmt("# {s} - Quartus Build Script\n", .{spec.name});
-    try builder.writeLine("# Generated by VIBEE - φ² + 1/φ² = 3");
-    try builder.writeLine("# Usage: quartus_sh -t build_quartus.tcl");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    // Load packages
-    try builder.writeLine("package require ::quartus::project");
-    try builder.writeLine("package require ::quartus::flow");
-    try builder.newline();
-    
-    // Project settings
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# PROJECT SETTINGS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("set project_name \"{s}\"\n", .{spec.name});
-    try builder.writeLine("set family \"Cyclone V\"  ;# Modify for your device");
-    try builder.writeLine("set device \"5CSEMA5F31C6\"  ;# DE1-SoC (modify for your board)");
-    try builder.writeFmt("set top_module \"{s}_top\"\n", .{spec.name});
-    try builder.newline();
-    
-    // Create project
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# CREATE PROJECT");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("if {[project_exists $project_name]} {");
-    try builder.writeLine("    project_open $project_name");
-    try builder.writeLine("} else {");
-    try builder.writeLine("    project_new $project_name");
-    try builder.writeLine("}");
-    try builder.newline();
-    
-    // Set device
-    try builder.writeLine("set_global_assignment -name FAMILY $family");
-    try builder.writeLine("set_global_assignment -name DEVICE $device");
-    try builder.writeLine("set_global_assignment -name TOP_LEVEL_ENTITY $top_module");
-    try builder.writeLine("set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files");
-    try builder.newline();
-    
-    // Add sources
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# ADD SOURCE FILES");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeFmt("set_global_assignment -name VERILOG_FILE {s}.v\n", .{spec.name});
-    try builder.writeFmt("set_global_assignment -name SDC_FILE {s}.sdc\n", .{spec.name});
-    try builder.newline();
-    
-    // Compile
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# COMPILE");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("puts \"Starting compilation...\"");
-    try builder.newline();
-    try builder.writeLine("if {[catch {execute_flow -compile} result]} {");
-    try builder.writeLine("    puts \"ERROR: Compilation failed!\"");
-    try builder.writeLine("    puts $result");
-    try builder.writeLine("    project_close");
-    try builder.writeLine("    exit 1");
-    try builder.writeLine("}");
-    try builder.newline();
-    
-    try builder.writeLine("puts \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.writeLine("puts \"BUILD COMPLETE - φ² + 1/φ² = 3\"");
-    try builder.writeFmt("puts \"Output: output_files/{s}.sof\"\n", .{spec.name});
-    try builder.writeLine("puts \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.newline();
-    
-    try builder.writeLine("project_close");
-    try builder.writeLine("exit 0");
-    
-    return try allocator.dupe(u8, builder.getOutput());
-}
-
-/// Генерация Makefile для полного flow
-pub fn generateMakefile(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
-    var builder = VerilogBuilder.init(allocator);
-    defer builder.deinit();
-    
-    // Header
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeFmt("# {s} - FPGA Build Makefile\n", .{spec.name});
-    try builder.writeLine("# Generated by VIBEE - φ² + 1/φ² = 3");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    
-    // Variables
-    try builder.writeFmt("PROJECT = {s}\n", .{spec.name});
-    try builder.writeLine("TOP = $(PROJECT)_top");
-    try builder.writeLine("VERILOG = $(PROJECT).v");
-    try builder.writeLine("XDC = $(PROJECT).xdc");
-    try builder.writeLine("SDC = $(PROJECT).sdc");
-    try builder.newline();
-    
-    // Tool paths
-    try builder.writeLine("# Tool paths (modify as needed)");
-    try builder.writeLine("VIVADO = vivado");
-    try builder.writeLine("QUARTUS = quartus_sh");
-    try builder.writeLine("IVERILOG = iverilog");
-    try builder.writeLine("VVP = vvp");
-    try builder.writeLine("GTKWAVE = gtkwave");
-    try builder.newline();
-    
-    // Default target
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# TARGETS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine(".PHONY: all sim vivado quartus clean help");
-    try builder.newline();
-    try builder.writeLine("all: sim");
-    try builder.newline();
-    
-    // Help
-    try builder.writeLine("help:");
-    try builder.writeLine("\t@echo \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.writeLine("\t@echo \"$(PROJECT) - FPGA Build System\"");
-    try builder.writeLine("\t@echo \"═══════════════════════════════════════════════════════════════════════════════\"");
-    try builder.writeLine("\t@echo \"\"");
-    try builder.writeLine("\t@echo \"Targets:\"");
-    try builder.writeLine("\t@echo \"  sim      - Run simulation (iverilog + vvp)\"");
-    try builder.writeLine("\t@echo \"  wave     - View waveforms (gtkwave)\"");
-    try builder.writeLine("\t@echo \"  vivado   - Build for Xilinx (Vivado)\"");
-    try builder.writeLine("\t@echo \"  quartus  - Build for Intel (Quartus)\"");
-    try builder.writeLine("\t@echo \"  clean    - Remove generated files\"");
-    try builder.writeLine("\t@echo \"\"");
-    try builder.writeLine("\t@echo \"Sacred Formula: φ² + 1/φ² = 3\"");
-    try builder.newline();
-    
-    // Simulation
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# SIMULATION");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("sim: $(PROJECT)_sim");
-    try builder.writeLine("\t$(VVP) $(PROJECT)_sim");
-    try builder.newline();
-    try builder.writeLine("$(PROJECT)_sim: $(VERILOG)");
-    try builder.writeLine("\t$(IVERILOG) -o $@ $<");
-    try builder.newline();
-    try builder.writeLine("wave: sim");
-    try builder.writeLine("\t$(GTKWAVE) $(PROJECT).vcd &");
-    try builder.newline();
-    
-    // Vivado
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# XILINX VIVADO");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("vivado: $(VERILOG) $(XDC)");
-    try builder.writeLine("\t$(VIVADO) -mode batch -source build_vivado.tcl");
-    try builder.newline();
-    
-    // Quartus
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# INTEL QUARTUS");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("quartus: $(VERILOG) $(SDC)");
-    try builder.writeLine("\t$(QUARTUS) -t build_quartus.tcl");
-    try builder.newline();
-    
-    // Clean
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# CLEAN");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.newline();
-    try builder.writeLine("clean:");
-    try builder.writeLine("\trm -f $(PROJECT)_sim $(PROJECT).vcd");
-    try builder.writeLine("\trm -rf vivado_project");
-    try builder.writeLine("\trm -rf db incremental_db output_files");
-    try builder.writeLine("\trm -f *.rpt *.bit *.sof *.qpf *.qsf");
-    try builder.writeLine("\t@echo \"Clean complete.\"");
-    try builder.newline();
-    
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    try builder.writeLine("# END OF MAKEFILE");
-    try builder.writeLine("# ═══════════════════════════════════════════════════════════════════════════════");
-    
-    return try allocator.dupe(u8, builder.getOutput());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

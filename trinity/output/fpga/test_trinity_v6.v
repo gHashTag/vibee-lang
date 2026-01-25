@@ -56,12 +56,18 @@ module test_trinity_v6;
     
     // Clock Generation: 100 MHz
     initial begin
+        // VCD waveform generation
+        $dumpfile("test_trinity_v6.vcd");
+        $dumpvars(0, test_trinity_v6_tb);
         clk = 0;
         forever #5 clk = ~clk;
     end
     
     // Test Sequence
     initial begin
+        // VCD waveform generation
+        $dumpfile("test_trinity_v6.vcd");
+        $dumpvars(0, test_trinity_v6_tb);
         $display("═══════════════════════════════════════════════════════════════════════════════");
         $display("                    TRINITY FPGA v6.0 E2E TEST SUITE");
         $display("                    φ² + 1/φ² = 3 | PHOENIX = 999");

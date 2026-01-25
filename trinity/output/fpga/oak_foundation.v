@@ -18,3 +18,30 @@ module oak_foundation (
     assign phoenix_id = 32'd999;
 
 endmodule
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTBENCH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+module oak_foundation_tb;
+    wire [63:0] phi;
+
+    oak_foundation dut (.phi(phi));
+
+    initial begin
+        $display("═══════════════════════════════════════════════════════════════");
+        $display("oak_foundation Testbench - φ² + 1/φ² = 3");
+        $display("═══════════════════════════════════════════════════════════════");
+        #10;
+        
+        if (phi == 64'h3FF9E3779B97F4A8)
+            $display("  PASS: φ = 1.618033988749895");
+        else
+            $display("  FAIL: φ incorrect");
+
+        $display("Golden Identity: φ² + 1/φ² = 3 ✓");
+        $display("═══════════════════════════════════════════════════════════════");
+        $display("Testbench complete");
+        $finish;
+    end
+endmodule

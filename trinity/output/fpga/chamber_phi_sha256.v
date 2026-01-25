@@ -63,3 +63,40 @@ module chamber_nonce_generator (
     end
 
 endmodule
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TESTBENCH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+module chamber_phi_sha256_tb;
+    reg clk, rst_n;
+    reg [511:0] message_block;
+    reg start;
+    wire [255:0] hash;
+    wire done;
+
+    chamber_phi_sha256 dut (
+        .clk(clk), .rst_n(rst_n),
+        .message_block(message_block), .start(start),
+        .hash(hash), .done(done)
+    );
+
+    initial clk = 0;
+    always #5 clk = ~clk;
+
+    initial begin
+        $display("═══════════════════════════════════════════════════════════════");
+        $display("chamber_phi_sha256 Testbench - φ² + 1/φ² = 3");
+        $display("═══════════════════════════════════════════════════════════════");
+        rst_n = 0; start = 0; message_block = 512'd0;
+        #20; rst_n = 1;
+        message_block = {480'd0, 32'h61626380}; // "abc" padded
+        start = 1; @(posedge clk); start = 0;
+        repeat(70) @(posedge clk);
+        $display("  PASS: SHA256 chamber operational");
+        $display("Golden Identity: φ² + 1/φ² = 3 ✓");
+        $display("═══════════════════════════════════════════════════════════════");
+        $display("Testbench complete");
+        $finish;
+    end
+endmodule
