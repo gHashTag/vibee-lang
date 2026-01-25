@@ -1,170 +1,715 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# MESSAGE HANDLER - Main message routing
-# ═══════════════════════════════════════════════════════════════════════════════
-# Routes all incoming messages to appropriate handlers
-# φ² + 1/φ² = 3 | PHOENIX = 999
-# ═══════════════════════════════════════════════════════════════════════════════
-
 name: message_handler
 version: "2.0.0"
 language: zig
 module: message_handler
 
 description: |
-  Main message handler for Telegram bot.
-  Routes messages based on:
-  - Commands (/start, /menu, /balance)
-  - Menu buttons (ReplyKeyboard)
-  - Scene input (prompts, photos)
+  Main message handler for VIBEE Telegram bot.
+  Routes all incoming messages to appropriate handlers.
+  Connects scenes, services, and database layers.
 
 imports:
   - ../navigation/unified_navigation
   - ../menu/reply_keyboard
+  - ../scenes/neuro_photo_wizard
+  - ../scenes/text_to_video_wizard
+  - ../scenes/image_to_video_wizard
   - ../services/replicate_api
+  - ../db/user_repository
+  - ../db/generation_repository
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
-  UserState:
-    fields:
-      chat_id: Int
-      menu: String
-      scene: String
-      lang: String
-      balance: Int
-      prompt: Option<String>
-
   MessageContext:
+    description: "Incoming message context"
     fields:
       chat_id: Int
-      text: String
-      photo: Option<String>
-      voice: Option<String>
-      video: Option<String>
+      user_id: Int
+      message_id: Int
+      text: Option<String>
+      photo: Option<PhotoInfo>
+      voice: Option<VoiceInfo>
+      video: Option<VideoInfo>
+      document: Option<DocumentInfo>
+      from: UserInfo
+      reply_to: Option<Int>
+
+  UserInfo:
+    description: "Telegram user info"
+    fields:
+      id: Int
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+      language_code: Option<String>
+      is_premium: Bool
+
+  PhotoInfo:
+    description: "Photo message info"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      file_size: Option<Int>
+
+  VoiceInfo:
+    description: "Voice message info"
+    fields:
+      file_id: String
+      duration: Int
+      mime_type: Option<String>
+
+  VideoInfo:
+    description: "Video message info"
+    fields:
+      file_id: String
+      duration: Int
+      width: Int
+      height: Int
+
+  DocumentInfo:
+    description: "Document message info"
+    fields:
+      file_id: String
+      file_name: Option<String>
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  UserSession:
+    description: "User session state"
+    fields:
+      telegram_id: Int
+      current_menu: String
+      current_scene: Option<String>
+      scene_step: Option<Int>
+      scene_data: Option<Object>
+      language: String
+      balance: Int
+      last_activity: Timestamp
 
   HandlerResult:
+    description: "Handler execution result"
     fields:
       success: Bool
       response_text: Option<String>
-      keyboard: Option<String>
-      photo_url: Option<String>
+      response_photo: Option<String>
+      response_video: Option<String>
+      keyboard: Option<Object>
+      edit_message: Bool
+      delete_message: Bool
+      next_scene: Option<String>
+      next_step: Option<Int>
+
+  RouteMatch:
+    description: "Route matching result"
+    fields:
+      route_type: RouteType
+      handler_name: String
+      params: Option<Object>
+
+  RouteType:
+    description: "Route type enum"
+    values:
+      - command
+      - menu_button
+      - scene_input
+      - media_upload
+      - unknown
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTING TABLE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+routes:
+  commands:
+    "/start": handle_start
+    "/menu": handle_menu
+    "/balance": handle_balance
+    "/help": handle_help
+    "/settings": handle_settings
+    "/language": handle_language
+    "/support": handle_support
+    "/cancel": handle_cancel
+
+  main_menu:
+    "📸 Нейрофото": enter_photo_menu
+    "📸 Neuro Photo": enter_photo_menu
+    "🎥 Видео": enter_video_menu
+    "🎥 Video": enter_video_menu
+    "🎤 Аудио": enter_audio_menu
+    "🎤 Audio": enter_audio_menu
+    "🤖 Аватар": enter_avatar_menu
+    "🤖 Avatar": enter_avatar_menu
+    "🛠 Инструменты": enter_tools_menu
+    "🛠 Tools": enter_tools_menu
+    "💰 Баланс": show_balance
+    "💰 Balance": show_balance
+    "💎 Пополнить": show_topup
+    "💎 Top Up": show_topup
+    "💬 Поддержка": show_support
+    "💬 Support": show_support
+    "🌐 EN": switch_to_english
+    "🌐 RU": switch_to_russian
+
+  photo_menu:
+    "✨ Нейрофото": start_neuro_photo
+    "✨ Neuro Photo": start_neuro_photo
+    "🔍 Промпт из фото": start_prompt_from_photo
+    "🔍 Prompt from Photo": start_prompt_from_photo
+    "🎭 Замена лица": start_face_swap
+    "🎭 Face Swap": start_face_swap
+    "⬆️ Апскейл": start_upscale
+    "⬆️ Upscale": start_upscale
+    "◀️ Назад": back_to_main
+    "◀️ Back": back_to_main
+
+  video_menu:
+    "🎥 Фото в видео": start_image_to_video
+    "🎥 Photo to Video": start_image_to_video
+    "🎬 Текст в видео": start_text_to_video
+    "🎬 Text to Video": start_text_to_video
+    "👄 Lip Sync": start_lip_sync
+    "◀️ Назад": back_to_main
+    "◀️ Back": back_to_main
+
+  audio_menu:
+    "🎤 Голос аватара": start_voice_clone
+    "🎤 Avatar Voice": start_voice_clone
+    "🎙️ Текст в голос": start_text_to_speech
+    "🎙️ Text to Speech": start_text_to_speech
+    "◀️ Назад": back_to_main
+    "◀️ Back": back_to_main
+
+  avatar_menu:
+    "🤖 Цифровое тело": start_digital_body
+    "🤖 Digital Body": start_digital_body
+    "🧠 Мозг аватара": start_avatar_brain
+    "🧠 Avatar Brain": start_avatar_brain
+    "💬 Чат": start_avatar_chat
+    "💬 Chat": start_avatar_chat
+    "◀️ Назад": back_to_main
+    "◀️ Back": back_to_main
+
+  scene_handlers:
+    neuro_photo: handle_neuro_photo_input
+    text_to_video: handle_text_to_video_input
+    image_to_video: handle_image_to_video_input
+    face_swap: handle_face_swap_input
+    upscale: handle_upscale_input
+    voice_clone: handle_voice_clone_input
+    text_to_speech: handle_tts_input
+    lip_sync: handle_lip_sync_input
+    digital_body: handle_digital_body_input
+    avatar_brain: handle_avatar_brain_input
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAIN ROUTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_message
+    given: MessageContext
+    when: Any message received
+    then: |
+      1. Get or create user session
+      2. Match route (command > menu > scene > unknown)
+      3. Execute matched handler
+      4. Update session state
+      5. Return HandlerResult
+
+  - name: match_route
+    given: MessageContext and UserSession
+    when: Determining handler
+    then: |
+      1. If text starts with "/" -> command route
+      2. If text matches menu button -> menu route
+      3. If user in scene -> scene route
+      4. If photo/video/voice -> media route
+      5. Else -> unknown route
+
+  - name: execute_handler
+    given: RouteMatch and MessageContext
+    when: Running handler
+    then: |
+      1. Load handler by name
+      2. Execute with context
+      3. Handle errors
+      4. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # COMMAND HANDLERS
-  # ═══════════════════════════════════════════════════════════════════════════
-  
+  # ─────────────────────────────────────────────────────────────────────────────
+
   - name: handle_start
-    given: /start command
+    given: /start command with optional referral code
     when: User starts bot
     then: |
-      1. Reset user state
-      2. Send welcome message
-      3. Show main menu (ReplyKeyboard)
+      1. Create or update user in DB
+      2. Process referral if present
+      3. Reset session to main menu
+      4. Send welcome message
+      5. Show main menu keyboard
 
   - name: handle_menu
     given: /menu command
     when: User requests menu
-    then: Show main menu with categories
+    then: |
+      1. Reset scene state
+      2. Set menu to main
+      3. Show main menu keyboard
 
   - name: handle_balance
     given: /balance command
     when: User checks balance
-    then: Return current star balance
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # MENU BUTTON HANDLERS
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: handle_category_button
-    given: Category button text (📸 Нейрофото, 🎥 Видео, etc.)
-    when: User selects category
     then: |
-      1. Update user menu state
-      2. Show submenu with functions
+      1. Get balance from DB
+      2. Get spending stats
+      3. Format balance message
+      4. Send with topup button
 
-  - name: handle_function_button
-    given: Function button text (✨ Нейрофото, 🎥 Фото в видео, etc.)
-    when: User selects function
+  - name: handle_help
+    given: /help command
+    when: User requests help
     then: |
-      1. Check balance
-      2. Set scene
-      3. Request input (prompt/photo)
+      1. Get user language
+      2. Send help message
+      3. Show support contact
 
-  - name: handle_back_button
-    given: ◀️ Назад / ◀️ Back button
+  - name: handle_settings
+    given: /settings command
+    when: User opens settings
+    then: |
+      1. Show language option
+      2. Show notification settings
+      3. Show account info
+
+  - name: handle_language
+    given: /language command
+    when: User changes language
+    then: |
+      1. Toggle language (ru <-> en)
+      2. Update user in DB
+      3. Refresh current menu
+
+  - name: handle_support
+    given: /support command
+    when: User needs support
+    then: |
+      1. Show support message
+      2. Provide contact info
+
+  - name: handle_cancel
+    given: /cancel command
+    when: User cancels current action
+    then: |
+      1. Clear scene state
+      2. Return to main menu
+      3. Send cancellation message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MENU NAVIGATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enter_photo_menu
+    given: Photo category button
+    when: User enters photo menu
+    then: |
+      1. Set current_menu to "photo"
+      2. Show photo submenu keyboard
+
+  - name: enter_video_menu
+    given: Video category button
+    when: User enters video menu
+    then: |
+      1. Set current_menu to "video"
+      2. Show video submenu keyboard
+
+  - name: enter_audio_menu
+    given: Audio category button
+    when: User enters audio menu
+    then: |
+      1. Set current_menu to "audio"
+      2. Show audio submenu keyboard
+
+  - name: enter_avatar_menu
+    given: Avatar category button
+    when: User enters avatar menu
+    then: |
+      1. Set current_menu to "avatar"
+      2. Show avatar submenu keyboard
+
+  - name: enter_tools_menu
+    given: Tools category button
+    when: User enters tools menu
+    then: |
+      1. Set current_menu to "tools"
+      2. Show tools submenu keyboard
+
+  - name: back_to_main
+    given: Back button
     when: User goes back
-    then: Return to main menu
-
-  - name: handle_language_switch
-    given: 🌐 EN or 🌐 RU button
-    when: User switches language
     then: |
-      1. Update user lang
-      2. Refresh current menu in new language
+      1. Clear scene state
+      2. Set current_menu to "main"
+      3. Show main menu keyboard
 
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCENE STARTERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_neuro_photo
+    given: Neuro photo button
+    when: User starts neuro photo
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "neuro_photo"
+      3. Set step to 1 (model selection)
+      4. Show model selection keyboard
+
+  - name: start_text_to_video
+    given: Text to video button
+    when: User starts text to video
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "text_to_video"
+      3. Set step to 1 (model selection)
+      4. Show model selection keyboard
+
+  - name: start_image_to_video
+    given: Image to video button
+    when: User starts image to video
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "image_to_video"
+      3. Set step to 1 (photo upload)
+      4. Request photo upload
+
+  - name: start_face_swap
+    given: Face swap button
+    when: User starts face swap
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "face_swap"
+      3. Request source photo
+
+  - name: start_upscale
+    given: Upscale button
+    when: User starts upscale
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "upscale"
+      3. Request photo to upscale
+
+  - name: start_voice_clone
+    given: Voice clone button
+    when: User starts voice clone
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "voice_clone"
+      3. Request voice sample
+
+  - name: start_text_to_speech
+    given: TTS button
+    when: User starts TTS
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "text_to_speech"
+      3. Request text input
+
+  - name: start_lip_sync
+    given: Lip sync button
+    when: User starts lip sync
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "lip_sync"
+      3. Request video upload
+
+  - name: start_digital_body
+    given: Digital body button
+    when: User starts avatar training
+    then: |
+      1. Check balance >= cost
+      2. Set scene to "digital_body"
+      3. Request photos for training
+
+  - name: start_avatar_brain
+    given: Avatar brain button
+    when: User configures avatar AI
+    then: |
+      1. Set scene to "avatar_brain"
+      2. Show brain configuration
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # SCENE INPUT HANDLERS
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────────────────
 
-  - name: handle_prompt_input
-    given: Text message while in prompt scene
-    when: User sends prompt for generation
+  - name: handle_neuro_photo_input
+    given: Input while in neuro_photo scene
+    when: User provides scene input
     then: |
-      1. Validate prompt
-      2. Check balance
-      3. Call AI generation
-      4. Send result photo
-      5. Deduct balance
+      1. Get current step
+      2. Validate input for step
+      3. Process step (model/prompt/size)
+      4. If complete -> generate image
+      5. Advance to next step or complete
 
-  - name: handle_photo_input
-    given: Photo message while in photo scene
-    when: User sends photo for processing
+  - name: handle_text_to_video_input
+    given: Input while in text_to_video scene
+    when: User provides scene input
     then: |
-      1. Download photo
-      2. Check balance
-      3. Call appropriate AI service
-      4. Send result
-      5. Deduct balance
+      1. Get current step
+      2. Validate input for step
+      3. Process step (model/prompt/duration)
+      4. If complete -> generate video
+      5. Advance to next step or complete
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # ROUTING
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - name: route_message
-    given: Incoming message
-    when: Message received
+  - name: handle_image_to_video_input
+    given: Input while in image_to_video scene
+    when: User provides scene input
     then: |
-      1. Check if command -> handle_command
-      2. Check if menu button -> handle_menu_button
-      3. Check if in scene -> handle_scene_input
-      4. Else -> show help
+      1. Get current step
+      2. Validate input for step
+      3. Process step (photo/prompt/duration)
+      4. If complete -> animate image
+      5. Advance to next step or complete
 
-  - name: get_user_state
-    given: Chat ID
-    when: Need user context
-    then: Return UserState from storage or create default
+  - name: handle_face_swap_input
+    given: Input while in face_swap scene
+    when: User provides photos
+    then: |
+      1. Collect source and target photos
+      2. Validate faces detected
+      3. Process face swap
+      4. Return result
 
-  - name: update_user_state
-    given: Chat ID and new state
-    when: State changes
-    then: Save to storage
+  - name: handle_upscale_input
+    given: Input while in upscale scene
+    when: User provides photo
+    then: |
+      1. Validate photo
+      2. Process upscale
+      3. Return enhanced image
 
-test_cases:
-  - name: test_start_command
-    input: {text: "/start"}
-    expected: {menu: "main", keyboard: true}
+  - name: handle_voice_clone_input
+    given: Input while in voice_clone scene
+    when: User provides voice sample
+    then: |
+      1. Validate audio
+      2. Clone voice
+      3. Return voice ID
 
-  - name: test_photo_category
-    input: {text: "📸 Нейрофото"}
-    expected: {menu: "photo"}
+  - name: handle_tts_input
+    given: Input while in text_to_speech scene
+    when: User provides text
+    then: |
+      1. Validate text
+      2. Generate speech
+      3. Return audio
 
-  - name: test_back_to_main
-    input: {text: "◀️ Назад", current_menu: "photo"}
-    expected: {menu: "main"}
+  - name: handle_lip_sync_input
+    given: Input while in lip_sync scene
+    when: User provides video and audio
+    then: |
+      1. Validate media
+      2. Process lip sync
+      3. Return synced video
 
-  - name: test_prompt_in_scene
-    input: {text: "a cat in space", scene: "neuro_photo"}
-    expected: {generates: true}
+  - name: handle_digital_body_input
+    given: Input while in digital_body scene
+    when: User provides training photos
+    then: |
+      1. Collect photos (10-20)
+      2. Validate quality
+      3. Start training
+      4. Track progress
 
-  - name: test_insufficient_balance
-    input: {balance: 5, cost: 50}
-    expected: {error: "insufficient_balance"}
+  - name: handle_avatar_brain_input
+    given: Input while in avatar_brain scene
+    when: User configures AI
+    then: |
+      1. Process configuration
+      2. Save settings
+      3. Confirm setup
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: show_balance
+    given: Balance button
+    when: User checks balance
+    then: Same as handle_balance
+
+  - name: show_topup
+    given: Top up button
+    when: User wants to add funds
+    then: |
+      1. Show payment options
+      2. Generate invoice buttons
+
+  - name: show_support
+    given: Support button
+    when: User needs help
+    then: Same as handle_support
+
+  - name: switch_to_english
+    given: EN button
+    when: User switches to English
+    then: |
+      1. Set language to "en"
+      2. Update DB
+      3. Refresh menu
+
+  - name: switch_to_russian
+    given: RU button
+    when: User switches to Russian
+    then: |
+      1. Set language to "ru"
+      2. Update DB
+      3. Refresh menu
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_session
+    given: Telegram ID
+    when: Loading user session
+    then: |
+      1. Check memory cache
+      2. If not found, load from DB
+      3. Create default if new user
+      4. Return UserSession
+
+  - name: save_session
+    given: UserSession
+    when: Persisting session
+    then: |
+      1. Update memory cache
+      2. Persist to DB (async)
+
+  - name: clear_scene
+    given: UserSession
+    when: Exiting scene
+    then: |
+      1. Set current_scene to null
+      2. Set scene_step to null
+      3. Clear scene_data
+
+  - name: advance_scene_step
+    given: UserSession
+    when: Moving to next step
+    then: |
+      1. Increment scene_step
+      2. Save session
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_insufficient_balance
+    given: Required cost
+    when: Balance too low
+    then: |
+      1. Send insufficient balance message
+      2. Show current balance
+      3. Offer top up option
+
+  - name: handle_unknown_message
+    given: Unrecognized input
+    when: No route matched
+    then: |
+      1. Send help hint
+      2. Show current menu
+
+  - name: handle_error
+    given: Error during processing
+    when: Handler fails
+    then: |
+      1. Log error
+      2. Send user-friendly message
+      3. Offer retry or cancel
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_LANGUAGE: "ru"
+  DEFAULT_MENU: "main"
+  SESSION_TTL_SECONDS: 3600
+  MAX_PROMPT_LENGTH: 2000
+  MIN_PROMPT_LENGTH: 3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  welcome:
+    ru: |
+      👋 Добро пожаловать в VIBEE!
+      
+      Я помогу создать:
+      📸 Нейрофото с AI
+      🎥 Видео из текста и фото
+      🎤 Клонирование голоса
+      🤖 Цифрового аватара
+      
+      Выберите категорию в меню ниже 👇
+    en: |
+      👋 Welcome to VIBEE!
+      
+      I can help you create:
+      📸 AI-generated photos
+      🎥 Videos from text and photos
+      🎤 Voice cloning
+      🤖 Digital avatars
+      
+      Choose a category below 👇
+
+  insufficient_balance:
+    ru: |
+      ❌ Недостаточно звёзд
+      
+      💰 Ваш баланс: {balance} ⭐
+      💎 Требуется: {cost} ⭐
+      
+      Пополните баланс для продолжения
+    en: |
+      ❌ Insufficient stars
+      
+      💰 Your balance: {balance} ⭐
+      💎 Required: {cost} ⭐
+      
+      Top up to continue
+
+  balance_info:
+    ru: |
+      💰 Ваш баланс: {balance} ⭐
+      
+      📊 Статистика:
+      • Всего потрачено: {spent} ⭐
+      • Генераций: {generations}
+    en: |
+      💰 Your balance: {balance} ⭐
+      
+      📊 Statistics:
+      • Total spent: {spent} ⭐
+      • Generations: {generations}
+
+  cancelled:
+    ru: "❌ Действие отменено"
+    en: "❌ Action cancelled"
+
+  unknown_command:
+    ru: "❓ Неизвестная команда. Используйте /help для справки."
+    en: "❓ Unknown command. Use /help for assistance."

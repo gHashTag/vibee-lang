@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// payment_handler v1.0.0 - Generated from .vibee specification
+// payment_handler v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,13 +17,17 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const STAR_TO_RUB_RATE: f64 = 1.5;
+pub const CURRENCY_XTR: f64 = 0;
+
+pub const PROVIDER_TOKEN: f64 = 0;
+
+pub const PAYLOAD_EXPIRY_SECONDS: f64 = 3600;
+
+pub const REFUND_WINDOW_HOURS: f64 = 24;
 
 pub const MIN_STARS_PURCHASE: f64 = 50;
 
 pub const MAX_STARS_PURCHASE: f64 = 10000;
-
-pub const CURRENCY_XTR: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -40,57 +44,98 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Payment type enum
-pub const PaymentType = struct {
-};
-
-/// Payment request
-pub const PaymentRequest = struct {
-    user_id: []const u8,
-    telegram_id: []const u8,
-    amount: i64,
-    payment_type: PaymentType,
-    service: ?[]const u8,
-    description: []const u8,
-};
-
-/// Payment result
-pub const PaymentResult = struct {
-    success: bool,
-    transaction_id: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Payment status enum
-pub const PaymentStatus = struct {
-};
-
-/// Payment record in database
-pub const PaymentRecord = struct {
+/// Telegram pre-checkout query
+pub const PreCheckoutQuery = struct {
     id: []const u8,
-    user_id: []const u8,
-    telegram_id: []const u8,
-    amount: i64,
-    payment_type: PaymentType,
-    status: PaymentStatus,
-    service: ?[]const u8,
-    created_at: i64,
-    completed_at: ?[]const u8,
+    from: UserInfo,
+    currency: []const u8,
+    total_amount: i64,
+    invoice_payload: []const u8,
+    shipping_option_id: ?[]const u8,
+    order_info: ?[]const u8,
 };
 
-/// Telegram Stars invoice
-pub const StarPaymentInvoice = struct {
+/// Telegram successful payment
+pub const SuccessfulPayment = struct {
+    currency: []const u8,
+    total_amount: i64,
+    invoice_payload: []const u8,
+    telegram_payment_charge_id: []const u8,
+    provider_payment_charge_id: []const u8,
+};
+
+/// User info from payment
+pub const UserInfo = struct {
+    id: i64,
+    username: ?[]const u8,
+    first_name: ?[]const u8,
+};
+
+/// Order info if requested
+pub const OrderInfo = struct {
+    name: ?[]const u8,
+    phone_number: ?[]const u8,
+    email: ?[]const u8,
+};
+
+/// Parsed invoice payload
+pub const InvoicePayload = struct {
+    @"type": PayloadType,
+    stars: i64,
+    user_id: i64,
+    timestamp: i64,
+    service: ?[]const u8,
+};
+
+/// Payment payload type
+pub const PayloadType = struct {
+};
+
+/// Star package for purchase
+pub const StarPackage = struct {
+    stars: i64,
+    price_xtr: i64,
+    price_rub: f64,
+    bonus_percent: i64,
+    label: []const u8,
+};
+
+/// Telegram labeled price
+pub const LabeledPrice = struct {
+    label: []const u8,
+    amount: i64,
+};
+
+/// Parameters for creating invoice
+pub const InvoiceParams = struct {
+    chat_id: i64,
     title: []const u8,
     description: []const u8,
     payload: []const u8,
     currency: []const u8,
     prices: []const u8,
+    provider_token: ?[]const u8,
+    need_name: bool,
+    need_email: bool,
+    need_phone_number: bool,
+    is_flexible: bool,
 };
 
-/// Price label
-pub const LabeledPrice = struct {
-    label: []const u8,
-    amount: i64,
+/// Payment processing result
+pub const PaymentResult = struct {
+    success: bool,
+    stars_added: i64,
+    new_balance: i64,
+    transaction_id: ?[]const u8,
+    @"error": ?[]const u8,
+};
+
+/// Refund processing result
+pub const RefundResult = struct {
+    success: bool,
+    stars_refunded: i64,
+    new_balance: i64,
+    @"error": ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -170,72 +215,184 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "create_star_invoice" {
-// Given: Payment request
+// Given: Chat ID, star amount, language
 // When: Creating Stars invoice
-// Then: Returns StarPaymentInvoice
+// Then: |
     // TODO: Add test assertions
 }
 
 test "send_invoice" {
-// Given: Context and invoice
-// When: Sending payment request
-// Then: Returns success status
+// Given: InvoiceParams
+// When: Sending invoice to user
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "create_invoice_link" {
+// Given: Star amount, user ID
+// When: Creating shareable invoice link
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_invoice_payload" {
+// Given: PayloadType, stars, user_id
+// When: Creating payload string
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "parse_invoice_payload" {
+// Given: Payload string
+// When: Parsing payload
+// Then: |
     // TODO: Add test assertions
 }
 
 test "handle_pre_checkout" {
-// Given: Pre-checkout query
-// When: Validating payment
-// Then: Returns approval status
+// Given: PreCheckoutQuery
+// When: Validating payment before charge
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "validate_pre_checkout" {
+// Given: PreCheckoutQuery and InvoicePayload
+// When: Validating payment details
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "answer_pre_checkout_query" {
+// Given: Query ID, ok, error_message
+// When: Responding to pre-checkout
+// Then: |
     // TODO: Add test assertions
 }
 
 test "handle_successful_payment" {
-// Given: Successful payment message
-// When: Processing payment
-// Then: Updates balance and returns result
+// Given: Chat ID, SuccessfulPayment
+// When: Processing completed payment
+// Then: |
     // TODO: Add test assertions
 }
 
-test "create_robokassa_payment" {
-// Given: Payment request
-// When: Creating Robokassa payment
-// Then: Returns payment URL
+test "process_topup_payment" {
+// Given: User ID, stars, payment info
+// When: Processing balance top-up
+// Then: |
     // TODO: Add test assertions
 }
 
-test "verify_robokassa_callback" {
-// Given: Callback data
-// When: Verifying payment
-// Then: Returns verification result
+test "process_service_payment" {
+// Given: User ID, stars, service name
+// When: Processing service payment
+// Then: |
     // TODO: Add test assertions
 }
 
-test "get_payment_history" {
-// Given: User ID
-// When: Fetching history
-// Then: Returns list of PaymentRecord
+test "send_payment_confirmation" {
+// Given: Chat ID, stars, new_balance, language
+// When: Confirming payment to user
+// Then: |
     // TODO: Add test assertions
 }
 
 test "refund_payment" {
-// Given: Transaction ID
+// Given: User ID, telegram_payment_charge_id
 // When: Processing refund
-// Then: Returns refund result
+// Then: |
     // TODO: Add test assertions
 }
 
-test "calculate_stars_for_rubles" {
-// Given: Ruble amount
-// When: Converting currency
-// Then: Returns Stars amount
+test "can_refund" {
+// Given: Payment record
+// When: Checking refund eligibility
+// Then: |
     // TODO: Add test assertions
 }
 
-test "calculate_rubles_for_stars" {
-// Given: Stars amount
-// When: Converting currency
-// Then: Returns Ruble amount
+test "check_balance" {
+// Given: User ID, required_amount
+// When: Checking if balance sufficient
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "deduct_balance" {
+// Given: User ID, amount, service
+// When: Deducting for service
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "add_balance" {
+// Given: User ID, amount, reason
+// When: Adding to balance
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_package_by_stars" {
+// Given: Star amount
+// When: Finding package
+// Then: Return StarPackage or null
+    // TODO: Add test assertions
+}
+
+test "calculate_bonus" {
+// Given: StarPackage
+// When: Calculating bonus stars
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_all_packages" {
+// Given: Language
+// When: Listing packages
+// Then: Return list of StarPackage with labels
+    // TODO: Add test assertions
+}
+
+test "format_package_price" {
+// Given: StarPackage, language
+// When: Formatting price display
+// Then: Return formatted string
+    // TODO: Add test assertions
+}
+
+test "build_packages_keyboard" {
+// Given: Language
+// When: Building package selection
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_payment_keyboard" {
+// Given: Selected package, language
+// When: Building payment confirmation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_payment_history" {
+// Given: User ID, limit, offset
+// When: Fetching payment history
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_user_spending" {
+// Given: User ID
+// When: Getting spending stats
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_revenue_stats" {
+// Given: Date range
+// When: Getting revenue analytics
+// Then: |
     // TODO: Add test assertions
 }
 

@@ -1,131 +1,529 @@
 name: payment_handler
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: payment_handler
 
 description: |
   Payment handler for VIBEE Telegram bot.
-  Handles Telegram Stars and Ruble payments.
+  Handles Telegram Stars payments (XTR currency).
+  Supports pre-checkout validation and successful payment processing.
 
 imports:
-  - telegram
-  - user
-  - paid_services
+  - ../db/user_repository
+  - ../db/payment_repository
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
-  PaymentType:
-    description: "Payment type enum"
-    variants:
-      - TelegramStars
-      - Rubles
-      - Robokassa
-
-  PaymentRequest:
-    description: "Payment request"
-    fields:
-      user_id: String
-      telegram_id: String
-      amount: Int
-      payment_type: PaymentType
-      service: Option<String>
-      description: String
-
-  PaymentResult:
-    description: "Payment result"
-    fields:
-      success: Bool
-      transaction_id: Option<String>
-      error: Option<String>
-
-  PaymentStatus:
-    description: "Payment status enum"
-    variants:
-      - Pending
-      - Completed
-      - Failed
-      - Refunded
-
-  PaymentRecord:
-    description: "Payment record in database"
+  PreCheckoutQuery:
+    description: "Telegram pre-checkout query"
     fields:
       id: String
-      user_id: String
-      telegram_id: String
-      amount: Int
-      payment_type: PaymentType
-      status: PaymentStatus
-      service: Option<String>
-      created_at: Timestamp
-      completed_at: Option<Timestamp>
+      from: UserInfo
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      shipping_option_id: Option<String>
+      order_info: Option<OrderInfo>
 
-  StarPaymentInvoice:
-    description: "Telegram Stars invoice"
+  SuccessfulPayment:
+    description: "Telegram successful payment"
     fields:
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      telegram_payment_charge_id: String
+      provider_payment_charge_id: String
+
+  UserInfo:
+    description: "User info from payment"
+    fields:
+      id: Int
+      username: Option<String>
+      first_name: Option<String>
+
+  OrderInfo:
+    description: "Order info if requested"
+    fields:
+      name: Option<String>
+      phone_number: Option<String>
+      email: Option<String>
+
+  InvoicePayload:
+    description: "Parsed invoice payload"
+    fields:
+      type: PayloadType
+      stars: Int
+      user_id: Int
+      timestamp: Int
+      service: Option<String>
+
+  PayloadType:
+    description: "Payment payload type"
+    values:
+      - topup
+      - service_payment
+      - subscription
+
+  StarPackage:
+    description: "Star package for purchase"
+    fields:
+      stars: Int
+      price_xtr: Int
+      price_rub: Float
+      bonus_percent: Int
+      label: String
+
+  LabeledPrice:
+    description: "Telegram labeled price"
+    fields:
+      label: String
+      amount: Int
+
+  InvoiceParams:
+    description: "Parameters for creating invoice"
+    fields:
+      chat_id: Int
       title: String
       description: String
       payload: String
       currency: String
       prices: List<LabeledPrice>
+      provider_token: Option<String>
+      need_name: Bool
+      need_email: Bool
+      need_phone_number: Bool
+      is_flexible: Bool
 
-  LabeledPrice:
-    description: "Price label"
+  PaymentResult:
+    description: "Payment processing result"
     fields:
-      label: String
-      amount: Int
+      success: Bool
+      stars_added: Int
+      new_balance: Int
+      transaction_id: Option<String>
+      error: Option<String>
+
+  RefundResult:
+    description: "Refund processing result"
+    fields:
+      success: Bool
+      stars_refunded: Int
+      new_balance: Int
+      error: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STAR PACKAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+packages:
+  - stars: 50
+    price_xtr: 50
+    price_rub: 75
+    bonus_percent: 0
+    label_ru: "50 ⭐"
+    label_en: "50 ⭐"
+
+  - stars: 100
+    price_xtr: 100
+    price_rub: 150
+    bonus_percent: 0
+    label_ru: "100 ⭐"
+    label_en: "100 ⭐"
+
+  - stars: 250
+    price_xtr: 250
+    price_rub: 350
+    bonus_percent: 5
+    label_ru: "250 ⭐ (+5%)"
+    label_en: "250 ⭐ (+5%)"
+
+  - stars: 500
+    price_xtr: 500
+    price_rub: 650
+    bonus_percent: 10
+    label_ru: "500 ⭐ (+10%)"
+    label_en: "500 ⭐ (+10%)"
+
+  - stars: 1000
+    price_xtr: 1000
+    price_rub: 1200
+    bonus_percent: 15
+    label_ru: "1000 ⭐ (+15%)"
+    label_en: "1000 ⭐ (+15%)"
+
+  - stars: 2500
+    price_xtr: 2500
+    price_rub: 2800
+    bonus_percent: 20
+    label_ru: "2500 ⭐ (+20%)"
+    label_en: "2500 ⭐ (+20%)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INVOICE CREATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
   - name: create_star_invoice
-    given: Payment request
+    given: Chat ID, star amount, language
     when: Creating Stars invoice
-    then: Returns StarPaymentInvoice
+    then: |
+      1. Get package by star amount
+      2. Calculate total with bonus
+      3. Build invoice payload
+      4. Create LabeledPrice
+      5. Return InvoiceParams
 
   - name: send_invoice
-    given: Context and invoice
-    when: Sending payment request
-    then: Returns success status
+    given: InvoiceParams
+    when: Sending invoice to user
+    then: |
+      1. Call sendInvoice API
+      2. Return message ID or error
+
+  - name: create_invoice_link
+    given: Star amount, user ID
+    when: Creating shareable invoice link
+    then: |
+      1. Build invoice params
+      2. Call createInvoiceLink API
+      3. Return URL
+
+  - name: build_invoice_payload
+    given: PayloadType, stars, user_id
+    when: Creating payload string
+    then: |
+      1. Create JSON object
+      2. Add type, stars, user_id
+      3. Add timestamp
+      4. Encode to string
+      5. Return payload
+
+  - name: parse_invoice_payload
+    given: Payload string
+    when: Parsing payload
+    then: |
+      1. Decode string
+      2. Parse JSON
+      3. Validate fields
+      4. Return InvoicePayload
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRE-CHECKOUT HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: handle_pre_checkout
-    given: Pre-checkout query
-    when: Validating payment
-    then: Returns approval status
+    given: PreCheckoutQuery
+    when: Validating payment before charge
+    then: |
+      1. Parse invoice payload
+      2. Validate payload type
+      3. Validate user exists
+      4. Validate amount matches
+      5. Check for duplicate payment
+      6. Answer pre-checkout query
+      7. Return success/error
+
+  - name: validate_pre_checkout
+    given: PreCheckoutQuery and InvoicePayload
+    when: Validating payment details
+    then: |
+      1. Check currency is XTR
+      2. Check amount matches package
+      3. Check user_id matches
+      4. Check timestamp not expired
+      5. Return validation result
+
+  - name: answer_pre_checkout_query
+    given: Query ID, ok, error_message
+    when: Responding to pre-checkout
+    then: |
+      1. Call answerPreCheckoutQuery API
+      2. If ok=false, include error_message
+      3. Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUCCESSFUL PAYMENT HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: handle_successful_payment
-    given: Successful payment message
-    when: Processing payment
-    then: Updates balance and returns result
+    given: Chat ID, SuccessfulPayment
+    when: Processing completed payment
+    then: |
+      1. Parse invoice payload
+      2. Calculate stars with bonus
+      3. Create payment record in DB
+      4. Update user balance
+      5. Send confirmation message
+      6. Return PaymentResult
 
-  - name: create_robokassa_payment
-    given: Payment request
-    when: Creating Robokassa payment
-    then: Returns payment URL
+  - name: process_topup_payment
+    given: User ID, stars, payment info
+    when: Processing balance top-up
+    then: |
+      1. Get package bonus
+      2. Calculate total stars
+      3. Update user balance
+      4. Create payment record
+      5. Return new balance
 
-  - name: verify_robokassa_callback
-    given: Callback data
-    when: Verifying payment
-    then: Returns verification result
+  - name: process_service_payment
+    given: User ID, stars, service name
+    when: Processing service payment
+    then: |
+      1. Verify balance sufficient
+      2. Deduct from balance
+      3. Create payment record
+      4. Return success
 
-  - name: get_payment_history
-    given: User ID
-    when: Fetching history
-    then: Returns list of PaymentRecord
+  - name: send_payment_confirmation
+    given: Chat ID, stars, new_balance, language
+    when: Confirming payment to user
+    then: |
+      1. Format confirmation message
+      2. Include stars added
+      3. Include new balance
+      4. Send message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFUND HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: refund_payment
-    given: Transaction ID
+    given: User ID, telegram_payment_charge_id
     when: Processing refund
-    then: Returns refund result
+    then: |
+      1. Get payment record
+      2. Verify payment exists
+      3. Call refundStarPayment API
+      4. Update payment status
+      5. Deduct from user balance
+      6. Return RefundResult
 
-  - name: calculate_stars_for_rubles
-    given: Ruble amount
-    when: Converting currency
-    then: Returns Stars amount
+  - name: can_refund
+    given: Payment record
+    when: Checking refund eligibility
+    then: |
+      1. Check payment status is completed
+      2. Check within refund window
+      3. Check not already refunded
+      4. Return eligibility
 
-  - name: calculate_rubles_for_stars
-    given: Stars amount
-    when: Converting currency
-    then: Returns Ruble amount
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_balance
+    given: User ID, required_amount
+    when: Checking if balance sufficient
+    then: |
+      1. Get user balance from DB
+      2. Compare with required
+      3. Return sufficient/insufficient
+
+  - name: deduct_balance
+    given: User ID, amount, service
+    when: Deducting for service
+    then: |
+      1. Verify balance sufficient
+      2. Update balance atomically
+      3. Create payment record
+      4. Return new balance
+
+  - name: add_balance
+    given: User ID, amount, reason
+    when: Adding to balance
+    then: |
+      1. Update balance atomically
+      2. Create payment record
+      3. Return new balance
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PACKAGE HELPERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_package_by_stars
+    given: Star amount
+    when: Finding package
+    then: Return StarPackage or null
+
+  - name: calculate_bonus
+    given: StarPackage
+    when: Calculating bonus stars
+    then: |
+      1. Get bonus_percent
+      2. Calculate bonus = stars * percent / 100
+      3. Return total stars
+
+  - name: get_all_packages
+    given: Language
+    when: Listing packages
+    then: Return list of StarPackage with labels
+
+  - name: format_package_price
+    given: StarPackage, language
+    when: Formatting price display
+    then: Return formatted string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # KEYBOARD BUILDERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: build_packages_keyboard
+    given: Language
+    when: Building package selection
+    then: |
+      1. Get all packages
+      2. Create button for each
+      3. Add cancel button
+      4. Return InlineKeyboardMarkup
+
+  - name: build_payment_keyboard
+    given: Selected package, language
+    when: Building payment confirmation
+    then: |
+      1. Create pay button
+      2. Create cancel button
+      3. Return InlineKeyboardMarkup
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HISTORY & ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_payment_history
+    given: User ID, limit, offset
+    when: Fetching payment history
+    then: |
+      1. Query payment_repository
+      2. Format records
+      3. Return list
+
+  - name: get_user_spending
+    given: User ID
+    when: Getting spending stats
+    then: |
+      1. Get total spent
+      2. Get by service breakdown
+      3. Return stats
+
+  - name: get_revenue_stats
+    given: Date range
+    when: Getting revenue analytics
+    then: |
+      1. Get total revenue
+      2. Get by day breakdown
+      3. Get by package breakdown
+      4. Return stats
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 constants:
-  STAR_TO_RUB_RATE: 1.5
+  CURRENCY_XTR: "XTR"
+  PROVIDER_TOKEN: ""
+  PAYLOAD_EXPIRY_SECONDS: 3600
+  REFUND_WINDOW_HOURS: 24
   MIN_STARS_PURCHASE: 50
   MAX_STARS_PURCHASE: 10000
-  CURRENCY_XTR: "XTR"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  invoice_title:
+    ru: "Пополнение баланса VIBEE"
+    en: "VIBEE Balance Top Up"
+
+  invoice_description:
+    ru: "Покупка {stars} ⭐ для генерации контента"
+    en: "Purchase {stars} ⭐ for content generation"
+
+  payment_success:
+    ru: |
+      ✅ Оплата успешна!
+      
+      💫 Зачислено: {stars} ⭐
+      💰 Новый баланс: {balance} ⭐
+      
+      Спасибо за покупку! 🎉
+    en: |
+      ✅ Payment successful!
+      
+      💫 Added: {stars} ⭐
+      💰 New balance: {balance} ⭐
+      
+      Thank you for your purchase! 🎉
+
+  payment_failed:
+    ru: |
+      ❌ Ошибка оплаты
+      
+      Попробуйте ещё раз или обратитесь в поддержку.
+    en: |
+      ❌ Payment failed
+      
+      Please try again or contact support.
+
+  insufficient_balance:
+    ru: |
+      ❌ Недостаточно звёзд
+      
+      💰 Ваш баланс: {balance} ⭐
+      💎 Требуется: {required} ⭐
+      
+      Пополните баланс для продолжения.
+    en: |
+      ❌ Insufficient stars
+      
+      💰 Your balance: {balance} ⭐
+      💎 Required: {required} ⭐
+      
+      Top up to continue.
+
+  select_package:
+    ru: |
+      💎 Выберите пакет звёзд
+      
+      Чем больше пакет — тем больше бонус!
+    en: |
+      💎 Select a star package
+      
+      Bigger packages have bigger bonuses!
+
+  refund_success:
+    ru: |
+      ✅ Возврат выполнен
+      
+      💫 Возвращено: {stars} ⭐
+      💰 Баланс: {balance} ⭐
+    en: |
+      ✅ Refund completed
+      
+      💫 Refunded: {stars} ⭐
+      💰 Balance: {balance} ⭐
+
+  refund_failed:
+    ru: "❌ Не удалось выполнить возврат"
+    en: "❌ Refund failed"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ERROR CODES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+errors:
+  invalid_payload: "Invalid invoice payload"
+  user_not_found: "User not found"
+  amount_mismatch: "Amount does not match"
+  payload_expired: "Payment request expired"
+  duplicate_payment: "Duplicate payment detected"
+  insufficient_balance: "Insufficient balance"
+  refund_not_allowed: "Refund not allowed"
+  payment_not_found: "Payment not found"

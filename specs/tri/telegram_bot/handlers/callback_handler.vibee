@@ -1,94 +1,576 @@
 name: callback_handler
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: callback_handler
 
 description: |
   Callback query handler for VIBEE Telegram bot.
-  Handles inline keyboard button presses and navigation.
+  Handles inline keyboard button presses.
+  Routes callbacks to appropriate scene/action handlers.
 
 imports:
-  - telegram
-  - modes
-  - user
+  - ../db/user_repository
+  - ../db/generation_repository
+  - ../services/replicate_api
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
-  CallbackAction:
-    description: "Callback action types"
-    variants:
-      - GoHelp
-      - GoBack
-      - GoMenu
-      - GoBalance
-      - GoPayment
-      - SelectModel
-      - SelectSize
-      - ConfirmAction
-      - CancelAction
-      - StartGeneration
-      - SelectLanguage
+  CallbackContext:
+    description: "Callback query context"
+    fields:
+      callback_id: String
+      chat_id: Int
+      user_id: Int
+      message_id: Int
+      data: String
+      from: UserInfo
+
+  UserInfo:
+    description: "User info from callback"
+    fields:
+      id: Int
+      username: Option<String>
+      first_name: Option<String>
+      language_code: Option<String>
 
   CallbackData:
     description: "Parsed callback data"
     fields:
-      action: CallbackAction
-      payload: Option<String>
-      extra: Option<Object>
+      action: String
+      params: Map<String, String>
 
   CallbackResult:
     description: "Callback handling result"
     fields:
       success: Bool
-      message: Option<String>
-      next_scene: Option<String>
+      answer_text: Option<String>
+      show_alert: Bool
+      edit_text: Option<String>
+      edit_keyboard: Option<Object>
+      delete_message: Bool
+      send_new_message: Option<String>
+
+  ModelSelection:
+    description: "Model selection data"
+    fields:
+      model_id: String
+      model_name: String
+      cost: Int
+
+  SizeSelection:
+    description: "Size/aspect ratio selection"
+    fields:
+      width: Int
+      height: Int
+      label: String
+
+  DurationSelection:
+    description: "Video duration selection"
+    fields:
+      seconds: Int
+      label: String
+      cost_multiplier: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACK DATA FORMAT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+callback_format:
+  # Format: action:param1=value1:param2=value2
+  # Examples:
+  #   model:id=flux_schnell
+  #   size:w=1024:h=1024
+  #   duration:s=5
+  #   confirm:scene=neuro_photo
+  #   cancel
+  #   back:to=main
+  #   page:n=2:scene=history
+
+  actions:
+    # Navigation
+    - back          # Go back
+    - cancel        # Cancel current action
+    - menu          # Go to main menu
+    - help          # Show help
+    
+    # Model selection
+    - model         # Select AI model
+    - size          # Select output size
+    - duration      # Select video duration
+    - voice         # Select voice
+    
+    # Confirmation
+    - confirm       # Confirm action
+    - generate      # Start generation
+    - retry         # Retry failed generation
+    
+    # Pagination
+    - page          # Navigate pages
+    - history       # View history
+    
+    # Payment
+    - topup         # Top up balance
+    - pay           # Initiate payment
+    - package       # Select star package
+    
+    # Settings
+    - lang          # Change language
+    - notify        # Toggle notifications
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACK ROUTING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+routes:
+  # Navigation callbacks
+  back: handle_back
+  cancel: handle_cancel
+  menu: handle_menu
+  help: handle_help
+
+  # Model selection callbacks
+  model: handle_model_select
+  size: handle_size_select
+  duration: handle_duration_select
+  voice: handle_voice_select
+
+  # Action callbacks
+  confirm: handle_confirm
+  generate: handle_generate
+  retry: handle_retry
+
+  # Pagination callbacks
+  page: handle_page
+  history: handle_history
+
+  # Payment callbacks
+  topup: handle_topup
+  pay: handle_pay
+  package: handle_package
+
+  # Settings callbacks
+  lang: handle_language
+  notify: handle_notifications
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAIN ROUTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_callback
+    given: CallbackContext
+    when: Callback query received
+    then: |
+      1. Parse callback data
+      2. Validate user session
+      3. Route to handler
+      4. Execute handler
+      5. Answer callback
+      6. Return result
+
   - name: parse_callback_data
     given: Raw callback data string
     when: Parsing callback
-    then: Returns CallbackData
-
-  - name: handle_callback
-    given: Context and CallbackData
-    when: Processing callback
-    then: Returns CallbackResult
-
-  - name: handle_go_help
-    given: Context
-    when: Help button pressed
-    then: Shows help message
-
-  - name: handle_go_back
-    given: Context
-    when: Back button pressed
-    then: Returns to previous scene
-
-  - name: handle_go_menu
-    given: Context
-    when: Menu button pressed
-    then: Shows main menu
-
-  - name: handle_select_model
-    given: Context and model ID
-    when: Model selected
-    then: Updates session and proceeds
-
-  - name: handle_select_size
-    given: Context and size
-    when: Size selected
-    then: Updates aspect ratio
-
-  - name: handle_confirm_action
-    given: Context
-    when: Action confirmed
-    then: Proceeds with action
-
-  - name: handle_cancel_action
-    given: Context
-    when: Action cancelled
-    then: Cancels and returns to menu
+    then: |
+      1. Split by ":"
+      2. First part is action
+      3. Remaining parts are key=value params
+      4. Return CallbackData
 
   - name: answer_callback
-    given: Context and message
+    given: CallbackContext and answer text
     when: Responding to callback
-    then: Sends callback answer
+    then: |
+      1. Call answerCallbackQuery API
+      2. Optionally show alert
+      3. Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NAVIGATION HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_back
+    given: back callback with optional "to" param
+    when: User presses back
+    then: |
+      1. Get target from params or session
+      2. Clear current scene if any
+      3. Update message with previous state
+      4. Answer "◀️"
+
+  - name: handle_cancel
+    given: cancel callback
+    when: User cancels action
+    then: |
+      1. Clear scene state
+      2. Delete or edit message
+      3. Return to menu
+      4. Answer "❌ Отменено"
+
+  - name: handle_menu
+    given: menu callback
+    when: User requests menu
+    then: |
+      1. Clear scene state
+      2. Edit message to show menu
+      3. Answer "🏠"
+
+  - name: handle_help
+    given: help callback
+    when: User requests help
+    then: |
+      1. Edit message with help text
+      2. Show back button
+      3. Answer "❓"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MODEL SELECTION HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_model_select
+    given: model callback with id param
+    when: User selects model
+    then: |
+      1. Get model info by ID
+      2. Update scene_data with model
+      3. Advance to next step
+      4. Edit message with next prompt
+      5. Answer with model name
+
+  - name: handle_size_select
+    given: size callback with w and h params
+    when: User selects size
+    then: |
+      1. Parse width and height
+      2. Update scene_data with size
+      3. Advance to next step
+      4. Edit message with next prompt
+      5. Answer with size label
+
+  - name: handle_duration_select
+    given: duration callback with s param
+    when: User selects duration
+    then: |
+      1. Parse seconds
+      2. Calculate cost multiplier
+      3. Update scene_data with duration
+      4. Advance to next step
+      5. Answer with duration label
+
+  - name: handle_voice_select
+    given: voice callback with id param
+    when: User selects voice
+    then: |
+      1. Get voice info by ID
+      2. Update scene_data with voice
+      3. Advance to next step
+      4. Answer with voice name
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACTION HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_confirm
+    given: confirm callback with scene param
+    when: User confirms action
+    then: |
+      1. Validate all required data present
+      2. Check balance
+      3. If OK -> start generation
+      4. If not -> show error
+      5. Answer "✅"
+
+  - name: handle_generate
+    given: generate callback
+    when: User starts generation
+    then: |
+      1. Get scene data
+      2. Deduct balance
+      3. Create generation record
+      4. Call AI service
+      5. Send progress message
+      6. Answer "🚀 Генерация..."
+
+  - name: handle_retry
+    given: retry callback with generation_id param
+    when: User retries failed generation
+    then: |
+      1. Get original generation
+      2. Check balance
+      3. Create new generation
+      4. Call AI service
+      5. Answer "🔄 Повтор..."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAGINATION HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_page
+    given: page callback with n and scene params
+    when: User navigates pages
+    then: |
+      1. Get page number
+      2. Load page data
+      3. Edit message with new page
+      4. Update pagination buttons
+      5. Answer silently
+
+  - name: handle_history
+    given: history callback with optional page
+    when: User views history
+    then: |
+      1. Load user generations
+      2. Format history list
+      3. Show with pagination
+      4. Answer "📜"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PAYMENT HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_topup
+    given: topup callback
+    when: User wants to top up
+    then: |
+      1. Show star packages
+      2. Show payment methods
+      3. Answer "💎"
+
+  - name: handle_pay
+    given: pay callback with method param
+    when: User selects payment method
+    then: |
+      1. Get selected package
+      2. Create payment record
+      3. Generate invoice/link
+      4. Send payment message
+      5. Answer "💳"
+
+  - name: handle_package
+    given: package callback with stars param
+    when: User selects star package
+    then: |
+      1. Parse stars amount
+      2. Calculate price
+      3. Update session with package
+      4. Show payment methods
+      5. Answer with package info
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SETTINGS HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_language
+    given: lang callback with code param
+    when: User changes language
+    then: |
+      1. Update user language in DB
+      2. Update session
+      3. Refresh current message
+      4. Answer "🌐 {language}"
+
+  - name: handle_notifications
+    given: notify callback with enabled param
+    when: User toggles notifications
+    then: |
+      1. Update user settings
+      2. Toggle notification state
+      3. Update button text
+      4. Answer with new state
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # KEYBOARD BUILDERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: build_model_keyboard
+    given: Scene name and language
+    when: Building model selection
+    then: |
+      1. Get models for scene
+      2. Create button for each model
+      3. Add back button
+      4. Return InlineKeyboardMarkup
+
+  - name: build_size_keyboard
+    given: Available sizes and language
+    when: Building size selection
+    then: |
+      1. Create button for each size
+      2. Highlight current selection
+      3. Add back button
+      4. Return InlineKeyboardMarkup
+
+  - name: build_duration_keyboard
+    given: Available durations and language
+    when: Building duration selection
+    then: |
+      1. Create button for each duration
+      2. Show cost for each
+      3. Add back button
+      4. Return InlineKeyboardMarkup
+
+  - name: build_confirm_keyboard
+    given: Scene and language
+    when: Building confirmation
+    then: |
+      1. Create confirm button
+      2. Create cancel button
+      3. Return InlineKeyboardMarkup
+
+  - name: build_pagination_keyboard
+    given: Current page, total pages, callback prefix
+    when: Building pagination
+    then: |
+      1. Create prev button if not first
+      2. Show page indicator
+      3. Create next button if not last
+      4. Return InlineKeyboardMarkup
+
+  - name: build_payment_keyboard
+    given: Star packages and language
+    when: Building payment options
+    then: |
+      1. Create button for each package
+      2. Show price for each
+      3. Add cancel button
+      4. Return InlineKeyboardMarkup
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: edit_message_text
+    given: Chat ID, message ID, new text, keyboard
+    when: Updating message
+    then: Call editMessageText API
+
+  - name: edit_message_media
+    given: Chat ID, message ID, media, keyboard
+    when: Updating message media
+    then: Call editMessageMedia API
+
+  - name: delete_message
+    given: Chat ID, message ID
+    when: Removing message
+    then: Call deleteMessage API
+
+  - name: get_callback_answer_text
+    given: Action and language
+    when: Getting answer text
+    then: Return localized answer
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INLINE KEYBOARDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+keyboards:
+  model_neuro_photo:
+    rows:
+      - - text: "⚡ FLUX Schnell (10⭐)"
+          callback: "model:id=flux_schnell"
+        - text: "🎨 FLUX Dev (25⭐)"
+          callback: "model:id=flux_dev"
+      - - text: "🖼 SDXL (15⭐)"
+          callback: "model:id=sdxl"
+        - text: "👤 FLUX LoRA (30⭐)"
+          callback: "model:id=flux_lora"
+      - - text: "◀️ Назад"
+          callback: "back:to=photo"
+
+  model_text_to_video:
+    rows:
+      - - text: "🎬 Kling (100⭐)"
+          callback: "model:id=kling"
+      - - text: "🌟 Luma (80⭐)"
+          callback: "model:id=luma"
+      - - text: "🎥 Minimax (60⭐)"
+          callback: "model:id=minimax"
+      - - text: "◀️ Назад"
+          callback: "back:to=video"
+
+  size_selection:
+    rows:
+      - - text: "1:1 (1024x1024)"
+          callback: "size:w=1024:h=1024"
+        - text: "16:9 (1920x1080)"
+          callback: "size:w=1920:h=1080"
+      - - text: "9:16 (1080x1920)"
+          callback: "size:w=1080:h=1920"
+        - text: "4:3 (1024x768)"
+          callback: "size:w=1024:h=768"
+      - - text: "◀️ Назад"
+          callback: "back"
+
+  duration_selection:
+    rows:
+      - - text: "5 сек (1x)"
+          callback: "duration:s=5"
+        - text: "10 сек (2x)"
+          callback: "duration:s=10"
+      - - text: "◀️ Назад"
+          callback: "back"
+
+  confirm_generation:
+    rows:
+      - - text: "✅ Генерировать"
+          callback: "generate"
+        - text: "❌ Отмена"
+          callback: "cancel"
+
+  star_packages:
+    rows:
+      - - text: "50 ⭐ — 75₽"
+          callback: "package:stars=50"
+        - text: "100 ⭐ — 150₽"
+          callback: "package:stars=100"
+      - - text: "250 ⭐ — 350₽"
+          callback: "package:stars=250"
+        - text: "500 ⭐ — 650₽"
+          callback: "package:stars=500"
+      - - text: "1000 ⭐ — 1200₽"
+          callback: "package:stars=1000"
+      - - text: "◀️ Назад"
+          callback: "back:to=main"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CALLBACK_DATA_MAX_LENGTH: 64
+  ANSWER_CACHE_TIME: 0
+  DEFAULT_SHOW_ALERT: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANSWER TEXTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+answers:
+  back:
+    ru: "◀️"
+    en: "◀️"
+  cancel:
+    ru: "❌ Отменено"
+    en: "❌ Cancelled"
+  confirm:
+    ru: "✅"
+    en: "✅"
+  generate:
+    ru: "🚀 Генерация..."
+    en: "🚀 Generating..."
+  retry:
+    ru: "🔄 Повтор..."
+    en: "🔄 Retrying..."
+  insufficient_balance:
+    ru: "❌ Недостаточно звёзд"
+    en: "❌ Insufficient stars"
+  error:
+    ru: "❌ Ошибка"
+    en: "❌ Error"

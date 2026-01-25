@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// message_handler v2.0.0 - Generated from .vibee specification
+// media_handler v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,15 +17,19 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const DEFAULT_LANGUAGE: f64 = 0;
+pub const TELEGRAM_FILE_API: f64 = 0;
 
-pub const DEFAULT_MENU: f64 = 0;
+pub const STORAGE_BUCKET_UPLOADS: f64 = 0;
 
-pub const SESSION_TTL_SECONDS: f64 = 3600;
+pub const STORAGE_BUCKET_GENERATIONS: f64 = 0;
 
-pub const MAX_PROMPT_LENGTH: f64 = 2000;
+pub const STORAGE_BUCKET_TRAINING: f64 = 0;
 
-pub const MIN_PROMPT_LENGTH: f64 = 3;
+pub const MAX_TRAINING_PHOTOS: f64 = 20;
+
+pub const MIN_TRAINING_PHOTOS: f64 = 10;
+
+pub const TEMP_FILE_TTL_HOURS: f64 = 24;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -42,31 +46,33 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Incoming message context
-pub const MessageContext = struct {
+/// Media message context
+pub const MediaContext = struct {
     chat_id: i64,
     user_id: i64,
     message_id: i64,
-    text: ?[]const u8,
-    photo: ?[]const u8,
-    voice: ?[]const u8,
-    video: ?[]const u8,
-    document: ?[]const u8,
+    media_type: MediaType,
+    file_id: []const u8,
+    file_unique_id: []const u8,
+    file_size: ?[]const u8,
+    mime_type: ?[]const u8,
+    caption: ?[]const u8,
     from: UserInfo,
-    reply_to: ?[]const u8,
 };
 
-/// Telegram user info
+/// Type of media
+pub const MediaType = struct {
+};
+
+/// User info from message
 pub const UserInfo = struct {
     id: i64,
     username: ?[]const u8,
     first_name: ?[]const u8,
-    last_name: ?[]const u8,
     language_code: ?[]const u8,
-    is_premium: bool,
 };
 
-/// Photo message info
+/// Photo details
 pub const PhotoInfo = struct {
     file_id: []const u8,
     file_unique_id: []const u8,
@@ -75,63 +81,79 @@ pub const PhotoInfo = struct {
     file_size: ?[]const u8,
 };
 
-/// Voice message info
-pub const VoiceInfo = struct {
+/// Video details
+pub const VideoInfo = struct {
     file_id: []const u8,
+    file_unique_id: []const u8,
+    width: i64,
+    height: i64,
     duration: i64,
+    file_size: ?[]const u8,
+    mime_type: ?[]const u8,
+    thumbnail: ?[]const u8,
+};
+
+/// Audio details
+pub const AudioInfo = struct {
+    file_id: []const u8,
+    file_unique_id: []const u8,
+    duration: i64,
+    performer: ?[]const u8,
+    title: ?[]const u8,
+    file_size: ?[]const u8,
     mime_type: ?[]const u8,
 };
 
-/// Video message info
-pub const VideoInfo = struct {
+/// Voice message details
+pub const VoiceInfo = struct {
     file_id: []const u8,
+    file_unique_id: []const u8,
     duration: i64,
-    width: i64,
-    height: i64,
-};
-
-/// Document message info
-pub const DocumentInfo = struct {
-    file_id: []const u8,
-    file_name: ?[]const u8,
     mime_type: ?[]const u8,
     file_size: ?[]const u8,
 };
 
-/// User session state
-pub const UserSession = struct {
-    telegram_id: i64,
-    current_menu: []const u8,
-    current_scene: ?[]const u8,
-    scene_step: ?[]const u8,
-    scene_data: ?[]const u8,
-    language: []const u8,
-    balance: i64,
-    last_activity: i64,
+/// Document details
+pub const DocumentInfo = struct {
+    file_id: []const u8,
+    file_unique_id: []const u8,
+    file_name: ?[]const u8,
+    mime_type: ?[]const u8,
+    file_size: ?[]const u8,
+    thumbnail: ?[]const u8,
 };
 
-/// Handler execution result
-pub const HandlerResult = struct {
+/// Downloaded file info
+pub const FileDownload = struct {
+    file_path: []const u8,
+    file_url: []const u8,
+    file_size: i64,
+    local_path: ?[]const u8,
+};
+
+/// Media validation result
+pub const MediaValidation = struct {
+    is_valid: bool,
+    error_code: ?[]const u8,
+    error_message: ?[]const u8,
+    warnings: []const u8,
+};
+
+/// Storage upload result
+pub const UploadResult = struct {
+    success: bool,
+    url: ?[]const u8,
+    path: ?[]const u8,
+    @"error": ?[]const u8,
+};
+
+/// Media handling result
+pub const MediaResult = struct {
     success: bool,
     response_text: ?[]const u8,
-    response_photo: ?[]const u8,
-    response_video: ?[]const u8,
-    keyboard: ?[]const u8,
-    edit_message: bool,
-    delete_message: bool,
-    next_scene: ?[]const u8,
+    response_media: ?[]const u8,
+    media_type: ?[]const u8,
     next_step: ?[]const u8,
-};
-
-/// Route matching result
-pub const RouteMatch = struct {
-    route_type: RouteType,
-    handler_name: []const u8,
-    params: ?[]const u8,
-};
-
-/// Route type enum
-pub const RouteType = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -210,346 +232,213 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "handle_message" {
-// Given: MessageContext
-// When: Any message received
+test "handle_media" {
+// Given: MediaContext
+// When: Media message received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "match_route" {
-// Given: MessageContext and UserSession
-// When: Determining handler
+test "detect_media_type" {
+// Given: Telegram message
+// When: Determining media type
 // Then: |
     // TODO: Add test assertions
 }
 
-test "execute_handler" {
-// Given: RouteMatch and MessageContext
-// When: Running handler
+test "route_media_to_scene" {
+// Given: MediaContext and scene name
+// When: Routing to scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_start" {
-// Given: /start command with optional referral code
-// When: User starts bot
+test "handle_photo" {
+// Given: MediaContext with photo
+// When: Photo received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_menu" {
-// Given: /menu command
-// When: User requests menu
+test "get_largest_photo" {
+// Given: List of PhotoSize
+// When: Selecting best quality
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_balance" {
-// Given: /balance command
-// When: User checks balance
+test "validate_photo" {
+// Given: PhotoInfo
+// When: Validating photo
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_help" {
-// Given: /help command
-// When: User requests help
+test "handle_photo_for_neuro" {
+// Given: MediaContext
+// When: Photo for neuro photo scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_settings" {
-// Given: /settings command
-// When: User opens settings
+test "handle_photo_for_video" {
+// Given: MediaContext
+// When: Photo for image-to-video scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_language" {
-// Given: /language command
-// When: User changes language
+test "handle_photo_for_face_swap" {
+// Given: MediaContext
+// When: Photo for face swap scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_support" {
-// Given: /support command
-// When: User needs support
+test "handle_photo_for_upscale" {
+// Given: MediaContext
+// When: Photo for upscale scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_cancel" {
-// Given: /cancel command
-// When: User cancels current action
+test "handle_training_photos" {
+// Given: MediaContext
+// When: Photos for avatar training
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_photo_menu" {
-// Given: Photo category button
-// When: User enters photo menu
+test "handle_video" {
+// Given: MediaContext with video
+// When: Video received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_video_menu" {
-// Given: Video category button
-// When: User enters video menu
+test "validate_video" {
+// Given: VideoInfo
+// When: Validating video
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_audio_menu" {
-// Given: Audio category button
-// When: User enters audio menu
+test "handle_video_for_lip_sync" {
+// Given: MediaContext
+// When: Video for lip sync scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_avatar_menu" {
-// Given: Avatar category button
-// When: User enters avatar menu
+test "handle_audio" {
+// Given: MediaContext with audio
+// When: Audio received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_tools_menu" {
-// Given: Tools category button
-// When: User enters tools menu
+test "validate_audio" {
+// Given: AudioInfo
+// When: Validating audio
 // Then: |
     // TODO: Add test assertions
 }
 
-test "back_to_main" {
-// Given: Back button
-// When: User goes back
+test "handle_voice" {
+// Given: MediaContext with voice
+// When: Voice message received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_neuro_photo" {
-// Given: Neuro photo button
-// When: User starts neuro photo
+test "handle_audio_for_voice_clone" {
+// Given: MediaContext
+// When: Audio for voice cloning
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_text_to_video" {
-// Given: Text to video button
-// When: User starts text to video
+test "handle_audio_for_lip_sync" {
+// Given: MediaContext
+// When: Audio for lip sync
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_image_to_video" {
-// Given: Image to video button
-// When: User starts image to video
+test "handle_document" {
+// Given: MediaContext with document
+// When: Document received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_face_swap" {
-// Given: Face swap button
-// When: User starts face swap
+test "handle_zip_for_training" {
+// Given: MediaContext with ZIP
+// When: ZIP for avatar training
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_upscale" {
-// Given: Upscale button
-// When: User starts upscale
+test "download_file" {
+// Given: File ID
+// When: Downloading from Telegram
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_voice_clone" {
-// Given: Voice clone button
-// When: User starts voice clone
+test "upload_to_storage" {
+// Given: File data, bucket, path
+// When: Uploading to Supabase
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_text_to_speech" {
-// Given: TTS button
-// When: User starts TTS
-// Then: |
+test "get_public_url" {
+// Given: Bucket, path
+// When: Getting public URL
+// Then: Return Supabase public URL
     // TODO: Add test assertions
 }
 
-test "start_lip_sync" {
-// Given: Lip sync button
-// When: User starts lip sync
-// Then: |
+test "delete_from_storage" {
+// Given: Bucket, path
+// When: Cleaning up
+// Then: Delete file from storage
     // TODO: Add test assertions
 }
 
-test "start_digital_body" {
-// Given: Digital body button
-// When: User starts avatar training
-// Then: |
+test "get_file_extension" {
+// Given: File name or mime type
+// When: Determining extension
+// Then: Return extension string
     // TODO: Add test assertions
 }
 
-test "start_avatar_brain" {
-// Given: Avatar brain button
-// When: User configures avatar AI
-// Then: |
+test "generate_storage_path" {
+// Given: User ID, media type, extension
+// When: Creating storage path
+// Then: Return path like "users/{id}/{type}/{uuid}.{ext}"
     // TODO: Add test assertions
 }
 
-test "handle_neuro_photo_input" {
-// Given: Input while in neuro_photo scene
-// When: User provides scene input
-// Then: |
+test "convert_audio_format" {
+// Given: Audio data, target format
+// When: Converting audio
+// Then: Return converted audio
     // TODO: Add test assertions
 }
 
-test "handle_text_to_video_input" {
-// Given: Input while in text_to_video scene
-// When: User provides scene input
-// Then: |
+test "extract_zip" {
+// Given: ZIP data
+// When: Extracting files
+// Then: Return list of extracted files
     // TODO: Add test assertions
 }
 
-test "handle_image_to_video_input" {
-// Given: Input while in image_to_video scene
-// When: User provides scene input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_face_swap_input" {
-// Given: Input while in face_swap scene
-// When: User provides photos
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_upscale_input" {
-// Given: Input while in upscale scene
-// When: User provides photo
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_voice_clone_input" {
-// Given: Input while in voice_clone scene
-// When: User provides voice sample
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_tts_input" {
-// Given: Input while in text_to_speech scene
-// When: User provides text
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_lip_sync_input" {
-// Given: Input while in lip_sync scene
-// When: User provides video and audio
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_digital_body_input" {
-// Given: Input while in digital_body scene
-// When: User provides training photos
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_avatar_brain_input" {
-// Given: Input while in avatar_brain scene
-// When: User configures AI
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_balance" {
-// Given: Balance button
-// When: User checks balance
-// Then: Same as handle_balance
-    // TODO: Add test assertions
-}
-
-test "show_topup" {
-// Given: Top up button
-// When: User wants to add funds
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_support" {
-// Given: Support button
-// When: User needs help
-// Then: Same as handle_support
-    // TODO: Add test assertions
-}
-
-test "switch_to_english" {
-// Given: EN button
-// When: User switches to English
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "switch_to_russian" {
-// Given: RU button
-// When: User switches to Russian
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_session" {
-// Given: Telegram ID
-// When: Loading user session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "save_session" {
-// Given: UserSession
-// When: Persisting session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "clear_scene" {
-// Given: UserSession
-// When: Exiting scene
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "advance_scene_step" {
-// Given: UserSession
-// When: Moving to next step
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_insufficient_balance" {
-// Given: Required cost
-// When: Balance too low
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_unknown_message" {
-// Given: Unrecognized input
-// When: No route matched
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_error" {
-// Given: Error during processing
-// When: Handler fails
-// Then: |
+test "detect_faces" {
+// Given: Image data
+// When: Detecting faces
+// Then: Return face count and locations
     // TODO: Add test assertions
 }
 

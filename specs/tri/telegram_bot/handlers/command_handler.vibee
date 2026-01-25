@@ -1,0 +1,588 @@
+name: command_handler
+version: "1.0.0"
+language: zig
+module: command_handler
+
+description: |
+  Command handler for VIBEE Telegram bot.
+  Handles all /command messages.
+  Includes user commands and admin commands.
+
+imports:
+  - ../db/user_repository
+  - ../db/payment_repository
+  - ../db/generation_repository
+  - ../menu/reply_keyboard
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CommandContext:
+    description: "Command execution context"
+    fields:
+      chat_id: Int
+      user_id: Int
+      message_id: Int
+      command: String
+      args: List<String>
+      raw_text: String
+      from: UserInfo
+      is_private: Bool
+
+  UserInfo:
+    description: "User info from message"
+    fields:
+      id: Int
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+      language_code: Option<String>
+      is_premium: Bool
+
+  CommandResult:
+    description: "Command execution result"
+    fields:
+      success: Bool
+      response_text: Option<String>
+      response_photo: Option<String>
+      keyboard: Option<Object>
+      parse_mode: Option<String>
+      disable_preview: Bool
+
+  ParsedCommand:
+    description: "Parsed command structure"
+    fields:
+      name: String
+      args: List<String>
+      mentions: List<String>
+      deep_link: Option<String>
+
+  ReferralData:
+    description: "Referral from /start"
+    fields:
+      referrer_id: Option<Int>
+      referral_code: Option<String>
+      campaign: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMAND REGISTRY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+commands:
+  # User commands
+  user:
+    start:
+      description: "Start bot / restart"
+      handler: handle_start
+      args: "[referral_code]"
+    
+    menu:
+      description: "Show main menu"
+      handler: handle_menu
+      aliases: ["m"]
+    
+    balance:
+      description: "Check star balance"
+      handler: handle_balance
+      aliases: ["b", "bal"]
+    
+    help:
+      description: "Show help"
+      handler: handle_help
+      aliases: ["h", "?"]
+    
+    settings:
+      description: "User settings"
+      handler: handle_settings
+    
+    language:
+      description: "Change language"
+      handler: handle_language
+      aliases: ["lang"]
+    
+    support:
+      description: "Contact support"
+      handler: handle_support
+    
+    cancel:
+      description: "Cancel current action"
+      handler: handle_cancel
+    
+    history:
+      description: "View generation history"
+      handler: handle_history
+    
+    referral:
+      description: "Get referral link"
+      handler: handle_referral
+      aliases: ["ref", "invite"]
+    
+    topup:
+      description: "Top up balance"
+      handler: handle_topup
+      aliases: ["pay", "buy"]
+
+  # Admin commands
+  admin:
+    stats:
+      description: "Bot statistics"
+      handler: handle_admin_stats
+      admin_only: true
+    
+    broadcast:
+      description: "Send broadcast message"
+      handler: handle_admin_broadcast
+      admin_only: true
+      args: "<message>"
+    
+    user:
+      description: "User info"
+      handler: handle_admin_user
+      admin_only: true
+      args: "<telegram_id>"
+    
+    ban:
+      description: "Ban user"
+      handler: handle_admin_ban
+      admin_only: true
+      args: "<telegram_id>"
+    
+    unban:
+      description: "Unban user"
+      handler: handle_admin_unban
+      admin_only: true
+      args: "<telegram_id>"
+    
+    give:
+      description: "Give stars to user"
+      handler: handle_admin_give
+      admin_only: true
+      args: "<telegram_id> <amount>"
+    
+    take:
+      description: "Take stars from user"
+      handler: handle_admin_take
+      admin_only: true
+      args: "<telegram_id> <amount>"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COMMAND PARSER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: parse_command
+    given: Raw message text
+    when: Parsing command
+    then: |
+      1. Check starts with "/"
+      2. Extract command name (before @ or space)
+      3. Extract bot mention if present
+      4. Extract arguments
+      5. Return ParsedCommand
+
+  - name: is_command
+    given: Message text
+    when: Checking if command
+    then: Return true if starts with "/"
+
+  - name: route_command
+    given: ParsedCommand
+    when: Finding handler
+    then: |
+      1. Check command registry
+      2. Check aliases
+      3. Return handler name or null
+
+  - name: check_admin
+    given: User ID
+    when: Verifying admin access
+    then: Return true if user is admin
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER COMMANDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_start
+    given: CommandContext with optional referral code
+    when: User sends /start
+    then: |
+      1. Parse deep link if present
+      2. Create or update user in DB
+      3. Process referral bonus if new user
+      4. Clear any active scene
+      5. Send welcome message
+      6. Show main menu keyboard
+      7. Return success
+
+  - name: handle_menu
+    given: CommandContext
+    when: User sends /menu
+    then: |
+      1. Clear active scene
+      2. Reset to main menu
+      3. Send menu message
+      4. Show main menu keyboard
+
+  - name: handle_balance
+    given: CommandContext
+    when: User sends /balance
+    then: |
+      1. Get user balance from DB
+      2. Get spending statistics
+      3. Get generation count
+      4. Format balance message
+      5. Add top-up button
+      6. Send response
+
+  - name: handle_help
+    given: CommandContext
+    when: User sends /help
+    then: |
+      1. Get user language
+      2. Build help message with commands
+      3. Add support contact
+      4. Send response
+
+  - name: handle_settings
+    given: CommandContext
+    when: User sends /settings
+    then: |
+      1. Get current user settings
+      2. Build settings message
+      3. Show language option
+      4. Show notification toggle
+      5. Send with inline keyboard
+
+  - name: handle_language
+    given: CommandContext with optional lang code
+    when: User sends /language
+    then: |
+      1. If arg provided, set language
+      2. Else toggle ru <-> en
+      3. Update user in DB
+      4. Send confirmation
+      5. Refresh menu in new language
+
+  - name: handle_support
+    given: CommandContext
+    when: User sends /support
+    then: |
+      1. Get user language
+      2. Build support message
+      3. Include contact info
+      4. Include FAQ link
+      5. Send response
+
+  - name: handle_cancel
+    given: CommandContext
+    when: User sends /cancel
+    then: |
+      1. Clear active scene
+      2. Clear scene data
+      3. Send cancellation message
+      4. Return to main menu
+
+  - name: handle_history
+    given: CommandContext with optional page
+    when: User sends /history
+    then: |
+      1. Get user generations from DB
+      2. Paginate results (10 per page)
+      3. Format history list
+      4. Add pagination buttons
+      5. Send response
+
+  - name: handle_referral
+    given: CommandContext
+    when: User sends /referral
+    then: |
+      1. Get or create referral code
+      2. Get referral statistics
+      3. Build referral link
+      4. Format referral message
+      5. Send with share button
+
+  - name: handle_topup
+    given: CommandContext
+    when: User sends /topup
+    then: |
+      1. Get user language
+      2. Build payment options
+      3. Show star packages
+      4. Send with inline keyboard
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ADMIN COMMANDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_admin_stats
+    given: CommandContext (admin only)
+    when: Admin sends /stats
+    then: |
+      1. Verify admin access
+      2. Get total users count
+      3. Get active users (24h)
+      4. Get total revenue
+      5. Get generation stats
+      6. Format stats message
+      7. Send response
+
+  - name: handle_admin_broadcast
+    given: CommandContext with message (admin only)
+    when: Admin sends /broadcast
+    then: |
+      1. Verify admin access
+      2. Parse broadcast message
+      3. Get all active users
+      4. Queue broadcast
+      5. Send confirmation
+      6. Report delivery stats
+
+  - name: handle_admin_user
+    given: CommandContext with telegram_id (admin only)
+    when: Admin sends /user
+    then: |
+      1. Verify admin access
+      2. Parse telegram_id from args
+      3. Get user from DB
+      4. Get user statistics
+      5. Format user info
+      6. Send response
+
+  - name: handle_admin_ban
+    given: CommandContext with telegram_id (admin only)
+    when: Admin sends /ban
+    then: |
+      1. Verify admin access
+      2. Parse telegram_id from args
+      3. Ban user in DB
+      4. Send confirmation
+
+  - name: handle_admin_unban
+    given: CommandContext with telegram_id (admin only)
+    when: Admin sends /unban
+    then: |
+      1. Verify admin access
+      2. Parse telegram_id from args
+      3. Unban user in DB
+      4. Send confirmation
+
+  - name: handle_admin_give
+    given: CommandContext with telegram_id and amount (admin only)
+    when: Admin sends /give
+    then: |
+      1. Verify admin access
+      2. Parse telegram_id and amount
+      3. Add stars to user balance
+      4. Create payment record
+      5. Send confirmation to admin
+      6. Notify user
+
+  - name: handle_admin_take
+    given: CommandContext with telegram_id and amount (admin only)
+    when: Admin sends /take
+    then: |
+      1. Verify admin access
+      2. Parse telegram_id and amount
+      3. Deduct stars from user balance
+      4. Create payment record
+      5. Send confirmation
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: parse_referral_code
+    given: Start command args
+    when: Extracting referral
+    then: |
+      1. Check if arg starts with "ref_"
+      2. Extract referrer code
+      3. Return ReferralData
+
+  - name: process_referral
+    given: New user and referrer code
+    when: Processing referral bonus
+    then: |
+      1. Find referrer by code
+      2. If found, link user to referrer
+      3. Give bonus to referrer
+      4. Give bonus to new user
+      5. Return success
+
+  - name: format_balance_message
+    given: Balance, spent, generations, language
+    when: Building balance text
+    then: Return formatted message
+
+  - name: format_help_message
+    given: Language
+    when: Building help text
+    then: Return formatted help with commands
+
+  - name: format_stats_message
+    given: Stats data
+    when: Building admin stats
+    then: Return formatted statistics
+
+  - name: send_response
+    given: Chat ID, text, keyboard, parse_mode
+    when: Sending command response
+    then: Call sendMessage API
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  ADMIN_IDS: [144022504]
+  REFERRAL_BONUS_REFERRER: 10
+  REFERRAL_BONUS_NEW_USER: 5
+  HISTORY_PAGE_SIZE: 10
+  BROADCAST_BATCH_SIZE: 30
+  BROADCAST_DELAY_MS: 50
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  welcome:
+    ru: |
+      👋 Добро пожаловать в VIBEE!
+      
+      🤖 Я — ваш AI-ассистент для создания:
+      
+      📸 Нейрофото — генерация изображений
+      🎥 Видео — анимация из текста и фото
+      🎤 Аудио — клонирование голоса
+      🤖 Аватар — цифровое тело и мозг
+      
+      💰 Ваш баланс: {balance} ⭐
+      
+      Выберите категорию в меню 👇
+    en: |
+      👋 Welcome to VIBEE!
+      
+      🤖 I'm your AI assistant for creating:
+      
+      📸 Neuro Photo — image generation
+      🎥 Video — animation from text and photos
+      🎤 Audio — voice cloning
+      🤖 Avatar — digital body and brain
+      
+      💰 Your balance: {balance} ⭐
+      
+      Choose a category below 👇
+
+  welcome_referral:
+    ru: |
+      👋 Добро пожаловать в VIBEE!
+      
+      🎁 Вы получили {bonus} ⭐ от друга!
+      
+      Выберите категорию в меню 👇
+    en: |
+      👋 Welcome to VIBEE!
+      
+      🎁 You received {bonus} ⭐ from a friend!
+      
+      Choose a category below 👇
+
+  balance:
+    ru: |
+      💰 Ваш баланс: {balance} ⭐
+      
+      📊 Статистика:
+      ├ Потрачено: {spent} ⭐
+      ├ Генераций: {generations}
+      └ Уровень: {level}
+      
+      💎 Пополнить баланс?
+    en: |
+      💰 Your balance: {balance} ⭐
+      
+      📊 Statistics:
+      ├ Spent: {spent} ⭐
+      ├ Generations: {generations}
+      └ Level: {level}
+      
+      💎 Top up balance?
+
+  help:
+    ru: |
+      ❓ Справка по VIBEE
+      
+      📋 Команды:
+      /start — перезапуск бота
+      /menu — главное меню
+      /balance — проверить баланс
+      /history — история генераций
+      /referral — реферальная ссылка
+      /settings — настройки
+      /language — сменить язык
+      /support — поддержка
+      /cancel — отменить действие
+      
+      💬 Поддержка: @vibee_support
+    en: |
+      ❓ VIBEE Help
+      
+      📋 Commands:
+      /start — restart bot
+      /menu — main menu
+      /balance — check balance
+      /history — generation history
+      /referral — referral link
+      /settings — settings
+      /language — change language
+      /support — support
+      /cancel — cancel action
+      
+      💬 Support: @vibee_support
+
+  referral:
+    ru: |
+      🎁 Ваша реферальная программа
+      
+      🔗 Ваша ссылка:
+      {link}
+      
+      📊 Статистика:
+      ├ Приглашено: {count}
+      └ Заработано: {earned} ⭐
+      
+      💡 За каждого друга вы получите {bonus} ⭐
+    en: |
+      🎁 Your Referral Program
+      
+      🔗 Your link:
+      {link}
+      
+      📊 Statistics:
+      ├ Invited: {count}
+      └ Earned: {earned} ⭐
+      
+      💡 You'll get {bonus} ⭐ for each friend
+
+  cancelled:
+    ru: "❌ Действие отменено. Возврат в меню."
+    en: "❌ Action cancelled. Returning to menu."
+
+  language_changed:
+    ru: "🌐 Язык изменён на русский"
+    en: "🌐 Language changed to English"
+
+  unknown_command:
+    ru: "❓ Неизвестная команда. Используйте /help"
+    en: "❓ Unknown command. Use /help"
+
+  admin_only:
+    ru: "⛔ Эта команда только для администраторов"
+    en: "⛔ This command is for administrators only"

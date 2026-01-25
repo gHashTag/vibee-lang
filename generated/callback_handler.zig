@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// callback_handler v1.0.0 - Generated from .vibee specification
+// callback_handler v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,6 +17,12 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub const CALLBACK_DATA_MAX_LENGTH: f64 = 64;
+
+pub const ANSWER_CACHE_TIME: f64 = 0;
+
+pub const DEFAULT_SHOW_ALERT: f64 = 0;
+
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INV: f64 = 0.618033988749895;
@@ -32,22 +38,60 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Callback action types
-pub const CallbackAction = struct {
+/// Callback query context
+pub const CallbackContext = struct {
+    callback_id: []const u8,
+    chat_id: i64,
+    user_id: i64,
+    message_id: i64,
+    data: []const u8,
+    from: UserInfo,
+};
+
+/// User info from callback
+pub const UserInfo = struct {
+    id: i64,
+    username: ?[]const u8,
+    first_name: ?[]const u8,
+    language_code: ?[]const u8,
 };
 
 /// Parsed callback data
 pub const CallbackData = struct {
-    action: CallbackAction,
-    payload: ?[]const u8,
-    extra: ?[]const u8,
+    action: []const u8,
+    params: std.StringHashMap([]const u8),
 };
 
 /// Callback handling result
 pub const CallbackResult = struct {
     success: bool,
-    message: ?[]const u8,
-    next_scene: ?[]const u8,
+    answer_text: ?[]const u8,
+    show_alert: bool,
+    edit_text: ?[]const u8,
+    edit_keyboard: ?[]const u8,
+    delete_message: bool,
+    send_new_message: ?[]const u8,
+};
+
+/// Model selection data
+pub const ModelSelection = struct {
+    model_id: []const u8,
+    model_name: []const u8,
+    cost: i64,
+};
+
+/// Size/aspect ratio selection
+pub const SizeSelection = struct {
+    width: i64,
+    height: i64,
+    label: []const u8,
+};
+
+/// Video duration selection
+pub const DurationSelection = struct {
+    seconds: i64,
+    label: []const u8,
+    cost_multiplier: f64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -126,73 +170,220 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
+test "handle_callback" {
+// Given: CallbackContext
+// When: Callback query received
+// Then: |
+    // TODO: Add test assertions
+}
+
 test "parse_callback_data" {
 // Given: Raw callback data string
 // When: Parsing callback
-// Then: Returns CallbackData
-    // TODO: Add test assertions
-}
-
-test "handle_callback" {
-// Given: Context and CallbackData
-// When: Processing callback
-// Then: Returns CallbackResult
-    // TODO: Add test assertions
-}
-
-test "handle_go_help" {
-// Given: Context
-// When: Help button pressed
-// Then: Shows help message
-    // TODO: Add test assertions
-}
-
-test "handle_go_back" {
-// Given: Context
-// When: Back button pressed
-// Then: Returns to previous scene
-    // TODO: Add test assertions
-}
-
-test "handle_go_menu" {
-// Given: Context
-// When: Menu button pressed
-// Then: Shows main menu
-    // TODO: Add test assertions
-}
-
-test "handle_select_model" {
-// Given: Context and model ID
-// When: Model selected
-// Then: Updates session and proceeds
-    // TODO: Add test assertions
-}
-
-test "handle_select_size" {
-// Given: Context and size
-// When: Size selected
-// Then: Updates aspect ratio
-    // TODO: Add test assertions
-}
-
-test "handle_confirm_action" {
-// Given: Context
-// When: Action confirmed
-// Then: Proceeds with action
-    // TODO: Add test assertions
-}
-
-test "handle_cancel_action" {
-// Given: Context
-// When: Action cancelled
-// Then: Cancels and returns to menu
+// Then: |
     // TODO: Add test assertions
 }
 
 test "answer_callback" {
-// Given: Context and message
+// Given: CallbackContext and answer text
 // When: Responding to callback
-// Then: Sends callback answer
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_back" {
+// Given: back callback with optional "to" param
+// When: User presses back
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_cancel" {
+// Given: cancel callback
+// When: User cancels action
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_menu" {
+// Given: menu callback
+// When: User requests menu
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_help" {
+// Given: help callback
+// When: User requests help
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_model_select" {
+// Given: model callback with id param
+// When: User selects model
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_size_select" {
+// Given: size callback with w and h params
+// When: User selects size
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_duration_select" {
+// Given: duration callback with s param
+// When: User selects duration
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_voice_select" {
+// Given: voice callback with id param
+// When: User selects voice
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_confirm" {
+// Given: confirm callback with scene param
+// When: User confirms action
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_generate" {
+// Given: generate callback
+// When: User starts generation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_retry" {
+// Given: retry callback with generation_id param
+// When: User retries failed generation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_page" {
+// Given: page callback with n and scene params
+// When: User navigates pages
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_history" {
+// Given: history callback with optional page
+// When: User views history
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_topup" {
+// Given: topup callback
+// When: User wants to top up
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_pay" {
+// Given: pay callback with method param
+// When: User selects payment method
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_package" {
+// Given: package callback with stars param
+// When: User selects star package
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_language" {
+// Given: lang callback with code param
+// When: User changes language
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_notifications" {
+// Given: notify callback with enabled param
+// When: User toggles notifications
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_model_keyboard" {
+// Given: Scene name and language
+// When: Building model selection
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_size_keyboard" {
+// Given: Available sizes and language
+// When: Building size selection
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_duration_keyboard" {
+// Given: Available durations and language
+// When: Building duration selection
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_confirm_keyboard" {
+// Given: Scene and language
+// When: Building confirmation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_pagination_keyboard" {
+// Given: Current page, total pages, callback prefix
+// When: Building pagination
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_payment_keyboard" {
+// Given: Star packages and language
+// When: Building payment options
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "edit_message_text" {
+// Given: Chat ID, message ID, new text, keyboard
+// When: Updating message
+// Then: Call editMessageText API
+    // TODO: Add test assertions
+}
+
+test "edit_message_media" {
+// Given: Chat ID, message ID, media, keyboard
+// When: Updating message media
+// Then: Call editMessageMedia API
+    // TODO: Add test assertions
+}
+
+test "delete_message" {
+// Given: Chat ID, message ID
+// When: Removing message
+// Then: Call deleteMessage API
+    // TODO: Add test assertions
+}
+
+test "get_callback_answer_text" {
+// Given: Action and language
+// When: Getting answer text
+// Then: Return localized answer
     // TODO: Add test assertions
 }
 

@@ -1,0 +1,541 @@
+name: media_handler
+version: "1.0.0"
+language: zig
+module: media_handler
+
+description: |
+  Media handler for VIBEE Telegram bot.
+  Handles photo, video, audio, voice, and document uploads.
+  Routes media to appropriate scene handlers.
+
+imports:
+  - ../db/user_repository
+  - ../db/generation_repository
+  - ../services/replicate_api
+  - ../core/supabase_client
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MediaContext:
+    description: "Media message context"
+    fields:
+      chat_id: Int
+      user_id: Int
+      message_id: Int
+      media_type: MediaType
+      file_id: String
+      file_unique_id: String
+      file_size: Option<Int>
+      mime_type: Option<String>
+      caption: Option<String>
+      from: UserInfo
+
+  MediaType:
+    description: "Type of media"
+    values:
+      - photo
+      - video
+      - audio
+      - voice
+      - video_note
+      - document
+      - animation
+
+  UserInfo:
+    description: "User info from message"
+    fields:
+      id: Int
+      username: Option<String>
+      first_name: Option<String>
+      language_code: Option<String>
+
+  PhotoInfo:
+    description: "Photo details"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      file_size: Option<Int>
+
+  VideoInfo:
+    description: "Video details"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      duration: Int
+      file_size: Option<Int>
+      mime_type: Option<String>
+      thumbnail: Option<PhotoInfo>
+
+  AudioInfo:
+    description: "Audio details"
+    fields:
+      file_id: String
+      file_unique_id: String
+      duration: Int
+      performer: Option<String>
+      title: Option<String>
+      file_size: Option<Int>
+      mime_type: Option<String>
+
+  VoiceInfo:
+    description: "Voice message details"
+    fields:
+      file_id: String
+      file_unique_id: String
+      duration: Int
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  DocumentInfo:
+    description: "Document details"
+    fields:
+      file_id: String
+      file_unique_id: String
+      file_name: Option<String>
+      mime_type: Option<String>
+      file_size: Option<Int>
+      thumbnail: Option<PhotoInfo>
+
+  FileDownload:
+    description: "Downloaded file info"
+    fields:
+      file_path: String
+      file_url: String
+      file_size: Int
+      local_path: Option<String>
+
+  MediaValidation:
+    description: "Media validation result"
+    fields:
+      is_valid: Bool
+      error_code: Option<String>
+      error_message: Option<String>
+      warnings: List<String>
+
+  UploadResult:
+    description: "Storage upload result"
+    fields:
+      success: Bool
+      url: Option<String>
+      path: Option<String>
+      error: Option<String>
+
+  MediaResult:
+    description: "Media handling result"
+    fields:
+      success: Bool
+      response_text: Option<String>
+      response_media: Option<String>
+      media_type: Option<MediaType>
+      next_step: Option<Int>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VALIDATION RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+validation:
+  photo:
+    max_size_mb: 20
+    min_dimension: 256
+    max_dimension: 4096
+    allowed_formats: ["jpg", "jpeg", "png", "webp"]
+
+  video:
+    max_size_mb: 50
+    max_duration_seconds: 60
+    min_dimension: 256
+    max_dimension: 1920
+    allowed_formats: ["mp4", "mov", "avi"]
+
+  audio:
+    max_size_mb: 20
+    max_duration_seconds: 300
+    allowed_formats: ["mp3", "wav", "ogg", "m4a"]
+
+  voice:
+    max_size_mb: 10
+    max_duration_seconds: 120
+    allowed_formats: ["ogg", "oga"]
+
+  document:
+    max_size_mb: 50
+    allowed_extensions: ["zip", "jpg", "png", "mp4", "mp3"]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAIN ROUTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_media
+    given: MediaContext
+    when: Media message received
+    then: |
+      1. Get user session
+      2. Check if in media-expecting scene
+      3. Validate media for scene
+      4. Route to scene handler
+      5. Return MediaResult
+
+  - name: detect_media_type
+    given: Telegram message
+    when: Determining media type
+    then: |
+      1. Check photo array
+      2. Check video object
+      3. Check audio object
+      4. Check voice object
+      5. Check document object
+      6. Return MediaType
+
+  - name: route_media_to_scene
+    given: MediaContext and scene name
+    when: Routing to scene
+    then: |
+      1. Match scene to handler
+      2. Execute handler
+      3. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PHOTO HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_photo
+    given: MediaContext with photo
+    when: Photo received
+    then: |
+      1. Get largest photo size
+      2. Validate photo
+      3. Download photo
+      4. Upload to storage
+      5. Process in scene
+      6. Return result
+
+  - name: get_largest_photo
+    given: List of PhotoSize
+    when: Selecting best quality
+    then: |
+      1. Sort by file_size desc
+      2. Return first (largest)
+
+  - name: validate_photo
+    given: PhotoInfo
+    when: Validating photo
+    then: |
+      1. Check file size <= max
+      2. Check dimensions in range
+      3. Check format allowed
+      4. Return MediaValidation
+
+  - name: handle_photo_for_neuro
+    given: MediaContext
+    when: Photo for neuro photo scene
+    then: |
+      1. Download photo
+      2. Upload to storage
+      3. Update scene_data with photo_url
+      4. Advance to next step
+      5. Return prompt request
+
+  - name: handle_photo_for_video
+    given: MediaContext
+    when: Photo for image-to-video scene
+    then: |
+      1. Download photo
+      2. Validate aspect ratio
+      3. Upload to storage
+      4. Update scene_data
+      5. Advance to prompt step
+
+  - name: handle_photo_for_face_swap
+    given: MediaContext
+    when: Photo for face swap scene
+    then: |
+      1. Download photo
+      2. Detect faces
+      3. If no face -> error
+      4. Upload to storage
+      5. Update scene_data
+      6. Request target photo or proceed
+
+  - name: handle_photo_for_upscale
+    given: MediaContext
+    when: Photo for upscale scene
+    then: |
+      1. Download photo
+      2. Validate dimensions
+      3. Upload to storage
+      4. Start upscale process
+      5. Return progress message
+
+  - name: handle_training_photos
+    given: MediaContext
+    when: Photos for avatar training
+    then: |
+      1. Download photo
+      2. Validate quality
+      3. Add to training set
+      4. Check if enough photos
+      5. If complete -> start training
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_video
+    given: MediaContext with video
+    when: Video received
+    then: |
+      1. Validate video
+      2. Download video
+      3. Upload to storage
+      4. Process in scene
+      5. Return result
+
+  - name: validate_video
+    given: VideoInfo
+    when: Validating video
+    then: |
+      1. Check file size <= max
+      2. Check duration <= max
+      3. Check dimensions in range
+      4. Check format allowed
+      5. Return MediaValidation
+
+  - name: handle_video_for_lip_sync
+    given: MediaContext
+    when: Video for lip sync scene
+    then: |
+      1. Download video
+      2. Validate has face
+      3. Upload to storage
+      4. Update scene_data
+      5. Request audio
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_audio
+    given: MediaContext with audio
+    when: Audio received
+    then: |
+      1. Validate audio
+      2. Download audio
+      3. Upload to storage
+      4. Process in scene
+      5. Return result
+
+  - name: validate_audio
+    given: AudioInfo
+    when: Validating audio
+    then: |
+      1. Check file size <= max
+      2. Check duration <= max
+      3. Check format allowed
+      4. Return MediaValidation
+
+  - name: handle_voice
+    given: MediaContext with voice
+    when: Voice message received
+    then: |
+      1. Validate voice
+      2. Download voice
+      3. Convert to supported format
+      4. Upload to storage
+      5. Process in scene
+
+  - name: handle_audio_for_voice_clone
+    given: MediaContext
+    when: Audio for voice cloning
+    then: |
+      1. Download audio
+      2. Validate quality
+      3. Upload to storage
+      4. Start voice cloning
+      5. Return progress
+
+  - name: handle_audio_for_lip_sync
+    given: MediaContext
+    when: Audio for lip sync
+    then: |
+      1. Download audio
+      2. Validate duration matches video
+      3. Upload to storage
+      4. Start lip sync
+      5. Return progress
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DOCUMENT HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_document
+    given: MediaContext with document
+    when: Document received
+    then: |
+      1. Check file extension
+      2. Route by type (image/video/zip)
+      3. Process accordingly
+
+  - name: handle_zip_for_training
+    given: MediaContext with ZIP
+    when: ZIP for avatar training
+    then: |
+      1. Download ZIP
+      2. Extract images
+      3. Validate each image
+      4. Upload to storage
+      5. Start training
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FILE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: download_file
+    given: File ID
+    when: Downloading from Telegram
+    then: |
+      1. Call getFile API
+      2. Get file_path
+      3. Build download URL
+      4. Download file
+      5. Return FileDownload
+
+  - name: upload_to_storage
+    given: File data, bucket, path
+    when: Uploading to Supabase
+    then: |
+      1. Determine content type
+      2. Upload to bucket
+      3. Get public URL
+      4. Return UploadResult
+
+  - name: get_public_url
+    given: Bucket, path
+    when: Getting public URL
+    then: Return Supabase public URL
+
+  - name: delete_from_storage
+    given: Bucket, path
+    when: Cleaning up
+    then: Delete file from storage
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_file_extension
+    given: File name or mime type
+    when: Determining extension
+    then: Return extension string
+
+  - name: generate_storage_path
+    given: User ID, media type, extension
+    when: Creating storage path
+    then: Return path like "users/{id}/{type}/{uuid}.{ext}"
+
+  - name: convert_audio_format
+    given: Audio data, target format
+    when: Converting audio
+    then: Return converted audio
+
+  - name: extract_zip
+    given: ZIP data
+    when: Extracting files
+    then: Return list of extracted files
+
+  - name: detect_faces
+    given: Image data
+    when: Detecting faces
+    then: Return face count and locations
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  TELEGRAM_FILE_API: "https://api.telegram.org/file/bot{token}/{file_path}"
+  STORAGE_BUCKET_UPLOADS: "uploads"
+  STORAGE_BUCKET_GENERATIONS: "generations"
+  STORAGE_BUCKET_TRAINING: "training"
+  MAX_TRAINING_PHOTOS: 20
+  MIN_TRAINING_PHOTOS: 10
+  TEMP_FILE_TTL_HOURS: 24
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  photo_received:
+    ru: "📸 Фото получено! Обрабатываю..."
+    en: "📸 Photo received! Processing..."
+
+  video_received:
+    ru: "🎥 Видео получено! Обрабатываю..."
+    en: "🎥 Video received! Processing..."
+
+  audio_received:
+    ru: "🎤 Аудио получено! Обрабатываю..."
+    en: "🎤 Audio received! Processing..."
+
+  invalid_photo_size:
+    ru: "❌ Фото слишком большое. Максимум {max}MB"
+    en: "❌ Photo too large. Maximum {max}MB"
+
+  invalid_photo_dimensions:
+    ru: "❌ Неподходящий размер фото. Нужно от {min} до {max} пикселей"
+    en: "❌ Invalid photo dimensions. Need {min} to {max} pixels"
+
+  invalid_video_duration:
+    ru: "❌ Видео слишком длинное. Максимум {max} секунд"
+    en: "❌ Video too long. Maximum {max} seconds"
+
+  invalid_audio_duration:
+    ru: "❌ Аудио слишком длинное. Максимум {max} секунд"
+    en: "❌ Audio too long. Maximum {max} seconds"
+
+  no_face_detected:
+    ru: "❌ Лицо не обнаружено. Отправьте фото с чётким лицом"
+    en: "❌ No face detected. Send a photo with a clear face"
+
+  upload_failed:
+    ru: "❌ Ошибка загрузки. Попробуйте ещё раз"
+    en: "❌ Upload failed. Please try again"
+
+  unexpected_media:
+    ru: "❓ Сейчас я не ожидаю медиафайлов. Используйте меню"
+    en: "❓ Not expecting media now. Use the menu"
+
+  training_photo_added:
+    ru: "✅ Фото {current}/{total} добавлено"
+    en: "✅ Photo {current}/{total} added"
+
+  training_photos_complete:
+    ru: "✅ Все фото получены! Начинаю обучение..."
+    en: "✅ All photos received! Starting training..."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ERROR CODES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+errors:
+  file_too_large: "FILE_TOO_LARGE"
+  invalid_dimensions: "INVALID_DIMENSIONS"
+  invalid_format: "INVALID_FORMAT"
+  duration_too_long: "DURATION_TOO_LONG"
+  no_face_detected: "NO_FACE_DETECTED"
+  download_failed: "DOWNLOAD_FAILED"
+  upload_failed: "UPLOAD_FAILED"
+  conversion_failed: "CONVERSION_FAILED"
+  unexpected_media: "UNEXPECTED_MEDIA"

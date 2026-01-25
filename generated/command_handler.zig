@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// message_handler v2.0.0 - Generated from .vibee specification
+// command_handler v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,15 +17,17 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const DEFAULT_LANGUAGE: f64 = 0;
+pub const ADMIN_IDS: f64 = 0;
 
-pub const DEFAULT_MENU: f64 = 0;
+pub const REFERRAL_BONUS_REFERRER: f64 = 10;
 
-pub const SESSION_TTL_SECONDS: f64 = 3600;
+pub const REFERRAL_BONUS_NEW_USER: f64 = 5;
 
-pub const MAX_PROMPT_LENGTH: f64 = 2000;
+pub const HISTORY_PAGE_SIZE: f64 = 10;
 
-pub const MIN_PROMPT_LENGTH: f64 = 3;
+pub const BROADCAST_BATCH_SIZE: f64 = 30;
+
+pub const BROADCAST_DELAY_MS: f64 = 50;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -42,21 +44,19 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Incoming message context
-pub const MessageContext = struct {
+/// Command execution context
+pub const CommandContext = struct {
     chat_id: i64,
     user_id: i64,
     message_id: i64,
-    text: ?[]const u8,
-    photo: ?[]const u8,
-    voice: ?[]const u8,
-    video: ?[]const u8,
-    document: ?[]const u8,
+    command: []const u8,
+    args: []const u8,
+    raw_text: []const u8,
     from: UserInfo,
-    reply_to: ?[]const u8,
+    is_private: bool,
 };
 
-/// Telegram user info
+/// User info from message
 pub const UserInfo = struct {
     id: i64,
     username: ?[]const u8,
@@ -66,72 +66,29 @@ pub const UserInfo = struct {
     is_premium: bool,
 };
 
-/// Photo message info
-pub const PhotoInfo = struct {
-    file_id: []const u8,
-    file_unique_id: []const u8,
-    width: i64,
-    height: i64,
-    file_size: ?[]const u8,
-};
-
-/// Voice message info
-pub const VoiceInfo = struct {
-    file_id: []const u8,
-    duration: i64,
-    mime_type: ?[]const u8,
-};
-
-/// Video message info
-pub const VideoInfo = struct {
-    file_id: []const u8,
-    duration: i64,
-    width: i64,
-    height: i64,
-};
-
-/// Document message info
-pub const DocumentInfo = struct {
-    file_id: []const u8,
-    file_name: ?[]const u8,
-    mime_type: ?[]const u8,
-    file_size: ?[]const u8,
-};
-
-/// User session state
-pub const UserSession = struct {
-    telegram_id: i64,
-    current_menu: []const u8,
-    current_scene: ?[]const u8,
-    scene_step: ?[]const u8,
-    scene_data: ?[]const u8,
-    language: []const u8,
-    balance: i64,
-    last_activity: i64,
-};
-
-/// Handler execution result
-pub const HandlerResult = struct {
+/// Command execution result
+pub const CommandResult = struct {
     success: bool,
     response_text: ?[]const u8,
     response_photo: ?[]const u8,
-    response_video: ?[]const u8,
     keyboard: ?[]const u8,
-    edit_message: bool,
-    delete_message: bool,
-    next_scene: ?[]const u8,
-    next_step: ?[]const u8,
+    parse_mode: ?[]const u8,
+    disable_preview: bool,
 };
 
-/// Route matching result
-pub const RouteMatch = struct {
-    route_type: RouteType,
-    handler_name: []const u8,
-    params: ?[]const u8,
+/// Parsed command structure
+pub const ParsedCommand = struct {
+    name: []const u8,
+    args: []const u8,
+    mentions: []const u8,
+    deep_link: ?[]const u8,
 };
 
-/// Route type enum
-pub const RouteType = struct {
+/// Referral from /start
+pub const ReferralData = struct {
+    referrer_id: ?[]const u8,
+    referral_code: ?[]const u8,
+    campaign: ?[]const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -210,346 +167,199 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "handle_message" {
-// Given: MessageContext
-// When: Any message received
+test "parse_command" {
+// Given: Raw message text
+// When: Parsing command
 // Then: |
     // TODO: Add test assertions
 }
 
-test "match_route" {
-// Given: MessageContext and UserSession
-// When: Determining handler
+test "is_command" {
+// Given: Message text
+// When: Checking if command
+// Then: Return true if starts with "/"
+    // TODO: Add test assertions
+}
+
+test "route_command" {
+// Given: ParsedCommand
+// When: Finding handler
 // Then: |
     // TODO: Add test assertions
 }
 
-test "execute_handler" {
-// Given: RouteMatch and MessageContext
-// When: Running handler
-// Then: |
+test "check_admin" {
+// Given: User ID
+// When: Verifying admin access
+// Then: Return true if user is admin
     // TODO: Add test assertions
 }
 
 test "handle_start" {
-// Given: /start command with optional referral code
-// When: User starts bot
+// Given: CommandContext with optional referral code
+// When: User sends /start
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_menu" {
-// Given: /menu command
-// When: User requests menu
+// Given: CommandContext
+// When: User sends /menu
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_balance" {
-// Given: /balance command
-// When: User checks balance
+// Given: CommandContext
+// When: User sends /balance
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_help" {
-// Given: /help command
-// When: User requests help
+// Given: CommandContext
+// When: User sends /help
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_settings" {
-// Given: /settings command
-// When: User opens settings
+// Given: CommandContext
+// When: User sends /settings
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_language" {
-// Given: /language command
-// When: User changes language
+// Given: CommandContext with optional lang code
+// When: User sends /language
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_support" {
-// Given: /support command
-// When: User needs support
+// Given: CommandContext
+// When: User sends /support
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_cancel" {
-// Given: /cancel command
-// When: User cancels current action
+// Given: CommandContext
+// When: User sends /cancel
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_photo_menu" {
-// Given: Photo category button
-// When: User enters photo menu
+test "handle_history" {
+// Given: CommandContext with optional page
+// When: User sends /history
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_video_menu" {
-// Given: Video category button
-// When: User enters video menu
+test "handle_referral" {
+// Given: CommandContext
+// When: User sends /referral
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_audio_menu" {
-// Given: Audio category button
-// When: User enters audio menu
+test "handle_topup" {
+// Given: CommandContext
+// When: User sends /topup
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_avatar_menu" {
-// Given: Avatar category button
-// When: User enters avatar menu
+test "handle_admin_stats" {
+// Given: CommandContext (admin only)
+// When: Admin sends /stats
 // Then: |
     // TODO: Add test assertions
 }
 
-test "enter_tools_menu" {
-// Given: Tools category button
-// When: User enters tools menu
+test "handle_admin_broadcast" {
+// Given: CommandContext with message (admin only)
+// When: Admin sends /broadcast
 // Then: |
     // TODO: Add test assertions
 }
 
-test "back_to_main" {
-// Given: Back button
-// When: User goes back
+test "handle_admin_user" {
+// Given: CommandContext with telegram_id (admin only)
+// When: Admin sends /user
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_neuro_photo" {
-// Given: Neuro photo button
-// When: User starts neuro photo
+test "handle_admin_ban" {
+// Given: CommandContext with telegram_id (admin only)
+// When: Admin sends /ban
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_text_to_video" {
-// Given: Text to video button
-// When: User starts text to video
+test "handle_admin_unban" {
+// Given: CommandContext with telegram_id (admin only)
+// When: Admin sends /unban
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_image_to_video" {
-// Given: Image to video button
-// When: User starts image to video
+test "handle_admin_give" {
+// Given: CommandContext with telegram_id and amount (admin only)
+// When: Admin sends /give
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_face_swap" {
-// Given: Face swap button
-// When: User starts face swap
+test "handle_admin_take" {
+// Given: CommandContext with telegram_id and amount (admin only)
+// When: Admin sends /take
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_upscale" {
-// Given: Upscale button
-// When: User starts upscale
+test "parse_referral_code" {
+// Given: Start command args
+// When: Extracting referral
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_voice_clone" {
-// Given: Voice clone button
-// When: User starts voice clone
+test "process_referral" {
+// Given: New user and referrer code
+// When: Processing referral bonus
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_text_to_speech" {
-// Given: TTS button
-// When: User starts TTS
-// Then: |
+test "format_balance_message" {
+// Given: Balance, spent, generations, language
+// When: Building balance text
+// Then: Return formatted message
     // TODO: Add test assertions
 }
 
-test "start_lip_sync" {
-// Given: Lip sync button
-// When: User starts lip sync
-// Then: |
+test "format_help_message" {
+// Given: Language
+// When: Building help text
+// Then: Return formatted help with commands
     // TODO: Add test assertions
 }
 
-test "start_digital_body" {
-// Given: Digital body button
-// When: User starts avatar training
-// Then: |
+test "format_stats_message" {
+// Given: Stats data
+// When: Building admin stats
+// Then: Return formatted statistics
     // TODO: Add test assertions
 }
 
-test "start_avatar_brain" {
-// Given: Avatar brain button
-// When: User configures avatar AI
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_neuro_photo_input" {
-// Given: Input while in neuro_photo scene
-// When: User provides scene input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_text_to_video_input" {
-// Given: Input while in text_to_video scene
-// When: User provides scene input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_image_to_video_input" {
-// Given: Input while in image_to_video scene
-// When: User provides scene input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_face_swap_input" {
-// Given: Input while in face_swap scene
-// When: User provides photos
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_upscale_input" {
-// Given: Input while in upscale scene
-// When: User provides photo
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_voice_clone_input" {
-// Given: Input while in voice_clone scene
-// When: User provides voice sample
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_tts_input" {
-// Given: Input while in text_to_speech scene
-// When: User provides text
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_lip_sync_input" {
-// Given: Input while in lip_sync scene
-// When: User provides video and audio
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_digital_body_input" {
-// Given: Input while in digital_body scene
-// When: User provides training photos
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_avatar_brain_input" {
-// Given: Input while in avatar_brain scene
-// When: User configures AI
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_balance" {
-// Given: Balance button
-// When: User checks balance
-// Then: Same as handle_balance
-    // TODO: Add test assertions
-}
-
-test "show_topup" {
-// Given: Top up button
-// When: User wants to add funds
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_support" {
-// Given: Support button
-// When: User needs help
-// Then: Same as handle_support
-    // TODO: Add test assertions
-}
-
-test "switch_to_english" {
-// Given: EN button
-// When: User switches to English
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "switch_to_russian" {
-// Given: RU button
-// When: User switches to Russian
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_session" {
-// Given: Telegram ID
-// When: Loading user session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "save_session" {
-// Given: UserSession
-// When: Persisting session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "clear_scene" {
-// Given: UserSession
-// When: Exiting scene
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "advance_scene_step" {
-// Given: UserSession
-// When: Moving to next step
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_insufficient_balance" {
-// Given: Required cost
-// When: Balance too low
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_unknown_message" {
-// Given: Unrecognized input
-// When: No route matched
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_error" {
-// Given: Error during processing
-// When: Handler fails
-// Then: |
+test "send_response" {
+// Given: Chat ID, text, keyboard, parse_mode
+// When: Sending command response
+// Then: Call sendMessage API
     // TODO: Add test assertions
 }
 
