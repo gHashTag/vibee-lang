@@ -1,0 +1,765 @@
+name: avatar_generator
+version: "1.0.0"
+language: zig
+module: avatar_generator
+
+description: |
+  Avatar generation for VIBEE Telegram bot.
+  Face generation, body synthesis, voice cloning, video creation.
+  Integrates with Replicate, ElevenLabs, and other AI providers.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  GeneratorService:
+    description: "Avatar generator service"
+    fields:
+      config: GeneratorConfig
+      replicate_client: Object
+      elevenlabs_client: Object
+      storage: Object
+      queue: Object
+      stats: GeneratorStats
+      is_initialized: Bool
+
+  GeneratorConfig:
+    description: "Generator configuration"
+    fields:
+      storage_bucket: String
+      max_concurrent_jobs: Int
+      default_timeout_ms: Int
+      enable_nsfw_filter: Bool
+      enable_watermark: Bool
+      watermark_image: Option<String>
+      webhook_url: Option<String>
+
+  GeneratorStats:
+    description: "Generator statistics"
+    fields:
+      faces_generated: Int
+      bodies_generated: Int
+      voices_cloned: Int
+      videos_created: Int
+      images_swapped: Int
+      total_processing_time_ms: Int
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FACE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FaceGenerationInput:
+    description: "Face generation input"
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      style: FaceStyle
+      gender: Option<Gender>
+      age_range: Option<AgeRange>
+      ethnicity: Option<String>
+      expression: Option<FaceExpression>
+      pose: Option<FacePose>
+      lighting: Option<Lighting>
+      width: Int
+      height: Int
+      num_outputs: Int
+      seed: Option<Int>
+
+  FaceStyle:
+    description: "Face style"
+    values:
+      - photorealistic
+      - artistic
+      - anime
+      - cartoon
+      - pixar
+      - comic
+      - oil_painting
+      - watercolor
+      - sketch
+      - cyberpunk
+      - fantasy
+
+  Gender:
+    description: "Gender"
+    values:
+      - male
+      - female
+      - androgynous
+
+  AgeRange:
+    description: "Age range"
+    values:
+      - child
+      - teen
+      - young_adult
+      - adult
+      - middle_aged
+      - senior
+
+  FaceExpression:
+    description: "Face expression"
+    values:
+      - neutral
+      - happy
+      - sad
+      - angry
+      - surprised
+      - thoughtful
+      - confident
+      - playful
+      - serious
+
+  FacePose:
+    description: "Face pose"
+    values:
+      - front
+      - three_quarter_left
+      - three_quarter_right
+      - profile_left
+      - profile_right
+      - looking_up
+      - looking_down
+
+  Lighting:
+    description: "Lighting"
+    values:
+      - natural
+      - studio
+      - dramatic
+      - soft
+      - golden_hour
+      - blue_hour
+      - neon
+      - rim_light
+
+  FaceGenerationOutput:
+    description: "Face generation output"
+    fields:
+      images: List<GeneratedImage>
+      seed_used: Int
+      model_used: String
+      processing_time_ms: Int
+      cost_usd: Float
+
+  GeneratedImage:
+    description: "Generated image"
+    fields:
+      image_id: String
+      url: String
+      thumbnail_url: Option<String>
+      width: Int
+      height: Int
+      file_size: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FACE ENHANCEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FaceEnhancementInput:
+    description: "Face enhancement input"
+    fields:
+      image_url: String
+      enhancement_type: EnhancementType
+      strength: Float
+      preserve_identity: Bool
+
+  EnhancementType:
+    description: "Enhancement type"
+    values:
+      - upscale_2x
+      - upscale_4x
+      - restore
+      - beautify
+      - deage
+      - age
+      - style_transfer
+
+  FaceEnhancementOutput:
+    description: "Face enhancement output"
+    fields:
+      image_url: String
+      thumbnail_url: Option<String>
+      processing_time_ms: Int
+      cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FACE SWAP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FaceSwapInput:
+    description: "Face swap input"
+    fields:
+      source_face_url: String
+      target_image_url: String
+      swap_mode: SwapMode
+      enhance_result: Bool
+      preserve_expression: Bool
+
+  SwapMode:
+    description: "Swap mode"
+    values:
+      - single_face
+      - all_faces
+      - specific_face
+
+  FaceSwapOutput:
+    description: "Face swap output"
+    fields:
+      result_url: String
+      faces_swapped: Int
+      processing_time_ms: Int
+      cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BODY GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BodyGenerationInput:
+    description: "Body generation input"
+    fields:
+      face_image_url: String
+      prompt: String
+      negative_prompt: Option<String>
+      body_type: BodyType
+      pose: BodyPose
+      clothing: Option<ClothingDescription>
+      background: Option<String>
+      style: FaceStyle
+      width: Int
+      height: Int
+
+  BodyType:
+    description: "Body type"
+    values:
+      - slim
+      - average
+      - athletic
+      - muscular
+      - plus_size
+
+  BodyPose:
+    description: "Body pose"
+    values:
+      - standing_front
+      - standing_side
+      - sitting
+      - walking
+      - action
+      - professional
+      - casual
+      - custom
+
+  ClothingDescription:
+    description: "Clothing description"
+    fields:
+      style: ClothingStyle
+      colors: List<String>
+      description: Option<String>
+
+  ClothingStyle:
+    description: "Clothing style"
+    values:
+      - casual
+      - formal
+      - business
+      - sporty
+      - creative
+      - fantasy
+      - futuristic
+      - historical
+
+  BodyGenerationOutput:
+    description: "Body generation output"
+    fields:
+      image_url: String
+      thumbnail_url: Option<String>
+      processing_time_ms: Int
+      cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VOICE CLONING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  VoiceCloneInput:
+    description: "Voice clone input"
+    fields:
+      name: String
+      description: Option<String>
+      audio_samples: List<AudioSample>
+      labels: Option<Object>
+
+  AudioSample:
+    description: "Audio sample"
+    fields:
+      url: String
+      duration_seconds: Float
+      file_size: Int
+
+  VoiceCloneOutput:
+    description: "Voice clone output"
+    fields:
+      voice_id: String
+      name: String
+      status: CloneStatus
+      preview_url: Option<String>
+      processing_time_ms: Int
+
+  CloneStatus:
+    description: "Clone status"
+    values:
+      - pending
+      - processing
+      - ready
+      - failed
+
+  VoiceSettings:
+    description: "Voice settings"
+    fields:
+      stability: Float
+      similarity_boost: Float
+      style: Float
+      use_speaker_boost: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TEXT TO SPEECH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TTSInput:
+    description: "TTS input"
+    fields:
+      voice_id: String
+      text: String
+      model: TTSModel
+      settings: Option<VoiceSettings>
+      output_format: AudioFormat
+
+  TTSModel:
+    description: "TTS model"
+    values:
+      - eleven_multilingual_v2
+      - eleven_turbo_v2
+      - eleven_monolingual_v1
+
+  AudioFormat:
+    description: "Audio format"
+    values:
+      - mp3_44100_128
+      - mp3_44100_192
+      - pcm_16000
+      - pcm_22050
+      - pcm_44100
+
+  TTSOutput:
+    description: "TTS output"
+    fields:
+      audio_url: String
+      duration_seconds: Float
+      file_size: Int
+      characters_used: Int
+      processing_time_ms: Int
+      cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TalkingHeadInput:
+    description: "Talking head input"
+    fields:
+      face_image_url: String
+      audio_url: String
+      expression_scale: Float
+      pose_style: Int
+      still_mode: Bool
+
+  TalkingHeadOutput:
+    description: "Talking head output"
+    fields:
+      video_url: String
+      thumbnail_url: Option<String>
+      duration_seconds: Float
+      file_size: Int
+      processing_time_ms: Int
+      cost_usd: Float
+
+  LipSyncInput:
+    description: "Lip sync input"
+    fields:
+      video_url: String
+      audio_url: String
+      enhance_face: Bool
+
+  LipSyncOutput:
+    description: "Lip sync output"
+    fields:
+      video_url: String
+      duration_seconds: Float
+      file_size: Int
+      processing_time_ms: Int
+      cost_usd: Float
+
+  AvatarVideoInput:
+    description: "Avatar video input"
+    fields:
+      avatar_id: String
+      script: String
+      voice_id: Option<String>
+      background: Option<String>
+      style: Option<FaceStyle>
+      duration_limit_seconds: Option<Int>
+
+  AvatarVideoOutput:
+    description: "Avatar video output"
+    fields:
+      video_url: String
+      audio_url: String
+      thumbnail_url: Option<String>
+      duration_seconds: Float
+      file_size: Int
+      processing_time_ms: Int
+      cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPRESSION GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ExpressionInput:
+    description: "Expression input"
+    fields:
+      face_image_url: String
+      target_expression: FaceExpression
+      intensity: Float
+      preserve_identity: Bool
+
+  ExpressionOutput:
+    description: "Expression output"
+    fields:
+      image_url: String
+      expression_applied: FaceExpression
+      processing_time_ms: Int
+      cost_usd: Float
+
+  ExpressionPackInput:
+    description: "Expression pack input"
+    fields:
+      face_image_url: String
+      expressions: List<FaceExpression>
+
+  ExpressionPackOutput:
+    description: "Expression pack output"
+    fields:
+      expressions: List<ExpressionOutput>
+      total_processing_time_ms: Int
+      total_cost_usd: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  GenerationJob:
+    description: "Generation job"
+    fields:
+      job_id: String
+      job_type: JobType
+      avatar_id: Option<String>
+      telegram_id: Int
+      status: JobStatus
+      progress: Int
+      input: Object
+      output: Option<Object>
+      error: Option<String>
+      created_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+
+  JobType:
+    description: "Job type"
+    values:
+      - face_generation
+      - face_enhancement
+      - face_swap
+      - body_generation
+      - voice_clone
+      - tts
+      - talking_head
+      - lip_sync
+      - avatar_video
+      - expression_pack
+
+  JobStatus:
+    description: "Job status"
+    values:
+      - pending
+      - queued
+      - processing
+      - completed
+      - failed
+      - cancelled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  GeneratorError:
+    description: "Generator error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_input
+      - face_not_detected
+      - nsfw_detected
+      - model_unavailable
+      - quota_exceeded
+      - timeout
+      - provider_error
+      - storage_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_service
+    given: GeneratorConfig
+    when: Creating service
+    then: Return GeneratorService
+
+  - name: initialize
+    given: No parameters
+    when: Initializing service
+    then: Setup connections
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return GeneratorStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FACE GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_face
+    given: FaceGenerationInput
+    when: Generating face
+    then: Return FaceGenerationOutput
+
+  - name: generate_face_async
+    given: FaceGenerationInput
+    when: Generating face async
+    then: Return job ID
+
+  - name: enhance_face
+    given: FaceEnhancementInput
+    when: Enhancing face
+    then: Return FaceEnhancementOutput
+
+  - name: swap_face
+    given: FaceSwapInput
+    when: Swapping face
+    then: Return FaceSwapOutput
+
+  - name: detect_face
+    given: Image URL
+    when: Detecting face
+    then: Return face data
+
+  - name: extract_face_embedding
+    given: Image URL
+    when: Extracting embedding
+    then: Return embedding
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BODY GENERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_body
+    given: BodyGenerationInput
+    when: Generating body
+    then: Return BodyGenerationOutput
+
+  - name: generate_body_async
+    given: BodyGenerationInput
+    when: Generating body async
+    then: Return job ID
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VOICE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: clone_voice
+    given: VoiceCloneInput
+    when: Cloning voice
+    then: Return VoiceCloneOutput
+
+  - name: get_clone_status
+    given: Voice ID
+    when: Getting status
+    then: Return CloneStatus
+
+  - name: generate_speech
+    given: TTSInput
+    when: Generating speech
+    then: Return TTSOutput
+
+  - name: generate_speech_stream
+    given: TTSInput
+    when: Streaming speech
+    then: Return audio stream
+
+  - name: get_available_voices
+    given: No parameters
+    when: Getting voices
+    then: Return voice list
+
+  - name: delete_cloned_voice
+    given: Voice ID
+    when: Deleting voice
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_talking_head
+    given: TalkingHeadInput
+    when: Creating talking head
+    then: Return TalkingHeadOutput
+
+  - name: create_talking_head_async
+    given: TalkingHeadInput
+    when: Creating async
+    then: Return job ID
+
+  - name: lip_sync_video
+    given: LipSyncInput
+    when: Lip syncing
+    then: Return LipSyncOutput
+
+  - name: create_avatar_video
+    given: AvatarVideoInput
+    when: Creating avatar video
+    then: Return AvatarVideoOutput
+
+  - name: create_avatar_video_async
+    given: AvatarVideoInput
+    when: Creating async
+    then: Return job ID
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPRESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_expression
+    given: ExpressionInput
+    when: Generating expression
+    then: Return ExpressionOutput
+
+  - name: generate_expression_pack
+    given: ExpressionPackInput
+    when: Generating pack
+    then: Return ExpressionPackOutput
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_job
+    given: Job ID
+    when: Getting job
+    then: Return GenerationJob
+
+  - name: get_user_jobs
+    given: Telegram ID
+    when: Getting user jobs
+    then: Return job list
+
+  - name: cancel_job
+    given: Job ID
+    when: Cancelling job
+    then: Return success
+
+  - name: retry_job
+    given: Job ID
+    when: Retrying job
+    then: Return new job ID
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: Job type and parameters
+    when: Estimating cost
+    then: Return cost estimate
+
+  - name: validate_image
+    given: Image URL
+    when: Validating image
+    then: Return validation result
+
+  - name: validate_audio
+    given: Audio URL
+    when: Validating audio
+    then: Return validation result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 300000
+  DEFAULT_MAX_CONCURRENT: 5
+  DEFAULT_STORAGE_BUCKET: "avatar-generations"
+
+  # Face generation
+  DEFAULT_FACE_WIDTH: 1024
+  DEFAULT_FACE_HEIGHT: 1024
+  MAX_FACE_SIZE: 2048
+  DEFAULT_NUM_OUTPUTS: 1
+  MAX_NUM_OUTPUTS: 4
+
+  # Voice cloning
+  MIN_AUDIO_SAMPLES: 1
+  MAX_AUDIO_SAMPLES: 25
+  MIN_SAMPLE_DURATION: 30
+  MAX_SAMPLE_DURATION: 300
+  MAX_SAMPLE_SIZE_MB: 10
+
+  # TTS
+  MAX_TTS_CHARACTERS: 5000
+  DEFAULT_STABILITY: 0.5
+  DEFAULT_SIMILARITY_BOOST: 0.75
+
+  # Video
+  MAX_VIDEO_DURATION_SECONDS: 60
+  DEFAULT_VIDEO_FPS: 25
+  MAX_SCRIPT_LENGTH: 2000
+
+  # Models
+  FACE_MODEL: "black-forest-labs/flux-1.1-pro"
+  UPSCALE_MODEL: "nightmareai/real-esrgan"
+  FACE_SWAP_MODEL: "lucataco/facefusion"
+  TALKING_HEAD_MODEL: "cjwbw/sadtalker"
+  LIP_SYNC_MODEL: "cjwbw/video-retalking"
+
+  # Costs (approximate USD)
+  COST_FACE_GENERATION: 0.05
+  COST_FACE_ENHANCEMENT: 0.02
+  COST_FACE_SWAP: 0.03
+  COST_BODY_GENERATION: 0.08
+  COST_VOICE_CLONE: 0.50
+  COST_TTS_PER_1K_CHARS: 0.03
+  COST_TALKING_HEAD_PER_SEC: 0.10
+  COST_LIP_SYNC_PER_SEC: 0.08
