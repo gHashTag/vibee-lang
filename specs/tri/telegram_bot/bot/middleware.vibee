@@ -1,0 +1,487 @@
+name: middleware
+version: "1.0.0"
+language: zig
+module: middleware
+
+description: |
+  Middleware chain for VIBEE Telegram bot.
+  Request/response pipeline with logging, auth, rate limiting.
+  Supports async middleware, error handling, context enrichment.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MiddlewareChain:
+    description: "Middleware chain"
+    fields:
+      middlewares: List<Middleware>
+      error_handlers: List<ErrorHandler>
+      config: ChainConfig
+      stats: ChainStats
+
+  ChainConfig:
+    description: "Chain configuration"
+    fields:
+      timeout_ms: Int
+      continue_on_error: Bool
+      log_requests: Bool
+      log_responses: Bool
+      log_errors: Bool
+
+  Middleware:
+    description: "Middleware definition"
+    fields:
+      name: String
+      handler: String
+      priority: Int
+      enabled: Bool
+      config: Option<Object>
+      applies_to: MiddlewareScope
+
+  MiddlewareScope:
+    description: "Middleware scope"
+    fields:
+      update_types: Option<List<String>>
+      commands: Option<List<String>>
+      chat_types: Option<List<String>>
+      exclude_commands: Option<List<String>>
+
+  ErrorHandler:
+    description: "Error handler"
+    fields:
+      name: String
+      handler: String
+      error_types: List<String>
+      priority: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MiddlewareContext:
+    description: "Middleware context"
+    fields:
+      update: Object
+      user: Option<Object>
+      chat_id: Int
+      user_id: Int
+      message_id: Option<Int>
+      session: Object
+      state: Object
+      locale: String
+      start_time: Timestamp
+      metadata: Object
+
+  MiddlewareResult:
+    description: "Middleware result"
+    fields:
+      continue_chain: Bool
+      context: MiddlewareContext
+      response: Option<Object>
+      error: Option<MiddlewareError>
+
+  MiddlewareError:
+    description: "Middleware error"
+    fields:
+      code: ErrorCode
+      message: String
+      middleware: String
+      recoverable: Bool
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - auth_failed
+      - rate_limited
+      - user_banned
+      - permission_denied
+      - validation_failed
+      - timeout
+      - internal_error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUILT-IN MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LoggingConfig:
+    description: "Logging middleware config"
+    fields:
+      log_level: String
+      include_body: Bool
+      include_headers: Bool
+      mask_sensitive: Bool
+      sensitive_fields: List<String>
+
+  AuthConfig:
+    description: "Auth middleware config"
+    fields:
+      require_registration: Bool
+      auto_register: Bool
+      check_ban: Bool
+      check_subscription: Bool
+      admin_bypass: Bool
+
+  RateLimitConfig:
+    description: "Rate limit middleware config"
+    fields:
+      requests_per_minute: Int
+      requests_per_hour: Int
+      burst_limit: Int
+      by_user: Bool
+      by_chat: Bool
+      whitelist: List<Int>
+
+  LocaleConfig:
+    description: "Locale middleware config"
+    fields:
+      default_locale: String
+      supported_locales: List<String>
+      detect_from_user: Bool
+      fallback_locale: String
+
+  SessionConfig:
+    description: "Session middleware config"
+    fields:
+      ttl_seconds: Int
+      auto_create: Bool
+      persist: Bool
+      storage: String
+
+  ThrottleConfig:
+    description: "Throttle middleware config"
+    fields:
+      min_interval_ms: Int
+      max_concurrent: Int
+      queue_size: Int
+
+  ValidationConfig:
+    description: "Validation middleware config"
+    fields:
+      max_message_length: Int
+      max_caption_length: Int
+      allowed_content_types: List<String>
+      block_forwards: Bool
+
+  MetricsConfig:
+    description: "Metrics middleware config"
+    fields:
+      collect_timing: Bool
+      collect_errors: Bool
+      collect_user_stats: Bool
+      sample_rate: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ChainStats:
+    description: "Chain statistics"
+    fields:
+      total_requests: Int
+      successful_requests: Int
+      failed_requests: Int
+      avg_processing_time_ms: Float
+      by_middleware: Map<String, MiddlewareStats>
+
+  MiddlewareStats:
+    description: "Middleware statistics"
+    fields:
+      name: String
+      invocations: Int
+      successes: Int
+      failures: Int
+      avg_time_ms: Float
+      blocked_count: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHAIN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_chain
+    given: ChainConfig
+    when: Creating chain
+    then: Return MiddlewareChain
+
+  - name: use
+    given: Middleware
+    when: Adding middleware
+    then: Add to chain
+
+  - name: use_before
+    given: Middleware and target
+    when: Adding before target
+    then: Insert before
+
+  - name: use_after
+    given: Middleware and target
+    when: Adding after target
+    then: Insert after
+
+  - name: remove
+    given: Middleware name
+    when: Removing middleware
+    then: Remove from chain
+
+  - name: get_middleware
+    given: Name
+    when: Getting middleware
+    then: Return Middleware
+
+  - name: list_middlewares
+    given: No parameters
+    when: Listing middlewares
+    then: Return middleware list
+
+  - name: reorder
+    given: Name and new priority
+    when: Reordering middleware
+    then: Update priority
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute
+    given: MiddlewareContext
+    when: Executing chain
+    then: Return MiddlewareResult
+
+  - name: execute_middleware
+    given: Middleware and context
+    when: Executing single
+    then: Return MiddlewareResult
+
+  - name: handle_error
+    given: Error and context
+    when: Handling error
+    then: Return MiddlewareResult
+
+  - name: abort
+    given: Error
+    when: Aborting chain
+    then: Stop execution
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUILT-IN MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: logging
+    given: LoggingConfig
+    when: Creating logging middleware
+    then: Return Middleware
+
+  - name: auth
+    given: AuthConfig
+    when: Creating auth middleware
+    then: Return Middleware
+
+  - name: rate_limit
+    given: RateLimitConfig
+    when: Creating rate limit middleware
+    then: Return Middleware
+
+  - name: locale
+    given: LocaleConfig
+    when: Creating locale middleware
+    then: Return Middleware
+
+  - name: session
+    given: SessionConfig
+    when: Creating session middleware
+    then: Return Middleware
+
+  - name: throttle
+    given: ThrottleConfig
+    when: Creating throttle middleware
+    then: Return Middleware
+
+  - name: validation
+    given: ValidationConfig
+    when: Creating validation middleware
+    then: Return Middleware
+
+  - name: metrics
+    given: MetricsConfig
+    when: Creating metrics middleware
+    then: Return Middleware
+
+  - name: error_boundary
+    given: No parameters
+    when: Creating error boundary
+    then: Return Middleware
+
+  - name: timeout
+    given: Timeout ms
+    when: Creating timeout middleware
+    then: Return Middleware
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: mw_logging
+    given: Context
+    when: Logging request
+    then: Log and continue
+
+  - name: mw_auth
+    given: Context
+    when: Authenticating
+    then: Load user or reject
+
+  - name: mw_rate_limit
+    given: Context
+    when: Checking rate limit
+    then: Allow or reject
+
+  - name: mw_locale
+    given: Context
+    when: Setting locale
+    then: Detect and set locale
+
+  - name: mw_session
+    given: Context
+    when: Loading session
+    then: Load or create session
+
+  - name: mw_throttle
+    given: Context
+    when: Throttling
+    then: Queue or process
+
+  - name: mw_validation
+    given: Context
+    when: Validating
+    then: Validate or reject
+
+  - name: mw_metrics
+    given: Context
+    when: Collecting metrics
+    then: Record and continue
+
+  - name: mw_ban_check
+    given: Context
+    when: Checking ban
+    then: Allow or reject
+
+  - name: mw_subscription_check
+    given: Context
+    when: Checking subscription
+    then: Allow or reject
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_error_handler
+    given: ErrorHandler
+    when: Registering handler
+    then: Add handler
+
+  - name: handle_auth_error
+    given: Error and context
+    when: Handling auth error
+    then: Send auth message
+
+  - name: handle_rate_limit_error
+    given: Error and context
+    when: Handling rate limit
+    then: Send rate limit message
+
+  - name: handle_ban_error
+    given: Error and context
+    when: Handling ban
+    then: Send ban message
+
+  - name: handle_generic_error
+    given: Error and context
+    when: Handling generic error
+    then: Send error message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enable
+    given: Middleware name
+    when: Enabling middleware
+    then: Set enabled
+
+  - name: disable
+    given: Middleware name
+    when: Disabling middleware
+    then: Set disabled
+
+  - name: is_enabled
+    given: Middleware name
+    when: Checking enabled
+    then: Return true if enabled
+
+  - name: configure
+    given: Name and config
+    when: Configuring middleware
+    then: Update config
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ChainStats
+
+  - name: get_middleware_stats
+    given: Name
+    when: Getting middleware stats
+    then: Return MiddlewareStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_RATE_LIMIT_RPM: 60
+  DEFAULT_RATE_LIMIT_RPH: 1000
+  DEFAULT_BURST_LIMIT: 10
+  DEFAULT_SESSION_TTL: 86400
+  DEFAULT_THROTTLE_INTERVAL_MS: 100
+  DEFAULT_MAX_CONCURRENT: 10
+
+  # Middleware names
+  MW_LOGGING: "logging"
+  MW_AUTH: "auth"
+  MW_RATE_LIMIT: "rate_limit"
+  MW_LOCALE: "locale"
+  MW_SESSION: "session"
+  MW_THROTTLE: "throttle"
+  MW_VALIDATION: "validation"
+  MW_METRICS: "metrics"
+  MW_ERROR_BOUNDARY: "error_boundary"
+  MW_TIMEOUT: "timeout"
+  MW_BAN_CHECK: "ban_check"
+  MW_SUBSCRIPTION_CHECK: "subscription_check"
+
+  # Priority levels
+  PRIORITY_FIRST: 0
+  PRIORITY_EARLY: 100
+  PRIORITY_NORMAL: 500
+  PRIORITY_LATE: 900
+  PRIORITY_LAST: 1000
+
+  # Sensitive fields
+  SENSITIVE_FIELDS: "token,password,secret,api_key,credit_card"

@@ -1,0 +1,714 @@
+name: bot_core
+version: "1.0.0"
+language: zig
+module: bot_core
+
+description: |
+  Core Telegram bot module for VIBEE.
+  Manages bot lifecycle, update processing, service integration.
+  Supports polling and webhook modes with graceful shutdown.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Bot:
+    description: "Telegram bot instance"
+    fields:
+      config: BotConfig
+      telegram: TelegramClient
+      services: BotServices
+      middleware: Object
+      handlers: HandlerRegistry
+      scenes: Object
+      state: BotState
+      stats: BotStats
+
+  BotConfig:
+    description: "Bot configuration"
+    fields:
+      token: String
+      bot_username: String
+      mode: BotMode
+      webhook_url: Option<String>
+      webhook_port: Option<Int>
+      webhook_secret: Option<String>
+      polling_timeout: Int
+      polling_limit: Int
+      allowed_updates: List<String>
+      admin_ids: List<Int>
+      log_level: LogLevel
+      is_dev: Bool
+
+  BotMode:
+    description: "Bot operation mode"
+    values:
+      - polling
+      - webhook
+
+  LogLevel:
+    description: "Log level"
+    values:
+      - debug
+      - info
+      - warn
+      - error
+
+  BotState:
+    description: "Bot state"
+    values:
+      - initializing
+      - running
+      - paused
+      - stopping
+      - stopped
+      - error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BotServices:
+    description: "Bot service clients"
+    fields:
+      database: Object
+      cache: Object
+      ai_router: Object
+      payment_router: Object
+      job_queue: Object
+      scheduler: Object
+      storage: Object
+
+  TelegramClient:
+    description: "Telegram API client"
+    fields:
+      token: String
+      api_url: String
+      timeout_ms: Int
+      retry_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Update:
+    description: "Telegram update"
+    fields:
+      update_id: Int
+      message: Option<Message>
+      edited_message: Option<Message>
+      channel_post: Option<Message>
+      edited_channel_post: Option<Message>
+      callback_query: Option<CallbackQuery>
+      inline_query: Option<InlineQuery>
+      chosen_inline_result: Option<ChosenInlineResult>
+      shipping_query: Option<ShippingQuery>
+      pre_checkout_query: Option<PreCheckoutQuery>
+      poll: Option<Poll>
+      poll_answer: Option<PollAnswer>
+      my_chat_member: Option<ChatMemberUpdated>
+      chat_member: Option<ChatMemberUpdated>
+      chat_join_request: Option<ChatJoinRequest>
+
+  Message:
+    description: "Telegram message"
+    fields:
+      message_id: Int
+      message_thread_id: Option<Int>
+      from: Option<User>
+      sender_chat: Option<Chat>
+      date: Int
+      chat: Chat
+      forward_origin: Option<MessageOrigin>
+      is_topic_message: Option<Bool>
+      is_automatic_forward: Option<Bool>
+      reply_to_message: Option<Object>
+      external_reply: Option<Object>
+      quote: Option<Object>
+      text: Option<String>
+      entities: Option<List<MessageEntity>>
+      caption: Option<String>
+      caption_entities: Option<List<MessageEntity>>
+      photo: Option<List<PhotoSize>>
+      video: Option<Video>
+      audio: Option<Audio>
+      document: Option<Document>
+      voice: Option<Voice>
+      video_note: Option<VideoNote>
+      sticker: Option<Sticker>
+      animation: Option<Animation>
+      contact: Option<Contact>
+      location: Option<Location>
+      venue: Option<Venue>
+      poll: Option<Poll>
+      dice: Option<Dice>
+      successful_payment: Option<SuccessfulPayment>
+      reply_markup: Option<Object>
+
+  User:
+    description: "Telegram user"
+    fields:
+      id: Int
+      is_bot: Bool
+      first_name: String
+      last_name: Option<String>
+      username: Option<String>
+      language_code: Option<String>
+      is_premium: Option<Bool>
+      added_to_attachment_menu: Option<Bool>
+
+  Chat:
+    description: "Telegram chat"
+    fields:
+      id: Int
+      type: ChatType
+      title: Option<String>
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+
+  ChatType:
+    description: "Chat type"
+    values:
+      - private
+      - group
+      - supergroup
+      - channel
+
+  CallbackQuery:
+    description: "Callback query"
+    fields:
+      id: String
+      from: User
+      message: Option<Message>
+      inline_message_id: Option<String>
+      chat_instance: String
+      data: Option<String>
+      game_short_name: Option<String>
+
+  MessageEntity:
+    description: "Message entity"
+    fields:
+      type: EntityType
+      offset: Int
+      length: Int
+      url: Option<String>
+      user: Option<User>
+      language: Option<String>
+      custom_emoji_id: Option<String>
+
+  EntityType:
+    description: "Entity type"
+    values:
+      - mention
+      - hashtag
+      - cashtag
+      - bot_command
+      - url
+      - email
+      - phone_number
+      - bold
+      - italic
+      - underline
+      - strikethrough
+      - spoiler
+      - blockquote
+      - code
+      - pre
+      - text_link
+      - text_mention
+      - custom_emoji
+
+  PhotoSize:
+    description: "Photo size"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      file_size: Option<Int>
+
+  Video:
+    description: "Video"
+    fields:
+      file_id: String
+      file_unique_id: String
+      width: Int
+      height: Int
+      duration: Int
+      thumbnail: Option<PhotoSize>
+      file_name: Option<String>
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  Audio:
+    description: "Audio"
+    fields:
+      file_id: String
+      file_unique_id: String
+      duration: Int
+      performer: Option<String>
+      title: Option<String>
+      file_name: Option<String>
+      mime_type: Option<String>
+      file_size: Option<Int>
+      thumbnail: Option<PhotoSize>
+
+  Document:
+    description: "Document"
+    fields:
+      file_id: String
+      file_unique_id: String
+      thumbnail: Option<PhotoSize>
+      file_name: Option<String>
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  Voice:
+    description: "Voice"
+    fields:
+      file_id: String
+      file_unique_id: String
+      duration: Int
+      mime_type: Option<String>
+      file_size: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Context:
+    description: "Update context"
+    fields:
+      update: Update
+      bot: Object
+      user: Option<BotUser>
+      chat_id: Int
+      user_id: Int
+      message_id: Option<Int>
+      session: Session
+      scene: Option<String>
+      state: Object
+      locale: String
+
+  BotUser:
+    description: "Bot user from database"
+    fields:
+      id: Int
+      telegram_id: Int
+      username: Option<String>
+      first_name: String
+      last_name: Option<String>
+      language_code: String
+      is_premium: Bool
+      is_admin: Bool
+      is_banned: Bool
+      balance_stars: Int
+      subscription_tier: Option<String>
+      created_at: Timestamp
+      last_active_at: Timestamp
+
+  Session:
+    description: "User session"
+    fields:
+      session_id: String
+      user_id: Int
+      data: Object
+      scene: Option<String>
+      scene_state: Option<Object>
+      created_at: Timestamp
+      updated_at: Timestamp
+      expires_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HandlerRegistry:
+    description: "Handler registry"
+    fields:
+      message_handlers: List<Handler>
+      callback_handlers: List<Handler>
+      command_handlers: Map<String, Handler>
+      inline_handlers: List<Handler>
+      error_handler: Handler
+
+  Handler:
+    description: "Update handler"
+    fields:
+      name: String
+      filter: HandlerFilter
+      handler_fn: String
+      priority: Int
+
+  HandlerFilter:
+    description: "Handler filter"
+    fields:
+      update_types: List<String>
+      commands: Option<List<String>>
+      callback_data: Option<String>
+      text_pattern: Option<String>
+      content_types: Option<List<String>>
+      chat_types: Option<List<ChatType>>
+      user_ids: Option<List<Int>>
+      is_admin: Option<Bool>
+
+  MiddlewareChain:
+    description: "Middleware chain"
+    fields:
+      middlewares: List<Middleware>
+
+  Middleware:
+    description: "Middleware"
+    fields:
+      name: String
+      handler_fn: String
+      priority: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BotStats:
+    description: "Bot statistics"
+    fields:
+      updates_processed: Int
+      messages_received: Int
+      callbacks_received: Int
+      commands_executed: Int
+      errors_count: Int
+      avg_response_time_ms: Float
+      uptime_ms: Int
+      active_users_24h: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BotError:
+    description: "Bot error"
+    fields:
+      code: ErrorCode
+      message: String
+      update_id: Option<Int>
+      user_id: Option<Int>
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - telegram_api_error
+      - handler_error
+      - middleware_error
+      - service_error
+      - database_error
+      - rate_limited
+      - user_banned
+      - invalid_update
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_bot
+    given: BotConfig
+    when: Creating bot
+    then: Return Bot
+
+  - name: initialize
+    given: No parameters
+    when: Initializing bot
+    then: Setup services and handlers
+
+  - name: start
+    given: No parameters
+    when: Starting bot
+    then: Begin processing updates
+
+  - name: stop
+    given: No parameters
+    when: Stopping bot
+    then: Graceful shutdown
+
+  - name: restart
+    given: No parameters
+    when: Restarting bot
+    then: Stop and start
+
+  - name: get_state
+    given: No parameters
+    when: Getting state
+    then: Return BotState
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # POLLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_polling
+    given: No parameters
+    when: Starting polling
+    then: Begin long polling
+
+  - name: stop_polling
+    given: No parameters
+    when: Stopping polling
+    then: Stop polling loop
+
+  - name: get_updates
+    given: Offset and limit
+    when: Getting updates
+    then: Return update list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOK
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_webhook
+    given: URL and options
+    when: Setting webhook
+    then: Configure webhook
+
+  - name: delete_webhook
+    given: No parameters
+    when: Deleting webhook
+    then: Remove webhook
+
+  - name: get_webhook_info
+    given: No parameters
+    when: Getting webhook info
+    then: Return webhook info
+
+  - name: handle_webhook
+    given: Update payload
+    when: Handling webhook
+    then: Process update
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UPDATE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_update
+    given: Update
+    when: Processing update
+    then: Route to handler
+
+  - name: create_context
+    given: Update
+    when: Creating context
+    then: Return Context
+
+  - name: run_middleware
+    given: Context
+    when: Running middleware
+    then: Execute chain
+
+  - name: dispatch
+    given: Context
+    when: Dispatching update
+    then: Call handler
+
+  - name: handle_error
+    given: Error and context
+    when: Handling error
+    then: Log and respond
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_handler
+    given: Handler
+    when: Registering handler
+    then: Add to registry
+
+  - name: register_command
+    given: Command and handler
+    when: Registering command
+    then: Add command handler
+
+  - name: register_callback
+    given: Pattern and handler
+    when: Registering callback
+    then: Add callback handler
+
+  - name: register_middleware
+    given: Middleware
+    when: Registering middleware
+    then: Add to chain
+
+  - name: unregister_handler
+    given: Handler name
+    when: Unregistering handler
+    then: Remove from registry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM API
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_message
+    given: Chat ID, text, options
+    when: Sending message
+    then: Return Message
+
+  - name: edit_message
+    given: Chat ID, message ID, text
+    when: Editing message
+    then: Return Message
+
+  - name: delete_message
+    given: Chat ID and message ID
+    when: Deleting message
+    then: Return success
+
+  - name: send_photo
+    given: Chat ID, photo, options
+    when: Sending photo
+    then: Return Message
+
+  - name: send_video
+    given: Chat ID, video, options
+    when: Sending video
+    then: Return Message
+
+  - name: send_document
+    given: Chat ID, document, options
+    when: Sending document
+    then: Return Message
+
+  - name: send_audio
+    given: Chat ID, audio, options
+    when: Sending audio
+    then: Return Message
+
+  - name: send_voice
+    given: Chat ID, voice, options
+    when: Sending voice
+    then: Return Message
+
+  - name: answer_callback_query
+    given: Query ID and options
+    when: Answering callback
+    then: Return success
+
+  - name: send_chat_action
+    given: Chat ID and action
+    when: Sending action
+    then: Return success
+
+  - name: get_file
+    given: File ID
+    when: Getting file
+    then: Return File
+
+  - name: download_file
+    given: File path
+    when: Downloading file
+    then: Return file bytes
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user
+    given: Telegram ID
+    when: Getting user
+    then: Return BotUser
+
+  - name: create_user
+    given: User data
+    when: Creating user
+    then: Return BotUser
+
+  - name: update_user
+    given: User ID and data
+    when: Updating user
+    then: Return BotUser
+
+  - name: ban_user
+    given: User ID and reason
+    when: Banning user
+    then: Return success
+
+  - name: unban_user
+    given: User ID
+    when: Unbanning user
+    then: Return success
+
+  - name: is_admin
+    given: User ID
+    when: Checking admin
+    then: Return true if admin
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_session
+    given: User ID
+    when: Getting session
+    then: Return Session
+
+  - name: set_session_data
+    given: User ID and data
+    when: Setting session data
+    then: Return success
+
+  - name: clear_session
+    given: User ID
+    when: Clearing session
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return BotStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  - name: get_me
+    given: No parameters
+    when: Getting bot info
+    then: Return User
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  API_URL: "https://api.telegram.org/bot"
+  FILE_URL: "https://api.telegram.org/file/bot"
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_POLLING_TIMEOUT: 30
+  DEFAULT_POLLING_LIMIT: 100
+
+  # Update types
+  UPDATE_MESSAGE: "message"
+  UPDATE_EDITED_MESSAGE: "edited_message"
+  UPDATE_CALLBACK_QUERY: "callback_query"
+  UPDATE_INLINE_QUERY: "inline_query"
+  UPDATE_PRE_CHECKOUT_QUERY: "pre_checkout_query"
+
+  # Chat actions
+  ACTION_TYPING: "typing"
+  ACTION_UPLOAD_PHOTO: "upload_photo"
+  ACTION_UPLOAD_VIDEO: "upload_video"
+  ACTION_UPLOAD_DOCUMENT: "upload_document"
+  ACTION_RECORD_VOICE: "record_voice"
+
+  # Parse modes
+  PARSE_HTML: "HTML"
+  PARSE_MARKDOWN: "Markdown"
+  PARSE_MARKDOWNV2: "MarkdownV2"

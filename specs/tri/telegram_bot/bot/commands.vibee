@@ -1,0 +1,564 @@
+name: commands
+version: "1.0.0"
+language: zig
+module: commands
+
+description: |
+  Bot commands for VIBEE Telegram bot.
+  Defines all slash commands, their handlers, and permissions.
+  Supports command groups, aliases, and localization.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CommandRegistry:
+    description: "Command registry"
+    fields:
+      commands: Map<String, Command>
+      groups: Map<String, CommandGroup>
+      aliases: Map<String, String>
+      stats: CommandStats
+
+  Command:
+    description: "Bot command"
+    fields:
+      name: String
+      description: String
+      handler: String
+      group: Option<String>
+      aliases: List<String>
+      args: List<CommandArg>
+      permissions: CommandPermissions
+      rate_limit: Option<RateLimit>
+      cooldown_ms: Option<Int>
+      hidden: Bool
+      enabled: Bool
+
+  CommandArg:
+    description: "Command argument"
+    fields:
+      name: String
+      description: String
+      type: ArgType
+      required: Bool
+      default_value: Option<Object>
+      choices: Option<List<ArgChoice>>
+      min_value: Option<Int>
+      max_value: Option<Int>
+      min_length: Option<Int>
+      max_length: Option<Int>
+
+  ArgType:
+    description: "Argument type"
+    values:
+      - string
+      - integer
+      - float
+      - boolean
+      - user
+      - channel
+      - role
+      - attachment
+
+  ArgChoice:
+    description: "Argument choice"
+    fields:
+      name: String
+      value: Object
+
+  CommandPermissions:
+    description: "Command permissions"
+    fields:
+      user_permissions: List<Permission>
+      bot_permissions: List<Permission>
+      admin_only: Bool
+      premium_only: Bool
+      owner_only: Bool
+      allowed_users: Option<List<Int>>
+      denied_users: Option<List<Int>>
+      allowed_chats: Option<List<Int>>
+      chat_types: Option<List<String>>
+
+  Permission:
+    description: "Permission"
+    values:
+      - send_messages
+      - send_media
+      - send_polls
+      - embed_links
+      - attach_files
+      - add_reactions
+      - use_external_emoji
+      - manage_messages
+      - manage_channels
+      - kick_members
+      - ban_members
+      - administrator
+
+  RateLimit:
+    description: "Rate limit"
+    fields:
+      max_uses: Int
+      window_ms: Int
+      per_user: Bool
+
+  CommandGroup:
+    description: "Command group"
+    fields:
+      name: String
+      description: String
+      commands: List<String>
+      icon: Option<String>
+      order: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CommandContext:
+    description: "Command execution context"
+    fields:
+      command: String
+      args: List<String>
+      raw_args: String
+      parsed_args: Object
+      user_id: Int
+      chat_id: Int
+      message_id: Int
+      reply_to_message_id: Option<Int>
+      is_reply: Bool
+      locale: String
+
+  CommandResult:
+    description: "Command result"
+    fields:
+      success: Bool
+      response: Option<CommandResponse>
+      error: Option<CommandError>
+      execution_time_ms: Int
+
+  CommandResponse:
+    description: "Command response"
+    fields:
+      text: Option<String>
+      parse_mode: Option<String>
+      reply_markup: Option<Object>
+      media: Option<Object>
+      reply_to_message: Bool
+      disable_notification: Bool
+      protect_content: Bool
+
+  CommandError:
+    description: "Command error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - command_not_found
+      - invalid_args
+      - missing_args
+      - permission_denied
+      - rate_limited
+      - cooldown_active
+      - user_banned
+      - command_disabled
+      - handler_error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LocalizedCommand:
+    description: "Localized command"
+    fields:
+      command: String
+      locale: String
+      name: String
+      description: String
+      arg_descriptions: Map<String, String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CommandStats:
+    description: "Command statistics"
+    fields:
+      total_executions: Int
+      successful_executions: Int
+      failed_executions: Int
+      by_command: Map<String, CommandMetrics>
+      by_user: Map<Int, Int>
+
+  CommandMetrics:
+    description: "Command metrics"
+    fields:
+      command: String
+      executions: Int
+      successes: Int
+      failures: Int
+      avg_execution_time_ms: Float
+      last_used: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HELP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HelpEntry:
+    description: "Help entry"
+    fields:
+      command: String
+      description: String
+      usage: String
+      examples: List<String>
+      group: Option<String>
+      aliases: List<String>
+
+  HelpPage:
+    description: "Help page"
+    fields:
+      title: String
+      entries: List<HelpEntry>
+      page: Int
+      total_pages: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REGISTRY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_registry
+    given: No parameters
+    when: Creating registry
+    then: Return CommandRegistry
+
+  - name: register_command
+    given: Command
+    when: Registering command
+    then: Add to registry
+
+  - name: unregister_command
+    given: Command name
+    when: Unregistering command
+    then: Remove from registry
+
+  - name: get_command
+    given: Command name
+    when: Getting command
+    then: Return Command or null
+
+  - name: list_commands
+    given: Optional group filter
+    when: Listing commands
+    then: Return command list
+
+  - name: register_alias
+    given: Alias and command
+    when: Registering alias
+    then: Add alias
+
+  - name: resolve_alias
+    given: Alias
+    when: Resolving alias
+    then: Return command name
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GROUPS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_group
+    given: CommandGroup
+    when: Registering group
+    then: Add group
+
+  - name: get_group
+    given: Group name
+    when: Getting group
+    then: Return CommandGroup
+
+  - name: list_groups
+    given: No parameters
+    when: Listing groups
+    then: Return group list
+
+  - name: get_commands_in_group
+    given: Group name
+    when: Getting group commands
+    then: Return command list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute
+    given: CommandContext
+    when: Executing command
+    then: Return CommandResult
+
+  - name: parse_args
+    given: Command and raw args
+    when: Parsing arguments
+    then: Return parsed args
+
+  - name: validate_args
+    given: Command and args
+    when: Validating arguments
+    then: Return validation result
+
+  - name: check_permissions
+    given: Command and user
+    when: Checking permissions
+    then: Return true if allowed
+
+  - name: check_rate_limit
+    given: Command and user
+    when: Checking rate limit
+    then: Return true if allowed
+
+  - name: check_cooldown
+    given: Command and user
+    when: Checking cooldown
+    then: Return remaining ms or 0
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUILT-IN COMMANDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cmd_start
+    given: Context
+    when: Handling /start
+    then: Return welcome message
+
+  - name: cmd_help
+    given: Context
+    when: Handling /help
+    then: Return help message
+
+  - name: cmd_menu
+    given: Context
+    when: Handling /menu
+    then: Return main menu
+
+  - name: cmd_settings
+    given: Context
+    when: Handling /settings
+    then: Return settings menu
+
+  - name: cmd_balance
+    given: Context
+    when: Handling /balance
+    then: Return balance info
+
+  - name: cmd_profile
+    given: Context
+    when: Handling /profile
+    then: Return profile info
+
+  - name: cmd_language
+    given: Context
+    when: Handling /language
+    then: Return language selector
+
+  - name: cmd_cancel
+    given: Context
+    when: Handling /cancel
+    then: Cancel current action
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ADMIN COMMANDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cmd_admin
+    given: Context
+    when: Handling /admin
+    then: Return admin panel
+
+  - name: cmd_stats
+    given: Context
+    when: Handling /stats
+    then: Return bot statistics
+
+  - name: cmd_broadcast
+    given: Context
+    when: Handling /broadcast
+    then: Start broadcast wizard
+
+  - name: cmd_ban
+    given: Context
+    when: Handling /ban
+    then: Ban user
+
+  - name: cmd_unban
+    given: Context
+    when: Handling /unban
+    then: Unban user
+
+  - name: cmd_grant
+    given: Context
+    when: Handling /grant
+    then: Grant stars to user
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION COMMANDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cmd_generate
+    given: Context
+    when: Handling /generate
+    then: Start generation wizard
+
+  - name: cmd_neuro
+    given: Context
+    when: Handling /neuro
+    then: Start neuro photo wizard
+
+  - name: cmd_video
+    given: Context
+    when: Handling /video
+    then: Start video wizard
+
+  - name: cmd_voice
+    given: Context
+    when: Handling /voice
+    then: Start voice wizard
+
+  - name: cmd_avatar
+    given: Context
+    when: Handling /avatar
+    then: Start avatar wizard
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HELP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_help
+    given: Command name
+    when: Getting help
+    then: Return HelpEntry
+
+  - name: get_help_page
+    given: Page number and group
+    when: Getting help page
+    then: Return HelpPage
+
+  - name: format_help
+    given: HelpEntry and locale
+    when: Formatting help
+    then: Return formatted text
+
+  - name: format_usage
+    given: Command
+    when: Formatting usage
+    then: Return usage string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_localization
+    given: LocalizedCommand
+    when: Setting localization
+    then: Store translation
+
+  - name: get_localized
+    given: Command and locale
+    when: Getting localized
+    then: Return LocalizedCommand
+
+  - name: set_bot_commands
+    given: Locale
+    when: Setting bot commands
+    then: Update Telegram commands
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return CommandStats
+
+  - name: get_command_metrics
+    given: Command name
+    when: Getting metrics
+    then: Return CommandMetrics
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enable_command
+    given: Command name
+    when: Enabling command
+    then: Set enabled
+
+  - name: disable_command
+    given: Command name
+    when: Disabling command
+    then: Set disabled
+
+  - name: is_enabled
+    given: Command name
+    when: Checking enabled
+    then: Return true if enabled
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  # Core commands
+  CMD_START: "start"
+  CMD_HELP: "help"
+  CMD_MENU: "menu"
+  CMD_SETTINGS: "settings"
+  CMD_BALANCE: "balance"
+  CMD_PROFILE: "profile"
+  CMD_LANGUAGE: "language"
+  CMD_CANCEL: "cancel"
+
+  # Admin commands
+  CMD_ADMIN: "admin"
+  CMD_STATS: "stats"
+  CMD_BROADCAST: "broadcast"
+  CMD_BAN: "ban"
+  CMD_UNBAN: "unban"
+  CMD_GRANT: "grant"
+
+  # Generation commands
+  CMD_GENERATE: "generate"
+  CMD_NEURO: "neuro"
+  CMD_VIDEO: "video"
+  CMD_VOICE: "voice"
+  CMD_AVATAR: "avatar"
+
+  # Command groups
+  GROUP_GENERAL: "general"
+  GROUP_GENERATION: "generation"
+  GROUP_ACCOUNT: "account"
+  GROUP_ADMIN: "admin"
+
+  # Rate limits
+  DEFAULT_RATE_LIMIT_MAX: 10
+  DEFAULT_RATE_LIMIT_WINDOW_MS: 60000
+  DEFAULT_COOLDOWN_MS: 3000
+
+  # Locales
+  LOCALE_EN: "en"
+  LOCALE_RU: "ru"

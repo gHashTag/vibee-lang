@@ -1,0 +1,578 @@
+name: scene_manager
+version: "1.0.0"
+language: zig
+module: scene_manager
+
+description: |
+  Scene manager for VIBEE Telegram bot.
+  Wizard-style multi-step conversations with state management.
+  Supports scene transitions, back navigation, timeouts.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SceneManager:
+    description: "Scene manager instance"
+    fields:
+      scenes: Map<String, Scene>
+      active_sessions: Map<Int, SceneSession>
+      config: SceneConfig
+      stats: SceneStats
+
+  SceneConfig:
+    description: "Scene configuration"
+    fields:
+      default_timeout_ms: Int
+      max_steps: Int
+      persist_state: Bool
+      allow_interrupts: Bool
+      back_command: String
+      cancel_command: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCENES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Scene:
+    description: "Scene definition"
+    fields:
+      scene_id: String
+      name: String
+      description: String
+      steps: List<SceneStep>
+      enter_handler: Option<String>
+      leave_handler: Option<String>
+      timeout_handler: Option<String>
+      error_handler: Option<String>
+      default_state: Object
+      ttl_ms: Int
+
+  SceneStep:
+    description: "Scene step"
+    fields:
+      step_id: String
+      name: String
+      prompt: StepPrompt
+      handler: String
+      validator: Option<String>
+      on_invalid: Option<String>
+      next_step: Option<String>
+      conditions: List<StepCondition>
+      timeout_ms: Option<Int>
+      retry_count: Int
+
+  StepPrompt:
+    description: "Step prompt"
+    fields:
+      text: String
+      parse_mode: Option<String>
+      reply_markup: Option<ReplyMarkup>
+      media: Option<StepMedia>
+
+  StepMedia:
+    description: "Step media"
+    fields:
+      type: MediaType
+      file_id: Option<String>
+      url: Option<String>
+      caption: Option<String>
+
+  MediaType:
+    description: "Media type"
+    values:
+      - photo
+      - video
+      - audio
+      - document
+      - animation
+
+  ReplyMarkup:
+    description: "Reply markup"
+    fields:
+      type: MarkupType
+      keyboard: Option<List<List<KeyboardButton>>>
+      inline_keyboard: Option<List<List<InlineButton>>>
+      resize_keyboard: Bool
+      one_time_keyboard: Bool
+      remove_keyboard: Bool
+
+  MarkupType:
+    description: "Markup type"
+    values:
+      - reply_keyboard
+      - inline_keyboard
+      - remove_keyboard
+      - force_reply
+
+  KeyboardButton:
+    description: "Keyboard button"
+    fields:
+      text: String
+      request_contact: Bool
+      request_location: Bool
+      request_poll: Option<Object>
+      web_app: Option<Object>
+
+  InlineButton:
+    description: "Inline button"
+    fields:
+      text: String
+      callback_data: Option<String>
+      url: Option<String>
+      web_app: Option<Object>
+      switch_inline_query: Option<String>
+      pay: Bool
+
+  StepCondition:
+    description: "Step condition"
+    fields:
+      field: String
+      operator: ConditionOperator
+      value: Object
+      next_step: String
+
+  ConditionOperator:
+    description: "Condition operator"
+    values:
+      - eq
+      - neq
+      - gt
+      - lt
+      - contains
+      - matches
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SceneSession:
+    description: "Active scene session"
+    fields:
+      session_id: String
+      user_id: Int
+      chat_id: Int
+      scene_id: String
+      current_step: String
+      step_index: Int
+      state: SceneState
+      history: List<StepHistory>
+      started_at: Timestamp
+      updated_at: Timestamp
+      expires_at: Timestamp
+
+  SceneState:
+    description: "Scene state"
+    fields:
+      data: Object
+      errors: List<String>
+      retry_count: Int
+      is_complete: Bool
+      is_cancelled: Bool
+
+  StepHistory:
+    description: "Step history entry"
+    fields:
+      step_id: String
+      input: Option<Object>
+      output: Option<Object>
+      timestamp: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSITIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Transition:
+    description: "Scene transition"
+    fields:
+      from_scene: Option<String>
+      from_step: Option<String>
+      to_scene: String
+      to_step: Option<String>
+      preserve_state: Bool
+      data: Option<Object>
+
+  TransitionResult:
+    description: "Transition result"
+    fields:
+      success: Bool
+      session: Option<SceneSession>
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StepResult:
+    description: "Step handler result"
+    fields:
+      success: Bool
+      data: Option<Object>
+      next_step: Option<String>
+      error: Option<String>
+      retry: Bool
+
+  ValidationResult:
+    description: "Validation result"
+    fields:
+      valid: Bool
+      value: Option<Object>
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WIZARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Wizard:
+    description: "Wizard definition"
+    fields:
+      wizard_id: String
+      name: String
+      scenes: List<String>
+      start_scene: String
+      end_scene: String
+      on_complete: String
+      on_cancel: String
+
+  WizardSession:
+    description: "Wizard session"
+    fields:
+      wizard_id: String
+      user_id: Int
+      current_scene: String
+      scene_order: List<String>
+      completed_scenes: List<String>
+      global_state: Object
+      started_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SceneStats:
+    description: "Scene statistics"
+    fields:
+      total_sessions: Int
+      active_sessions: Int
+      completed_sessions: Int
+      cancelled_sessions: Int
+      timed_out_sessions: Int
+      avg_completion_time_ms: Float
+      by_scene: Map<String, SceneMetrics>
+
+  SceneMetrics:
+    description: "Scene metrics"
+    fields:
+      scene_id: String
+      entries: Int
+      completions: Int
+      cancellations: Int
+      avg_steps: Float
+      avg_duration_ms: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SceneError:
+    description: "Scene error"
+    fields:
+      code: ErrorCode
+      message: String
+      scene_id: Option<String>
+      step_id: Option<String>
+      user_id: Option<Int>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - scene_not_found
+      - step_not_found
+      - session_not_found
+      - session_expired
+      - validation_failed
+      - handler_error
+      - max_retries_exceeded
+      - transition_failed
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: SceneConfig
+    when: Creating manager
+    then: Return SceneManager
+
+  - name: register_scene
+    given: Scene
+    when: Registering scene
+    then: Add to registry
+
+  - name: unregister_scene
+    given: Scene ID
+    when: Unregistering scene
+    then: Remove from registry
+
+  - name: get_scene
+    given: Scene ID
+    when: Getting scene
+    then: Return Scene
+
+  - name: list_scenes
+    given: No parameters
+    when: Listing scenes
+    then: Return scene list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enter_scene
+    given: User ID, scene ID, initial state
+    when: Entering scene
+    then: Return SceneSession
+
+  - name: leave_scene
+    given: User ID
+    when: Leaving scene
+    then: Return success
+
+  - name: get_session
+    given: User ID
+    when: Getting session
+    then: Return SceneSession or null
+
+  - name: has_active_session
+    given: User ID
+    when: Checking session
+    then: Return true if active
+
+  - name: update_session
+    given: User ID and state
+    when: Updating session
+    then: Return SceneSession
+
+  - name: clear_session
+    given: User ID
+    when: Clearing session
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STEP PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process_input
+    given: User ID and input
+    when: Processing step input
+    then: Return StepResult
+
+  - name: get_current_step
+    given: User ID
+    when: Getting current step
+    then: Return SceneStep
+
+  - name: go_to_step
+    given: User ID and step ID
+    when: Going to step
+    then: Return SceneSession
+
+  - name: next_step
+    given: User ID
+    when: Going to next step
+    then: Return SceneSession
+
+  - name: prev_step
+    given: User ID
+    when: Going to previous step
+    then: Return SceneSession
+
+  - name: retry_step
+    given: User ID
+    when: Retrying step
+    then: Return SceneSession
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSITIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: transition
+    given: Transition
+    when: Transitioning
+    then: Return TransitionResult
+
+  - name: can_transition
+    given: User ID and target scene
+    when: Checking transition
+    then: Return true if allowed
+
+  - name: get_transition_history
+    given: User ID
+    when: Getting history
+    then: Return transition list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_state
+    given: User ID
+    when: Getting state
+    then: Return SceneState
+
+  - name: set_state
+    given: User ID and data
+    when: Setting state
+    then: Return success
+
+  - name: merge_state
+    given: User ID and data
+    when: Merging state
+    then: Return SceneState
+
+  - name: clear_state
+    given: User ID
+    when: Clearing state
+    then: Return success
+
+  - name: get_state_value
+    given: User ID and key
+    when: Getting value
+    then: Return value
+
+  - name: set_state_value
+    given: User ID, key, value
+    when: Setting value
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROMPTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_prompt
+    given: User ID and step
+    when: Sending prompt
+    then: Return message ID
+
+  - name: build_keyboard
+    given: Step and state
+    when: Building keyboard
+    then: Return ReplyMarkup
+
+  - name: format_prompt
+    given: Template and state
+    when: Formatting prompt
+    then: Return formatted text
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VALIDATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_input
+    given: Step and input
+    when: Validating input
+    then: Return ValidationResult
+
+  - name: register_validator
+    given: Name and function
+    when: Registering validator
+    then: Add validator
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WIZARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_wizard
+    given: Wizard
+    when: Registering wizard
+    then: Add wizard
+
+  - name: start_wizard
+    given: User ID and wizard ID
+    when: Starting wizard
+    then: Return WizardSession
+
+  - name: complete_wizard
+    given: User ID
+    when: Completing wizard
+    then: Return result
+
+  - name: cancel_wizard
+    given: User ID
+    when: Cancelling wizard
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLEANUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_expired
+    given: No parameters
+    when: Cleaning up
+    then: Return count cleaned
+
+  - name: get_expired_sessions
+    given: No parameters
+    when: Getting expired
+    then: Return session list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return SceneStats
+
+  - name: get_scene_metrics
+    given: Scene ID
+    when: Getting scene metrics
+    then: Return SceneMetrics
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 1800000
+  DEFAULT_MAX_STEPS: 20
+  DEFAULT_RETRY_COUNT: 3
+  DEFAULT_BACK_COMMAND: "/back"
+  DEFAULT_CANCEL_COMMAND: "/cancel"
+
+  # Scene IDs
+  SCENE_NEURO_PHOTO: "neuro_photo"
+  SCENE_IMAGE_TO_VIDEO: "image_to_video"
+  SCENE_TEXT_TO_VIDEO: "text_to_video"
+  SCENE_FACE_SWAP: "face_swap"
+  SCENE_VOICE_AVATAR: "voice_avatar"
+  SCENE_DIGITAL_AVATAR: "digital_avatar"
+  SCENE_SETTINGS: "settings"
+  SCENE_PAYMENT: "payment"
+
+  # Step types
+  STEP_TEXT_INPUT: "text_input"
+  STEP_PHOTO_INPUT: "photo_input"
+  STEP_VIDEO_INPUT: "video_input"
+  STEP_SELECTION: "selection"
+  STEP_CONFIRMATION: "confirmation"
+
+  # Validators
+  VALIDATOR_TEXT: "text"
+  VALIDATOR_PHOTO: "photo"
+  VALIDATOR_VIDEO: "video"
+  VALIDATOR_NUMBER: "number"
+  VALIDATOR_EMAIL: "email"
+  VALIDATOR_URL: "url"
