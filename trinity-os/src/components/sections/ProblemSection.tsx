@@ -14,31 +14,31 @@ export default function ProblemSection() {
       <h2 className="fade" dangerouslySetInnerHTML={{ __html: p.title }} />
       <p className="fade" style={{ marginBottom: 'clamp(2rem, 6vw, 4rem)' }}>{p.sub}</p>
       
-      <div className="grid fade" style={{ textAlign: 'left', gap: '1.5rem' }}>
+      <div className="grid fade" style={{ textAlign: 'left', gap: '1.2rem', alignItems: 'stretch' }}>
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          whileInView={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.6 }}
+          initial={{ opacity: 0, y: 15 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8 }}
           viewport={{ once: true }}
           className="premium-card"
         >
-          <h4 style={{ color: '#ff453a', marginBottom: '1rem', fontSize: '1rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{p.binaryTitle}</h4>
-          <p style={{ fontSize: '0.85rem', marginBottom: '1.5rem', lineHeight: '1.6' }}>{p.bitnetDesc.replace(/<[^>]*>?/gm, '')}</p>
-          <div style={{ fontSize: '0.75rem', color: 'var(--muted)', fontFamily: 'monospace', background: 'rgba(0,0,0,0.2)', padding: '0.8rem', borderRadius: '4px' }}>
+          <h4 style={{ color: '#ff453a', marginBottom: '0.8rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.15em' }}>{p.binaryTitle}</h4>
+          <p style={{ fontSize: '0.85rem', marginBottom: '1.2rem', lineHeight: '1.6', opacity: 0.8 }}>{p.bitnetDesc.replace(/<[^>]*>?/gm, '')}</p>
+          <div style={{ fontSize: '0.7rem', color: 'rgba(255,69,58,0.6)', fontFamily: 'monospace', background: 'rgba(255,69,58,0.05)', padding: '0.8rem', borderRadius: '6px', border: '1px solid rgba(255,69,58,0.1)' }}>
             {p.binaryFlow?.join(' → ')}
           </div>
         </motion.div>
 
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          whileInView={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.6, delay: 0.2 }}
+          initial={{ opacity: 0, y: 15 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.1 }}
           viewport={{ once: true }}
-          className="premium-card" style={{ borderLeft: '4px solid var(--accent)' }}
+          className="premium-card" style={{ borderLeft: '3px solid var(--accent)' }}
         >
-          <h4 style={{ color: 'var(--accent)', marginBottom: '1rem', fontSize: '1rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{p.trinityTitle}</h4>
-          <p style={{ fontSize: '0.85rem', marginBottom: '1.5rem', lineHeight: '1.6' }}>{p.trinityDesc}</p>
-          <div style={{ fontSize: '0.75rem', color: 'var(--accent)', fontFamily: 'monospace', background: 'rgba(0,229,153,0.05)', padding: '0.8rem', borderRadius: '4px' }}>
+          <h4 style={{ color: 'var(--accent)', marginBottom: '0.8rem', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.15em' }}>{p.trinityTitle}</h4>
+          <p style={{ fontSize: '0.85rem', marginBottom: '1.2rem', lineHeight: '1.6' }}>{p.trinityDesc}</p>
+          <div style={{ fontSize: '0.7rem', color: 'var(--accent)', fontFamily: 'monospace', background: 'rgba(0,229,153,0.05)', padding: '0.8rem', borderRadius: '6px', border: '1px solid rgba(0,229,153,0.1)' }}>
             {p.trinityFlow?.join(' → ')}
           </div>
         </motion.div>

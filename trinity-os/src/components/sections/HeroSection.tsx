@@ -18,8 +18,8 @@ export default function HeroSection() {
       >
         φ² + 1/φ² = 3
       </motion.div>
-      <h2 className="fade" style={{ fontSize: 'clamp(1.5rem, 5vw, 2.5rem)', marginBottom: '1.5rem' }} dangerouslySetInnerHTML={{ __html: t.headline }} />
-      <p className="fade" style={{ fontSize: 'clamp(0.9rem, 3vw, 1.1rem)', marginBottom: '3rem', opacity: 0.8 }}>{t.quote}</p>
+      <h2 className="fade" style={{ fontSize: 'clamp(1.8rem, 6vw, 2.8rem)', marginBottom: '1.2rem', letterSpacing: '-0.03em' }} dangerouslySetInnerHTML={{ __html: t.headline }} />
+      <p className="fade" style={{ fontSize: 'clamp(1rem, 2.5vw, 1.15rem)', marginBottom: '3rem', opacity: 0.7, maxWidth: '800px' }}>{t.quote}</p>
       
       <div className="fade" style={{ display: 'flex', gap: '1rem', marginTop: '2.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
         <motion.a 

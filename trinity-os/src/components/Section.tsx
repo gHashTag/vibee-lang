@@ -21,7 +21,7 @@ export default function Section({ id, children, className = '', style }: Section
   }, [])
 
   return (
-    <section id={id} ref={ref} className={`${className} ${visible ? 'visible' : ''}`} style={style}>
+    <section id={id} ref={ref} className={`${className} ${visible ? 'visible' : ''}`} style={{ minHeight: '30vh', ...style }}>
       {children}
     </section>
   )
