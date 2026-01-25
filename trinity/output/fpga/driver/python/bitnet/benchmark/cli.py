@@ -124,6 +124,27 @@ Examples:
     )
     
     parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Generate visualization plots"
+    )
+    
+    parser.add_argument(
+        "--plot-dir",
+        type=str,
+        default="plots",
+        help="Directory for plot output (default: plots)"
+    )
+    
+    parser.add_argument(
+        "--plot-format",
+        type=str,
+        choices=["png", "svg", "pdf"],
+        default="png",
+        help="Plot output format (default: png)"
+    )
+    
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version="BitNet Benchmark Suite 1.0.0"
@@ -210,6 +231,69 @@ def run_benchmarks(args):
             else:
                 # Text format
                 print_summary(runner.results)
+        
+        # Generate plots if requested
+        if args.plot:
+            generate_plots(runner.results, args.plot_dir, args.plot_format)
+
+
+def generate_plots(suite, output_dir: str, format: str):
+    """Генерация графиков визуализации"""
+    try:
+        from .visualization import BenchmarkVisualizer
+        
+        print()
+        print("=" * 60)
+        print("GENERATING PLOTS")
+        print("=" * 60)
+        
+        viz = BenchmarkVisualizer(suite)
+        
+        # Создать все доступные графики
+        plots_created = []
+        
+        try:
+            viz.plot_latency_histogram()
+            plots_created.append("latency_histogram")
+        except (ValueError, Exception):
+            pass
+        
+        try:
+            viz.plot_latency_percentiles()
+            plots_created.append("latency_percentiles")
+        except (ValueError, Exception):
+            pass
+        
+        try:
+            viz.plot_throughput_bar()
+            plots_created.append("throughput_bar")
+        except (ValueError, Exception):
+            pass
+        
+        try:
+            viz.plot_memory_bandwidth()
+            plots_created.append("memory_bandwidth")
+        except (ValueError, Exception):
+            pass
+        
+        try:
+            viz.plot_summary_dashboard()
+            plots_created.append("summary_dashboard")
+        except (ValueError, Exception):
+            pass
+        
+        # Сохранить
+        saved = viz.save_all(output_dir, formats=[format])
+        
+        print(f"Plots saved to: {output_dir}/")
+        for name in plots_created:
+            print(f"  - {name}.{format}")
+        
+        viz.close_all()
+        
+    except ImportError as e:
+        print(f"Warning: Could not generate plots - {e}")
+        print("Install matplotlib: pip install matplotlib")
 
 
 def print_summary(suite):

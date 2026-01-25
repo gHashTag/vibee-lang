@@ -13,6 +13,15 @@ from .throughput import ThroughputBenchmark
 from .memory import MemoryBenchmark
 from .report import ReportGenerator
 
+# Visualization (optional - requires matplotlib)
+try:
+    from .visualization import BenchmarkVisualizer, visualize_results
+    HAS_VISUALIZATION = True
+except ImportError:
+    HAS_VISUALIZATION = False
+    BenchmarkVisualizer = None
+    visualize_results = None
+
 __all__ = [
     "BenchmarkRunner",
     "BenchmarkResult",
@@ -20,4 +29,7 @@ __all__ = [
     "ThroughputBenchmark",
     "MemoryBenchmark",
     "ReportGenerator",
+    "BenchmarkVisualizer",
+    "visualize_results",
+    "HAS_VISUALIZATION",
 ]
