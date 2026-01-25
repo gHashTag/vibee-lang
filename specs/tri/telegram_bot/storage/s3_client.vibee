@@ -1,0 +1,575 @@
+name: s3_client
+version: "1.0.0"
+language: zig
+module: s3_client
+
+description: |
+  S3-compatible storage client for VIBEE Telegram bot.
+  Supports AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces.
+  Handles uploads, downloads, presigned URLs, multipart.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  S3Client:
+    description: "S3 client instance"
+    fields:
+      config: S3Config
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  S3Config:
+    description: "S3 configuration"
+    fields:
+      endpoint: String
+      region: String
+      access_key_id: String
+      secret_access_key: String
+      bucket: String
+      use_ssl: Bool
+      force_path_style: Bool
+      timeout_ms: Int
+      max_retries: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      uploads: Int
+      downloads: Int
+      deletes: Int
+      bytes_uploaded: Int
+      bytes_downloaded: Int
+      errors: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OBJECTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  S3Object:
+    description: "S3 object"
+    fields:
+      key: String
+      bucket: String
+      size: Int
+      etag: String
+      content_type: String
+      last_modified: Timestamp
+      metadata: Map<String, String>
+      storage_class: StorageClass
+
+  StorageClass:
+    description: "Storage class"
+    values:
+      - standard
+      - reduced_redundancy
+      - standard_ia
+      - onezone_ia
+      - intelligent_tiering
+      - glacier
+      - deep_archive
+
+  ObjectVersion:
+    description: "Object version"
+    fields:
+      version_id: String
+      key: String
+      is_latest: Bool
+      last_modified: Timestamp
+      etag: String
+      size: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PutObjectInput:
+    description: "Put object input"
+    fields:
+      key: String
+      body: Object
+      content_type: Option<String>
+      content_length: Option<Int>
+      content_encoding: Option<String>
+      content_disposition: Option<String>
+      cache_control: Option<String>
+      metadata: Option<Map<String, String>>
+      acl: Option<ObjectAcl>
+      storage_class: Option<StorageClass>
+      tagging: Option<String>
+
+  ObjectAcl:
+    description: "Object ACL"
+    values:
+      - private
+      - public_read
+      - public_read_write
+      - authenticated_read
+      - bucket_owner_read
+      - bucket_owner_full_control
+
+  PutObjectOutput:
+    description: "Put object output"
+    fields:
+      etag: String
+      version_id: Option<String>
+      expiration: Option<String>
+
+  GetObjectInput:
+    description: "Get object input"
+    fields:
+      key: String
+      version_id: Option<String>
+      range: Option<String>
+      if_match: Option<String>
+      if_none_match: Option<String>
+      if_modified_since: Option<Timestamp>
+      if_unmodified_since: Option<Timestamp>
+
+  GetObjectOutput:
+    description: "Get object output"
+    fields:
+      body: Object
+      content_type: String
+      content_length: Int
+      etag: String
+      last_modified: Timestamp
+      metadata: Map<String, String>
+      version_id: Option<String>
+      cache_control: Option<String>
+      content_disposition: Option<String>
+      content_encoding: Option<String>
+
+  DeleteObjectInput:
+    description: "Delete object input"
+    fields:
+      key: String
+      version_id: Option<String>
+
+  DeleteObjectOutput:
+    description: "Delete object output"
+    fields:
+      delete_marker: Bool
+      version_id: Option<String>
+
+  CopyObjectInput:
+    description: "Copy object input"
+    fields:
+      source_bucket: String
+      source_key: String
+      destination_key: String
+      metadata: Option<Map<String, String>>
+      metadata_directive: Option<String>
+      acl: Option<ObjectAcl>
+
+  CopyObjectOutput:
+    description: "Copy object output"
+    fields:
+      etag: String
+      last_modified: Timestamp
+      version_id: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LISTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ListObjectsInput:
+    description: "List objects input"
+    fields:
+      prefix: Option<String>
+      delimiter: Option<String>
+      max_keys: Option<Int>
+      continuation_token: Option<String>
+      start_after: Option<String>
+
+  ListObjectsOutput:
+    description: "List objects output"
+    fields:
+      contents: List<S3Object>
+      common_prefixes: List<String>
+      is_truncated: Bool
+      next_continuation_token: Option<String>
+      key_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MULTIPART
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MultipartUpload:
+    description: "Multipart upload"
+    fields:
+      upload_id: String
+      key: String
+      bucket: String
+      initiated: Timestamp
+
+  UploadPart:
+    description: "Upload part"
+    fields:
+      part_number: Int
+      etag: String
+      size: Int
+
+  CompletedPart:
+    description: "Completed part"
+    fields:
+      part_number: Int
+      etag: String
+
+  MultipartUploadInput:
+    description: "Multipart upload input"
+    fields:
+      key: String
+      content_type: Option<String>
+      metadata: Option<Map<String, String>>
+      acl: Option<ObjectAcl>
+
+  UploadPartInput:
+    description: "Upload part input"
+    fields:
+      upload_id: String
+      key: String
+      part_number: Int
+      body: Object
+      content_length: Int
+
+  CompleteMultipartInput:
+    description: "Complete multipart input"
+    fields:
+      upload_id: String
+      key: String
+      parts: List<CompletedPart>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRESIGNED
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PresignedUrlInput:
+    description: "Presigned URL input"
+    fields:
+      key: String
+      expires_in_seconds: Int
+      method: HttpMethod
+      content_type: Option<String>
+      content_disposition: Option<String>
+
+  HttpMethod:
+    description: "HTTP method"
+    values:
+      - get
+      - put
+      - delete
+      - head
+
+  PresignedUrl:
+    description: "Presigned URL"
+    fields:
+      url: String
+      expires_at: Timestamp
+      method: HttpMethod
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUCKETS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Bucket:
+    description: "S3 bucket"
+    fields:
+      name: String
+      creation_date: Timestamp
+      region: Option<String>
+
+  BucketPolicy:
+    description: "Bucket policy"
+    fields:
+      version: String
+      statement: List<PolicyStatement>
+
+  PolicyStatement:
+    description: "Policy statement"
+    fields:
+      sid: Option<String>
+      effect: String
+      principal: Object
+      action: List<String>
+      resource: List<String>
+      condition: Option<Object>
+
+  CorsRule:
+    description: "CORS rule"
+    fields:
+      allowed_headers: List<String>
+      allowed_methods: List<String>
+      allowed_origins: List<String>
+      expose_headers: List<String>
+      max_age_seconds: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  S3Error:
+    description: "S3 error"
+    fields:
+      code: ErrorCode
+      message: String
+      resource: Option<String>
+      request_id: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - access_denied
+      - bucket_not_found
+      - key_not_found
+      - invalid_access_key
+      - signature_mismatch
+      - request_timeout
+      - service_unavailable
+      - internal_error
+      - invalid_range
+      - entity_too_large
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: S3Config
+    when: Creating client
+    then: Return S3Client
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate credentials
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OBJECT OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: put_object
+    given: PutObjectInput
+    when: Uploading object
+    then: Return PutObjectOutput
+
+  - name: get_object
+    given: GetObjectInput
+    when: Downloading object
+    then: Return GetObjectOutput
+
+  - name: delete_object
+    given: DeleteObjectInput
+    when: Deleting object
+    then: Return DeleteObjectOutput
+
+  - name: copy_object
+    given: CopyObjectInput
+    when: Copying object
+    then: Return CopyObjectOutput
+
+  - name: head_object
+    given: Key
+    when: Getting object metadata
+    then: Return S3Object
+
+  - name: object_exists
+    given: Key
+    when: Checking existence
+    then: Return true if exists
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LISTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: list_objects
+    given: ListObjectsInput
+    when: Listing objects
+    then: Return ListObjectsOutput
+
+  - name: list_all_objects
+    given: Prefix
+    when: Listing all objects
+    then: Return all objects
+
+  - name: list_versions
+    given: Key prefix
+    when: Listing versions
+    then: Return version list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MULTIPART
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_multipart_upload
+    given: MultipartUploadInput
+    when: Creating multipart
+    then: Return MultipartUpload
+
+  - name: upload_part
+    given: UploadPartInput
+    when: Uploading part
+    then: Return UploadPart
+
+  - name: complete_multipart_upload
+    given: CompleteMultipartInput
+    when: Completing multipart
+    then: Return PutObjectOutput
+
+  - name: abort_multipart_upload
+    given: Upload ID and key
+    when: Aborting multipart
+    then: Return success
+
+  - name: list_multipart_uploads
+    given: Prefix
+    when: Listing multipart
+    then: Return upload list
+
+  - name: list_parts
+    given: Upload ID and key
+    when: Listing parts
+    then: Return part list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRESIGNED URLS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_presigned_url
+    given: PresignedUrlInput
+    when: Getting presigned URL
+    then: Return PresignedUrl
+
+  - name: get_presigned_download_url
+    given: Key and expires
+    when: Getting download URL
+    then: Return URL string
+
+  - name: get_presigned_upload_url
+    given: Key, content type, expires
+    when: Getting upload URL
+    then: Return URL string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUCKETS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: list_buckets
+    given: No parameters
+    when: Listing buckets
+    then: Return bucket list
+
+  - name: create_bucket
+    given: Bucket name and region
+    when: Creating bucket
+    then: Return success
+
+  - name: delete_bucket
+    given: Bucket name
+    when: Deleting bucket
+    then: Return success
+
+  - name: get_bucket_location
+    given: Bucket name
+    when: Getting location
+    then: Return region
+
+  - name: set_bucket_policy
+    given: Bucket and policy
+    when: Setting policy
+    then: Return success
+
+  - name: get_bucket_policy
+    given: Bucket name
+    when: Getting policy
+    then: Return BucketPolicy
+
+  - name: set_bucket_cors
+    given: Bucket and rules
+    when: Setting CORS
+    then: Return success
+
+  - name: get_bucket_cors
+    given: Bucket name
+    when: Getting CORS
+    then: Return CorsRule list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: upload_file
+    given: Local path and key
+    when: Uploading file
+    then: Return PutObjectOutput
+
+  - name: download_file
+    given: Key and local path
+    when: Downloading file
+    then: Return success
+
+  - name: upload_stream
+    given: Stream and key
+    when: Uploading stream
+    then: Return PutObjectOutput
+
+  - name: get_public_url
+    given: Key
+    when: Getting public URL
+    then: Return URL string
+
+  - name: generate_key
+    given: Prefix and extension
+    when: Generating key
+    then: Return unique key
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_REGION: "us-east-1"
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_RETRIES: 3
+
+  # Endpoints
+  AWS_ENDPOINT: "s3.amazonaws.com"
+  MINIO_ENDPOINT: "localhost:9000"
+  R2_ENDPOINT: "r2.cloudflarestorage.com"
+  DO_SPACES_ENDPOINT: "digitaloceanspaces.com"
+
+  # Limits
+  MAX_OBJECT_SIZE: 5368709120
+  MAX_PART_SIZE: 5368709120
+  MIN_PART_SIZE: 5242880
+  MAX_PARTS: 10000
+
+  # Presigned URL defaults
+  DEFAULT_PRESIGNED_EXPIRES: 3600
+  MAX_PRESIGNED_EXPIRES: 604800
+
+  # Content types
+  CONTENT_TYPE_BINARY: "application/octet-stream"
+  CONTENT_TYPE_JSON: "application/json"
+  CONTENT_TYPE_PNG: "image/png"
+  CONTENT_TYPE_JPEG: "image/jpeg"
+  CONTENT_TYPE_WEBP: "image/webp"
+  CONTENT_TYPE_MP4: "video/mp4"
+  CONTENT_TYPE_MP3: "audio/mpeg"

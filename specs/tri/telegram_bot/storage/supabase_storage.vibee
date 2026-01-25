@@ -1,0 +1,472 @@
+name: supabase_storage
+version: "1.0.0"
+language: zig
+module: supabase_storage
+
+description: |
+  Supabase Storage client for VIBEE Telegram bot.
+  File storage with RLS policies, transformations, CDN.
+  Handles images, videos, audio for AI generations.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  SupabaseStorage:
+    description: "Supabase Storage client"
+    fields:
+      config: StorageConfig
+      http_client: Object
+      is_initialized: Bool
+      stats: ClientStats
+
+  StorageConfig:
+    description: "Storage configuration"
+    fields:
+      url: String
+      anon_key: String
+      service_role_key: Option<String>
+      timeout_ms: Int
+      max_retries: Int
+
+  ClientStats:
+    description: "Client statistics"
+    fields:
+      uploads: Int
+      downloads: Int
+      deletes: Int
+      bytes_uploaded: Int
+      bytes_downloaded: Int
+      transformations: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUCKETS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Bucket:
+    description: "Storage bucket"
+    fields:
+      id: String
+      name: String
+      owner: Option<String>
+      public: Bool
+      file_size_limit: Option<Int>
+      allowed_mime_types: Option<List<String>>
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  CreateBucketInput:
+    description: "Create bucket input"
+    fields:
+      name: String
+      public: Bool
+      file_size_limit: Option<Int>
+      allowed_mime_types: Option<List<String>>
+
+  UpdateBucketInput:
+    description: "Update bucket input"
+    fields:
+      public: Option<Bool>
+      file_size_limit: Option<Int>
+      allowed_mime_types: Option<List<String>>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FILES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FileObject:
+    description: "File object"
+    fields:
+      id: String
+      name: String
+      bucket_id: String
+      owner: Option<String>
+      created_at: Timestamp
+      updated_at: Timestamp
+      last_accessed_at: Option<Timestamp>
+      metadata: FileMetadata
+
+  FileMetadata:
+    description: "File metadata"
+    fields:
+      size: Int
+      mimetype: String
+      cache_control: String
+      content_length: Int
+      etag: String
+      http_status_code: Int
+
+  UploadInput:
+    description: "Upload input"
+    fields:
+      bucket: String
+      path: String
+      file: Object
+      content_type: Option<String>
+      cache_control: Option<String>
+      upsert: Bool
+      metadata: Option<Object>
+
+  UploadOutput:
+    description: "Upload output"
+    fields:
+      id: String
+      path: String
+      full_path: String
+
+  DownloadInput:
+    description: "Download input"
+    fields:
+      bucket: String
+      path: String
+      transform: Option<TransformOptions>
+
+  MoveInput:
+    description: "Move input"
+    fields:
+      bucket: String
+      from_path: String
+      to_path: String
+
+  CopyInput:
+    description: "Copy input"
+    fields:
+      bucket: String
+      from_path: String
+      to_path: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LISTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ListInput:
+    description: "List input"
+    fields:
+      bucket: String
+      path: Option<String>
+      limit: Option<Int>
+      offset: Option<Int>
+      sort_by: Option<SortBy>
+      search: Option<String>
+
+  SortBy:
+    description: "Sort by"
+    fields:
+      column: String
+      order: SortOrder
+
+  SortOrder:
+    description: "Sort order"
+    values:
+      - asc
+      - desc
+
+  ListOutput:
+    description: "List output"
+    fields:
+      files: List<FileObject>
+      folders: List<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSFORMATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TransformOptions:
+    description: "Image transformation options"
+    fields:
+      width: Option<Int>
+      height: Option<Int>
+      resize: Option<ResizeMode>
+      format: Option<ImageFormat>
+      quality: Option<Int>
+
+  ResizeMode:
+    description: "Resize mode"
+    values:
+      - cover
+      - contain
+      - fill
+
+  ImageFormat:
+    description: "Image format"
+    values:
+      - origin
+      - avif
+      - webp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SIGNED URLS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SignedUrlInput:
+    description: "Signed URL input"
+    fields:
+      bucket: String
+      path: String
+      expires_in: Int
+      transform: Option<TransformOptions>
+      download: Option<String>
+
+  SignedUrl:
+    description: "Signed URL"
+    fields:
+      signed_url: String
+      path: String
+      token: String
+
+  SignedUploadUrlInput:
+    description: "Signed upload URL input"
+    fields:
+      bucket: String
+      path: String
+      expires_in: Int
+
+  SignedUploadUrl:
+    description: "Signed upload URL"
+    fields:
+      signed_url: String
+      path: String
+      token: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PUBLIC URLS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PublicUrl:
+    description: "Public URL"
+    fields:
+      public_url: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StorageError:
+    description: "Storage error"
+    fields:
+      status_code: Int
+      error: String
+      message: String
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - bucket_not_found
+      - object_not_found
+      - bucket_already_exists
+      - invalid_bucket_name
+      - invalid_file_path
+      - file_too_large
+      - invalid_mime_type
+      - permission_denied
+      - rate_limited
+      - storage_quota_exceeded
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLIENT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_client
+    given: StorageConfig
+    when: Creating client
+    then: Return SupabaseStorage
+
+  - name: initialize
+    given: No parameters
+    when: Initializing client
+    then: Validate configuration
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ClientStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUCKETS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: list_buckets
+    given: No parameters
+    when: Listing buckets
+    then: Return bucket list
+
+  - name: get_bucket
+    given: Bucket ID
+    when: Getting bucket
+    then: Return Bucket
+
+  - name: create_bucket
+    given: CreateBucketInput
+    when: Creating bucket
+    then: Return Bucket
+
+  - name: update_bucket
+    given: Bucket ID and UpdateBucketInput
+    when: Updating bucket
+    then: Return Bucket
+
+  - name: delete_bucket
+    given: Bucket ID
+    when: Deleting bucket
+    then: Return success
+
+  - name: empty_bucket
+    given: Bucket ID
+    when: Emptying bucket
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FILE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: upload
+    given: UploadInput
+    when: Uploading file
+    then: Return UploadOutput
+
+  - name: upload_to_signed_url
+    given: Signed URL and file
+    when: Uploading to signed URL
+    then: Return success
+
+  - name: download
+    given: DownloadInput
+    when: Downloading file
+    then: Return file bytes
+
+  - name: remove
+    given: Bucket and paths
+    when: Removing files
+    then: Return removed list
+
+  - name: move
+    given: MoveInput
+    when: Moving file
+    then: Return success
+
+  - name: copy
+    given: CopyInput
+    when: Copying file
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LISTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: list
+    given: ListInput
+    when: Listing files
+    then: Return ListOutput
+
+  - name: list_all
+    given: Bucket and path
+    when: Listing all files
+    then: Return all files
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # URLS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_signed_url
+    given: SignedUrlInput
+    when: Creating signed URL
+    then: Return SignedUrl
+
+  - name: create_signed_urls
+    given: Bucket, paths, expires
+    when: Creating signed URLs
+    then: Return SignedUrl list
+
+  - name: create_signed_upload_url
+    given: SignedUploadUrlInput
+    when: Creating upload URL
+    then: Return SignedUploadUrl
+
+  - name: get_public_url
+    given: Bucket and path
+    when: Getting public URL
+    then: Return PublicUrl
+
+  - name: get_public_url_with_transform
+    given: Bucket, path, transform
+    when: Getting transformed URL
+    then: Return PublicUrl
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: exists
+    given: Bucket and path
+    when: Checking existence
+    then: Return true if exists
+
+  - name: get_metadata
+    given: Bucket and path
+    when: Getting metadata
+    then: Return FileMetadata
+
+  - name: update_metadata
+    given: Bucket, path, metadata
+    when: Updating metadata
+    then: Return success
+
+  - name: generate_path
+    given: User ID, type, extension
+    when: Generating path
+    then: Return unique path
+
+  - name: get_file_extension
+    given: Content type
+    when: Getting extension
+    then: Return extension
+
+  - name: get_content_type
+    given: File extension
+    when: Getting content type
+    then: Return content type
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 30000
+  DEFAULT_MAX_RETRIES: 3
+  DEFAULT_CACHE_CONTROL: "max-age=3600"
+
+  # Buckets
+  BUCKET_AVATARS: "avatars"
+  BUCKET_GENERATIONS: "generations"
+  BUCKET_UPLOADS: "uploads"
+  BUCKET_TEMP: "temp"
+
+  # Paths
+  PATH_IMAGES: "images"
+  PATH_VIDEOS: "videos"
+  PATH_AUDIO: "audio"
+  PATH_DOCUMENTS: "documents"
+
+  # Limits
+  MAX_FILE_SIZE: 52428800
+  MAX_IMAGE_SIZE: 10485760
+  MAX_VIDEO_SIZE: 104857600
+
+  # Signed URL defaults
+  DEFAULT_SIGNED_URL_EXPIRES: 3600
+  MAX_SIGNED_URL_EXPIRES: 604800
+
+  # Transform defaults
+  DEFAULT_QUALITY: 80
+  DEFAULT_FORMAT: "webp"
+
+  # MIME types
+  ALLOWED_IMAGE_TYPES: "image/jpeg,image/png,image/webp,image/gif"
+  ALLOWED_VIDEO_TYPES: "video/mp4,video/webm,video/quicktime"
+  ALLOWED_AUDIO_TYPES: "audio/mpeg,audio/wav,audio/ogg"

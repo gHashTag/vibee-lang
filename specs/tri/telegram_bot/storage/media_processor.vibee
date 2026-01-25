@@ -1,0 +1,584 @@
+name: media_processor
+version: "1.0.0"
+language: zig
+module: media_processor
+
+description: |
+  Media processing for VIBEE Telegram bot.
+  Image, video, audio transformations.
+  Thumbnail generation, format conversion, optimization.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MediaProcessor:
+    description: "Media processor"
+    fields:
+      config: ProcessorConfig
+      stats: ProcessorStats
+      is_initialized: Bool
+
+  ProcessorConfig:
+    description: "Processor configuration"
+    fields:
+      temp_dir: String
+      max_concurrent: Int
+      timeout_ms: Int
+      ffmpeg_path: Option<String>
+      imagemagick_path: Option<String>
+
+  ProcessorStats:
+    description: "Processor statistics"
+    fields:
+      images_processed: Int
+      videos_processed: Int
+      audio_processed: Int
+      bytes_input: Int
+      bytes_output: Int
+      processing_time_ms: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MEDIA INFO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MediaInfo:
+    description: "Media information"
+    fields:
+      media_type: MediaType
+      format: String
+      size: Int
+      duration_ms: Option<Int>
+      width: Option<Int>
+      height: Option<Int>
+      bitrate: Option<Int>
+      codec: Option<String>
+      metadata: Object
+
+  MediaType:
+    description: "Media type"
+    values:
+      - image
+      - video
+      - audio
+      - document
+      - unknown
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ImageInput:
+    description: "Image input"
+    fields:
+      data: Object
+      format: Option<String>
+
+  ImageOutput:
+    description: "Image output"
+    fields:
+      data: Object
+      format: String
+      width: Int
+      height: Int
+      size: Int
+
+  ResizeOptions:
+    description: "Resize options"
+    fields:
+      width: Option<Int>
+      height: Option<Int>
+      mode: ResizeMode
+      background: Option<String>
+
+  ResizeMode:
+    description: "Resize mode"
+    values:
+      - fit
+      - fill
+      - cover
+      - contain
+      - stretch
+
+  CropOptions:
+    description: "Crop options"
+    fields:
+      x: Int
+      y: Int
+      width: Int
+      height: Int
+
+  ImageFormat:
+    description: "Image format"
+    values:
+      - jpeg
+      - png
+      - webp
+      - gif
+      - avif
+
+  ImageQuality:
+    description: "Image quality"
+    fields:
+      quality: Int
+      compression: Option<Int>
+
+  WatermarkOptions:
+    description: "Watermark options"
+    fields:
+      image: Object
+      position: WatermarkPosition
+      opacity: Float
+      scale: Float
+
+  WatermarkPosition:
+    description: "Watermark position"
+    values:
+      - top_left
+      - top_right
+      - bottom_left
+      - bottom_right
+      - center
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  VideoInput:
+    description: "Video input"
+    fields:
+      data: Object
+      format: Option<String>
+
+  VideoOutput:
+    description: "Video output"
+    fields:
+      data: Object
+      format: String
+      width: Int
+      height: Int
+      duration_ms: Int
+      size: Int
+
+  VideoFormat:
+    description: "Video format"
+    values:
+      - mp4
+      - webm
+      - mov
+      - avi
+      - gif
+
+  VideoCodec:
+    description: "Video codec"
+    values:
+      - h264
+      - h265
+      - vp8
+      - vp9
+      - av1
+
+  VideoResizeOptions:
+    description: "Video resize options"
+    fields:
+      width: Option<Int>
+      height: Option<Int>
+      maintain_aspect: Bool
+
+  VideoTrimOptions:
+    description: "Video trim options"
+    fields:
+      start_ms: Int
+      end_ms: Int
+
+  VideoEncodeOptions:
+    description: "Video encode options"
+    fields:
+      format: VideoFormat
+      codec: Option<VideoCodec>
+      bitrate: Option<Int>
+      fps: Option<Int>
+      crf: Option<Int>
+
+  ThumbnailOptions:
+    description: "Thumbnail options"
+    fields:
+      time_ms: Option<Int>
+      width: Option<Int>
+      height: Option<Int>
+      format: ImageFormat
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AudioInput:
+    description: "Audio input"
+    fields:
+      data: Object
+      format: Option<String>
+
+  AudioOutput:
+    description: "Audio output"
+    fields:
+      data: Object
+      format: String
+      duration_ms: Int
+      size: Int
+      sample_rate: Int
+      channels: Int
+
+  AudioFormat:
+    description: "Audio format"
+    values:
+      - mp3
+      - wav
+      - ogg
+      - aac
+      - flac
+
+  AudioCodec:
+    description: "Audio codec"
+    values:
+      - mp3
+      - aac
+      - opus
+      - vorbis
+      - flac
+
+  AudioEncodeOptions:
+    description: "Audio encode options"
+    fields:
+      format: AudioFormat
+      codec: Option<AudioCodec>
+      bitrate: Option<Int>
+      sample_rate: Option<Int>
+      channels: Option<Int>
+
+  AudioTrimOptions:
+    description: "Audio trim options"
+    fields:
+      start_ms: Int
+      end_ms: Int
+
+  AudioNormalizeOptions:
+    description: "Audio normalize options"
+    fields:
+      target_db: Float
+      peak_normalize: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BatchJob:
+    description: "Batch job"
+    fields:
+      id: String
+      items: List<BatchItem>
+      status: BatchStatus
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  BatchItem:
+    description: "Batch item"
+    fields:
+      id: String
+      input: Object
+      output: Option<Object>
+      status: ItemStatus
+      error: Option<String>
+
+  BatchStatus:
+    description: "Batch status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+      - cancelled
+
+  ItemStatus:
+    description: "Item status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+      - skipped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ProcessorError:
+    description: "Processor error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_input
+      - unsupported_format
+      - file_too_large
+      - processing_failed
+      - timeout
+      - codec_not_found
+      - insufficient_memory
+      - corrupted_file
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_processor
+    given: ProcessorConfig
+    when: Creating processor
+    then: Return MediaProcessor
+
+  - name: initialize
+    given: No parameters
+    when: Initializing processor
+    then: Validate dependencies
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ProcessorStats
+
+  - name: cleanup
+    given: No parameters
+    when: Cleaning up
+    then: Remove temp files
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MEDIA INFO
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_media_info
+    given: File data
+    when: Getting media info
+    then: Return MediaInfo
+
+  - name: detect_media_type
+    given: File data or extension
+    when: Detecting type
+    then: Return MediaType
+
+  - name: validate_media
+    given: File data and constraints
+    when: Validating media
+    then: Return validation result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMAGE PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: resize_image
+    given: ImageInput and ResizeOptions
+    when: Resizing image
+    then: Return ImageOutput
+
+  - name: crop_image
+    given: ImageInput and CropOptions
+    when: Cropping image
+    then: Return ImageOutput
+
+  - name: convert_image
+    given: ImageInput and target format
+    when: Converting image
+    then: Return ImageOutput
+
+  - name: compress_image
+    given: ImageInput and ImageQuality
+    when: Compressing image
+    then: Return ImageOutput
+
+  - name: add_watermark
+    given: ImageInput and WatermarkOptions
+    when: Adding watermark
+    then: Return ImageOutput
+
+  - name: rotate_image
+    given: ImageInput and degrees
+    when: Rotating image
+    then: Return ImageOutput
+
+  - name: flip_image
+    given: ImageInput and direction
+    when: Flipping image
+    then: Return ImageOutput
+
+  - name: create_thumbnail
+    given: ImageInput and size
+    when: Creating thumbnail
+    then: Return ImageOutput
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIDEO PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: resize_video
+    given: VideoInput and VideoResizeOptions
+    when: Resizing video
+    then: Return VideoOutput
+
+  - name: trim_video
+    given: VideoInput and VideoTrimOptions
+    when: Trimming video
+    then: Return VideoOutput
+
+  - name: convert_video
+    given: VideoInput and VideoEncodeOptions
+    when: Converting video
+    then: Return VideoOutput
+
+  - name: extract_thumbnail
+    given: VideoInput and ThumbnailOptions
+    when: Extracting thumbnail
+    then: Return ImageOutput
+
+  - name: extract_frames
+    given: VideoInput and interval
+    when: Extracting frames
+    then: Return ImageOutput list
+
+  - name: extract_audio
+    given: VideoInput
+    when: Extracting audio
+    then: Return AudioOutput
+
+  - name: add_audio_to_video
+    given: VideoInput and AudioInput
+    when: Adding audio
+    then: Return VideoOutput
+
+  - name: create_gif
+    given: VideoInput and options
+    when: Creating GIF
+    then: Return ImageOutput
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIO PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: convert_audio
+    given: AudioInput and AudioEncodeOptions
+    when: Converting audio
+    then: Return AudioOutput
+
+  - name: trim_audio
+    given: AudioInput and AudioTrimOptions
+    when: Trimming audio
+    then: Return AudioOutput
+
+  - name: normalize_audio
+    given: AudioInput and AudioNormalizeOptions
+    when: Normalizing audio
+    then: Return AudioOutput
+
+  - name: merge_audio
+    given: AudioInput list
+    when: Merging audio
+    then: Return AudioOutput
+
+  - name: split_audio
+    given: AudioInput and timestamps
+    when: Splitting audio
+    then: Return AudioOutput list
+
+  - name: get_waveform
+    given: AudioInput and options
+    when: Getting waveform
+    then: Return waveform data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BATCH PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_batch
+    given: BatchItem list
+    when: Creating batch
+    then: Return BatchJob
+
+  - name: process_batch
+    given: BatchJob
+    when: Processing batch
+    then: Return BatchJob
+
+  - name: get_batch_status
+    given: Batch ID
+    when: Getting status
+    then: Return BatchJob
+
+  - name: cancel_batch
+    given: Batch ID
+    when: Cancelling batch
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: optimize_for_telegram
+    given: Media data
+    when: Optimizing for Telegram
+    then: Return optimized media
+
+  - name: optimize_for_web
+    given: Media data
+    when: Optimizing for web
+    then: Return optimized media
+
+  - name: generate_preview
+    given: Media data
+    when: Generating preview
+    then: Return preview
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_TIMEOUT_MS: 60000
+  DEFAULT_MAX_CONCURRENT: 4
+  DEFAULT_TEMP_DIR: "/tmp/media_processor"
+
+  # Image defaults
+  DEFAULT_IMAGE_QUALITY: 85
+  DEFAULT_THUMBNAIL_SIZE: 320
+  MAX_IMAGE_DIMENSION: 4096
+
+  # Video defaults
+  DEFAULT_VIDEO_BITRATE: 2000000
+  DEFAULT_VIDEO_FPS: 30
+  DEFAULT_VIDEO_CRF: 23
+  MAX_VIDEO_DURATION_MS: 600000
+
+  # Audio defaults
+  DEFAULT_AUDIO_BITRATE: 128000
+  DEFAULT_SAMPLE_RATE: 44100
+  DEFAULT_CHANNELS: 2
+  MAX_AUDIO_DURATION_MS: 3600000
+
+  # Telegram limits
+  TELEGRAM_MAX_PHOTO_SIZE: 10485760
+  TELEGRAM_MAX_VIDEO_SIZE: 52428800
+  TELEGRAM_MAX_AUDIO_SIZE: 52428800
+  TELEGRAM_MAX_DOCUMENT_SIZE: 52428800
+  TELEGRAM_VIDEO_NOTE_SIZE: 640
+  TELEGRAM_THUMBNAIL_SIZE: 320
+
+  # Formats
+  SUPPORTED_IMAGE_FORMATS: "jpeg,png,webp,gif,avif"
+  SUPPORTED_VIDEO_FORMATS: "mp4,webm,mov,avi"
+  SUPPORTED_AUDIO_FORMATS: "mp3,wav,ogg,aac,flac"
