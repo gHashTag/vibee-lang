@@ -15,9 +15,9 @@ export default function MilestonesSection() {
         <p>{m.sub}</p>
       </div>
       
-      <div className="grid fade" style={{ marginTop: '3rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(200px, 25vw, 300px), 1fr))', gap: '1.5rem' }}>
+      <div className="grid fade" style={{ marginTop: '3rem', gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(250px, 28vw, 350px), 1fr))', gap: '1.5rem' }}>
         {m.quarters?.map((q: { q: string; title: string; items: string[] }, i: number) => (
-          <div key={i} className="premium-card compact" style={{ textAlign: 'left', background: 'rgba(255,255,255,0.02)', padding: '1.5rem' }}>
+          <div key={i} className="premium-card compact" style={{ textAlign: 'left', background: 'rgba(255,255,255,0.02)', padding: '1.5rem', minHeight: '220px' }}>
             <div style={{ fontSize: '0.65rem', color: 'var(--accent)', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{q.q}</div>
             <h4 style={{ marginBottom: '0.8rem', fontSize: '1rem' }}>{q.title}</h4>
             {q.items?.map((item: string, j: number) => (
