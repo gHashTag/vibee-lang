@@ -24,24 +24,25 @@ export default function SolutionSection() {
               cx="50" cy="50" r="45" fill="none" stroke="var(--accent)" strokeWidth="3" 
               strokeDasharray="283"
               initial={{ pathLength: 0, rotate: -90 }}
-              whileInView={{ pathLength: 1.585/3 }} // Illustrative of density ratio
+              whileInView={{ pathLength: 1.585/3 }} 
               viewport={{ once: true }}
               transition={{ duration: 2, ease: "easeOut" }}
               strokeLinecap="round" 
             />
             <motion.text 
-               x="50" y="42" textAnchor="middle" fill="var(--text)" fontSize="8" fontWeight="400" opacity="0.6"
-               initial={{ opacity: 0, y: 35 }}
-               whileInView={{ opacity: 0.6, y: 42 }}
+               x="50" y="35" textAnchor="middle" dominantBaseline="middle" fill="var(--text)" fontSize="7" fontWeight="400" opacity="0.5"
+               initial={{ opacity: 0 }}
+               whileInView={{ opacity: 0.5 }}
                transition={{ delay: 0.5 }}
             >
               log₂(3)
             </motion.text>
             <motion.text 
-               x="50" y="62" textAnchor="middle" fill="var(--accent)" fontSize="18" fontWeight="600"
-               initial={{ opacity: 0, scale: 0.8 }}
+               x="50" y="58" textAnchor="middle" dominantBaseline="middle" fill="var(--accent)" fontSize="22" fontWeight="600"
+               initial={{ opacity: 0, scale: 0.9 }}
                whileInView={{ opacity: 1, scale: 1 }}
-               transition={{ delay: 0.8, type: 'spring' }}
+               transition={{ delay: 0.8, type: 'spring', stiffness: 100 }}
+               style={{ filter: 'drop-shadow(0 0 10px rgba(0, 229, 153, 0.4))' }}
             >
               1.585
             </motion.text>
