@@ -9,8 +9,16 @@ export default function MiningMVP() {
   const [hashrate, setHashrate] = useState(0);
   const [efficiency, setEfficiency] = useState(578.8);
   const [satoshi, setSatoshi] = useState(0);
+  const [wallet, setWallet] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  const connectWallet = () => {
+    // Simulated Wallet Connection (e.g., Ledger / WalletConnect)
+    const mockAddr = `0xTRINITY_${Math.random().toString(16).substring(2, 10).toUpperCase()}`;
+    setWallet(mockAddr);
+    setLogs(prev => [...prev, `WALLET_CONNECTED: ${mockAddr} via LEDGER_NATIVE`]);
+  };
 
   // Simulation Logic
   useEffect(() => {
@@ -51,23 +59,33 @@ export default function MiningMVP() {
       position: 'relative',
       overflow: 'hidden'
     }}>
-      {/* Background Glows */}
+      {/* Simulation Banner */}
       <div style={{ 
-        position: 'absolute', 
-        top: '-10%', 
-        left: '50%', 
-        width: '100%', 
-        height: '40%', 
-        background: 'radial-gradient(circle, rgba(0, 229, 153, 0.1) 0%, transparent 70%)',
-        transform: 'translateX(-50%)',
-        zIndex: 0
-      }} />
+        background: 'rgba(255, 69, 58, 0.1)', 
+        color: '#ff453a', 
+        fontSize: '0.6rem', 
+        padding: '4px', 
+        textAlign: 'center', 
+        borderRadius: '4px',
+        marginBottom: '1rem',
+        border: '1px solid rgba(255, 69, 58, 0.2)',
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        zIndex: 10
+      }}>
+        VIBEE_OS: Active SU(3) Core Simulation (Native Protocol Running on ARM64)
+      </div>
 
       {/* Header Stat Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2rem', zIndex: 1 }}>
-        <div>
-          <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>BTC Accumulation</div>
-          <div style={{ fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent)' }}>₿ {satoshi.toFixed(8)}</div>
+        <div onClick={connectWallet} style={{ cursor: 'pointer' }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+            {wallet ? 'Account Connected' : 'Bitcoin Wallet'}
+          </div>
+          <div style={{ fontSize: '1.2rem', fontWeight: 600, color: wallet ? 'var(--accent)' : '#fff' }}>
+            {wallet ? `₿ ${satoshi.toFixed(8)}` : 'DISCONNECTED'}
+          </div>
+          {wallet && <div style={{ fontSize: '0.5rem', color: 'var(--muted)', marginTop: '2px' }}>{wallet}</div>}
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Native Port</div>
