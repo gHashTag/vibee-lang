@@ -1,0 +1,449 @@
+name: database
+version: "1.0.0"
+language: zig
+module: database
+
+description: |
+  Database abstraction layer for VIBEE Telegram bot.
+  Supports PostgreSQL (Supabase), SQLite, connection pooling.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  DatabaseConfig:
+    description: "Database connection configuration"
+    fields:
+      driver: DatabaseDriver
+      host: String
+      port: Int
+      database: String
+      username: String
+      password: String
+      ssl_mode: SslMode
+      pool_size: Int
+      connection_timeout: Int
+      query_timeout: Int
+
+  DatabaseDriver:
+    description: "Supported database drivers"
+    values:
+      - postgresql
+      - sqlite
+      - mysql
+
+  SslMode:
+    description: "SSL connection mode"
+    values:
+      - disable
+      - allow
+      - prefer
+      - require
+      - verify_ca
+      - verify_full
+
+  Connection:
+    description: "Database connection handle"
+    fields:
+      id: String
+      driver: DatabaseDriver
+      is_active: Bool
+      created_at: Timestamp
+      last_used: Timestamp
+
+  ConnectionPool:
+    description: "Connection pool state"
+    fields:
+      max_size: Int
+      active_count: Int
+      idle_count: Int
+      waiting_count: Int
+
+  QueryResult:
+    description: "Query execution result"
+    fields:
+      rows: List<Object>
+      row_count: Int
+      affected_rows: Int
+      last_insert_id: Option<Int>
+      execution_time_ms: Int
+
+  QueryError:
+    description: "Query error details"
+    fields:
+      code: String
+      message: String
+      detail: Option<String>
+      hint: Option<String>
+      position: Option<Int>
+      query: Option<String>
+
+  Transaction:
+    description: "Database transaction"
+    fields:
+      id: String
+      connection_id: String
+      isolation_level: IsolationLevel
+      started_at: Timestamp
+      is_active: Bool
+
+  IsolationLevel:
+    description: "Transaction isolation level"
+    values:
+      - read_uncommitted
+      - read_committed
+      - repeatable_read
+      - serializable
+
+  PreparedStatement:
+    description: "Prepared statement handle"
+    fields:
+      id: String
+      sql: String
+      param_count: Int
+      created_at: Timestamp
+
+  QueryBuilder:
+    description: "SQL query builder state"
+    fields:
+      table: String
+      select_columns: List<String>
+      where_clauses: List<String>
+      order_by: List<String>
+      limit_value: Option<Int>
+      offset_value: Option<Int>
+      joins: List<String>
+
+  MigrationStatus:
+    description: "Migration execution status"
+    fields:
+      version: String
+      name: String
+      applied_at: Option<Timestamp>
+      checksum: String
+      status: MigrationState
+
+  MigrationState:
+    description: "Migration state"
+    values:
+      - pending
+      - applied
+      - failed
+      - rolled_back
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONNECTION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: connect
+    given: DatabaseConfig
+    when: Establishing connection
+    then: Return Connection or error
+
+  - name: disconnect
+    given: Connection
+    when: Closing connection
+    then: Release resources
+
+  - name: ping
+    given: Connection
+    when: Testing connection
+    then: Return true if alive
+
+  - name: reconnect
+    given: Connection
+    when: Connection lost
+    then: Attempt reconnection
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONNECTION POOL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_pool
+    given: DatabaseConfig
+    when: Initializing pool
+    then: Return ConnectionPool
+
+  - name: acquire_connection
+    given: ConnectionPool
+    when: Getting connection from pool
+    then: Return Connection or wait
+
+  - name: release_connection
+    given: Connection and pool
+    when: Returning connection to pool
+    then: Mark as available
+
+  - name: get_pool_stats
+    given: ConnectionPool
+    when: Checking pool status
+    then: Return pool statistics
+
+  - name: resize_pool
+    given: Pool and new size
+    when: Adjusting pool size
+    then: Add or remove connections
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERY EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute
+    given: Connection and SQL
+    when: Executing query
+    then: Return QueryResult or error
+
+  - name: execute_params
+    given: Connection, SQL, and parameters
+    when: Executing parameterized query
+    then: Return QueryResult (SQL injection safe)
+
+  - name: query_one
+    given: Connection and SQL
+    when: Fetching single row
+    then: Return row or null
+
+  - name: query_all
+    given: Connection and SQL
+    when: Fetching all rows
+    then: Return list of rows
+
+  - name: query_scalar
+    given: Connection and SQL
+    when: Fetching single value
+    then: Return value or null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREPARED STATEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: prepare
+    given: Connection and SQL
+    when: Creating prepared statement
+    then: Return PreparedStatement
+
+  - name: execute_prepared
+    given: PreparedStatement and parameters
+    when: Executing prepared statement
+    then: Return QueryResult
+
+  - name: close_prepared
+    given: PreparedStatement
+    when: Releasing statement
+    then: Free resources
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: begin_transaction
+    given: Connection
+    when: Starting transaction
+    then: Return Transaction
+
+  - name: begin_transaction_with_level
+    given: Connection and IsolationLevel
+    when: Starting transaction with isolation
+    then: Return Transaction
+
+  - name: commit
+    given: Transaction
+    when: Committing changes
+    then: Persist changes
+
+  - name: rollback
+    given: Transaction
+    when: Rolling back changes
+    then: Discard changes
+
+  - name: savepoint
+    given: Transaction and name
+    when: Creating savepoint
+    then: Mark rollback point
+
+  - name: rollback_to_savepoint
+    given: Transaction and savepoint name
+    when: Partial rollback
+    then: Rollback to savepoint
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERY BUILDER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: select
+    given: Table name and columns
+    when: Building SELECT query
+    then: Return QueryBuilder
+
+  - name: where
+    given: QueryBuilder and condition
+    when: Adding WHERE clause
+    then: Return updated QueryBuilder
+
+  - name: where_eq
+    given: QueryBuilder, column, value
+    when: Adding equality condition
+    then: Return updated QueryBuilder
+
+  - name: where_in
+    given: QueryBuilder, column, values
+    when: Adding IN condition
+    then: Return updated QueryBuilder
+
+  - name: where_like
+    given: QueryBuilder, column, pattern
+    when: Adding LIKE condition
+    then: Return updated QueryBuilder
+
+  - name: where_between
+    given: QueryBuilder, column, min, max
+    when: Adding BETWEEN condition
+    then: Return updated QueryBuilder
+
+  - name: where_null
+    given: QueryBuilder and column
+    when: Adding IS NULL condition
+    then: Return updated QueryBuilder
+
+  - name: where_not_null
+    given: QueryBuilder and column
+    when: Adding IS NOT NULL condition
+    then: Return updated QueryBuilder
+
+  - name: order_by
+    given: QueryBuilder, column, direction
+    when: Adding ORDER BY
+    then: Return updated QueryBuilder
+
+  - name: limit
+    given: QueryBuilder and count
+    when: Adding LIMIT
+    then: Return updated QueryBuilder
+
+  - name: offset
+    given: QueryBuilder and count
+    when: Adding OFFSET
+    then: Return updated QueryBuilder
+
+  - name: join
+    given: QueryBuilder, table, condition
+    when: Adding JOIN
+    then: Return updated QueryBuilder
+
+  - name: left_join
+    given: QueryBuilder, table, condition
+    when: Adding LEFT JOIN
+    then: Return updated QueryBuilder
+
+  - name: build_sql
+    given: QueryBuilder
+    when: Generating SQL
+    then: Return SQL string
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INSERT/UPDATE/DELETE BUILDERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: insert
+    given: Table and data object
+    when: Building INSERT
+    then: Return SQL and params
+
+  - name: insert_many
+    given: Table and list of objects
+    when: Building bulk INSERT
+    then: Return SQL and params
+
+  - name: update
+    given: Table, data, where condition
+    when: Building UPDATE
+    then: Return SQL and params
+
+  - name: delete
+    given: Table and where condition
+    when: Building DELETE
+    then: Return SQL and params
+
+  - name: upsert
+    given: Table, data, conflict columns
+    when: Building UPSERT (INSERT ON CONFLICT)
+    then: Return SQL and params
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIGRATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: run_migrations
+    given: Connection and migrations path
+    when: Applying pending migrations
+    then: Return list of applied migrations
+
+  - name: rollback_migration
+    given: Connection and version
+    when: Rolling back migration
+    then: Return success or error
+
+  - name: get_migration_status
+    given: Connection
+    when: Checking migrations
+    then: Return list of MigrationStatus
+
+  - name: create_migration
+    given: Migration name
+    when: Creating new migration file
+    then: Return file path
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: escape_string
+    given: String value
+    when: Escaping for SQL
+    then: Return escaped string
+
+  - name: escape_identifier
+    given: Identifier (table/column name)
+    when: Escaping identifier
+    then: Return quoted identifier
+
+  - name: table_exists
+    given: Connection and table name
+    when: Checking table existence
+    then: Return true if exists
+
+  - name: get_table_columns
+    given: Connection and table name
+    when: Getting table schema
+    then: Return list of column info
+
+  - name: get_table_indexes
+    given: Connection and table name
+    when: Getting indexes
+    then: Return list of index info
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_POOL_SIZE: 10
+  DEFAULT_CONNECTION_TIMEOUT: 30000
+  DEFAULT_QUERY_TIMEOUT: 60000
+  MAX_POOL_SIZE: 100
+  MIN_POOL_SIZE: 1
+
+  SUPABASE_DEFAULT_PORT: 5432
+  SQLITE_MEMORY: ":memory:"
+
+  ERROR_CONNECTION_FAILED: "DB_CONNECTION_FAILED"
+  ERROR_QUERY_FAILED: "DB_QUERY_FAILED"
+  ERROR_TRANSACTION_FAILED: "DB_TRANSACTION_FAILED"
+  ERROR_POOL_EXHAUSTED: "DB_POOL_EXHAUSTED"
+  ERROR_TIMEOUT: "DB_TIMEOUT"

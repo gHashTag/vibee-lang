@@ -1,0 +1,462 @@
+name: cache
+version: "1.0.0"
+language: zig
+module: cache
+
+description: |
+  Caching layer for VIBEE Telegram bot.
+  In-memory cache with TTL, LRU eviction, namespaces.
+  Supports Redis-like operations.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CacheConfig:
+    description: "Cache configuration"
+    fields:
+      max_size: Int
+      default_ttl: Int
+      eviction_policy: EvictionPolicy
+      namespace: String
+      persist_to_disk: Bool
+      compression: Bool
+
+  EvictionPolicy:
+    description: "Cache eviction strategy"
+    values:
+      - lru
+      - lfu
+      - fifo
+      - ttl
+      - random
+
+  CacheEntry:
+    description: "Single cache entry"
+    fields:
+      key: String
+      value: Object
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+      access_count: Int
+      last_accessed: Timestamp
+      size_bytes: Int
+
+  CacheStats:
+    description: "Cache statistics"
+    fields:
+      total_entries: Int
+      total_size_bytes: Int
+      hit_count: Int
+      miss_count: Int
+      hit_rate: Float
+      eviction_count: Int
+      expired_count: Int
+
+  CacheNamespace:
+    description: "Isolated cache namespace"
+    fields:
+      name: String
+      prefix: String
+      entry_count: Int
+      size_bytes: Int
+
+  CacheOperation:
+    description: "Cache operation result"
+    fields:
+      success: Bool
+      key: String
+      operation: String
+      old_value: Option<Object>
+      new_value: Option<Object>
+
+  CachePattern:
+    description: "Key pattern for bulk operations"
+    fields:
+      pattern: String
+      matched_count: Int
+
+  CacheLock:
+    description: "Distributed lock"
+    fields:
+      key: String
+      owner: String
+      acquired_at: Timestamp
+      expires_at: Timestamp
+      is_held: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BASIC OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get
+    given: Cache key
+    when: Retrieving value
+    then: Return value or null
+
+  - name: get_or_default
+    given: Key and default value
+    when: Retrieving with fallback
+    then: Return value or default
+
+  - name: get_or_set
+    given: Key, factory function, TTL
+    when: Get or compute value
+    then: Return existing or computed value
+
+  - name: set
+    given: Key and value
+    when: Storing value
+    then: Store with default TTL
+
+  - name: set_with_ttl
+    given: Key, value, TTL seconds
+    when: Storing with expiration
+    then: Store with custom TTL
+
+  - name: set_if_not_exists
+    given: Key and value
+    when: Storing only if absent
+    then: Return true if stored
+
+  - name: set_if_exists
+    given: Key and value
+    when: Updating only if present
+    then: Return true if updated
+
+  - name: delete
+    given: Cache key
+    when: Removing entry
+    then: Return true if deleted
+
+  - name: exists
+    given: Cache key
+    when: Checking existence
+    then: Return true if exists and not expired
+
+  - name: touch
+    given: Cache key
+    when: Updating access time
+    then: Reset TTL and access time
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BULK OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_many
+    given: List of keys
+    when: Retrieving multiple values
+    then: Return map of key to value
+
+  - name: set_many
+    given: Map of key-value pairs
+    when: Storing multiple values
+    then: Store all with default TTL
+
+  - name: delete_many
+    given: List of keys
+    when: Removing multiple entries
+    then: Return count of deleted
+
+  - name: delete_by_pattern
+    given: Key pattern (glob)
+    when: Removing matching entries
+    then: Return count of deleted
+
+  - name: get_keys
+    given: Optional pattern
+    when: Listing keys
+    then: Return list of matching keys
+
+  - name: get_keys_by_prefix
+    given: Key prefix
+    when: Finding keys by prefix
+    then: Return list of keys
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TTL OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_ttl
+    given: Cache key
+    when: Checking remaining TTL
+    then: Return seconds or -1 if no TTL
+
+  - name: set_ttl
+    given: Key and new TTL
+    when: Updating expiration
+    then: Return true if updated
+
+  - name: expire_at
+    given: Key and timestamp
+    when: Setting absolute expiration
+    then: Return true if updated
+
+  - name: persist
+    given: Cache key
+    when: Removing expiration
+    then: Make entry permanent
+
+  - name: cleanup_expired
+    given: No parameters
+    when: Manual cleanup
+    then: Remove all expired entries
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NUMERIC OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: increment
+    given: Key and delta (default 1)
+    when: Incrementing numeric value
+    then: Return new value
+
+  - name: decrement
+    given: Key and delta (default 1)
+    when: Decrementing numeric value
+    then: Return new value
+
+  - name: increment_by_float
+    given: Key and float delta
+    when: Incrementing by float
+    then: Return new value
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIST OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: list_push
+    given: Key and value
+    when: Adding to list end
+    then: Return new list length
+
+  - name: list_push_front
+    given: Key and value
+    when: Adding to list start
+    then: Return new list length
+
+  - name: list_pop
+    given: Cache key
+    when: Removing from list end
+    then: Return removed value
+
+  - name: list_pop_front
+    given: Cache key
+    when: Removing from list start
+    then: Return removed value
+
+  - name: list_range
+    given: Key, start, end
+    when: Getting list slice
+    then: Return list of values
+
+  - name: list_length
+    given: Cache key
+    when: Getting list size
+    then: Return length
+
+  - name: list_trim
+    given: Key, start, end
+    when: Trimming list
+    then: Keep only range
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SET OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_add
+    given: Key and value
+    when: Adding to set
+    then: Return true if added (not duplicate)
+
+  - name: set_remove
+    given: Key and value
+    when: Removing from set
+    then: Return true if removed
+
+  - name: set_contains
+    given: Key and value
+    when: Checking membership
+    then: Return true if member
+
+  - name: set_members
+    given: Cache key
+    when: Getting all members
+    then: Return list of values
+
+  - name: set_size
+    given: Cache key
+    when: Getting set size
+    then: Return count
+
+  - name: set_random
+    given: Key and count
+    when: Getting random members
+    then: Return random values
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HASH OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: hash_get
+    given: Key and field
+    when: Getting hash field
+    then: Return value or null
+
+  - name: hash_set
+    given: Key, field, value
+    when: Setting hash field
+    then: Return true if new field
+
+  - name: hash_delete
+    given: Key and field
+    when: Deleting hash field
+    then: Return true if deleted
+
+  - name: hash_exists
+    given: Key and field
+    when: Checking field existence
+    then: Return true if exists
+
+  - name: hash_get_all
+    given: Cache key
+    when: Getting all fields
+    then: Return map of field to value
+
+  - name: hash_keys
+    given: Cache key
+    when: Getting field names
+    then: Return list of fields
+
+  - name: hash_values
+    given: Cache key
+    when: Getting field values
+    then: Return list of values
+
+  - name: hash_increment
+    given: Key, field, delta
+    when: Incrementing hash field
+    then: Return new value
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NAMESPACE OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_namespace
+    given: Namespace name
+    when: Creating isolated namespace
+    then: Return CacheNamespace
+
+  - name: get_namespace
+    given: Namespace name
+    when: Getting namespace
+    then: Return CacheNamespace or null
+
+  - name: clear_namespace
+    given: Namespace name
+    when: Clearing namespace
+    then: Remove all entries in namespace
+
+  - name: list_namespaces
+    given: No parameters
+    when: Listing namespaces
+    then: Return list of namespaces
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: acquire_lock
+    given: Lock key and TTL
+    when: Acquiring distributed lock
+    then: Return CacheLock or null
+
+  - name: release_lock
+    given: CacheLock
+    when: Releasing lock
+    then: Return true if released
+
+  - name: extend_lock
+    given: CacheLock and additional TTL
+    when: Extending lock duration
+    then: Return true if extended
+
+  - name: is_locked
+    given: Lock key
+    when: Checking lock status
+    then: Return true if locked
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CACHE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: clear
+    given: No parameters
+    when: Clearing entire cache
+    then: Remove all entries
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return CacheStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear hit/miss counters
+
+  - name: get_size
+    given: No parameters
+    when: Getting cache size
+    then: Return total bytes
+
+  - name: get_entry_count
+    given: No parameters
+    when: Getting entry count
+    then: Return number of entries
+
+  - name: evict
+    given: Count to evict
+    when: Manual eviction
+    then: Remove entries per policy
+
+  - name: save_to_disk
+    given: File path
+    when: Persisting cache
+    then: Save to file
+
+  - name: load_from_disk
+    given: File path
+    when: Loading cache
+    then: Restore from file
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_SIZE: 10000
+  DEFAULT_TTL_SECONDS: 3600
+  MAX_KEY_LENGTH: 256
+  MAX_VALUE_SIZE: 1048576
+
+  NAMESPACE_USER: "user"
+  NAMESPACE_SESSION: "session"
+  NAMESPACE_RATE_LIMIT: "rate_limit"
+  NAMESPACE_GENERATION: "generation"
+  NAMESPACE_TEMP: "temp"
+
+  TTL_SHORT: 60
+  TTL_MEDIUM: 300
+  TTL_LONG: 3600
+  TTL_DAY: 86400
+  TTL_WEEK: 604800
+
+  LOCK_DEFAULT_TTL: 30
+  LOCK_MAX_TTL: 300

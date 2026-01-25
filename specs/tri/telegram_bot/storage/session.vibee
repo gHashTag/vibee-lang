@@ -1,0 +1,471 @@
+name: session
+version: "1.0.0"
+language: zig
+module: session
+
+description: |
+  Session management for VIBEE Telegram bot.
+  Handles user sessions, authentication tokens, device tracking.
+  Supports session persistence and security.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Session:
+    description: "User session"
+    fields:
+      session_id: String
+      telegram_id: Int
+      chat_id: Int
+      created_at: Timestamp
+      expires_at: Timestamp
+      last_activity: Timestamp
+      is_active: Bool
+      ip_address: Option<String>
+      user_agent: Option<String>
+      device_info: Option<DeviceInfo>
+      metadata: Object
+
+  SessionConfig:
+    description: "Session configuration"
+    fields:
+      ttl_seconds: Int
+      max_sessions_per_user: Int
+      extend_on_activity: Bool
+      secure_only: Bool
+      same_site: SameSitePolicy
+
+  SameSitePolicy:
+    description: "Cookie same-site policy"
+    values:
+      - strict
+      - lax
+      - none
+
+  DeviceInfo:
+    description: "Device information"
+    fields:
+      device_type: DeviceType
+      platform: String
+      app_version: Option<String>
+      telegram_version: Option<String>
+      language: String
+
+  DeviceType:
+    description: "Device type"
+    values:
+      - mobile_android
+      - mobile_ios
+      - desktop_windows
+      - desktop_macos
+      - desktop_linux
+      - web
+      - unknown
+
+  SessionToken:
+    description: "Session authentication token"
+    fields:
+      token: String
+      session_id: String
+      telegram_id: Int
+      issued_at: Timestamp
+      expires_at: Timestamp
+      token_type: TokenType
+      scopes: List<String>
+
+  TokenType:
+    description: "Token type"
+    values:
+      - access
+      - refresh
+      - api_key
+      - webhook
+
+  SessionActivity:
+    description: "Session activity record"
+    fields:
+      session_id: String
+      activity_type: String
+      timestamp: Timestamp
+      details: Object
+
+  SessionStats:
+    description: "Session statistics"
+    fields:
+      total_sessions: Int
+      active_sessions: Int
+      expired_sessions: Int
+      avg_session_duration: Int
+      sessions_by_device: Object
+
+  AuthResult:
+    description: "Authentication result"
+    fields:
+      success: Bool
+      session: Option<Session>
+      token: Option<SessionToken>
+      error: Option<String>
+      requires_2fa: Bool
+
+  SessionFilter:
+    description: "Filter for querying sessions"
+    fields:
+      telegram_id: Option<Int>
+      is_active: Option<Bool>
+      device_type: Option<DeviceType>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  RateLimitInfo:
+    description: "Rate limit information"
+    fields:
+      session_id: String
+      action: String
+      count: Int
+      window_start: Timestamp
+      window_end: Timestamp
+      limit: Int
+      remaining: Int
+      reset_at: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_session
+    given: Telegram ID and chat ID
+    when: Starting new session
+    then: Return new Session
+
+  - name: create_session_with_device
+    given: Telegram ID, chat ID, DeviceInfo
+    when: Starting session with device info
+    then: Return new Session
+
+  - name: get_session
+    given: Session ID
+    when: Retrieving session
+    then: Return Session or null
+
+  - name: get_session_by_telegram_id
+    given: Telegram ID
+    when: Finding active session
+    then: Return most recent Session or null
+
+  - name: get_or_create_session
+    given: Telegram ID and chat ID
+    when: Ensuring session exists
+    then: Return existing or new Session
+
+  - name: update_session
+    given: Session ID and updates
+    when: Updating session data
+    then: Return updated Session
+
+  - name: extend_session
+    given: Session ID
+    when: Extending expiration
+    then: Update expires_at
+
+  - name: end_session
+    given: Session ID
+    when: Ending session
+    then: Mark as inactive
+
+  - name: destroy_session
+    given: Session ID
+    when: Destroying session
+    then: Remove session data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_active_sessions
+    given: Telegram ID
+    when: Listing active sessions
+    then: Return list of Sessions
+
+  - name: get_all_sessions
+    given: Telegram ID
+    when: Listing all sessions
+    then: Return list of Sessions
+
+  - name: find_sessions
+    given: SessionFilter
+    when: Searching sessions
+    then: Return filtered list
+
+  - name: count_sessions
+    given: SessionFilter
+    when: Counting sessions
+    then: Return count
+
+  - name: get_session_stats
+    given: Optional telegram ID
+    when: Getting statistics
+    then: Return SessionStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION VALIDATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_session
+    given: Session ID
+    when: Checking session validity
+    then: Return true if valid and active
+
+  - name: is_session_expired
+    given: Session ID
+    when: Checking expiration
+    then: Return true if expired
+
+  - name: is_session_active
+    given: Session ID
+    when: Checking activity
+    then: Return true if active
+
+  - name: touch_session
+    given: Session ID
+    when: Recording activity
+    then: Update last_activity
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MULTI-SESSION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: end_all_sessions
+    given: Telegram ID
+    when: Logging out everywhere
+    then: End all user sessions
+
+  - name: end_other_sessions
+    given: Telegram ID and current session ID
+    when: Logging out other devices
+    then: End all except current
+
+  - name: limit_sessions
+    given: Telegram ID and max count
+    when: Enforcing session limit
+    then: End oldest sessions if over limit
+
+  - name: get_session_count
+    given: Telegram ID
+    when: Counting user sessions
+    then: Return active session count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOKEN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_token
+    given: Session and TokenType
+    when: Creating auth token
+    then: Return SessionToken
+
+  - name: generate_access_token
+    given: Session
+    when: Creating access token
+    then: Return short-lived token
+
+  - name: generate_refresh_token
+    given: Session
+    when: Creating refresh token
+    then: Return long-lived token
+
+  - name: validate_token
+    given: Token string
+    when: Validating token
+    then: Return SessionToken or null
+
+  - name: refresh_token
+    given: Refresh token string
+    when: Refreshing access token
+    then: Return new access token
+
+  - name: revoke_token
+    given: Token string
+    when: Revoking token
+    then: Invalidate token
+
+  - name: revoke_all_tokens
+    given: Session ID
+    when: Revoking all tokens
+    then: Invalidate all session tokens
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUTHENTICATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: authenticate_telegram
+    given: Telegram auth data
+    when: Authenticating via Telegram
+    then: Return AuthResult
+
+  - name: authenticate_token
+    given: Token string
+    when: Authenticating via token
+    then: Return AuthResult
+
+  - name: authenticate_webhook
+    given: Webhook secret
+    when: Authenticating webhook
+    then: Return AuthResult
+
+  - name: verify_telegram_hash
+    given: Auth data and bot token
+    when: Verifying Telegram login
+    then: Return true if valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACTIVITY TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_activity
+    given: Session ID and activity type
+    when: Recording activity
+    then: Store SessionActivity
+
+  - name: get_activity_log
+    given: Session ID and limit
+    when: Getting activity history
+    then: Return list of activities
+
+  - name: get_recent_activity
+    given: Telegram ID and hours
+    when: Getting recent activity
+    then: Return activity summary
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMITING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_rate_limit
+    given: Session ID and action
+    when: Checking rate limit
+    then: Return RateLimitInfo
+
+  - name: increment_rate_limit
+    given: Session ID and action
+    when: Recording action
+    then: Increment counter
+
+  - name: is_rate_limited
+    given: Session ID and action
+    when: Checking if limited
+    then: Return true if over limit
+
+  - name: reset_rate_limit
+    given: Session ID and action
+    when: Resetting limit
+    then: Clear counter
+
+  - name: get_rate_limit_remaining
+    given: Session ID and action
+    when: Checking remaining
+    then: Return remaining count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION DATA
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_session_data
+    given: Session ID, key, value
+    when: Storing session data
+    then: Update metadata
+
+  - name: get_session_data
+    given: Session ID and key
+    when: Retrieving session data
+    then: Return value or null
+
+  - name: delete_session_data
+    given: Session ID and key
+    when: Removing session data
+    then: Remove from metadata
+
+  - name: clear_session_data
+    given: Session ID
+    when: Clearing all data
+    then: Clear metadata
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLEANUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_expired
+    given: No parameters
+    when: Removing expired sessions
+    then: Return count of removed
+
+  - name: cleanup_inactive
+    given: Inactive threshold seconds
+    when: Removing inactive sessions
+    then: Return count of removed
+
+  - name: purge_old_sessions
+    given: Age in days
+    when: Purging old sessions
+    then: Remove sessions older than age
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEVICE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: detect_device
+    given: User agent string
+    when: Parsing device info
+    then: Return DeviceInfo
+
+  - name: get_sessions_by_device
+    given: Telegram ID and DeviceType
+    when: Finding device sessions
+    then: Return list of Sessions
+
+  - name: is_new_device
+    given: Telegram ID and DeviceInfo
+    when: Checking if new device
+    then: Return true if not seen before
+
+  - name: get_known_devices
+    given: Telegram ID
+    when: Listing known devices
+    then: Return list of DeviceInfo
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_SESSION_TTL: 86400
+  MAX_SESSION_TTL: 2592000
+  ACCESS_TOKEN_TTL: 3600
+  REFRESH_TOKEN_TTL: 2592000
+  MAX_SESSIONS_PER_USER: 5
+
+  RATE_LIMIT_WINDOW: 60
+  RATE_LIMIT_MESSAGE: 30
+  RATE_LIMIT_GENERATION: 10
+  RATE_LIMIT_PAYMENT: 5
+  RATE_LIMIT_API: 100
+
+  ACTIVITY_MESSAGE: "message"
+  ACTIVITY_COMMAND: "command"
+  ACTIVITY_CALLBACK: "callback"
+  ACTIVITY_GENERATION: "generation"
+  ACTIVITY_PAYMENT: "payment"
+  ACTIVITY_LOGIN: "login"
+  ACTIVITY_LOGOUT: "logout"
+
+  TOKEN_PREFIX_ACCESS: "vba_"
+  TOKEN_PREFIX_REFRESH: "vbr_"
+  TOKEN_PREFIX_API: "vbk_"

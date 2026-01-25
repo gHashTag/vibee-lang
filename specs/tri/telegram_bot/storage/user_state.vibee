@@ -1,0 +1,515 @@
+name: user_state
+version: "1.0.0"
+language: zig
+module: user_state
+
+description: |
+  User state management for VIBEE Telegram bot.
+  Tracks conversation state, wizard progress, pending actions.
+  Supports FSM (Finite State Machine) for multi-step flows.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  UserState:
+    description: "Complete user state"
+    fields:
+      telegram_id: Int
+      current_scene: Option<String>
+      current_step: Option<String>
+      scene_data: Object
+      pending_action: Option<PendingAction>
+      last_message_id: Option<Int>
+      last_activity: Timestamp
+      language: String
+      context: Object
+
+  SceneState:
+    description: "Scene/wizard state"
+    values:
+      - idle
+      - awaiting_input
+      - processing
+      - confirming
+      - completed
+      - cancelled
+      - error
+
+  PendingAction:
+    description: "Action waiting for user input"
+    fields:
+      action_type: ActionType
+      prompt: String
+      timeout: Int
+      created_at: Timestamp
+      expires_at: Timestamp
+      metadata: Object
+
+  ActionType:
+    description: "Types of pending actions"
+    values:
+      - awaiting_photo
+      - awaiting_video
+      - awaiting_audio
+      - awaiting_text
+      - awaiting_prompt
+      - awaiting_confirmation
+      - awaiting_payment
+      - awaiting_selection
+      - awaiting_file
+
+  WizardState:
+    description: "Multi-step wizard state"
+    fields:
+      wizard_id: String
+      current_step: Int
+      total_steps: Int
+      steps_data: List<Object>
+      can_go_back: Bool
+      started_at: Timestamp
+      last_step_at: Timestamp
+
+  WizardStep:
+    description: "Single wizard step"
+    fields:
+      step_id: String
+      step_number: Int
+      name: String
+      is_completed: Bool
+      is_skippable: Bool
+      data: Object
+      completed_at: Option<Timestamp>
+
+  ConversationContext:
+    description: "Conversation context"
+    fields:
+      telegram_id: Int
+      chat_id: Int
+      message_history: List<Object>
+      last_bot_message: Option<Int>
+      last_user_message: Option<Int>
+      reply_to_message: Option<Int>
+
+  StateTransition:
+    description: "State transition record"
+    fields:
+      from_state: String
+      to_state: String
+      trigger: String
+      timestamp: Timestamp
+      metadata: Object
+
+  GenerationState:
+    description: "AI generation in progress"
+    fields:
+      generation_id: String
+      model: String
+      prompt: String
+      status: GenerationStatus
+      progress: Int
+      started_at: Timestamp
+      estimated_completion: Option<Timestamp>
+      result_url: Option<String>
+      error: Option<String>
+
+  GenerationStatus:
+    description: "Generation status"
+    values:
+      - queued
+      - starting
+      - processing
+      - completed
+      - failed
+      - cancelled
+
+  MenuState:
+    description: "Current menu state"
+    fields:
+      current_menu: String
+      menu_stack: List<String>
+      selected_item: Option<String>
+      page: Int
+      total_pages: Int
+
+  InputBuffer:
+    description: "Buffered user input"
+    fields:
+      telegram_id: Int
+      input_type: String
+      content: Object
+      file_id: Option<String>
+      created_at: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_state
+    given: Telegram ID
+    when: Retrieving user state
+    then: Return UserState or create default
+
+  - name: set_state
+    given: Telegram ID and UserState
+    when: Saving user state
+    then: Persist state
+
+  - name: update_state
+    given: Telegram ID and partial state
+    when: Updating specific fields
+    then: Merge and persist
+
+  - name: clear_state
+    given: Telegram ID
+    when: Resetting user state
+    then: Remove all state data
+
+  - name: get_or_create_state
+    given: Telegram ID
+    when: Ensuring state exists
+    then: Return existing or new state
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCENE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enter_scene
+    given: Telegram ID and scene name
+    when: Starting new scene
+    then: Set current scene and clear data
+
+  - name: exit_scene
+    given: Telegram ID
+    when: Leaving current scene
+    then: Clear scene state
+
+  - name: get_current_scene
+    given: Telegram ID
+    when: Checking active scene
+    then: Return scene name or null
+
+  - name: is_in_scene
+    given: Telegram ID and scene name
+    when: Checking specific scene
+    then: Return true if in scene
+
+  - name: set_scene_data
+    given: Telegram ID, key, value
+    when: Storing scene-specific data
+    then: Update scene data
+
+  - name: get_scene_data
+    given: Telegram ID and key
+    when: Retrieving scene data
+    then: Return value or null
+
+  - name: clear_scene_data
+    given: Telegram ID
+    when: Clearing scene data
+    then: Remove all scene data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WIZARD MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_wizard
+    given: Telegram ID, wizard ID, total steps
+    when: Starting multi-step wizard
+    then: Initialize wizard state
+
+  - name: get_wizard_state
+    given: Telegram ID
+    when: Getting wizard progress
+    then: Return WizardState or null
+
+  - name: advance_wizard
+    given: Telegram ID and step data
+    when: Moving to next step
+    then: Save step data and advance
+
+  - name: go_back_wizard
+    given: Telegram ID
+    when: Going to previous step
+    then: Decrement step counter
+
+  - name: complete_wizard
+    given: Telegram ID
+    when: Finishing wizard
+    then: Mark as completed
+
+  - name: cancel_wizard
+    given: Telegram ID
+    when: Cancelling wizard
+    then: Clear wizard state
+
+  - name: get_wizard_step_data
+    given: Telegram ID and step number
+    when: Getting specific step data
+    then: Return step data or null
+
+  - name: set_wizard_step_data
+    given: Telegram ID, step, data
+    when: Updating step data
+    then: Save step data
+
+  - name: is_wizard_active
+    given: Telegram ID
+    when: Checking wizard status
+    then: Return true if active
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PENDING ACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_pending_action
+    given: Telegram ID and PendingAction
+    when: Setting expected input
+    then: Store pending action
+
+  - name: get_pending_action
+    given: Telegram ID
+    when: Checking pending action
+    then: Return PendingAction or null
+
+  - name: clear_pending_action
+    given: Telegram ID
+    when: Clearing pending action
+    then: Remove pending action
+
+  - name: is_action_pending
+    given: Telegram ID
+    when: Checking if action pending
+    then: Return true if pending
+
+  - name: is_action_expired
+    given: Telegram ID
+    when: Checking action timeout
+    then: Return true if expired
+
+  - name: await_photo
+    given: Telegram ID and prompt
+    when: Expecting photo input
+    then: Set photo pending action
+
+  - name: await_text
+    given: Telegram ID and prompt
+    when: Expecting text input
+    then: Set text pending action
+
+  - name: await_confirmation
+    given: Telegram ID and prompt
+    when: Expecting yes/no
+    then: Set confirmation pending
+
+  - name: await_selection
+    given: Telegram ID, prompt, options
+    when: Expecting selection
+    then: Set selection pending
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GENERATION STATE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_generation
+    given: Telegram ID and GenerationState
+    when: Starting AI generation
+    then: Store generation state
+
+  - name: get_generation_state
+    given: Telegram ID
+    when: Checking generation status
+    then: Return GenerationState or null
+
+  - name: update_generation_progress
+    given: Telegram ID and progress
+    when: Updating progress
+    then: Update progress percentage
+
+  - name: complete_generation
+    given: Telegram ID and result URL
+    when: Generation completed
+    then: Mark as completed
+
+  - name: fail_generation
+    given: Telegram ID and error
+    when: Generation failed
+    then: Mark as failed
+
+  - name: cancel_generation
+    given: Telegram ID
+    when: Cancelling generation
+    then: Mark as cancelled
+
+  - name: is_generating
+    given: Telegram ID
+    when: Checking if generating
+    then: Return true if in progress
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MENU STATE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_menu_state
+    given: Telegram ID
+    when: Getting menu state
+    then: Return MenuState
+
+  - name: set_current_menu
+    given: Telegram ID and menu name
+    when: Navigating to menu
+    then: Update current menu
+
+  - name: push_menu
+    given: Telegram ID and menu name
+    when: Entering submenu
+    then: Push to menu stack
+
+  - name: pop_menu
+    given: Telegram ID
+    when: Going back
+    then: Pop from menu stack
+
+  - name: clear_menu_stack
+    given: Telegram ID
+    when: Resetting navigation
+    then: Clear menu stack
+
+  - name: set_menu_page
+    given: Telegram ID and page number
+    when: Paginating menu
+    then: Update current page
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INPUT BUFFER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: buffer_input
+    given: Telegram ID and InputBuffer
+    when: Storing user input
+    then: Save to buffer
+
+  - name: get_buffered_input
+    given: Telegram ID
+    when: Retrieving buffered input
+    then: Return InputBuffer or null
+
+  - name: clear_input_buffer
+    given: Telegram ID
+    when: Clearing buffer
+    then: Remove buffered input
+
+  - name: has_buffered_input
+    given: Telegram ID
+    when: Checking buffer
+    then: Return true if has input
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_context
+    given: Telegram ID, key, value
+    when: Storing context data
+    then: Update context
+
+  - name: get_context
+    given: Telegram ID and key
+    when: Retrieving context
+    then: Return value or null
+
+  - name: clear_context
+    given: Telegram ID
+    when: Clearing context
+    then: Remove all context
+
+  - name: merge_context
+    given: Telegram ID and object
+    when: Merging context data
+    then: Merge into existing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACTIVITY TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: update_activity
+    given: Telegram ID
+    when: User activity detected
+    then: Update last_activity timestamp
+
+  - name: get_last_activity
+    given: Telegram ID
+    when: Checking last activity
+    then: Return timestamp
+
+  - name: is_active
+    given: Telegram ID and timeout
+    when: Checking if recently active
+    then: Return true if within timeout
+
+  - name: get_inactive_users
+    given: Timeout seconds
+    when: Finding inactive users
+    then: Return list of telegram IDs
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MESSAGE TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_last_message_id
+    given: Telegram ID and message ID
+    when: Tracking bot message
+    then: Store message ID
+
+  - name: get_last_message_id
+    given: Telegram ID
+    when: Getting last message
+    then: Return message ID or null
+
+  - name: set_reply_to
+    given: Telegram ID and message ID
+    when: Setting reply target
+    then: Store reply message ID
+
+  - name: get_reply_to
+    given: Telegram ID
+    when: Getting reply target
+    then: Return message ID or null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  STATE_TTL_SECONDS: 86400
+  PENDING_ACTION_TIMEOUT: 300
+  WIZARD_TIMEOUT: 1800
+  GENERATION_TIMEOUT: 600
+  INPUT_BUFFER_TTL: 60
+
+  SCENE_NEURO_PHOTO: "neuro_photo"
+  SCENE_IMAGE_TO_VIDEO: "image_to_video"
+  SCENE_TEXT_TO_VIDEO: "text_to_video"
+  SCENE_VOICE_AVATAR: "voice_avatar"
+  SCENE_DIGITAL_AVATAR: "digital_avatar"
+  SCENE_LIP_SYNC: "lip_sync"
+  SCENE_FACE_SWAP: "face_swap"
+  SCENE_UPSCALE: "upscale"
+  SCENE_PROMPT_FROM_PHOTO: "prompt_from_photo"
+  SCENE_PAYMENT: "payment"
+  SCENE_SETTINGS: "settings"
+
+  MENU_MAIN: "main"
+  MENU_NEURO_PHOTO: "neuro_photo"
+  MENU_VIDEO: "video"
+  MENU_AUDIO: "audio"
+  MENU_AVATAR: "avatar"
+  MENU_TOOLS: "tools"
+  MENU_BALANCE: "balance"
+  MENU_SUPPORT: "support"
