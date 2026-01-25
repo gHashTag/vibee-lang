@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// auth_middleware v2.0.0 - Generated from .vibee specification
+// logging_middleware v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,17 +17,17 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const SESSION_TTL_HOURS: f64 = 24;
+pub const LOG_LEVEL: f64 = 0;
 
-pub const SESSION_EXTEND_HOURS: f64 = 12;
+pub const LOG_FORMAT: f64 = 0;
 
-pub const ADMIN_IDS: f64 = 0;
+pub const MAX_LOG_DATA_LENGTH: f64 = 1000;
 
-pub const DEFAULT_LANGUAGE: f64 = 0;
+pub const ERROR_ALERT_THRESHOLD: f64 = 10;
 
-pub const DEFAULT_MENU: f64 = 0;
+pub const ERROR_ALERT_WINDOW_SECONDS: f64 = 60;
 
-pub const MAINTENANCE_MODE: f64 = 0;
+pub const ADMIN_ALERT_CHAT_ID: f64 = -1001234567890;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -44,82 +44,84 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Authentication context passed through middleware
-pub const AuthContext = struct {
+/// Logging context for middleware chain
+pub const LogContext = struct {
+    request_id: []const u8,
     telegram_id: i64,
     chat_id: i64,
-    message_id: i64,
-    user: ?[]const u8,
-    session: ?[]const u8,
-    is_authenticated: bool,
-    is_new_user: bool,
-    auth_error: ?[]const u8,
+    start_time: i64,
+    end_time: ?[]const u8,
+    duration_ms: ?[]const u8,
+    log_level: LogLevel,
 };
 
-/// Authenticated user data
-pub const AuthenticatedUser = struct {
-    id: []const u8,
-    telegram_id: i64,
-    username: ?[]const u8,
-    first_name: ?[]const u8,
-    last_name: ?[]const u8,
-    language_code: []const u8,
-    balance: i64,
-    level: i64,
-    is_premium: bool,
-    is_banned: bool,
-    referral_code: ?[]const u8,
-    created_at: i64,
+/// Log level enum
+pub const LogLevel = struct {
 };
 
-/// User session data
-pub const SessionData = struct {
-    telegram_id: i64,
-    current_menu: []const u8,
-    current_scene: ?[]const u8,
-    scene_step: ?[]const u8,
-    scene_data: ?[]const u8,
-    language: []const u8,
-    last_activity: i64,
-    expires_at: i64,
-};
-
-/// Authentication error
-pub const AuthError = struct {
-    code: AuthErrorCode,
+/// Structured log entry
+pub const LogEntry = struct {
+    timestamp: i64,
+    level: LogLevel,
+    request_id: []const u8,
+    telegram_id: ?[]const u8,
+    chat_id: ?[]const u8,
+    event: []const u8,
     message: []const u8,
-    retry_after: ?[]const u8,
-};
-
-/// Authentication error codes
-pub const AuthErrorCode = struct {
-};
-
-/// Authentication result
-pub const AuthResult = struct {
-    success: bool,
-    context: ?[]const u8,
+    data: ?[]const u8,
     @"error": ?[]const u8,
+    duration_ms: ?[]const u8,
 };
 
-/// Telegram user from update
-pub const TelegramUser = struct {
-    id: i64,
-    is_bot: bool,
-    first_name: []const u8,
-    last_name: ?[]const u8,
-    username: ?[]const u8,
-    language_code: ?[]const u8,
-    is_premium: ?[]const u8,
+/// Error information for logging
+pub const ErrorInfo = struct {
+    code: []const u8,
+    message: []const u8,
+    stack_trace: ?[]const u8,
+    context: ?[]const u8,
 };
 
-/// User ban information
-pub const BanInfo = struct {
-    is_banned: bool,
-    reason: ?[]const u8,
-    banned_at: ?[]const u8,
-    banned_until: ?[]const u8,
-    banned_by: ?[]const u8,
+/// Request log entry
+pub const RequestLog = struct {
+    request_id: []const u8,
+    timestamp: i64,
+    telegram_id: i64,
+    chat_id: i64,
+    update_type: []const u8,
+    message_type: ?[]const u8,
+    command: ?[]const u8,
+    callback_data: ?[]const u8,
+    text_length: ?[]const u8,
+    has_media: bool,
+};
+
+/// Response log entry
+pub const ResponseLog = struct {
+    request_id: []const u8,
+    timestamp: i64,
+    success: bool,
+    response_type: []const u8,
+    message_sent: bool,
+    keyboard_sent: bool,
+    media_sent: bool,
+    @"error": ?[]const u8,
+    duration_ms: i64,
+};
+
+/// Analytics event
+pub const AnalyticsEvent = struct {
+    event_name: []const u8,
+    telegram_id: i64,
+    properties: []const u8,
+    timestamp: i64,
+};
+
+/// Metric data point
+pub const MetricPoint = struct {
+    name: []const u8,
+    value: f64,
+    tags: std.StringHashMap([]const u8),
+    timestamp: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -198,212 +200,240 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "authenticate" {
-// Given: TelegramUser and chat_id
-// When: Processing any update
+test "log_request" {
+// Given: Telegram update
+// When: Request received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_message" {
-// Given: Telegram message update
-// When: Processing message
+test "log_message_request" {
+// Given: Message update
+// When: Message received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_callback" {
-// Given: Telegram callback query
-// When: Processing callback
+test "log_callback_request" {
+// Given: Callback query
+// When: Callback received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_payment" {
-// Given: Telegram pre-checkout or payment
-// When: Processing payment
+test "log_payment_request" {
+// Given: Payment update
+// When: Payment received
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_or_create_user" {
-// Given: TelegramUser
-// When: Ensuring user exists
+test "log_response" {
+// Given: LogContext and response
+// When: Response sent
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_user" {
-// Given: TelegramUser
-// When: Creating new user
+test "log_success" {
+// Given: LogContext and response details
+// When: Successful response
+// Then: Log with info level
+    // TODO: Add test assertions
+}
+
+test "log_error" {
+// Given: LogContext and error
+// When: Error response
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_user_profile" {
-// Given: AuthenticatedUser and TelegramUser
-// When: Profile data changed
+test "log_exception" {
+// Given: Exception and context
+// When: Exception caught
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_user_by_telegram_id" {
-// Given: Telegram ID
-// When: Fetching user
-// Then: Return AuthenticatedUser or null
+test "log_validation_error" {
+// Given: Validation error and context
+// When: Validation failed
+// Then: Log with warn level
     // TODO: Add test assertions
 }
 
-test "get_or_create_session" {
-// Given: Telegram ID
-// When: Loading session
+test "log_api_error" {
+// Given: API error and context
+// When: External API failed
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_session" {
-// Given: Telegram ID and language
-// When: Creating new session
+test "log_database_error" {
+// Given: DB error and context
+// When: Database operation failed
 // Then: |
     // TODO: Add test assertions
 }
 
-test "load_session" {
-// Given: Telegram ID
-// When: Loading from cache
+test "track_event" {
+// Given: Event name, telegram_id, properties
+// When: Tracking user action
 // Then: |
     // TODO: Add test assertions
 }
 
-test "save_session" {
-// Given: SessionData
-// When: Persisting session
+test "track_generation_started" {
+// Given: Telegram ID, service, model
+// When: Generation started
+// Then: Track "generation_started" event
+    // TODO: Add test assertions
+}
+
+test "track_generation_completed" {
+// Given: Telegram ID, service, duration, success
+// When: Generation completed
+// Then: Track "generation_completed" event
+    // TODO: Add test assertions
+}
+
+test "track_payment_completed" {
+// Given: Telegram ID, amount, method
+// When: Payment completed
+// Then: Track "payment_completed" event
+    // TODO: Add test assertions
+}
+
+test "track_user_action" {
+// Given: Telegram ID, action, details
+// When: User performs action
+// Then: Track action event
+    // TODO: Add test assertions
+}
+
+test "record_metric" {
+// Given: Metric name, value, tags
+// When: Recording metric
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_session" {
-// Given: Telegram ID and updates
-// When: Updating session fields
+test "record_request_duration" {
+// Given: Duration ms and tags
+// When: Request completed
+// Then: Record "request_duration_ms" metric
+    // TODO: Add test assertions
+}
+
+test "record_generation_duration" {
+// Given: Duration ms, service, model
+// When: Generation completed
+// Then: Record "generation_duration_ms" metric
+    // TODO: Add test assertions
+}
+
+test "increment_counter" {
+// Given: Counter name and tags
+// When: Counting events
+// Then: Increment counter metric
+    // TODO: Add test assertions
+}
+
+test "record_gauge" {
+// Given: Gauge name, value, tags
+// When: Recording current value
+// Then: Record gauge metric
+    // TODO: Add test assertions
+}
+
+test "format_log_entry" {
+// Given: LogEntry
+// When: Formatting for output
 // Then: |
     // TODO: Add test assertions
 }
 
-test "clear_session" {
-// Given: Telegram ID
-// When: Logging out or resetting
+test "format_json_log" {
+// Given: LogEntry
+// When: JSON output
+// Then: Return JSON string
+    // TODO: Add test assertions
+}
+
+test "format_text_log" {
+// Given: LogEntry
+// When: Text output
+// Then: Return "[LEVEL] timestamp - message"
+    // TODO: Add test assertions
+}
+
+test "sanitize_log_data" {
+// Given: Data object
+// When: Removing sensitive data
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_session_expired" {
-// Given: SessionData
-// When: Checking expiry
-// Then: Return true if expires_at < now
-    // TODO: Add test assertions
-}
-
-test "extend_session" {
-// Given: Telegram ID
-// When: Extending session lifetime
+test "write_log" {
+// Given: LogEntry
+// When: Writing to output
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_user_banned" {
-// Given: Telegram ID
-// When: Checking ban status
+test "write_to_stdout" {
+// Given: Formatted log
+// When: Console output
+// Then: Print to stdout
+    // TODO: Add test assertions
+}
+
+test "write_to_file" {
+// Given: Formatted log
+// When: File output
+// Then: Append to log file
+    // TODO: Add test assertions
+}
+
+test "send_to_aggregator" {
+// Given: LogEntry
+// When: External logging
+// Then: Send to log aggregation service
+    // TODO: Add test assertions
+}
+
+test "logging_middleware" {
+// Given: Update and next handler
+// When: Middleware execution
 // Then: |
     // TODO: Add test assertions
 }
 
-test "ban_user" {
-// Given: Telegram ID, reason, duration
-// When: Banning user
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "unban_user" {
-// Given: Telegram ID
-// When: Unbanning user
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "check_temporary_ban_expiry" {
-// Given: BanInfo
-// When: Checking if ban expired
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "is_admin" {
-// Given: Telegram ID
-// When: Checking admin status
-// Then: Return true if in ADMIN_IDS list
-    // TODO: Add test assertions
-}
-
-test "check_permission" {
-// Given: AuthContext and permission name
-// When: Checking specific permission
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "require_admin" {
-// Given: AuthContext
-// When: Requiring admin access
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "require_level" {
-// Given: AuthContext and min_level
-// When: Requiring minimum level
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "is_maintenance_mode" {
+test "generate_request_id" {
 // Given: No parameters
-// When: Checking maintenance status
-// Then: Return true if maintenance enabled
+// When: Creating request ID
+// Then: Return UUID or short ID
     // TODO: Add test assertions
 }
 
-test "set_maintenance_mode" {
-// Given: Enabled flag and message
-// When: Toggling maintenance
+test "get_log_context" {
+// Given: Request ID
+// When: Retrieving context
+// Then: Return LogContext from storage
+    // TODO: Add test assertions
+}
+
+test "send_alert" {
+// Given: Alert level, message, context
+// When: Critical event
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_maintenance_message" {
-// Given: Language
-// When: Getting maintenance text
-// Then: Return localized maintenance message
-    // TODO: Add test assertions
-}
-
-test "create_auth_error" {
-// Given: AuthErrorCode and message
-// When: Creating error response
-// Then: Return AuthError
-    // TODO: Add test assertions
-}
-
-test "handle_banned_user" {
-// Given: AuthContext and BanInfo
-// When: User is banned
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_maintenance" {
-// Given: AuthContext
-// When: In maintenance mode
+test "check_error_threshold" {
+// Given: Error type
+// When: Checking for alert
 // Then: |
     // TODO: Add test assertions
 }

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// auth_middleware v2.0.0 - Generated from .vibee specification
+// middleware_chain v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,17 +17,11 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const SESSION_TTL_HOURS: f64 = 24;
+pub const CHAIN_TIMEOUT_MS: f64 = 30000;
 
-pub const SESSION_EXTEND_HOURS: f64 = 12;
+pub const MAX_MIDDLEWARE_RETRIES: f64 = 1;
 
-pub const ADMIN_IDS: f64 = 0;
-
-pub const DEFAULT_LANGUAGE: f64 = 0;
-
-pub const DEFAULT_MENU: f64 = 0;
-
-pub const MAINTENANCE_MODE: f64 = 0;
+pub const CONTEXT_TTL_SECONDS: f64 = 300;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -44,82 +38,62 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Authentication context passed through middleware
-pub const AuthContext = struct {
+/// Combined context from all middleware
+pub const MiddlewareContext = struct {
+    request_id: []const u8,
     telegram_id: i64,
     chat_id: i64,
     message_id: i64,
-    user: ?[]const u8,
-    session: ?[]const u8,
-    is_authenticated: bool,
-    is_new_user: bool,
-    auth_error: ?[]const u8,
+    auth_data: []const u8,
+    balance_data: ?[]const u8,
+    rate_limit_data: []const u8,
+    log_data: []const u8,
+    start_time: i64,
+    metadata: []const u8,
 };
 
-/// Authenticated user data
-pub const AuthenticatedUser = struct {
-    id: []const u8,
-    telegram_id: i64,
-    username: ?[]const u8,
-    first_name: ?[]const u8,
-    last_name: ?[]const u8,
-    language_code: []const u8,
-    balance: i64,
-    level: i64,
-    is_premium: bool,
-    is_banned: bool,
-    referral_code: ?[]const u8,
-    created_at: i64,
-};
-
-/// User session data
-pub const SessionData = struct {
-    telegram_id: i64,
-    current_menu: []const u8,
-    current_scene: ?[]const u8,
-    scene_step: ?[]const u8,
-    scene_data: ?[]const u8,
-    language: []const u8,
-    last_activity: i64,
-    expires_at: i64,
-};
-
-/// Authentication error
-pub const AuthError = struct {
-    code: AuthErrorCode,
-    message: []const u8,
-    retry_after: ?[]const u8,
-};
-
-/// Authentication error codes
-pub const AuthErrorCode = struct {
-};
-
-/// Authentication result
-pub const AuthResult = struct {
+/// Result from middleware chain
+pub const MiddlewareResult = struct {
     success: bool,
     context: ?[]const u8,
     @"error": ?[]const u8,
+    should_continue: bool,
 };
 
-/// Telegram user from update
-pub const TelegramUser = struct {
-    id: i64,
-    is_bot: bool,
-    first_name: []const u8,
-    last_name: ?[]const u8,
-    username: ?[]const u8,
-    language_code: ?[]const u8,
-    is_premium: ?[]const u8,
+/// Middleware error
+pub const MiddlewareError = struct {
+    middleware: []const u8,
+    code: []const u8,
+    message: []const u8,
+    retry_after: ?[]const u8,
+    user_message: ?[]const u8,
 };
 
-/// User ban information
-pub const BanInfo = struct {
-    is_banned: bool,
-    reason: ?[]const u8,
-    banned_at: ?[]const u8,
-    banned_until: ?[]const u8,
-    banned_by: ?[]const u8,
+/// Middleware configuration
+pub const MiddlewareConfig = struct {
+    name: []const u8,
+    enabled: bool,
+    order: i64,
+    options: ?[]const u8,
+};
+
+/// Chain configuration
+pub const ChainConfig = struct {
+    middlewares: []const u8,
+    error_handler: []const u8,
+    timeout_ms: i64,
+};
+
+/// Telegram update type
+pub const UpdateType = struct {
+};
+
+/// Middleware handler function type
+pub const MiddlewareHandler = struct {
+    name: []const u8,
+    handler_name: []const u8,
+    requires_auth: bool,
+    requires_balance: bool,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -198,212 +172,212 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "authenticate" {
-// Given: TelegramUser and chat_id
+test "execute_chain" {
+// Given: Telegram update and handler
 // When: Processing any update
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_message" {
-// Given: Telegram message update
+test "execute_message_chain" {
+// Given: Message update
 // When: Processing message
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_callback" {
-// Given: Telegram callback query
+test "execute_callback_chain" {
+// Given: Callback query
 // When: Processing callback
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_payment" {
-// Given: Telegram pre-checkout or payment
+test "execute_payment_chain" {
+// Given: Payment update
 // When: Processing payment
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_or_create_user" {
-// Given: TelegramUser
-// When: Ensuring user exists
+test "execute_generation_chain" {
+// Given: Generation request
+// When: Processing AI generation
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_user" {
-// Given: TelegramUser
-// When: Creating new user
+test "execute_middleware" {
+// Given: Middleware config and context
+// When: Running single middleware
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_user_profile" {
-// Given: AuthenticatedUser and TelegramUser
-// When: Profile data changed
+test "execute_logging_middleware" {
+// Given: Context
+// When: Running logging
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_user_by_telegram_id" {
-// Given: Telegram ID
-// When: Fetching user
-// Then: Return AuthenticatedUser or null
-    // TODO: Add test assertions
-}
-
-test "get_or_create_session" {
-// Given: Telegram ID
-// When: Loading session
+test "execute_rate_limit_middleware" {
+// Given: Context
+// When: Running rate limit
 // Then: |
     // TODO: Add test assertions
 }
 
-test "create_session" {
-// Given: Telegram ID and language
-// When: Creating new session
+test "execute_auth_middleware" {
+// Given: Context
+// When: Running auth
 // Then: |
     // TODO: Add test assertions
 }
 
-test "load_session" {
-// Given: Telegram ID
-// When: Loading from cache
+test "execute_balance_middleware" {
+// Given: Context and required amount
+// When: Running balance check
 // Then: |
     // TODO: Add test assertions
 }
 
-test "save_session" {
-// Given: SessionData
-// When: Persisting session
+test "execute_handler" {
+// Given: Context and handler
+// When: Running actual handler
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_session" {
-// Given: Telegram ID and updates
-// When: Updating session fields
+test "execute_response_logging" {
+// Given: Context and result
+// When: Logging response
 // Then: |
     // TODO: Add test assertions
 }
 
-test "clear_session" {
-// Given: Telegram ID
-// When: Logging out or resetting
+test "build_chain" {
+// Given: Update type and options
+// When: Building middleware chain
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_session_expired" {
-// Given: SessionData
-// When: Checking expiry
-// Then: Return true if expires_at < now
+test "build_message_chain" {
+// Given: Message type
+// When: Building for message
+// Then: Return standard chain
     // TODO: Add test assertions
 }
 
-test "extend_session" {
-// Given: Telegram ID
-// When: Extending session lifetime
+test "build_callback_chain" {
+// Given: Callback data
+// When: Building for callback
+// Then: Return standard chain
+    // TODO: Add test assertions
+}
+
+test "build_payment_chain" {
+// Given: Payment type
+// When: Building for payment
+// Then: Return chain with balance middleware
+    // TODO: Add test assertions
+}
+
+test "build_generation_chain" {
+// Given: Service and cost
+// When: Building for generation
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_user_banned" {
-// Given: Telegram ID
-// When: Checking ban status
+test "handle_middleware_error" {
+// Given: MiddlewareError and context
+// When: Middleware fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "ban_user" {
-// Given: Telegram ID, reason, duration
-// When: Banning user
+test "handle_auth_error" {
+// Given: AuthError and context
+// When: Auth fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "unban_user" {
-// Given: Telegram ID
-// When: Unbanning user
+test "handle_rate_limit_error" {
+// Given: RateLimitError and context
+// When: Rate limited
 // Then: |
     // TODO: Add test assertions
 }
 
-test "check_temporary_ban_expiry" {
-// Given: BanInfo
-// When: Checking if ban expired
+test "handle_balance_error" {
+// Given: BalanceError and context
+// When: Balance insufficient
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_admin" {
-// Given: Telegram ID
-// When: Checking admin status
-// Then: Return true if in ADMIN_IDS list
-    // TODO: Add test assertions
-}
-
-test "check_permission" {
-// Given: AuthContext and permission name
-// When: Checking specific permission
+test "handle_handler_error" {
+// Given: Error and context
+// When: Handler fails
 // Then: |
     // TODO: Add test assertions
 }
 
-test "require_admin" {
-// Given: AuthContext
-// When: Requiring admin access
+test "create_context" {
+// Given: Telegram update
+// When: Initializing context
 // Then: |
     // TODO: Add test assertions
 }
 
-test "require_level" {
-// Given: AuthContext and min_level
-// When: Requiring minimum level
+test "update_context" {
+// Given: Context and updates
+// When: Updating context
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_maintenance_mode" {
-// Given: No parameters
-// When: Checking maintenance status
-// Then: Return true if maintenance enabled
+test "get_context_value" {
+// Given: Context and key
+// When: Reading context
+// Then: Return value from metadata
     // TODO: Add test assertions
 }
 
-test "set_maintenance_mode" {
-// Given: Enabled flag and message
-// When: Toggling maintenance
+test "set_context_value" {
+// Given: Context, key, value
+// When: Writing context
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_maintenance_message" {
-// Given: Language
-// When: Getting maintenance text
-// Then: Return localized maintenance message
-    // TODO: Add test assertions
-}
-
-test "create_auth_error" {
-// Given: AuthErrorCode and message
-// When: Creating error response
-// Then: Return AuthError
-    // TODO: Add test assertions
-}
-
-test "handle_banned_user" {
-// Given: AuthContext and BanInfo
-// When: User is banned
+test "should_skip_middleware" {
+// Given: Middleware config and context
+// When: Checking skip conditions
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_maintenance" {
-// Given: AuthContext
-// When: In maintenance mode
+test "is_paid_operation" {
+// Given: Handler name
+// When: Checking if needs balance
+// Then: Return true if handler requires payment
+    // TODO: Add test assertions
+}
+
+test "get_operation_cost" {
+// Given: Handler name and params
+// When: Getting cost
+// Then: Return cost from balance_middleware
+    // TODO: Add test assertions
+}
+
+test "finalize_chain" {
+// Given: Context and result
+// When: Cleaning up
 // Then: |
     // TODO: Add test assertions
 }

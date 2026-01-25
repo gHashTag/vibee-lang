@@ -1,76 +1,432 @@
 name: auth_middleware
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: auth_middleware
 
 description: |
   Authentication middleware for VIBEE Telegram bot.
-  Handles user authentication and session management.
+  Handles user authentication, session management, and access control.
+  First middleware in the chain - ensures user exists and is not banned.
 
 imports:
-  - telegram
-  - user
+  - ../db/user_repository
+  - ../core/supabase_client
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
+  AuthContext:
+    description: "Authentication context passed through middleware"
+    fields:
+      telegram_id: Int
+      chat_id: Int
+      message_id: Int
+      user: Option<AuthenticatedUser>
+      session: Option<SessionData>
+      is_authenticated: Bool
+      is_new_user: Bool
+      auth_error: Option<AuthError>
+
+  AuthenticatedUser:
+    description: "Authenticated user data"
+    fields:
+      id: String
+      telegram_id: Int
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+      language_code: String
+      balance: Int
+      level: Int
+      is_premium: Bool
+      is_banned: Bool
+      referral_code: Option<String>
+      created_at: Timestamp
+
+  SessionData:
+    description: "User session data"
+    fields:
+      telegram_id: Int
+      current_menu: String
+      current_scene: Option<String>
+      scene_step: Option<Int>
+      scene_data: Option<Object>
+      language: String
+      last_activity: Timestamp
+      expires_at: Timestamp
+
+  AuthError:
+    description: "Authentication error"
+    fields:
+      code: AuthErrorCode
+      message: String
+      retry_after: Option<Int>
+
+  AuthErrorCode:
+    description: "Authentication error codes"
+    values:
+      - user_banned
+      - session_expired
+      - invalid_token
+      - rate_limited
+      - maintenance_mode
+      - unknown_error
+
   AuthResult:
     description: "Authentication result"
     fields:
-      is_authenticated: Bool
-      user: Option<User>
-      is_new_user: Bool
-      error: Option<String>
+      success: Bool
+      context: Option<AuthContext>
+      error: Option<AuthError>
 
-  SessionData:
-    description: "Session data"
+  TelegramUser:
+    description: "Telegram user from update"
     fields:
-      user_id: String
-      telegram_id: String
-      is_ru: Bool
-      current_scene: Option<String>
-      last_activity: Timestamp
+      id: Int
+      is_bot: Bool
+      first_name: String
+      last_name: Option<String>
+      username: Option<String>
+      language_code: Option<String>
+      is_premium: Option<Bool>
+
+  BanInfo:
+    description: "User ban information"
+    fields:
+      is_banned: Bool
+      reason: Option<String>
+      banned_at: Option<Timestamp>
+      banned_until: Option<Timestamp>
+      banned_by: Option<Int>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 behaviors:
-  - name: authenticate
-    given: Context
-    when: Processing request
-    then: Returns AuthResult
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAIN AUTHENTICATION
+  # ─────────────────────────────────────────────────────────────────────────────
 
-  - name: ensure_user_exists
-    given: Telegram user data
-    when: Checking user
-    then: Creates user if not exists
+  - name: authenticate
+    given: TelegramUser and chat_id
+    when: Processing any update
+    then: |
+      1. Check maintenance mode
+      2. Check if user is banned
+      3. Get or create user in DB
+      4. Load or create session
+      5. Update last activity
+      6. Return AuthResult
+
+  - name: authenticate_message
+    given: Telegram message update
+    when: Processing message
+    then: |
+      1. Extract user from message.from
+      2. Call authenticate
+      3. Return AuthContext
+
+  - name: authenticate_callback
+    given: Telegram callback query
+    when: Processing callback
+    then: |
+      1. Extract user from callback_query.from
+      2. Call authenticate
+      3. Return AuthContext
+
+  - name: authenticate_payment
+    given: Telegram pre-checkout or payment
+    when: Processing payment
+    then: |
+      1. Extract user from payment.from
+      2. Call authenticate
+      3. Verify payment permissions
+      4. Return AuthContext
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_or_create_user
+    given: TelegramUser
+    when: Ensuring user exists
+    then: |
+      1. Try to get user by telegram_id
+      2. If not found, create new user
+      3. If found, update profile if changed
+      4. Return AuthenticatedUser and is_new flag
+
+  - name: create_user
+    given: TelegramUser
+    when: Creating new user
+    then: |
+      1. Generate referral code
+      2. Set default balance and level
+      3. Insert into DB
+      4. Return new user
+
+  - name: update_user_profile
+    given: AuthenticatedUser and TelegramUser
+    when: Profile data changed
+    then: |
+      1. Compare username, first_name, etc.
+      2. If changed, update in DB
+      3. Return updated user
+
+  - name: get_user_by_telegram_id
+    given: Telegram ID
+    when: Fetching user
+    then: Return AuthenticatedUser or null
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSION MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_or_create_session
+    given: Telegram ID
+    when: Loading session
+    then: |
+      1. Try to get session from cache
+      2. If not found or expired, create new
+      3. Return SessionData
+
+  - name: create_session
+    given: Telegram ID and language
+    when: Creating new session
+    then: |
+      1. Set default menu to "main"
+      2. Set expiry time
+      3. Save to cache
+      4. Return SessionData
 
   - name: load_session
     given: Telegram ID
-    when: Loading session
-    then: Returns SessionData
+    when: Loading from cache
+    then: |
+      1. Get from Redis/memory cache
+      2. Check expiry
+      3. Return SessionData or null
 
   - name: save_session
-    given: Telegram ID and session
-    when: Saving session
-    then: Returns success status
+    given: SessionData
+    when: Persisting session
+    then: |
+      1. Update last_activity
+      2. Save to cache
+      3. Return success
+
+  - name: update_session
+    given: Telegram ID and updates
+    when: Updating session fields
+    then: |
+      1. Load current session
+      2. Apply updates
+      3. Save session
+      4. Return updated SessionData
 
   - name: clear_session
     given: Telegram ID
-    when: Clearing session
-    then: Returns success status
+    when: Logging out or resetting
+    then: |
+      1. Delete from cache
+      2. Return success
 
-  - name: update_last_activity
+  - name: is_session_expired
+    given: SessionData
+    when: Checking expiry
+    then: Return true if expires_at < now
+
+  - name: extend_session
     given: Telegram ID
-    when: Updating activity
-    then: Returns success status
+    when: Extending session lifetime
+    then: |
+      1. Load session
+      2. Update expires_at
+      3. Save session
 
-  - name: is_banned
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BAN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: is_user_banned
     given: Telegram ID
     when: Checking ban status
-    then: Returns true if banned
+    then: |
+      1. Get user from DB
+      2. Check is_banned flag
+      3. Check ban expiry if temporary
+      4. Return BanInfo
 
-  - name: check_rate_limit
+  - name: ban_user
+    given: Telegram ID, reason, duration
+    when: Banning user
+    then: |
+      1. Update is_banned in DB
+      2. Set ban reason and expiry
+      3. Clear user session
+      4. Return success
+
+  - name: unban_user
     given: Telegram ID
-    when: Checking rate limit
-    then: Returns true if allowed
+    when: Unbanning user
+    then: |
+      1. Update is_banned to false
+      2. Clear ban info
+      3. Return success
+
+  - name: check_temporary_ban_expiry
+    given: BanInfo
+    when: Checking if ban expired
+    then: |
+      1. If banned_until is set
+      2. Check if now > banned_until
+      3. If expired, auto-unban
+      4. Return is_still_banned
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACCESS CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: is_admin
+    given: Telegram ID
+    when: Checking admin status
+    then: Return true if in ADMIN_IDS list
+
+  - name: check_permission
+    given: AuthContext and permission name
+    when: Checking specific permission
+    then: |
+      1. Check if admin (all permissions)
+      2. Check user level for permission
+      3. Return allowed/denied
+
+  - name: require_admin
+    given: AuthContext
+    when: Requiring admin access
+    then: |
+      1. Check is_admin
+      2. If not, return error
+      3. If yes, continue
+
+  - name: require_level
+    given: AuthContext and min_level
+    when: Requiring minimum level
+    then: |
+      1. Check user.level >= min_level
+      2. If not, return error
+      3. If yes, continue
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE MODE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: is_maintenance_mode
+    given: No parameters
+    when: Checking maintenance status
+    then: Return true if maintenance enabled
+
+  - name: set_maintenance_mode
+    given: Enabled flag and message
+    when: Toggling maintenance
+    then: |
+      1. Update maintenance flag
+      2. Set maintenance message
+      3. Return success
+
+  - name: get_maintenance_message
+    given: Language
+    when: Getting maintenance text
+    then: Return localized maintenance message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_auth_error
+    given: AuthErrorCode and message
+    when: Creating error response
+    then: Return AuthError
+
+  - name: handle_banned_user
+    given: AuthContext and BanInfo
+    when: User is banned
+    then: |
+      1. Create ban error
+      2. Send ban message to user
+      3. Return error result
+
+  - name: handle_maintenance
+    given: AuthContext
+    when: In maintenance mode
+    then: |
+      1. Check if admin (admins bypass)
+      2. If not admin, send maintenance message
+      3. Return error result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 constants:
   SESSION_TTL_HOURS: 24
-  RATE_LIMIT_REQUESTS: 30
-  RATE_LIMIT_WINDOW_SEC: 60
+  SESSION_EXTEND_HOURS: 12
+  ADMIN_IDS: [144022504]
+  DEFAULT_LANGUAGE: "ru"
+  DEFAULT_MENU: "main"
+  MAINTENANCE_MODE: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  banned:
+    ru: |
+      ⛔ Ваш аккаунт заблокирован.
+      
+      Причина: {reason}
+      
+      Для разблокировки обратитесь в поддержку: @vibee_support
+    en: |
+      ⛔ Your account is banned.
+      
+      Reason: {reason}
+      
+      Contact support to appeal: @vibee_support
+
+  banned_temporary:
+    ru: |
+      ⛔ Ваш аккаунт временно заблокирован.
+      
+      Причина: {reason}
+      Разблокировка: {until}
+    en: |
+      ⛔ Your account is temporarily banned.
+      
+      Reason: {reason}
+      Unban: {until}
+
+  maintenance:
+    ru: |
+      🔧 Бот на техническом обслуживании.
+      
+      {message}
+      
+      Попробуйте позже.
+    en: |
+      🔧 Bot is under maintenance.
+      
+      {message}
+      
+      Please try again later.
+
+  welcome_new_user:
+    ru: "👋 Добро пожаловать! Ваш аккаунт создан."
+    en: "👋 Welcome! Your account has been created."
+
+  session_expired:
+    ru: "⏰ Сессия истекла. Используйте /start"
+    en: "⏰ Session expired. Use /start"

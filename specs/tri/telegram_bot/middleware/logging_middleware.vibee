@@ -1,0 +1,414 @@
+name: logging_middleware
+version: "1.0.0"
+language: zig
+module: logging_middleware
+
+description: |
+  Logging middleware for VIBEE Telegram bot.
+  Handles request/response logging, error tracking, and analytics.
+  Provides structured logging for debugging and monitoring.
+
+imports:
+  - ./auth_middleware
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  LogContext:
+    description: "Logging context for middleware chain"
+    fields:
+      request_id: String
+      telegram_id: Int
+      chat_id: Int
+      start_time: Timestamp
+      end_time: Option<Timestamp>
+      duration_ms: Option<Int>
+      log_level: LogLevel
+
+  LogLevel:
+    description: "Log level enum"
+    values:
+      - debug
+      - info
+      - warn
+      - error
+      - fatal
+
+  LogEntry:
+    description: "Structured log entry"
+    fields:
+      timestamp: Timestamp
+      level: LogLevel
+      request_id: String
+      telegram_id: Option<Int>
+      chat_id: Option<Int>
+      event: String
+      message: String
+      data: Option<Object>
+      error: Option<ErrorInfo>
+      duration_ms: Option<Int>
+
+  ErrorInfo:
+    description: "Error information for logging"
+    fields:
+      code: String
+      message: String
+      stack_trace: Option<String>
+      context: Option<Object>
+
+  RequestLog:
+    description: "Request log entry"
+    fields:
+      request_id: String
+      timestamp: Timestamp
+      telegram_id: Int
+      chat_id: Int
+      update_type: String
+      message_type: Option<String>
+      command: Option<String>
+      callback_data: Option<String>
+      text_length: Option<Int>
+      has_media: Bool
+
+  ResponseLog:
+    description: "Response log entry"
+    fields:
+      request_id: String
+      timestamp: Timestamp
+      success: Bool
+      response_type: String
+      message_sent: Bool
+      keyboard_sent: Bool
+      media_sent: Bool
+      error: Option<String>
+      duration_ms: Int
+
+  AnalyticsEvent:
+    description: "Analytics event"
+    fields:
+      event_name: String
+      telegram_id: Int
+      properties: Object
+      timestamp: Timestamp
+
+  MetricPoint:
+    description: "Metric data point"
+    fields:
+      name: String
+      value: Float
+      tags: Map<String, String>
+      timestamp: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REQUEST LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_request
+    given: Telegram update
+    when: Request received
+    then: |
+      1. Generate request_id
+      2. Extract request details
+      3. Create RequestLog
+      4. Write to log
+      5. Return LogContext
+
+  - name: log_message_request
+    given: Message update
+    when: Message received
+    then: |
+      1. Extract message details
+      2. Detect message type
+      3. Log with appropriate level
+      4. Return LogContext
+
+  - name: log_callback_request
+    given: Callback query
+    when: Callback received
+    then: |
+      1. Extract callback data
+      2. Log callback action
+      3. Return LogContext
+
+  - name: log_payment_request
+    given: Payment update
+    when: Payment received
+    then: |
+      1. Extract payment details (sanitized)
+      2. Log with info level
+      3. Return LogContext
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESPONSE LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_response
+    given: LogContext and response
+    when: Response sent
+    then: |
+      1. Calculate duration
+      2. Create ResponseLog
+      3. Write to log
+      4. Update metrics
+
+  - name: log_success
+    given: LogContext and response details
+    when: Successful response
+    then: Log with info level
+
+  - name: log_error
+    given: LogContext and error
+    when: Error response
+    then: |
+      1. Extract error details
+      2. Log with error level
+      3. Track error metrics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_exception
+    given: Exception and context
+    when: Exception caught
+    then: |
+      1. Extract stack trace
+      2. Create ErrorInfo
+      3. Log with error/fatal level
+      4. Send alert if critical
+
+  - name: log_validation_error
+    given: Validation error and context
+    when: Validation failed
+    then: Log with warn level
+
+  - name: log_api_error
+    given: API error and context
+    when: External API failed
+    then: |
+      1. Log error details
+      2. Track API failure metrics
+      3. Check for patterns
+
+  - name: log_database_error
+    given: DB error and context
+    when: Database operation failed
+    then: |
+      1. Log error (sanitize sensitive data)
+      2. Track DB error metrics
+      3. Alert if critical
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: track_event
+    given: Event name, telegram_id, properties
+    when: Tracking user action
+    then: |
+      1. Create AnalyticsEvent
+      2. Enrich with context
+      3. Send to analytics
+
+  - name: track_generation_started
+    given: Telegram ID, service, model
+    when: Generation started
+    then: Track "generation_started" event
+
+  - name: track_generation_completed
+    given: Telegram ID, service, duration, success
+    when: Generation completed
+    then: Track "generation_completed" event
+
+  - name: track_payment_completed
+    given: Telegram ID, amount, method
+    when: Payment completed
+    then: Track "payment_completed" event
+
+  - name: track_user_action
+    given: Telegram ID, action, details
+    when: User performs action
+    then: Track action event
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: record_metric
+    given: Metric name, value, tags
+    when: Recording metric
+    then: |
+      1. Create MetricPoint
+      2. Send to metrics backend
+      3. Update local aggregates
+
+  - name: record_request_duration
+    given: Duration ms and tags
+    when: Request completed
+    then: Record "request_duration_ms" metric
+
+  - name: record_generation_duration
+    given: Duration ms, service, model
+    when: Generation completed
+    then: Record "generation_duration_ms" metric
+
+  - name: increment_counter
+    given: Counter name and tags
+    when: Counting events
+    then: Increment counter metric
+
+  - name: record_gauge
+    given: Gauge name, value, tags
+    when: Recording current value
+    then: Record gauge metric
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOG FORMATTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: format_log_entry
+    given: LogEntry
+    when: Formatting for output
+    then: |
+      1. Format timestamp
+      2. Format level
+      3. Build JSON structure
+      4. Return formatted string
+
+  - name: format_json_log
+    given: LogEntry
+    when: JSON output
+    then: Return JSON string
+
+  - name: format_text_log
+    given: LogEntry
+    when: Text output
+    then: Return "[LEVEL] timestamp - message"
+
+  - name: sanitize_log_data
+    given: Data object
+    when: Removing sensitive data
+    then: |
+      1. Remove passwords
+      2. Mask tokens
+      3. Truncate long strings
+      4. Return sanitized data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOG OUTPUT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: write_log
+    given: LogEntry
+    when: Writing to output
+    then: |
+      1. Format entry
+      2. Write to stdout/file
+      3. Send to log aggregator if configured
+
+  - name: write_to_stdout
+    given: Formatted log
+    when: Console output
+    then: Print to stdout
+
+  - name: write_to_file
+    given: Formatted log
+    when: File output
+    then: Append to log file
+
+  - name: send_to_aggregator
+    given: LogEntry
+    when: External logging
+    then: Send to log aggregation service
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE INTEGRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: logging_middleware
+    given: Update and next handler
+    when: Middleware execution
+    then: |
+      1. Log request
+      2. Start timer
+      3. Execute next handler
+      4. Log response
+      5. Return result
+
+  - name: generate_request_id
+    given: No parameters
+    when: Creating request ID
+    then: Return UUID or short ID
+
+  - name: get_log_context
+    given: Request ID
+    when: Retrieving context
+    then: Return LogContext from storage
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ALERTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_alert
+    given: Alert level, message, context
+    when: Critical event
+    then: |
+      1. Format alert message
+      2. Send to admin channel
+      3. Log alert sent
+
+  - name: check_error_threshold
+    given: Error type
+    when: Checking for alert
+    then: |
+      1. Count recent errors
+      2. If > threshold, send alert
+      3. Reset counter
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  MAX_LOG_DATA_LENGTH: 1000
+  ERROR_ALERT_THRESHOLD: 10
+  ERROR_ALERT_WINDOW_SECONDS: 60
+  ADMIN_ALERT_CHAT_ID: -1001234567890
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOG EVENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+events:
+  request_received: "request.received"
+  request_completed: "request.completed"
+  request_failed: "request.failed"
+  
+  auth_success: "auth.success"
+  auth_failed: "auth.failed"
+  auth_banned: "auth.banned"
+  
+  generation_started: "generation.started"
+  generation_completed: "generation.completed"
+  generation_failed: "generation.failed"
+  
+  payment_started: "payment.started"
+  payment_completed: "payment.completed"
+  payment_failed: "payment.failed"
+  
+  rate_limited: "rate_limit.blocked"
+  balance_insufficient: "balance.insufficient"
+  
+  error_validation: "error.validation"
+  error_api: "error.api"
+  error_database: "error.database"
+  error_unknown: "error.unknown"

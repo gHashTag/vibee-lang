@@ -1,51 +1,458 @@
 name: balance_middleware
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: balance_middleware
 
 description: |
   Balance middleware for VIBEE Telegram bot.
-  Handles balance checks before paid operations.
+  Handles balance checks, deductions, and refunds.
+  Ensures sufficient balance before paid operations.
 
 imports:
-  - telegram
-  - user
-  - cost_calculator
+  - ../db/user_repository
+  - ../db/payment_repository
+  - ./auth_middleware
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 types:
-  BalanceCheckResult:
-    description: "Balance check result"
+  BalanceContext:
+    description: "Balance context for middleware chain"
     fields:
-      has_sufficient_balance: Bool
+      telegram_id: Int
+      current_balance: Int
+      required_amount: Int
+      has_sufficient: Bool
+      reserved_amount: Int
+      balance_error: Option<BalanceError>
+
+  BalanceError:
+    description: "Balance error details"
+    fields:
+      code: BalanceErrorCode
+      message: String
       current_balance: Int
       required_amount: Int
       shortfall: Int
 
+  BalanceErrorCode:
+    description: "Balance error codes"
+    values:
+      - insufficient_balance
+      - deduction_failed
+      - refund_failed
+      - reservation_failed
+      - concurrent_modification
+
+  BalanceCheckResult:
+    description: "Balance check result"
+    fields:
+      success: Bool
+      current_balance: Int
+      required_amount: Int
+      shortfall: Int
+      can_proceed: Bool
+
+  DeductionResult:
+    description: "Balance deduction result"
+    fields:
+      success: Bool
+      amount_deducted: Int
+      new_balance: Int
+      transaction_id: Option<String>
+      error: Option<BalanceError>
+
+  RefundResult:
+    description: "Balance refund result"
+    fields:
+      success: Bool
+      amount_refunded: Int
+      new_balance: Int
+      transaction_id: Option<String>
+      error: Option<BalanceError>
+
+  ReservationResult:
+    description: "Balance reservation result"
+    fields:
+      success: Bool
+      reservation_id: String
+      amount_reserved: Int
+      expires_at: Timestamp
+      error: Option<BalanceError>
+
+  ServiceCost:
+    description: "Service cost information"
+    fields:
+      service: String
+      model: Option<String>
+      base_cost: Int
+      multiplier: Float
+      total_cost: Int
+      duration: Option<Int>
+
+  BalanceHistory:
+    description: "Balance history entry"
+    fields:
+      id: String
+      telegram_id: Int
+      amount: Int
+      balance_before: Int
+      balance_after: Int
+      operation: BalanceOperation
+      service: Option<String>
+      description: String
+      created_at: Timestamp
+
+  BalanceOperation:
+    description: "Balance operation type"
+    values:
+      - topup
+      - deduction
+      - refund
+      - reservation
+      - release
+      - bonus
+      - referral
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SERVICE COSTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+costs:
+  neuro_photo:
+    flux_schnell: 10
+    flux_dev: 25
+    sdxl: 15
+    flux_lora: 30
+
+  text_to_video:
+    kling_5s: 100
+    kling_10s: 180
+    luma_5s: 80
+    luma_10s: 150
+    minimax_5s: 60
+    minimax_10s: 110
+
+  image_to_video:
+    kling_5s: 80
+    kling_10s: 150
+    luma_5s: 70
+    luma_10s: 130
+
+  face_swap: 20
+  upscale: 15
+  voice_clone: 50
+  text_to_speech: 5
+  lip_sync: 100
+  avatar_training: 500
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE CHECKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
   - name: check_balance
-    given: Context and required amount
-    when: Checking balance
-    then: Returns BalanceCheckResult
+    given: Telegram ID and required amount
+    when: Checking if balance sufficient
+    then: |
+      1. Get current balance from DB
+      2. Compare with required amount
+      3. Calculate shortfall if any
+      4. Return BalanceCheckResult
+
+  - name: check_balance_for_service
+    given: Telegram ID and ServiceCost
+    when: Checking balance for specific service
+    then: |
+      1. Calculate total cost with multipliers
+      2. Check balance
+      3. Return BalanceCheckResult
+
+  - name: get_current_balance
+    given: Telegram ID
+    when: Fetching balance
+    then: |
+      1. Query user_repository
+      2. Return current balance
+
+  - name: has_sufficient_balance
+    given: Telegram ID and amount
+    when: Quick check
+    then: Return true if balance >= amount
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE DEDUCTION
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: deduct_balance
+    given: Telegram ID, amount, service, description
+    when: Deducting for service
+    then: |
+      1. Verify sufficient balance
+      2. Atomically deduct amount
+      3. Create payment record
+      4. Log balance history
+      5. Return DeductionResult
+
+  - name: deduct_balance_atomic
     given: Telegram ID and amount
-    when: Deducting balance
-    then: Returns new balance
+    when: Atomic deduction
+    then: |
+      1. Use DB transaction
+      2. Check balance >= amount
+      3. Update balance = balance - amount
+      4. Return new balance or error
+
+  - name: deduct_with_reservation
+    given: Reservation ID
+    when: Converting reservation to deduction
+    then: |
+      1. Get reservation
+      2. Verify not expired
+      3. Mark as deducted
+      4. Return DeductionResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE REFUND
+  # ─────────────────────────────────────────────────────────────────────────────
 
   - name: refund_balance
-    given: Telegram ID and amount
-    when: Refunding balance
-    then: Returns new balance
+    given: Telegram ID, amount, reason
+    when: Refunding failed operation
+    then: |
+      1. Add amount to balance
+      2. Create refund record
+      3. Log balance history
+      4. Return RefundResult
+
+  - name: refund_transaction
+    given: Transaction ID
+    when: Refunding specific transaction
+    then: |
+      1. Get original transaction
+      2. Verify not already refunded
+      3. Refund amount
+      4. Mark transaction as refunded
+      5. Return RefundResult
+
+  - name: partial_refund
+    given: Transaction ID and amount
+    when: Partial refund
+    then: |
+      1. Get original transaction
+      2. Verify amount <= original
+      3. Refund partial amount
+      4. Update transaction
+      5. Return RefundResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE RESERVATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: reserve_balance
+    given: Telegram ID, amount, ttl_seconds
+    when: Reserving for pending operation
+    then: |
+      1. Check sufficient balance
+      2. Create reservation record
+      3. Set expiry time
+      4. Return ReservationResult
+
+  - name: release_reservation
+    given: Reservation ID
+    when: Releasing unused reservation
+    then: |
+      1. Get reservation
+      2. Mark as released
+      3. Return success
+
+  - name: get_reservation
+    given: Reservation ID
+    when: Fetching reservation
+    then: Return reservation or null
+
+  - name: is_reservation_valid
+    given: Reservation ID
+    when: Checking validity
+    then: Return true if exists and not expired
+
+  - name: cleanup_expired_reservations
+    given: No parameters
+    when: Periodic cleanup
+    then: |
+      1. Find expired reservations
+      2. Release each
+      3. Return count released
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST CALCULATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_service_cost
+    given: Service name and options
+    when: Calculating cost
+    then: |
+      1. Get base cost from costs table
+      2. Apply model multiplier
+      3. Apply duration multiplier
+      4. Return ServiceCost
+
+  - name: get_model_cost
+    given: Service and model name
+    when: Getting model-specific cost
+    then: Return cost from costs table
+
+  - name: calculate_video_cost
+    given: Service, model, duration_seconds
+    when: Calculating video cost
+    then: |
+      1. Get base cost for 5s
+      2. Apply duration multiplier
+      3. Return total cost
+
+  - name: get_cost_breakdown
+    given: ServiceCost
+    when: Getting detailed breakdown
+    then: Return formatted cost details
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BALANCE HISTORY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_balance_change
+    given: Telegram ID, amount, operation, details
+    when: Logging balance change
+    then: |
+      1. Create BalanceHistory entry
+      2. Insert into DB
+      3. Return entry ID
+
+  - name: get_balance_history
+    given: Telegram ID, limit, offset
+    when: Fetching history
+    then: Return list of BalanceHistory
+
+  - name: get_spending_by_service
+    given: Telegram ID
+    when: Getting spending breakdown
+    then: |
+      1. Aggregate by service
+      2. Return service -> total map
+
+  - name: get_daily_spending
+    given: Telegram ID, days
+    when: Getting daily spending
+    then: Return day -> total map
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE INTEGRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: require_balance
+    given: AuthContext and required amount
+    when: Middleware check
+    then: |
+      1. Check balance
+      2. If insufficient, send error message
+      3. If sufficient, continue chain
+      4. Return BalanceContext
 
   - name: send_insufficient_balance_message
-    given: Context and shortfall
-    when: Balance insufficient
-    then: Sends payment prompt
+    given: Chat ID, balance, required, language
+    when: Balance too low
+    then: |
+      1. Format message with amounts
+      2. Add top-up button
+      3. Send message
 
-  - name: get_balance_display
+  - name: send_low_balance_warning
+    given: Chat ID, balance, language
+    when: Balance below warning threshold
+    then: |
+      1. Format warning message
+      2. Add top-up suggestion
+      3. Send message
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DISPLAY FORMATTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: format_balance
     given: Balance amount
-    when: Formatting balance
-    then: Returns formatted string
+    when: Formatting for display
+    then: Return "{amount} ⭐"
+
+  - name: format_cost
+    given: ServiceCost and language
+    when: Formatting cost display
+    then: Return formatted cost string
+
+  - name: format_shortfall
+    given: Shortfall amount and language
+    when: Formatting shortfall
+    then: Return "Не хватает: {amount} ⭐"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 constants:
   MIN_BALANCE_WARNING: 10
+  RESERVATION_TTL_SECONDS: 300
+  MAX_DEDUCTION_RETRIES: 3
+  REFUND_WINDOW_HOURS: 24
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  insufficient_balance:
+    ru: |
+      ❌ Недостаточно звёзд
+      
+      💰 Ваш баланс: {balance} ⭐
+      💎 Требуется: {required} ⭐
+      📉 Не хватает: {shortfall} ⭐
+      
+      Пополните баланс для продолжения 👇
+    en: |
+      ❌ Insufficient stars
+      
+      💰 Your balance: {balance} ⭐
+      💎 Required: {required} ⭐
+      📉 Shortfall: {shortfall} ⭐
+      
+      Top up to continue 👇
+
+  low_balance_warning:
+    ru: |
+      ⚠️ Низкий баланс
+      
+      💰 Осталось: {balance} ⭐
+      
+      Рекомендуем пополнить баланс
+    en: |
+      ⚠️ Low balance
+      
+      💰 Remaining: {balance} ⭐
+      
+      Consider topping up
+
+  deduction_success:
+    ru: "✅ Списано {amount} ⭐ | Баланс: {balance} ⭐"
+    en: "✅ Deducted {amount} ⭐ | Balance: {balance} ⭐"
+
+  refund_success:
+    ru: "✅ Возвращено {amount} ⭐ | Баланс: {balance} ⭐"
+    en: "✅ Refunded {amount} ⭐ | Balance: {balance} ⭐"
+
+  cost_info:
+    ru: "💎 Стоимость: {cost} ⭐"
+    en: "💎 Cost: {cost} ⭐"

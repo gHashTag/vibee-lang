@@ -1,0 +1,412 @@
+name: rate_limit_middleware
+version: "1.0.0"
+language: zig
+module: rate_limit_middleware
+
+description: |
+  Rate limiting middleware for VIBEE Telegram bot.
+  Prevents abuse by limiting request frequency.
+  Uses sliding window algorithm with Redis/memory cache.
+
+imports:
+  - ./auth_middleware
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  RateLimitContext:
+    description: "Rate limit context for middleware chain"
+    fields:
+      telegram_id: Int
+      is_allowed: Bool
+      requests_remaining: Int
+      reset_at: Timestamp
+      rate_limit_error: Option<RateLimitError>
+
+  RateLimitError:
+    description: "Rate limit error details"
+    fields:
+      code: RateLimitErrorCode
+      message: String
+      retry_after_seconds: Int
+      limit: Int
+      window_seconds: Int
+
+  RateLimitErrorCode:
+    description: "Rate limit error codes"
+    values:
+      - rate_limited
+      - burst_limited
+      - daily_limited
+      - generation_limited
+
+  RateLimitConfig:
+    description: "Rate limit configuration"
+    fields:
+      name: String
+      max_requests: Int
+      window_seconds: Int
+      burst_limit: Option<Int>
+      burst_window_seconds: Option<Int>
+
+  RateLimitBucket:
+    description: "Rate limit bucket state"
+    fields:
+      key: String
+      count: Int
+      window_start: Timestamp
+      last_request: Timestamp
+
+  RateLimitResult:
+    description: "Rate limit check result"
+    fields:
+      allowed: Bool
+      remaining: Int
+      reset_at: Timestamp
+      retry_after: Option<Int>
+
+  UserRateLimits:
+    description: "All rate limits for a user"
+    fields:
+      telegram_id: Int
+      global: RateLimitBucket
+      messages: RateLimitBucket
+      callbacks: RateLimitBucket
+      generations: RateLimitBucket
+      payments: RateLimitBucket
+
+  RateLimitStats:
+    description: "Rate limit statistics"
+    fields:
+      total_requests: Int
+      blocked_requests: Int
+      unique_users: Int
+      top_offenders: List<Object>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RATE LIMIT CONFIGURATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+limits:
+  # Global rate limit (all requests)
+  global:
+    max_requests: 60
+    window_seconds: 60
+    burst_limit: 10
+    burst_window_seconds: 1
+
+  # Message rate limit
+  messages:
+    max_requests: 30
+    window_seconds: 60
+    burst_limit: 5
+    burst_window_seconds: 1
+
+  # Callback query rate limit
+  callbacks:
+    max_requests: 60
+    window_seconds: 60
+    burst_limit: 10
+    burst_window_seconds: 1
+
+  # AI generation rate limit
+  generations:
+    max_requests: 10
+    window_seconds: 60
+    burst_limit: 3
+    burst_window_seconds: 10
+
+  # Payment rate limit
+  payments:
+    max_requests: 5
+    window_seconds: 60
+    burst_limit: 2
+    burst_window_seconds: 10
+
+  # Daily limits
+  daily_messages: 1000
+  daily_generations: 100
+  daily_payments: 20
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMIT CHECKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_rate_limit
+    given: Telegram ID and limit type
+    when: Checking if request allowed
+    then: |
+      1. Get bucket for user and type
+      2. Check sliding window
+      3. Check burst limit
+      4. Return RateLimitResult
+
+  - name: check_global_limit
+    given: Telegram ID
+    when: Checking global rate limit
+    then: |
+      1. Get global bucket
+      2. Apply sliding window algorithm
+      3. Return allowed/blocked
+
+  - name: check_message_limit
+    given: Telegram ID
+    when: Checking message rate limit
+    then: Check against messages config
+
+  - name: check_callback_limit
+    given: Telegram ID
+    when: Checking callback rate limit
+    then: Check against callbacks config
+
+  - name: check_generation_limit
+    given: Telegram ID
+    when: Checking generation rate limit
+    then: Check against generations config
+
+  - name: check_payment_limit
+    given: Telegram ID
+    when: Checking payment rate limit
+    then: Check against payments config
+
+  - name: check_daily_limit
+    given: Telegram ID and limit type
+    when: Checking daily limit
+    then: |
+      1. Get daily counter
+      2. Check against daily limit
+      3. Return allowed/blocked
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SLIDING WINDOW ALGORITHM
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: sliding_window_check
+    given: Bucket key, max_requests, window_seconds
+    when: Applying sliding window
+    then: |
+      1. Get current timestamp
+      2. Get bucket from cache
+      3. Remove expired entries
+      4. Count requests in window
+      5. Return count < max_requests
+
+  - name: increment_counter
+    given: Bucket key
+    when: Recording request
+    then: |
+      1. Add timestamp to bucket
+      2. Update last_request
+      3. Save to cache
+
+  - name: get_bucket
+    given: Telegram ID and limit type
+    when: Getting rate limit bucket
+    then: |
+      1. Build cache key
+      2. Get from Redis/memory
+      3. Return bucket or create new
+
+  - name: save_bucket
+    given: RateLimitBucket
+    when: Persisting bucket
+    then: Save to cache with TTL
+
+  - name: build_bucket_key
+    given: Telegram ID and limit type
+    when: Creating cache key
+    then: Return "ratelimit:{type}:{telegram_id}"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BURST LIMITING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_burst_limit
+    given: Telegram ID, limit type
+    when: Checking burst
+    then: |
+      1. Get burst config
+      2. Count requests in burst window
+      3. Return allowed if < burst_limit
+
+  - name: is_burst_exceeded
+    given: Bucket and burst config
+    when: Checking burst exceeded
+    then: |
+      1. Get requests in last burst_window_seconds
+      2. Return count >= burst_limit
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PREMIUM/VIP HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_limits
+    given: Telegram ID
+    when: Getting user-specific limits
+    then: |
+      1. Check if premium user
+      2. Check if VIP/admin
+      3. Return adjusted limits
+
+  - name: get_premium_multiplier
+    given: User level
+    when: Calculating limit multiplier
+    then: |
+      1. Level 1-5: 1.0x
+      2. Level 6-10: 1.5x
+      3. Level 11+: 2.0x
+      4. Admin: unlimited
+
+  - name: is_exempt_from_limits
+    given: Telegram ID
+    when: Checking exemption
+    then: Return true if admin
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE INTEGRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: rate_limit_middleware
+    given: AuthContext and limit type
+    when: Middleware check
+    then: |
+      1. Check if exempt
+      2. Check rate limit
+      3. If blocked, send error
+      4. If allowed, increment and continue
+      5. Return RateLimitContext
+
+  - name: send_rate_limit_message
+    given: Chat ID, retry_after, language
+    when: User is rate limited
+    then: |
+      1. Format message with retry time
+      2. Send message
+      3. Log rate limit event
+
+  - name: handle_rate_limited
+    given: RateLimitContext
+    when: Request blocked
+    then: |
+      1. Log event
+      2. Send user message
+      3. Return error response
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MONITORING & STATS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_rate_limit_event
+    given: Telegram ID, limit type, allowed
+    when: Logging event
+    then: |
+      1. Increment stats counter
+      2. If blocked, log to analytics
+      3. Check for abuse patterns
+
+  - name: get_rate_limit_stats
+    given: Time range
+    when: Getting statistics
+    then: |
+      1. Aggregate blocked requests
+      2. Find top offenders
+      3. Return RateLimitStats
+
+  - name: detect_abuse
+    given: Telegram ID
+    when: Checking for abuse
+    then: |
+      1. Count blocked requests
+      2. If > threshold, flag user
+      3. Optionally auto-ban
+
+  - name: reset_user_limits
+    given: Telegram ID
+    when: Admin reset
+    then: |
+      1. Clear all buckets for user
+      2. Log reset event
+      3. Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: calculate_retry_after
+    given: RateLimitBucket and config
+    when: Calculating wait time
+    then: Return seconds until next allowed request
+
+  - name: format_retry_time
+    given: Seconds and language
+    when: Formatting for display
+    then: Return "X секунд" or "X seconds"
+
+  - name: get_requests_remaining
+    given: Bucket and config
+    when: Calculating remaining
+    then: Return max_requests - current_count
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CACHE_TTL_SECONDS: 3600
+  ABUSE_THRESHOLD_BLOCKS: 100
+  AUTO_BAN_THRESHOLD: 500
+  STATS_RETENTION_DAYS: 7
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  rate_limited:
+    ru: |
+      ⏳ Слишком много запросов
+      
+      Подождите {seconds} секунд перед следующим запросом.
+    en: |
+      ⏳ Too many requests
+      
+      Please wait {seconds} seconds before your next request.
+
+  burst_limited:
+    ru: |
+      ⚡ Слишком быстро!
+      
+      Подождите несколько секунд.
+    en: |
+      ⚡ Too fast!
+      
+      Please wait a few seconds.
+
+  daily_limited:
+    ru: |
+      📅 Достигнут дневной лимит
+      
+      Лимит сбросится в полночь UTC.
+    en: |
+      📅 Daily limit reached
+      
+      Limit resets at midnight UTC.
+
+  generation_limited:
+    ru: |
+      🎨 Лимит генераций
+      
+      Вы можете делать {limit} генераций в минуту.
+      Подождите {seconds} секунд.
+    en: |
+      🎨 Generation limit
+      
+      You can make {limit} generations per minute.
+      Please wait {seconds} seconds.

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// auth_middleware v2.0.0 - Generated from .vibee specification
+// rate_limit_middleware v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,17 +17,13 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const SESSION_TTL_HOURS: f64 = 24;
+pub const CACHE_TTL_SECONDS: f64 = 3600;
 
-pub const SESSION_EXTEND_HOURS: f64 = 12;
+pub const ABUSE_THRESHOLD_BLOCKS: f64 = 100;
 
-pub const ADMIN_IDS: f64 = 0;
+pub const AUTO_BAN_THRESHOLD: f64 = 500;
 
-pub const DEFAULT_LANGUAGE: f64 = 0;
-
-pub const DEFAULT_MENU: f64 = 0;
-
-pub const MAINTENANCE_MODE: f64 = 0;
+pub const STATS_RETENTION_DAYS: f64 = 7;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -44,82 +40,69 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Authentication context passed through middleware
-pub const AuthContext = struct {
+/// Rate limit context for middleware chain
+pub const RateLimitContext = struct {
     telegram_id: i64,
-    chat_id: i64,
-    message_id: i64,
-    user: ?[]const u8,
-    session: ?[]const u8,
-    is_authenticated: bool,
-    is_new_user: bool,
-    auth_error: ?[]const u8,
+    is_allowed: bool,
+    requests_remaining: i64,
+    reset_at: i64,
+    rate_limit_error: ?[]const u8,
 };
 
-/// Authenticated user data
-pub const AuthenticatedUser = struct {
-    id: []const u8,
-    telegram_id: i64,
-    username: ?[]const u8,
-    first_name: ?[]const u8,
-    last_name: ?[]const u8,
-    language_code: []const u8,
-    balance: i64,
-    level: i64,
-    is_premium: bool,
-    is_banned: bool,
-    referral_code: ?[]const u8,
-    created_at: i64,
-};
-
-/// User session data
-pub const SessionData = struct {
-    telegram_id: i64,
-    current_menu: []const u8,
-    current_scene: ?[]const u8,
-    scene_step: ?[]const u8,
-    scene_data: ?[]const u8,
-    language: []const u8,
-    last_activity: i64,
-    expires_at: i64,
-};
-
-/// Authentication error
-pub const AuthError = struct {
-    code: AuthErrorCode,
+/// Rate limit error details
+pub const RateLimitError = struct {
+    code: RateLimitErrorCode,
     message: []const u8,
+    retry_after_seconds: i64,
+    limit: i64,
+    window_seconds: i64,
+};
+
+/// Rate limit error codes
+pub const RateLimitErrorCode = struct {
+};
+
+/// Rate limit configuration
+pub const RateLimitConfig = struct {
+    name: []const u8,
+    max_requests: i64,
+    window_seconds: i64,
+    burst_limit: ?[]const u8,
+    burst_window_seconds: ?[]const u8,
+};
+
+/// Rate limit bucket state
+pub const RateLimitBucket = struct {
+    key: []const u8,
+    count: i64,
+    window_start: i64,
+    last_request: i64,
+};
+
+/// Rate limit check result
+pub const RateLimitResult = struct {
+    allowed: bool,
+    remaining: i64,
+    reset_at: i64,
     retry_after: ?[]const u8,
 };
 
-/// Authentication error codes
-pub const AuthErrorCode = struct {
+/// All rate limits for a user
+pub const UserRateLimits = struct {
+    telegram_id: i64,
+    global: RateLimitBucket,
+    messages: RateLimitBucket,
+    callbacks: RateLimitBucket,
+    generations: RateLimitBucket,
+    payments: RateLimitBucket,
 };
 
-/// Authentication result
-pub const AuthResult = struct {
-    success: bool,
-    context: ?[]const u8,
-    @"error": ?[]const u8,
-};
-
-/// Telegram user from update
-pub const TelegramUser = struct {
-    id: i64,
-    is_bot: bool,
-    first_name: []const u8,
-    last_name: ?[]const u8,
-    username: ?[]const u8,
-    language_code: ?[]const u8,
-    is_premium: ?[]const u8,
-};
-
-/// User ban information
-pub const BanInfo = struct {
-    is_banned: bool,
-    reason: ?[]const u8,
-    banned_at: ?[]const u8,
-    banned_until: ?[]const u8,
-    banned_by: ?[]const u8,
+/// Rate limit statistics
+pub const RateLimitStats = struct {
+    total_requests: i64,
+    blocked_requests: i64,
+    unique_users: i64,
+    top_offenders: []const u8,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -198,213 +181,192 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "authenticate" {
-// Given: TelegramUser and chat_id
-// When: Processing any update
+test "check_rate_limit" {
+// Given: Telegram ID and limit type
+// When: Checking if request allowed
 // Then: |
     // TODO: Add test assertions
 }
 
-test "authenticate_message" {
-// Given: Telegram message update
-// When: Processing message
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "authenticate_callback" {
-// Given: Telegram callback query
-// When: Processing callback
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "authenticate_payment" {
-// Given: Telegram pre-checkout or payment
-// When: Processing payment
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_or_create_user" {
-// Given: TelegramUser
-// When: Ensuring user exists
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "create_user" {
-// Given: TelegramUser
-// When: Creating new user
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "update_user_profile" {
-// Given: AuthenticatedUser and TelegramUser
-// When: Profile data changed
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_user_by_telegram_id" {
+test "check_global_limit" {
 // Given: Telegram ID
-// When: Fetching user
-// Then: Return AuthenticatedUser or null
+// When: Checking global rate limit
+// Then: |
     // TODO: Add test assertions
 }
 
-test "get_or_create_session" {
+test "check_message_limit" {
 // Given: Telegram ID
-// When: Loading session
-// Then: |
+// When: Checking message rate limit
+// Then: Check against messages config
     // TODO: Add test assertions
 }
 
-test "create_session" {
-// Given: Telegram ID and language
-// When: Creating new session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "load_session" {
+test "check_callback_limit" {
 // Given: Telegram ID
-// When: Loading from cache
-// Then: |
+// When: Checking callback rate limit
+// Then: Check against callbacks config
     // TODO: Add test assertions
 }
 
-test "save_session" {
-// Given: SessionData
-// When: Persisting session
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "update_session" {
-// Given: Telegram ID and updates
-// When: Updating session fields
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "clear_session" {
+test "check_generation_limit" {
 // Given: Telegram ID
-// When: Logging out or resetting
-// Then: |
+// When: Checking generation rate limit
+// Then: Check against generations config
     // TODO: Add test assertions
 }
 
-test "is_session_expired" {
-// Given: SessionData
-// When: Checking expiry
-// Then: Return true if expires_at < now
-    // TODO: Add test assertions
-}
-
-test "extend_session" {
+test "check_payment_limit" {
 // Given: Telegram ID
-// When: Extending session lifetime
+// When: Checking payment rate limit
+// Then: Check against payments config
+    // TODO: Add test assertions
+}
+
+test "check_daily_limit" {
+// Given: Telegram ID and limit type
+// When: Checking daily limit
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_user_banned" {
+test "sliding_window_check" {
+// Given: Bucket key, max_requests, window_seconds
+// When: Applying sliding window
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "increment_counter" {
+// Given: Bucket key
+// When: Recording request
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_bucket" {
+// Given: Telegram ID and limit type
+// When: Getting rate limit bucket
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "save_bucket" {
+// Given: RateLimitBucket
+// When: Persisting bucket
+// Then: Save to cache with TTL
+    // TODO: Add test assertions
+}
+
+test "build_bucket_key" {
+// Given: Telegram ID and limit type
+// When: Creating cache key
+// Then: Return "ratelimit:{type}:{telegram_id}"
+    // TODO: Add test assertions
+}
+
+test "check_burst_limit" {
+// Given: Telegram ID, limit type
+// When: Checking burst
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "is_burst_exceeded" {
+// Given: Bucket and burst config
+// When: Checking burst exceeded
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_user_limits" {
 // Given: Telegram ID
-// When: Checking ban status
+// When: Getting user-specific limits
 // Then: |
     // TODO: Add test assertions
 }
 
-test "ban_user" {
-// Given: Telegram ID, reason, duration
-// When: Banning user
+test "get_premium_multiplier" {
+// Given: User level
+// When: Calculating limit multiplier
 // Then: |
     // TODO: Add test assertions
 }
 
-test "unban_user" {
+test "is_exempt_from_limits" {
 // Given: Telegram ID
-// When: Unbanning user
+// When: Checking exemption
+// Then: Return true if admin
+    // TODO: Add test assertions
+}
+
+test "rate_limit_middleware" {
+// Given: AuthContext and limit type
+// When: Middleware check
 // Then: |
     // TODO: Add test assertions
 }
 
-test "check_temporary_ban_expiry" {
-// Given: BanInfo
-// When: Checking if ban expired
+test "send_rate_limit_message" {
+// Given: Chat ID, retry_after, language
+// When: User is rate limited
 // Then: |
     // TODO: Add test assertions
 }
 
-test "is_admin" {
+test "handle_rate_limited" {
+// Given: RateLimitContext
+// When: Request blocked
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "log_rate_limit_event" {
+// Given: Telegram ID, limit type, allowed
+// When: Logging event
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_rate_limit_stats" {
+// Given: Time range
+// When: Getting statistics
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "detect_abuse" {
 // Given: Telegram ID
-// When: Checking admin status
-// Then: Return true if in ADMIN_IDS list
-    // TODO: Add test assertions
-}
-
-test "check_permission" {
-// Given: AuthContext and permission name
-// When: Checking specific permission
+// When: Checking for abuse
 // Then: |
     // TODO: Add test assertions
 }
 
-test "require_admin" {
-// Given: AuthContext
-// When: Requiring admin access
+test "reset_user_limits" {
+// Given: Telegram ID
+// When: Admin reset
 // Then: |
     // TODO: Add test assertions
 }
 
-test "require_level" {
-// Given: AuthContext and min_level
-// When: Requiring minimum level
-// Then: |
+test "calculate_retry_after" {
+// Given: RateLimitBucket and config
+// When: Calculating wait time
+// Then: Return seconds until next allowed request
     // TODO: Add test assertions
 }
 
-test "is_maintenance_mode" {
-// Given: No parameters
-// When: Checking maintenance status
-// Then: Return true if maintenance enabled
+test "format_retry_time" {
+// Given: Seconds and language
+// When: Formatting for display
+// Then: Return "X секунд" or "X seconds"
     // TODO: Add test assertions
 }
 
-test "set_maintenance_mode" {
-// Given: Enabled flag and message
-// When: Toggling maintenance
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_maintenance_message" {
-// Given: Language
-// When: Getting maintenance text
-// Then: Return localized maintenance message
-    // TODO: Add test assertions
-}
-
-test "create_auth_error" {
-// Given: AuthErrorCode and message
-// When: Creating error response
-// Then: Return AuthError
-    // TODO: Add test assertions
-}
-
-test "handle_banned_user" {
-// Given: AuthContext and BanInfo
-// When: User is banned
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_maintenance" {
-// Given: AuthContext
-// When: In maintenance mode
-// Then: |
+test "get_requests_remaining" {
+// Given: Bucket and config
+// When: Calculating remaining
+// Then: Return max_requests - current_count
     // TODO: Add test assertions
 }
 

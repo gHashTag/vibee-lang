@@ -1,0 +1,435 @@
+name: middleware_chain
+version: "1.0.0"
+language: zig
+module: middleware_chain
+
+description: |
+  Middleware chain orchestrator for VIBEE Telegram bot.
+  Composes all middleware into a processing pipeline.
+  Handles middleware execution order and error propagation.
+
+imports:
+  - ./auth_middleware
+  - ./balance_middleware
+  - ./rate_limit_middleware
+  - ./logging_middleware
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  MiddlewareContext:
+    description: "Combined context from all middleware"
+    fields:
+      request_id: String
+      telegram_id: Int
+      chat_id: Int
+      message_id: Int
+      auth_data: Object
+      balance_data: Option<Object>
+      rate_limit_data: Object
+      log_data: Object
+      start_time: Timestamp
+      metadata: Object
+
+  MiddlewareResult:
+    description: "Result from middleware chain"
+    fields:
+      success: Bool
+      context: Option<MiddlewareContext>
+      error: Option<MiddlewareError>
+      should_continue: Bool
+
+  MiddlewareError:
+    description: "Middleware error"
+    fields:
+      middleware: String
+      code: String
+      message: String
+      retry_after: Option<Int>
+      user_message: Option<String>
+
+  MiddlewareConfig:
+    description: "Middleware configuration"
+    fields:
+      name: String
+      enabled: Bool
+      order: Int
+      options: Option<Object>
+
+  ChainConfig:
+    description: "Chain configuration"
+    fields:
+      middlewares: List<MiddlewareConfig>
+      error_handler: String
+      timeout_ms: Int
+
+  UpdateType:
+    description: "Telegram update type"
+    values:
+      - message
+      - callback_query
+      - pre_checkout_query
+      - successful_payment
+      - inline_query
+      - chosen_inline_result
+
+  MiddlewareHandler:
+    description: "Middleware handler function type"
+    fields:
+      name: String
+      handler_name: String
+      requires_auth: Bool
+      requires_balance: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MIDDLEWARE CHAIN ORDER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+chain:
+  # Order matters! Each middleware can short-circuit the chain
+  
+  # 1. Logging (always first - captures everything)
+  - name: logging
+    order: 1
+    enabled: true
+    description: "Log request start, generate request_id"
+
+  # 2. Rate Limiting (before auth to prevent DoS)
+  - name: rate_limit
+    order: 2
+    enabled: true
+    description: "Check global rate limit"
+
+  # 3. Authentication (creates/loads user)
+  - name: auth
+    order: 3
+    enabled: true
+    description: "Authenticate user, check ban status"
+
+  # 4. Rate Limiting (user-specific, after auth)
+  - name: user_rate_limit
+    order: 4
+    enabled: true
+    description: "Check user-specific rate limits"
+
+  # 5. Balance Check (optional, for paid operations)
+  - name: balance
+    order: 5
+    enabled: true
+    optional: true
+    description: "Check balance for paid operations"
+
+  # 6. Handler Execution
+  - name: handler
+    order: 6
+    enabled: true
+    description: "Execute the actual handler"
+
+  # 7. Response Logging (always last)
+  - name: response_logging
+    order: 7
+    enabled: true
+    description: "Log response and duration"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHAIN EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute_chain
+    given: Telegram update and handler
+    when: Processing any update
+    then: |
+      1. Create initial context
+      2. Execute each middleware in order
+      3. If any fails, short-circuit
+      4. Execute handler
+      5. Execute response middleware
+      6. Return result
+
+  - name: execute_message_chain
+    given: Message update
+    when: Processing message
+    then: |
+      1. Build message chain config
+      2. Execute chain
+      3. Return result
+
+  - name: execute_callback_chain
+    given: Callback query
+    when: Processing callback
+    then: |
+      1. Build callback chain config
+      2. Execute chain
+      3. Return result
+
+  - name: execute_payment_chain
+    given: Payment update
+    when: Processing payment
+    then: |
+      1. Build payment chain config
+      2. Include balance middleware
+      3. Execute chain
+      4. Return result
+
+  - name: execute_generation_chain
+    given: Generation request
+    when: Processing AI generation
+    then: |
+      1. Build generation chain config
+      2. Include balance check
+      3. Include generation rate limit
+      4. Execute chain
+      5. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: execute_middleware
+    given: Middleware config and context
+    when: Running single middleware
+    then: |
+      1. Check if enabled
+      2. Execute middleware handler
+      3. Update context
+      4. Return result
+
+  - name: execute_logging_middleware
+    given: Context
+    when: Running logging
+    then: |
+      1. Generate request_id
+      2. Log request
+      3. Start timer
+      4. Return updated context
+
+  - name: execute_rate_limit_middleware
+    given: Context
+    when: Running rate limit
+    then: |
+      1. Check rate limit
+      2. If blocked, return error
+      3. Increment counter
+      4. Return updated context
+
+  - name: execute_auth_middleware
+    given: Context
+    when: Running auth
+    then: |
+      1. Authenticate user
+      2. If banned, return error
+      3. Load session
+      4. Return updated context
+
+  - name: execute_balance_middleware
+    given: Context and required amount
+    when: Running balance check
+    then: |
+      1. Check balance
+      2. If insufficient, return error
+      3. Reserve amount
+      4. Return updated context
+
+  - name: execute_handler
+    given: Context and handler
+    when: Running actual handler
+    then: |
+      1. Execute handler with context
+      2. Capture result
+      3. Return result
+
+  - name: execute_response_logging
+    given: Context and result
+    when: Logging response
+    then: |
+      1. Calculate duration
+      2. Log response
+      3. Record metrics
+      4. Return result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHAIN BUILDING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: build_chain
+    given: Update type and options
+    when: Building middleware chain
+    then: |
+      1. Get default chain
+      2. Apply update-specific config
+      3. Filter enabled middleware
+      4. Sort by order
+      5. Return chain config
+
+  - name: build_message_chain
+    given: Message type
+    when: Building for message
+    then: Return standard chain
+
+  - name: build_callback_chain
+    given: Callback data
+    when: Building for callback
+    then: Return standard chain
+
+  - name: build_payment_chain
+    given: Payment type
+    when: Building for payment
+    then: Return chain with balance middleware
+
+  - name: build_generation_chain
+    given: Service and cost
+    when: Building for generation
+    then: |
+      1. Include balance middleware
+      2. Include generation rate limit
+      3. Return chain
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERROR HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_middleware_error
+    given: MiddlewareError and context
+    when: Middleware fails
+    then: |
+      1. Log error
+      2. Send user message if available
+      3. Return error result
+
+  - name: handle_auth_error
+    given: AuthError and context
+    when: Auth fails
+    then: |
+      1. If banned, send ban message
+      2. If maintenance, send maintenance message
+      3. Return error result
+
+  - name: handle_rate_limit_error
+    given: RateLimitError and context
+    when: Rate limited
+    then: |
+      1. Send rate limit message
+      2. Return error with retry_after
+
+  - name: handle_balance_error
+    given: BalanceError and context
+    when: Balance insufficient
+    then: |
+      1. Send insufficient balance message
+      2. Return error result
+
+  - name: handle_handler_error
+    given: Error and context
+    when: Handler fails
+    then: |
+      1. Log error
+      2. Refund if balance was deducted
+      3. Send error message
+      4. Return error result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_context
+    given: Telegram update
+    when: Initializing context
+    then: |
+      1. Extract telegram_id, chat_id
+      2. Generate request_id
+      3. Set start_time
+      4. Return initial context
+
+  - name: update_context
+    given: Context and updates
+    when: Updating context
+    then: |
+      1. Merge updates
+      2. Return updated context
+
+  - name: get_context_value
+    given: Context and key
+    when: Reading context
+    then: Return value from metadata
+
+  - name: set_context_value
+    given: Context, key, value
+    when: Writing context
+    then: |
+      1. Set metadata[key] = value
+      2. Return updated context
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # UTILITY FUNCTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: should_skip_middleware
+    given: Middleware config and context
+    when: Checking skip conditions
+    then: |
+      1. Check if disabled
+      2. Check if optional and not needed
+      3. Return should_skip
+
+  - name: is_paid_operation
+    given: Handler name
+    when: Checking if needs balance
+    then: Return true if handler requires payment
+
+  - name: get_operation_cost
+    given: Handler name and params
+    when: Getting cost
+    then: Return cost from balance_middleware
+
+  - name: finalize_chain
+    given: Context and result
+    when: Cleaning up
+    then: |
+      1. Release any reservations
+      2. Log final state
+      3. Return result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CHAIN_TIMEOUT_MS: 30000
+  MAX_MIDDLEWARE_RETRIES: 1
+  CONTEXT_TTL_SECONDS: 300
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAID OPERATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+paid_operations:
+  - start_neuro_photo
+  - start_text_to_video
+  - start_image_to_video
+  - start_face_swap
+  - start_upscale
+  - start_voice_clone
+  - start_text_to_speech
+  - start_lip_sync
+  - start_digital_body
+  - handle_generate
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MESSAGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+messages:
+  chain_error:
+    ru: "❌ Произошла ошибка. Попробуйте позже."
+    en: "❌ An error occurred. Please try again later."
+
+  timeout_error:
+    ru: "⏰ Превышено время ожидания. Попробуйте ещё раз."
+    en: "⏰ Request timed out. Please try again."
