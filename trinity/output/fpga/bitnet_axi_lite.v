@@ -205,9 +205,13 @@ module bitnet_axi_lite #(
     // Register writes
     wire wr_en = axi_awready && S_AXI_AWVALID && axi_wready && S_AXI_WVALID;
     
+    // Delayed control for proper pulse generation
+    reg [31:0] ctrl_prev;
+    
     always @(posedge S_AXI_ACLK) begin
         if (!S_AXI_ARESETN) begin
             reg_ctrl <= 32'd0;
+            ctrl_prev <= 32'd0;
             reg_input_lo <= 32'd0;
             reg_input_hi <= 32'd0;
             reg_weight_lo <= 32'd0;
@@ -216,17 +220,15 @@ module bitnet_axi_lite #(
             start_pulse <= 1'b0;
             load_pulse <= 1'b0;
         end else begin
-            // Auto-clear pulses
-            start_pulse <= 1'b0;
-            load_pulse <= 1'b0;
+            ctrl_prev <= reg_ctrl;
+            
+            // Generate pulses on rising edge of control bits
+            start_pulse <= reg_ctrl[0] && !ctrl_prev[0];
+            load_pulse <= reg_ctrl[1] && !ctrl_prev[1];
             
             if (wr_en) begin
                 case (axi_awaddr[5:0])
-                    ADDR_CTRL: begin
-                        reg_ctrl <= S_AXI_WDATA;
-                        if (S_AXI_WDATA[0]) start_pulse <= 1'b1;
-                        if (S_AXI_WDATA[1]) load_pulse <= 1'b1;
-                    end
+                    ADDR_CTRL:      reg_ctrl <= S_AXI_WDATA;
                     ADDR_INPUT_LO:  reg_input_lo <= S_AXI_WDATA;
                     ADDR_INPUT_HI:  reg_input_hi <= S_AXI_WDATA;
                     ADDR_WEIGHT_LO: reg_weight_lo <= S_AXI_WDATA;
@@ -235,7 +237,7 @@ module bitnet_axi_lite #(
                 endcase
             end
             
-            // Auto-clear START and LOAD_EN bits
+            // Auto-clear START and LOAD_EN bits after pulse
             if (start_pulse) reg_ctrl[0] <= 1'b0;
             if (load_pulse) reg_ctrl[1] <= 1'b0;
         end
