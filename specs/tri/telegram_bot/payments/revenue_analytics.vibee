@@ -1,0 +1,645 @@
+name: revenue_analytics
+version: "1.0.0"
+language: zig
+module: revenue_analytics
+
+description: |
+  Revenue analytics for VIBEE Telegram bot.
+  Business metrics, cohort analysis, revenue forecasting.
+  Tracks MRR, churn, LTV, conversion rates.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AnalyticsEngine:
+    description: "Analytics engine"
+    fields:
+      config: AnalyticsConfig
+      database: Object
+      cache: Object
+      is_initialized: Bool
+
+  AnalyticsConfig:
+    description: "Analytics configuration"
+    fields:
+      cache_ttl_seconds: Int
+      aggregation_interval_minutes: Int
+      retention_days: Int
+      enable_forecasting: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REVENUE METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RevenueMetrics:
+    description: "Revenue metrics"
+    fields:
+      period: MetricPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      total_revenue_stars: Int
+      total_revenue_usd: Float
+      mrr_stars: Int
+      mrr_usd: Float
+      arr_stars: Int
+      arr_usd: Float
+      new_revenue_stars: Int
+      expansion_revenue_stars: Int
+      contraction_revenue_stars: Int
+      churned_revenue_stars: Int
+      net_revenue_stars: Int
+
+  MetricPeriod:
+    description: "Metric period"
+    values:
+      - day
+      - week
+      - month
+      - quarter
+      - year
+
+  RevenueBreakdown:
+    description: "Revenue breakdown"
+    fields:
+      period: MetricPeriod
+      by_tier: List<TierRevenue>
+      by_product: List<ProductRevenue>
+      by_payment_method: List<PaymentMethodRevenue>
+      by_country: List<CountryRevenue>
+
+  TierRevenue:
+    description: "Revenue by tier"
+    fields:
+      tier: SubscriptionTier
+      revenue_stars: Int
+      revenue_usd: Float
+      subscriber_count: Int
+      percent_of_total: Float
+
+  ProductRevenue:
+    description: "Revenue by product"
+    fields:
+      product_type: ProductType
+      revenue_stars: Int
+      revenue_usd: Float
+      transaction_count: Int
+      percent_of_total: Float
+
+  ProductType:
+    description: "Product type"
+    values:
+      - subscription
+      - one_time_purchase
+      - top_up
+      - generation_pack
+      - premium_model
+
+  PaymentMethodRevenue:
+    description: "Revenue by payment method"
+    fields:
+      payment_method: PaymentMethod
+      revenue_stars: Int
+      revenue_usd: Float
+      transaction_count: Int
+      percent_of_total: Float
+
+  PaymentMethod:
+    description: "Payment method"
+    values:
+      - telegram_stars
+      - stripe
+      - cryptobot
+      - apple_pay
+      - google_pay
+
+  CountryRevenue:
+    description: "Revenue by country"
+    fields:
+      country_code: String
+      country_name: String
+      revenue_stars: Int
+      revenue_usd: Float
+      user_count: Int
+
+  SubscriptionTier:
+    description: "Subscription tier"
+    values:
+      - free
+      - basic
+      - pro
+      - premium
+      - enterprise
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UserMetrics:
+    description: "User metrics"
+    fields:
+      period: MetricPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      total_users: Int
+      active_users: Int
+      new_users: Int
+      churned_users: Int
+      reactivated_users: Int
+      paying_users: Int
+      trial_users: Int
+      conversion_rate: Float
+      churn_rate: Float
+      retention_rate: Float
+
+  UserSegment:
+    description: "User segment"
+    fields:
+      segment_id: String
+      name: String
+      description: String
+      criteria: SegmentCriteria
+      user_count: Int
+      revenue_stars: Int
+      avg_ltv_stars: Int
+
+  SegmentCriteria:
+    description: "Segment criteria"
+    fields:
+      tier: Option<SubscriptionTier>
+      min_spend_stars: Option<Int>
+      max_spend_stars: Option<Int>
+      min_generations: Option<Int>
+      max_generations: Option<Int>
+      registration_after: Option<Timestamp>
+      registration_before: Option<Timestamp>
+      country_codes: Option<List<String>>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COHORT ANALYSIS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CohortAnalysis:
+    description: "Cohort analysis"
+    fields:
+      cohort_type: CohortType
+      cohorts: List<Cohort>
+      retention_matrix: List<List<Float>>
+      revenue_matrix: List<List<Int>>
+
+  CohortType:
+    description: "Cohort type"
+    values:
+      - registration_week
+      - registration_month
+      - first_purchase_week
+      - first_purchase_month
+      - subscription_start_month
+
+  Cohort:
+    description: "Cohort"
+    fields:
+      cohort_id: String
+      cohort_period: String
+      initial_users: Int
+      current_users: Int
+      total_revenue_stars: Int
+      avg_revenue_per_user: Int
+      retention_rates: List<Float>
+
+  RetentionData:
+    description: "Retention data"
+    fields:
+      cohort_id: String
+      period_number: Int
+      retained_users: Int
+      retention_rate: Float
+      revenue_stars: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFETIME VALUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LTVMetrics:
+    description: "LTV metrics"
+    fields:
+      overall_ltv_stars: Int
+      overall_ltv_usd: Float
+      by_tier: List<TierLTV>
+      by_acquisition_source: List<SourceLTV>
+      ltv_to_cac_ratio: Float
+
+  TierLTV:
+    description: "LTV by tier"
+    fields:
+      tier: SubscriptionTier
+      avg_ltv_stars: Int
+      avg_ltv_usd: Float
+      avg_lifetime_days: Int
+      user_count: Int
+
+  SourceLTV:
+    description: "LTV by acquisition source"
+    fields:
+      source: AcquisitionSource
+      avg_ltv_stars: Int
+      avg_ltv_usd: Float
+      user_count: Int
+      cac_stars: Int
+
+  AcquisitionSource:
+    description: "Acquisition source"
+    values:
+      - organic
+      - referral
+      - telegram_ads
+      - social_media
+      - influencer
+      - paid_search
+      - direct
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHURN ANALYSIS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ChurnMetrics:
+    description: "Churn metrics"
+    fields:
+      period: MetricPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      churned_users: Int
+      churn_rate: Float
+      churned_revenue_stars: Int
+      revenue_churn_rate: Float
+      by_tier: List<TierChurn>
+      by_reason: List<ChurnReason>
+
+  TierChurn:
+    description: "Churn by tier"
+    fields:
+      tier: SubscriptionTier
+      churned_users: Int
+      churn_rate: Float
+      churned_revenue_stars: Int
+
+  ChurnReason:
+    description: "Churn reason"
+    fields:
+      reason: ChurnReasonType
+      user_count: Int
+      percent_of_total: Float
+
+  ChurnReasonType:
+    description: "Churn reason type"
+    values:
+      - price_too_high
+      - not_using_enough
+      - found_alternative
+      - missing_features
+      - poor_quality
+      - technical_issues
+      - payment_failed
+      - unknown
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FORECASTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RevenueForecast:
+    description: "Revenue forecast"
+    fields:
+      forecast_date: Timestamp
+      forecast_period: MetricPeriod
+      periods: List<ForecastPeriod>
+      confidence_level: Float
+      model_used: ForecastModel
+
+  ForecastPeriod:
+    description: "Forecast period"
+    fields:
+      period_start: Timestamp
+      period_end: Timestamp
+      predicted_revenue_stars: Int
+      predicted_revenue_usd: Float
+      lower_bound_stars: Int
+      upper_bound_stars: Int
+      predicted_users: Int
+      predicted_churn_rate: Float
+
+  ForecastModel:
+    description: "Forecast model"
+    values:
+      - linear_regression
+      - exponential_smoothing
+      - arima
+      - prophet
+      - ensemble
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONVERSION FUNNEL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ConversionFunnel:
+    description: "Conversion funnel"
+    fields:
+      funnel_id: String
+      name: String
+      period: MetricPeriod
+      stages: List<FunnelStage>
+      overall_conversion_rate: Float
+
+  FunnelStage:
+    description: "Funnel stage"
+    fields:
+      stage_name: String
+      stage_order: Int
+      users_entered: Int
+      users_completed: Int
+      conversion_rate: Float
+      drop_off_rate: Float
+      avg_time_in_stage_seconds: Int
+
+  FunnelType:
+    description: "Funnel type"
+    values:
+      - registration_to_first_generation
+      - free_to_paid
+      - trial_to_subscription
+      - basic_to_pro
+      - one_time_to_subscription
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPORTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AnalyticsReport:
+    description: "Analytics report"
+    fields:
+      report_id: String
+      report_type: ReportType
+      period: MetricPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      generated_at: Timestamp
+      data: Object
+
+  ReportType:
+    description: "Report type"
+    values:
+      - daily_summary
+      - weekly_summary
+      - monthly_summary
+      - revenue_report
+      - user_report
+      - churn_report
+      - cohort_report
+      - forecast_report
+
+  ReportSchedule:
+    description: "Report schedule"
+    fields:
+      schedule_id: String
+      report_type: ReportType
+      frequency: ReportFrequency
+      recipients: List<String>
+      is_active: Bool
+      last_sent_at: Option<Timestamp>
+      next_send_at: Timestamp
+
+  ReportFrequency:
+    description: "Report frequency"
+    values:
+      - daily
+      - weekly
+      - monthly
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_engine
+    given: AnalyticsConfig
+    when: Creating engine
+    then: Return AnalyticsEngine
+
+  - name: initialize
+    given: No parameters
+    when: Initializing engine
+    then: Setup aggregations
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REVENUE METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_revenue_metrics
+    given: Period and date range
+    when: Getting revenue metrics
+    then: Return RevenueMetrics
+
+  - name: get_revenue_breakdown
+    given: Period and date range
+    when: Getting breakdown
+    then: Return RevenueBreakdown
+
+  - name: get_mrr
+    given: Date
+    when: Getting MRR
+    then: Return MRR value
+
+  - name: get_arr
+    given: Date
+    when: Getting ARR
+    then: Return ARR value
+
+  - name: get_revenue_trend
+    given: Period and count
+    when: Getting trend
+    then: Return revenue list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_metrics
+    given: Period and date range
+    when: Getting user metrics
+    then: Return UserMetrics
+
+  - name: get_active_users
+    given: Period
+    when: Getting active users
+    then: Return count
+
+  - name: get_conversion_rate
+    given: Period
+    when: Getting conversion rate
+    then: Return rate
+
+  - name: get_user_segments
+    given: No parameters
+    when: Getting segments
+    then: Return segment list
+
+  - name: create_segment
+    given: SegmentCriteria
+    when: Creating segment
+    then: Return UserSegment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COHORT ANALYSIS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_cohort_analysis
+    given: CohortType and period count
+    when: Getting cohort analysis
+    then: Return CohortAnalysis
+
+  - name: get_retention_curve
+    given: Cohort ID
+    when: Getting retention curve
+    then: Return retention rates
+
+  - name: get_cohort_revenue
+    given: Cohort ID
+    when: Getting cohort revenue
+    then: Return revenue data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFETIME VALUE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_ltv_metrics
+    given: No parameters
+    when: Getting LTV metrics
+    then: Return LTVMetrics
+
+  - name: calculate_user_ltv
+    given: Telegram ID
+    when: Calculating user LTV
+    then: Return LTV value
+
+  - name: get_ltv_by_tier
+    given: No parameters
+    when: Getting LTV by tier
+    then: Return tier LTV list
+
+  - name: get_ltv_by_source
+    given: No parameters
+    when: Getting LTV by source
+    then: Return source LTV list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHURN ANALYSIS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_churn_metrics
+    given: Period and date range
+    when: Getting churn metrics
+    then: Return ChurnMetrics
+
+  - name: get_churn_rate
+    given: Period
+    when: Getting churn rate
+    then: Return rate
+
+  - name: get_at_risk_users
+    given: Threshold
+    when: Getting at-risk users
+    then: Return user list
+
+  - name: predict_churn
+    given: Telegram ID
+    when: Predicting churn
+    then: Return probability
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FORECASTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: forecast_revenue
+    given: Period count and model
+    when: Forecasting revenue
+    then: Return RevenueForecast
+
+  - name: forecast_users
+    given: Period count
+    when: Forecasting users
+    then: Return user forecast
+
+  - name: forecast_churn
+    given: Period count
+    when: Forecasting churn
+    then: Return churn forecast
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONVERSION FUNNEL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_conversion_funnel
+    given: FunnelType and period
+    when: Getting funnel
+    then: Return ConversionFunnel
+
+  - name: get_funnel_drop_offs
+    given: Funnel ID
+    when: Getting drop-offs
+    then: Return drop-off data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPORTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_report
+    given: ReportType and period
+    when: Generating report
+    then: Return AnalyticsReport
+
+  - name: schedule_report
+    given: ReportSchedule
+    when: Scheduling report
+    then: Return success
+
+  - name: get_scheduled_reports
+    given: No parameters
+    when: Getting schedules
+    then: Return schedule list
+
+  - name: send_report
+    given: Report ID and recipients
+    when: Sending report
+    then: Return success
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CACHE_TTL: 3600
+  DEFAULT_AGGREGATION_INTERVAL: 60
+  DEFAULT_RETENTION_DAYS: 365
+
+  # Stars to USD conversion (approximate)
+  STARS_TO_USD_RATE: 0.013
+
+  # Cohort settings
+  DEFAULT_COHORT_PERIODS: 12
+  MAX_COHORT_PERIODS: 52
+
+  # Forecast settings
+  DEFAULT_FORECAST_PERIODS: 6
+  DEFAULT_CONFIDENCE_LEVEL: 0.95
+
+  # Churn thresholds
+  CHURN_RISK_THRESHOLD: 0.7
+  CHURN_HIGH_RISK_THRESHOLD: 0.9
+
+  # Report settings
+  REPORT_RETENTION_DAYS: 90
+  MAX_REPORT_RECIPIENTS: 10

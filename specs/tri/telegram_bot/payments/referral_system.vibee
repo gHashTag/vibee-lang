@@ -1,0 +1,603 @@
+name: referral_system
+version: "1.0.0"
+language: zig
+module: referral_system
+
+description: |
+  Referral system for VIBEE Telegram bot.
+  Referral links, rewards, tracking, multi-level bonuses.
+  Integrates with wallet and subscription systems.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ReferralSystem:
+    description: "Referral system"
+    fields:
+      config: ReferralConfig
+      wallet_client: Object
+      database: Object
+      stats: SystemStats
+      is_initialized: Bool
+
+  ReferralConfig:
+    description: "Referral configuration"
+    fields:
+      referrer_reward_stars: Int
+      referee_reward_stars: Int
+      referrer_percent: Float
+      min_purchase_for_reward: Int
+      reward_delay_hours: Int
+      max_referrals_per_user: Int
+      enable_multi_level: Bool
+      multi_level_depth: Int
+      multi_level_percents: List<Float>
+
+  SystemStats:
+    description: "System statistics"
+    fields:
+      total_referrals: Int
+      successful_referrals: Int
+      total_rewards_paid_stars: Int
+      active_referrers: Int
+      conversion_rate: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRAL CODES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReferralCode:
+    description: "Referral code"
+    fields:
+      code: String
+      telegram_id: Int
+      code_type: CodeType
+      uses_count: Int
+      max_uses: Option<Int>
+      reward_multiplier: Float
+      expires_at: Option<Timestamp>
+      is_active: Bool
+      created_at: Timestamp
+      metadata: Object
+
+  CodeType:
+    description: "Code type"
+    values:
+      - personal
+      - influencer
+      - campaign
+      - partner
+      - promo
+
+  ReferralLink:
+    description: "Referral link"
+    fields:
+      link_id: String
+      code: String
+      telegram_id: Int
+      full_url: String
+      short_url: Option<String>
+      clicks: Int
+      conversions: Int
+      created_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Referral:
+    description: "Referral record"
+    fields:
+      referral_id: String
+      referrer_id: Int
+      referee_id: Int
+      code_used: String
+      status: ReferralStatus
+      referrer_reward_stars: Int
+      referee_reward_stars: Int
+      referrer_reward_paid: Bool
+      referee_reward_paid: Bool
+      qualified_at: Option<Timestamp>
+      created_at: Timestamp
+      metadata: Object
+
+  ReferralStatus:
+    description: "Referral status"
+    values:
+      - pending
+      - qualified
+      - rewarded
+      - expired
+      - cancelled
+      - fraud_detected
+
+  ReferralChain:
+    description: "Multi-level referral chain"
+    fields:
+      referee_id: Int
+      chain: List<ChainLevel>
+      total_depth: Int
+
+  ChainLevel:
+    description: "Chain level"
+    fields:
+      level: Int
+      referrer_id: Int
+      reward_percent: Float
+      reward_stars: Int
+      is_paid: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REWARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Reward:
+    description: "Referral reward"
+    fields:
+      reward_id: String
+      telegram_id: Int
+      referral_id: String
+      reward_type: RewardType
+      amount_stars: Int
+      status: RewardStatus
+      scheduled_at: Timestamp
+      paid_at: Option<Timestamp>
+      transaction_id: Option<String>
+
+  RewardType:
+    description: "Reward type"
+    values:
+      - signup_bonus
+      - first_purchase_bonus
+      - recurring_commission
+      - milestone_bonus
+      - campaign_bonus
+
+  RewardStatus:
+    description: "Reward status"
+    values:
+      - pending
+      - scheduled
+      - processing
+      - paid
+      - failed
+      - cancelled
+
+  RewardRule:
+    description: "Reward rule"
+    fields:
+      rule_id: String
+      name: String
+      description: String
+      trigger: RewardTrigger
+      reward_stars: Int
+      reward_percent: Option<Float>
+      conditions: RewardConditions
+      is_active: Bool
+
+  RewardTrigger:
+    description: "Reward trigger"
+    values:
+      - referee_signup
+      - referee_first_purchase
+      - referee_subscription
+      - referee_purchase
+      - referral_milestone
+
+  RewardConditions:
+    description: "Reward conditions"
+    fields:
+      min_purchase_stars: Option<Int>
+      min_subscription_tier: Option<String>
+      referee_must_be_active_days: Option<Int>
+      max_rewards_per_referee: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGNS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReferralCampaign:
+    description: "Referral campaign"
+    fields:
+      campaign_id: String
+      name: String
+      description: String
+      campaign_type: CampaignType
+      code_prefix: String
+      reward_multiplier: Float
+      bonus_stars: Int
+      budget_stars: Int
+      spent_stars: Int
+      max_referrals: Option<Int>
+      current_referrals: Int
+      starts_at: Timestamp
+      ends_at: Option<Timestamp>
+      is_active: Bool
+      created_at: Timestamp
+
+  CampaignType:
+    description: "Campaign type"
+    values:
+      - seasonal
+      - influencer
+      - partner
+      - launch
+      - retention
+
+  CampaignStats:
+    description: "Campaign statistics"
+    fields:
+      campaign_id: String
+      total_clicks: Int
+      total_signups: Int
+      total_conversions: Int
+      total_rewards_stars: Int
+      conversion_rate: Float
+      cost_per_acquisition: Float
+      roi: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEADERBOARD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Leaderboard:
+    description: "Referral leaderboard"
+    fields:
+      period: LeaderboardPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      entries: List<LeaderboardEntry>
+      total_participants: Int
+
+  LeaderboardPeriod:
+    description: "Leaderboard period"
+    values:
+      - daily
+      - weekly
+      - monthly
+      - all_time
+
+  LeaderboardEntry:
+    description: "Leaderboard entry"
+    fields:
+      rank: Int
+      telegram_id: Int
+      username: Option<String>
+      referral_count: Int
+      earnings_stars: Int
+      conversion_rate: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FRAUD DETECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FraudCheck:
+    description: "Fraud check result"
+    fields:
+      referral_id: String
+      is_suspicious: Bool
+      risk_score: Float
+      flags: List<FraudFlag>
+      recommendation: FraudAction
+
+  FraudFlag:
+    description: "Fraud flag"
+    values:
+      - same_device
+      - same_ip
+      - rapid_signup
+      - no_activity
+      - suspicious_pattern
+      - known_fraud_ring
+
+  FraudAction:
+    description: "Fraud action"
+    values:
+      - approve
+      - review
+      - delay
+      - reject
+      - ban
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReferralAnalytics:
+    description: "Referral analytics"
+    fields:
+      period: LeaderboardPeriod
+      total_referrals: Int
+      successful_referrals: Int
+      conversion_rate: Float
+      total_rewards_stars: Int
+      avg_reward_stars: Int
+      top_referrers: List<LeaderboardEntry>
+      by_source: List<SourceAnalytics>
+
+  SourceAnalytics:
+    description: "Analytics by source"
+    fields:
+      source: CodeType
+      referral_count: Int
+      conversion_rate: Float
+      total_rewards_stars: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ReferralError:
+    description: "Referral error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_code
+      - code_expired
+      - code_max_uses
+      - self_referral
+      - already_referred
+      - referrer_not_found
+      - reward_failed
+      - fraud_detected
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_system
+    given: ReferralConfig
+    when: Creating system
+    then: Return ReferralSystem
+
+  - name: initialize
+    given: No parameters
+    when: Initializing system
+    then: Load configuration
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return SystemStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRAL CODES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_code
+    given: Telegram ID and code type
+    when: Generating code
+    then: Return ReferralCode
+
+  - name: get_code
+    given: Code string
+    when: Getting code
+    then: Return ReferralCode
+
+  - name: get_user_code
+    given: Telegram ID
+    when: Getting user code
+    then: Return ReferralCode
+
+  - name: validate_code
+    given: Code string
+    when: Validating code
+    then: Return validation result
+
+  - name: deactivate_code
+    given: Code string
+    when: Deactivating code
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRAL LINKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_link
+    given: Telegram ID
+    when: Generating link
+    then: Return ReferralLink
+
+  - name: get_link
+    given: Link ID
+    when: Getting link
+    then: Return ReferralLink
+
+  - name: track_click
+    given: Link ID
+    when: Tracking click
+    then: Return success
+
+  - name: shorten_link
+    given: Full URL
+    when: Shortening link
+    then: Return short URL
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REFERRALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_referral
+    given: Referrer ID, referee ID, code
+    when: Creating referral
+    then: Return Referral
+
+  - name: get_referral
+    given: Referral ID
+    when: Getting referral
+    then: Return Referral
+
+  - name: get_user_referrals
+    given: Telegram ID
+    when: Getting user referrals
+    then: Return referral list
+
+  - name: get_referred_by
+    given: Telegram ID
+    when: Getting referrer
+    then: Return referrer ID
+
+  - name: qualify_referral
+    given: Referral ID
+    when: Qualifying referral
+    then: Return success
+
+  - name: get_referral_chain
+    given: Telegram ID
+    when: Getting chain
+    then: Return ReferralChain
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REWARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: calculate_reward
+    given: Referral ID
+    when: Calculating reward
+    then: Return reward amount
+
+  - name: schedule_reward
+    given: Reward details
+    when: Scheduling reward
+    then: Return Reward
+
+  - name: process_rewards
+    given: No parameters
+    when: Processing pending rewards
+    then: Return processed count
+
+  - name: pay_reward
+    given: Reward ID
+    when: Paying reward
+    then: Return success
+
+  - name: get_user_rewards
+    given: Telegram ID
+    when: Getting user rewards
+    then: Return reward list
+
+  - name: get_total_earnings
+    given: Telegram ID
+    when: Getting total earnings
+    then: Return total stars
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGNS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_campaign
+    given: Campaign details
+    when: Creating campaign
+    then: Return ReferralCampaign
+
+  - name: get_campaign
+    given: Campaign ID
+    when: Getting campaign
+    then: Return ReferralCampaign
+
+  - name: get_active_campaigns
+    given: No parameters
+    when: Getting active campaigns
+    then: Return campaign list
+
+  - name: get_campaign_stats
+    given: Campaign ID
+    when: Getting campaign stats
+    then: Return CampaignStats
+
+  - name: end_campaign
+    given: Campaign ID
+    when: Ending campaign
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEADERBOARD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_leaderboard
+    given: Period and limit
+    when: Getting leaderboard
+    then: Return Leaderboard
+
+  - name: get_user_rank
+    given: Telegram ID and period
+    when: Getting user rank
+    then: Return rank
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FRAUD DETECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_fraud
+    given: Referral ID
+    when: Checking fraud
+    then: Return FraudCheck
+
+  - name: report_fraud
+    given: Referral ID and reason
+    when: Reporting fraud
+    then: Return success
+
+  - name: review_suspicious
+    given: No parameters
+    when: Reviewing suspicious
+    then: Return referral list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANALYTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_analytics
+    given: Period
+    when: Getting analytics
+    then: Return ReferralAnalytics
+
+  - name: get_conversion_funnel
+    given: Period
+    when: Getting funnel
+    then: Return funnel data
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_REFERRER_REWARD: 50
+  DEFAULT_REFEREE_REWARD: 25
+  DEFAULT_REFERRER_PERCENT: 10.0
+  DEFAULT_MIN_PURCHASE: 100
+  DEFAULT_REWARD_DELAY_HOURS: 24
+  DEFAULT_MAX_REFERRALS: 1000
+
+  # Multi-level defaults
+  DEFAULT_MULTI_LEVEL_DEPTH: 3
+  LEVEL_1_PERCENT: 10.0
+  LEVEL_2_PERCENT: 5.0
+  LEVEL_3_PERCENT: 2.5
+
+  # Code settings
+  CODE_LENGTH: 8
+  CODE_CHARSET: "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+  CODE_PREFIX_PERSONAL: "REF"
+  CODE_PREFIX_INFLUENCER: "INF"
+  CODE_PREFIX_CAMPAIGN: "CMP"
+
+  # Fraud thresholds
+  FRAUD_RISK_THRESHOLD: 0.7
+  FRAUD_HIGH_RISK_THRESHOLD: 0.9
+  MIN_ACTIVITY_DAYS: 3
+
+  # Leaderboard
+  LEADERBOARD_SIZE: 100

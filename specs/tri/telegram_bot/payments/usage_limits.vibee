@@ -1,0 +1,539 @@
+name: usage_limits
+version: "1.0.0"
+language: zig
+module: usage_limits
+
+description: |
+  Usage limits and tracking for VIBEE Telegram bot.
+  Enforces generation limits, tracks consumption, manages quotas.
+  Integrates with subscription tiers and billing.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  UsageLimiter:
+    description: "Usage limiter service"
+    fields:
+      config: LimiterConfig
+      cache: Object
+      database: Object
+      stats: LimiterStats
+      is_initialized: Bool
+
+  LimiterConfig:
+    description: "Limiter configuration"
+    fields:
+      cache_ttl_seconds: Int
+      sync_interval_seconds: Int
+      grace_period_percent: Int
+      enable_soft_limits: Bool
+      enable_notifications: Bool
+
+  LimiterStats:
+    description: "Limiter statistics"
+    fields:
+      checks_performed: Int
+      limits_exceeded: Int
+      grace_periods_used: Int
+      quotas_reset: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER USAGE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UserUsage:
+    description: "User usage record"
+    fields:
+      telegram_id: Int
+      tier: SubscriptionTier
+      period_start: Timestamp
+      period_end: Timestamp
+      usage: UsageCounters
+      limits: UsageLimits
+      status: UsageStatus
+      last_generation_at: Option<Timestamp>
+      updated_at: Timestamp
+
+  UsageCounters:
+    description: "Usage counters"
+    fields:
+      generations_today: Int
+      generations_this_week: Int
+      generations_this_month: Int
+      images_generated: Int
+      videos_generated: Int
+      audio_generated: Int
+      stars_spent: Int
+      compute_time_ms: Int
+      storage_bytes: Int
+
+  UsageLimits:
+    description: "Usage limits"
+    fields:
+      daily_generations: Int
+      weekly_generations: Int
+      monthly_generations: Int
+      max_image_resolution: Int
+      max_video_duration_seconds: Int
+      max_audio_duration_seconds: Int
+      max_concurrent_jobs: Int
+      max_storage_bytes: Int
+      priority_queue: Bool
+
+  UsageStatus:
+    description: "Usage status"
+    values:
+      - active
+      - approaching_limit
+      - soft_limit_exceeded
+      - hard_limit_exceeded
+      - suspended
+
+  SubscriptionTier:
+    description: "Subscription tier"
+    values:
+      - free
+      - basic
+      - pro
+      - premium
+      - enterprise
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIMIT CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LimitCheckRequest:
+    description: "Limit check request"
+    fields:
+      telegram_id: Int
+      generation_type: GenerationType
+      estimated_cost_stars: Int
+      estimated_compute_ms: Int
+      output_size_bytes: Int
+
+  GenerationType:
+    description: "Generation type"
+    values:
+      - image
+      - video
+      - audio
+      - text
+
+  LimitCheckResult:
+    description: "Limit check result"
+    fields:
+      allowed: Bool
+      reason: Option<LimitReason>
+      remaining: RemainingQuota
+      suggestions: List<String>
+      upgrade_options: List<UpgradeOption>
+
+  LimitReason:
+    description: "Limit reason"
+    values:
+      - daily_limit_exceeded
+      - weekly_limit_exceeded
+      - monthly_limit_exceeded
+      - insufficient_balance
+      - resolution_too_high
+      - duration_too_long
+      - storage_full
+      - concurrent_limit
+      - rate_limited
+      - account_suspended
+
+  RemainingQuota:
+    description: "Remaining quota"
+    fields:
+      daily_remaining: Int
+      weekly_remaining: Int
+      monthly_remaining: Int
+      balance_remaining: Int
+      storage_remaining: Int
+      reset_in_seconds: Int
+
+  UpgradeOption:
+    description: "Upgrade option"
+    fields:
+      tier: SubscriptionTier
+      price_stars: Int
+      additional_generations: Int
+      features: List<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USAGE RECORDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UsageRecord:
+    description: "Usage record"
+    fields:
+      record_id: String
+      telegram_id: Int
+      generation_type: GenerationType
+      model_id: String
+      cost_stars: Int
+      compute_time_ms: Int
+      output_size_bytes: Int
+      request_id: String
+      created_at: Timestamp
+
+  UsageSummary:
+    description: "Usage summary"
+    fields:
+      telegram_id: Int
+      period: SummaryPeriod
+      period_start: Timestamp
+      period_end: Timestamp
+      total_generations: Int
+      total_cost_stars: Int
+      total_compute_ms: Int
+      by_type: List<TypeUsage>
+      by_model: List<ModelUsage>
+
+  SummaryPeriod:
+    description: "Summary period"
+    values:
+      - day
+      - week
+      - month
+      - year
+      - all_time
+
+  TypeUsage:
+    description: "Usage by type"
+    fields:
+      generation_type: GenerationType
+      count: Int
+      cost_stars: Int
+      compute_ms: Int
+
+  ModelUsage:
+    description: "Usage by model"
+    fields:
+      model_id: String
+      count: Int
+      cost_stars: Int
+      compute_ms: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUOTAS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  QuotaAllocation:
+    description: "Quota allocation"
+    fields:
+      allocation_id: String
+      telegram_id: Int
+      quota_type: QuotaType
+      amount: Int
+      reason: String
+      expires_at: Option<Timestamp>
+      created_at: Timestamp
+
+  QuotaType:
+    description: "Quota type"
+    values:
+      - bonus_generations
+      - promotional
+      - referral_reward
+      - compensation
+      - trial_extension
+
+  QuotaAdjustment:
+    description: "Quota adjustment"
+    fields:
+      telegram_id: Int
+      quota_type: QuotaType
+      amount: Int
+      reason: String
+      expires_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMITING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RateLimitConfig:
+    description: "Rate limit configuration"
+    fields:
+      requests_per_minute: Int
+      requests_per_hour: Int
+      burst_limit: Int
+      cooldown_seconds: Int
+
+  RateLimitStatus:
+    description: "Rate limit status"
+    fields:
+      telegram_id: Int
+      requests_this_minute: Int
+      requests_this_hour: Int
+      is_limited: Bool
+      retry_after_seconds: Option<Int>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NOTIFICATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UsageNotification:
+    description: "Usage notification"
+    fields:
+      notification_id: String
+      telegram_id: Int
+      notification_type: NotificationType
+      threshold_percent: Int
+      message: String
+      sent_at: Timestamp
+
+  NotificationType:
+    description: "Notification type"
+    values:
+      - approaching_daily_limit
+      - approaching_monthly_limit
+      - limit_exceeded
+      - quota_expiring
+      - subscription_expiring
+      - balance_low
+
+  NotificationThreshold:
+    description: "Notification threshold"
+    fields:
+      threshold_percent: Int
+      notification_type: NotificationType
+      enabled: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UsageError:
+    description: "Usage error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - user_not_found
+      - invalid_tier
+      - limit_exceeded
+      - quota_expired
+      - rate_limited
+      - database_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_limiter
+    given: LimiterConfig
+    when: Creating limiter
+    then: Return UsageLimiter
+
+  - name: initialize
+    given: No parameters
+    when: Initializing limiter
+    then: Load tier configs
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return LimiterStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIMIT CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_limit
+    given: LimitCheckRequest
+    when: Checking limit
+    then: Return LimitCheckResult
+
+  - name: can_generate
+    given: Telegram ID and generation type
+    when: Checking if can generate
+    then: Return boolean
+
+  - name: get_remaining_quota
+    given: Telegram ID
+    when: Getting remaining quota
+    then: Return RemainingQuota
+
+  - name: get_user_usage
+    given: Telegram ID
+    when: Getting user usage
+    then: Return UserUsage
+
+  - name: get_user_limits
+    given: Telegram ID
+    when: Getting user limits
+    then: Return UsageLimits
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USAGE TRACKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: record_usage
+    given: UsageRecord
+    when: Recording usage
+    then: Return success
+
+  - name: increment_counter
+    given: Telegram ID and generation type
+    when: Incrementing counter
+    then: Return new count
+
+  - name: get_usage_summary
+    given: Telegram ID and period
+    when: Getting summary
+    then: Return UsageSummary
+
+  - name: get_usage_history
+    given: Telegram ID and date range
+    when: Getting history
+    then: Return usage records
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUOTA MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: allocate_quota
+    given: QuotaAdjustment
+    when: Allocating quota
+    then: Return QuotaAllocation
+
+  - name: get_bonus_quota
+    given: Telegram ID
+    when: Getting bonus quota
+    then: Return total bonus
+
+  - name: expire_quotas
+    given: No parameters
+    when: Expiring quotas
+    then: Return expired count
+
+  - name: reset_daily_counters
+    given: No parameters
+    when: Resetting daily
+    then: Return reset count
+
+  - name: reset_monthly_counters
+    given: No parameters
+    when: Resetting monthly
+    then: Return reset count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TIER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_tier_limits
+    given: SubscriptionTier
+    when: Getting tier limits
+    then: Return UsageLimits
+
+  - name: update_user_tier
+    given: Telegram ID and tier
+    when: Updating tier
+    then: Return success
+
+  - name: compare_tiers
+    given: Current tier and target tier
+    when: Comparing tiers
+    then: Return comparison
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMITING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_rate_limit
+    given: Telegram ID
+    when: Checking rate limit
+    then: Return RateLimitStatus
+
+  - name: record_request
+    given: Telegram ID
+    when: Recording request
+    then: Return success
+
+  - name: get_rate_limit_config
+    given: SubscriptionTier
+    when: Getting config
+    then: Return RateLimitConfig
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NOTIFICATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_thresholds
+    given: Telegram ID
+    when: Checking thresholds
+    then: Return notifications to send
+
+  - name: send_usage_notification
+    given: UsageNotification
+    when: Sending notification
+    then: Return success
+
+  - name: get_notification_history
+    given: Telegram ID
+    when: Getting history
+    then: Return notifications
+
+  - name: set_notification_preferences
+    given: Telegram ID and thresholds
+    when: Setting preferences
+    then: Return success
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CACHE_TTL: 300
+  DEFAULT_SYNC_INTERVAL: 60
+  DEFAULT_GRACE_PERIOD_PERCENT: 10
+
+  # Free tier limits
+  FREE_DAILY_GENERATIONS: 5
+  FREE_MONTHLY_GENERATIONS: 50
+  FREE_MAX_RESOLUTION: 1024
+  FREE_MAX_VIDEO_DURATION: 5
+  FREE_MAX_STORAGE_GB: 1
+
+  # Basic tier limits
+  BASIC_DAILY_GENERATIONS: 20
+  BASIC_MONTHLY_GENERATIONS: 300
+  BASIC_MAX_RESOLUTION: 2048
+  BASIC_MAX_VIDEO_DURATION: 15
+  BASIC_MAX_STORAGE_GB: 5
+
+  # Pro tier limits
+  PRO_DAILY_GENERATIONS: 100
+  PRO_MONTHLY_GENERATIONS: 2000
+  PRO_MAX_RESOLUTION: 4096
+  PRO_MAX_VIDEO_DURATION: 60
+  PRO_MAX_STORAGE_GB: 50
+
+  # Premium tier limits
+  PREMIUM_DAILY_GENERATIONS: 500
+  PREMIUM_MONTHLY_GENERATIONS: 10000
+  PREMIUM_MAX_RESOLUTION: 8192
+  PREMIUM_MAX_VIDEO_DURATION: 300
+  PREMIUM_MAX_STORAGE_GB: 500
+
+  # Rate limits
+  FREE_REQUESTS_PER_MINUTE: 5
+  BASIC_REQUESTS_PER_MINUTE: 10
+  PRO_REQUESTS_PER_MINUTE: 30
+  PREMIUM_REQUESTS_PER_MINUTE: 60
+
+  # Notification thresholds
+  THRESHOLD_WARNING: 80
+  THRESHOLD_CRITICAL: 95
