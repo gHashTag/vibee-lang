@@ -278,6 +278,149 @@ list_available_ilas
 
 ---
 
+## VIO Runtime Control
+
+VIO (Virtual I/O) позволяет управлять параметрами BitNet акселератора в runtime без перекомпиляции.
+
+### Сборка с VIO
+
+```bash
+cd trinity/output/fpga
+
+# Только VIO
+make zynq-vio
+
+# ILA + VIO (полная отладка)
+make zynq-full-debug
+```
+
+### VIO Cores
+
+#### vio_runtime - Основной контроллер
+
+| Probe | Тип | Ширина | Описание |
+|-------|-----|--------|----------|
+| probe_in0 | IN | 8 | engine_status (FSM state) |
+| probe_in1 | IN | 32 | inference_count |
+| probe_in2 | IN | 8 | error_flags |
+| probe_in3 | IN | 8 | current_layer |
+| probe_in4 | IN | 32 | cycle_count |
+| probe_in5 | IN | 8 | utilization (%) |
+| probe_in6 | IN | 8 | fifo_status |
+| probe_in7 | IN | 12 | temperature (XADC raw) |
+| probe_out0 | OUT | 1 | force_start |
+| probe_out1 | OUT | 1 | force_reset |
+| probe_out2 | OUT | 1 | debug_mode |
+| probe_out3 | OUT | 1 | inject_error |
+| probe_out4 | OUT | 8 | layer_select |
+| probe_out5 | OUT | 16 | threshold_adj |
+| probe_out6 | OUT | 27 | simd_enable (3³ блоков) |
+| probe_out7 | OUT | 4 | perf_counter_sel |
+
+#### vio_simd - Управление 27 SIMD блоками
+
+| Probe | Тип | Ширина | Описание |
+|-------|-----|--------|----------|
+| probe_in0 | IN | 27 | simd_active - активные блоки |
+| probe_in1 | IN | 27 | simd_stall - блоки в stall |
+| probe_in2 | IN | 27 | simd_error - блоки с ошибкой |
+| probe_out0 | OUT | 27 | simd_enable - включение блоков |
+| probe_out1 | OUT | 27 | simd_force_stall - принудительный stall |
+| probe_out2 | OUT | 8 | simd_test_pattern |
+
+#### vio_perf - Performance Counters
+
+| Probe | Тип | Ширина | Описание |
+|-------|-----|--------|----------|
+| probe_in0 | IN | 32 | total_cycles |
+| probe_in1 | IN | 32 | compute_cycles |
+| probe_in2 | IN | 32 | mem_stall_cycles |
+| probe_in3 | IN | 32 | axi_wait_cycles |
+| probe_in4 | IN | 32 | layer_cycles |
+| probe_in5 | IN | 32 | simd_active_cycles |
+| probe_in6 | IN | 32 | cache_hits |
+| probe_in7 | IN | 32 | cache_misses |
+| probe_out0 | OUT | 1 | counter_reset |
+| probe_out1 | OUT | 4 | counter_select |
+
+#### vio_thermal - Температурный мониторинг
+
+| Probe | Тип | Ширина | Описание |
+|-------|-----|--------|----------|
+| probe_in0 | IN | 12 | temperature (текущая) |
+| probe_in1 | IN | 12 | temp_max (максимальная) |
+| probe_in2 | IN | 12 | temp_min (минимальная) |
+| probe_in3 | IN | 8 | thermal_status |
+| probe_out0 | OUT | 12 | temp_warn_threshold (~85°C) |
+| probe_out1 | OUT | 12 | temp_crit_threshold (~95°C) |
+
+### VIO Dashboard
+
+Интерактивная панель управления:
+
+```bash
+make dashboard
+```
+
+Или в Vivado:
+
+```tcl
+source scripts/vio_dashboard.tcl
+
+# Подключение
+vio_dashboard::connect
+
+# Статус
+vio_dashboard::status
+
+# Управление
+vio_dashboard::start_inference      # Запустить inference
+vio_dashboard::reset                # Soft reset
+vio_dashboard::set_debug_mode 1     # Включить debug
+vio_dashboard::set_layer 5          # Мониторить слой 5
+vio_dashboard::set_threshold 0x8000 # Установить threshold
+vio_dashboard::set_simd_enable 0x7FFFFFF  # Все SIMD включены
+vio_dashboard::reset_perf_counters  # Сбросить счётчики
+
+# Автоматический мониторинг (каждую секунду)
+vio_dashboard::monitor 1000
+```
+
+### Engine States
+
+| Код | Состояние | Описание |
+|-----|-----------|----------|
+| 0x00 | IDLE | Ожидание команды |
+| 0x01 | LOADING_WEIGHTS | Загрузка весов |
+| 0x02 | LOADING_INPUT | Загрузка входных данных |
+| 0x03 | COMPUTING | Вычисление |
+| 0x04 | STORING_OUTPUT | Сохранение результата |
+| 0x05 | DONE | Завершено |
+| 0xFF | ERROR | Ошибка |
+
+### Error Flags
+
+| Бит | Флаг | Описание |
+|-----|------|----------|
+| 0 | FIFO_OVERFLOW | Переполнение FIFO |
+| 1 | FIFO_UNDERFLOW | Опустошение FIFO |
+| 2 | AXI_ERROR | Ошибка AXI транзакции |
+| 3 | TIMEOUT | Таймаут операции |
+| 4 | WEIGHT_MISMATCH | Несоответствие весов |
+| 5 | CHECKSUM_FAIL | Ошибка контрольной суммы |
+| 6 | THERMAL_WARN | Предупреждение о температуре |
+| 7 | THERMAL_CRIT | Критическая температура |
+
+### Конвертация температуры
+
+```
+T(°C) = (raw_value × 503.975 / 4096) - 273.15
+```
+
+Пример: raw = 0x960 (2400) → T = (2400 × 503.975 / 4096) - 273.15 ≈ 22°C
+
+---
+
 ## Ресурсы Debug
 
 | Компонент | LUTs | FFs | BRAM |
@@ -287,11 +430,14 @@ list_available_ilas
 | ila_axis_output | 400 | 300 | 2 |
 | ila_engine | 800 | 600 | 4 |
 | ila_perf | 600 | 500 | 1 |
-| vio_ctrl | 200 | 150 | 0 |
+| vio_runtime | 400 | 300 | 0 |
+| vio_simd | 300 | 200 | 0 |
+| vio_perf | 350 | 250 | 0 |
+| vio_thermal | 200 | 150 | 0 |
 | dbg_hub | 300 | 200 | 0 |
-| **ИТОГО** | **3,200** | **2,450** | **11** |
+| **ИТОГО** | **4,250** | **3,200** | **11** |
 
-Дополнительная утилизация ZCU104: ~1.4% LUTs, ~0.5% FFs, ~3.5% BRAM
+Дополнительная утилизация ZCU104: ~1.9% LUTs, ~0.7% FFs, ~3.5% BRAM
 
 ---
 

@@ -1,0 +1,372 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE VIO Runtime Control Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# Virtual I/O для runtime управления BitNet акселератором
+#
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vio_runtime_control
+version: "1.0.0"
+language: varlog
+module: vio_runtime_control
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIO Input Probes (Readback от FPGA)
+  # ─────────────────────────────────────────────────────────────────────────────
+  
+  EngineStatus:
+    description: "Состояние BitNet Engine FSM"
+    fields:
+      state: Int
+    width: 8
+    encoding:
+      IDLE: 0x00
+      LOADING_WEIGHTS: 0x01
+      LOADING_INPUT: 0x02
+      COMPUTING: 0x03
+      STORING_OUTPUT: 0x04
+      DONE: 0x05
+      ERROR: 0xFF
+
+  InferenceCount:
+    description: "Счётчик выполненных inference"
+    fields:
+      count: Int
+    width: 32
+
+  ErrorFlags:
+    description: "Флаги ошибок"
+    fields:
+      flags: Int
+    width: 8
+    encoding:
+      NO_ERROR: 0x00
+      FIFO_OVERFLOW: 0x01
+      FIFO_UNDERFLOW: 0x02
+      AXI_ERROR: 0x04
+      TIMEOUT: 0x08
+      WEIGHT_MISMATCH: 0x10
+      CHECKSUM_FAIL: 0x20
+      THERMAL_WARN: 0x40
+      THERMAL_CRIT: 0x80
+
+  CurrentLayer:
+    description: "Текущий обрабатываемый слой"
+    fields:
+      layer: Int
+    width: 8
+
+  CycleCount:
+    description: "Счётчик тактов для performance"
+    fields:
+      cycles: Int
+    width: 32
+
+  Utilization:
+    description: "Утилизация вычислительных блоков (%)"
+    fields:
+      percent: Int
+    width: 8
+
+  FifoStatus:
+    description: "Статус FIFO буферов"
+    fields:
+      status: Int
+    width: 8
+    encoding:
+      # Биты [3:0] - Input FIFO level (0-15)
+      # Биты [7:4] - Output FIFO level (0-15)
+      INPUT_EMPTY: 0x00
+      INPUT_QUARTER: 0x04
+      INPUT_HALF: 0x08
+      INPUT_FULL: 0x0F
+      OUTPUT_EMPTY: 0x00
+      OUTPUT_QUARTER: 0x40
+      OUTPUT_HALF: 0x80
+      OUTPUT_FULL: 0xF0
+
+  Temperature:
+    description: "Температура FPGA от XADC"
+    fields:
+      temp: Int
+    width: 12
+    # Формула: T(°C) = (temp * 503.975 / 4096) - 273.15
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIO Output Probes (Control к FPGA)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ForceStart:
+    description: "Принудительный запуск inference"
+    fields:
+      trigger: Bool
+    width: 1
+
+  ForceReset:
+    description: "Программный сброс"
+    fields:
+      reset: Bool
+    width: 1
+
+  DebugMode:
+    description: "Включение debug режима"
+    fields:
+      enable: Bool
+    width: 1
+
+  InjectError:
+    description: "Инъекция ошибки для тестирования"
+    fields:
+      inject: Bool
+    width: 1
+
+  LayerSelect:
+    description: "Выбор слоя для мониторинга"
+    fields:
+      layer: Int
+    width: 8
+
+  ThresholdAdj:
+    description: "Runtime настройка threshold для quantization"
+    fields:
+      threshold: Int
+    width: 16
+    default: 0x8000
+
+  SimdEnable:
+    description: "Per-block SIMD enable (27 блоков = 3³)"
+    fields:
+      enable_mask: Int
+    width: 27
+    default: 0x7FFFFFF  # Все блоки включены
+
+  PerfCounterSel:
+    description: "Выбор performance counter для чтения"
+    fields:
+      selector: Int
+    width: 4
+    encoding:
+      TOTAL_CYCLES: 0x0
+      COMPUTE_CYCLES: 0x1
+      MEM_STALL_CYCLES: 0x2
+      AXI_WAIT_CYCLES: 0x3
+      LAYER_CYCLES: 0x4
+      SIMD_ACTIVE: 0x5
+      CACHE_HITS: 0x6
+      CACHE_MISSES: 0x7
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Составные типы
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  VioInputs:
+    description: "Все VIO input probes"
+    fields:
+      engine_status: EngineStatus
+      inference_count: InferenceCount
+      error_flags: ErrorFlags
+      current_layer: CurrentLayer
+      cycle_count: CycleCount
+      utilization: Utilization
+      fifo_status: FifoStatus
+      temperature: Temperature
+
+  VioOutputs:
+    description: "Все VIO output probes"
+    fields:
+      force_start: ForceStart
+      force_reset: ForceReset
+      debug_mode: DebugMode
+      inject_error: InjectError
+      layer_select: LayerSelect
+      threshold_adj: ThresholdAdj
+      simd_enable: SimdEnable
+      perf_counter_sel: PerfCounterSel
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Мониторинг состояния
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: read_engine_status
+    given: VIO подключен к Hardware Manager
+    when: Чтение probe_in0
+    then: Возвращает текущее состояние FSM (IDLE/COMPUTING/DONE/ERROR)
+
+  - name: read_inference_count
+    given: Engine выполнил хотя бы один inference
+    when: Чтение probe_in1
+    then: Возвращает общее количество выполненных inference
+
+  - name: read_error_flags
+    given: Произошла ошибка в системе
+    when: Чтение probe_in2
+    then: Возвращает bitmap активных ошибок
+
+  - name: read_temperature
+    given: XADC сконфигурирован
+    when: Чтение probe_in7
+    then: Возвращает температуру FPGA в raw формате
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Runtime управление
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: trigger_inference
+    given: Engine в состоянии IDLE
+    when: Установка probe_out0 = 1
+    then: Запускает один inference цикл
+
+  - name: soft_reset
+    given: Любое состояние системы
+    when: Установка probe_out1 = 1
+    then: Сбрасывает Engine в IDLE, очищает FIFO и счётчики
+
+  - name: enable_debug_mode
+    given: Любое состояние системы
+    when: Установка probe_out2 = 1
+    then: Включает расширенное логирование и ILA triggers
+
+  - name: inject_test_error
+    given: Debug mode включен
+    when: Установка probe_out3 = 1
+    then: Инъектирует тестовую ошибку для проверки error handling
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Настройка параметров
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: select_layer_monitor
+    given: Многослойная сеть загружена
+    when: Установка probe_out4 = N
+    then: ILA и performance counters фокусируются на слое N
+
+  - name: adjust_threshold
+    given: Quantization threshold требует настройки
+    when: Установка probe_out5 = value
+    then: Изменяет threshold для ternary quantization в runtime
+
+  - name: control_simd_blocks
+    given: 27 SIMD блоков доступны
+    when: Установка probe_out6 = mask
+    then: Включает/выключает отдельные SIMD блоки (power/debug)
+
+  - name: select_perf_counter
+    given: Performance monitoring активен
+    when: Установка probe_out7 = selector
+    then: Выбирает какой счётчик отображать в cycle_count
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНФИГУРАЦИЯ VIO IP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+config:
+  ip_vendor: xilinx.com
+  ip_name: vio
+  ip_version: "3.0"
+  instance_name: vio_runtime
+  
+  probes:
+    inputs:
+      - name: probe_in0
+        signal: engine_status
+        width: 8
+      - name: probe_in1
+        signal: inference_count
+        width: 32
+      - name: probe_in2
+        signal: error_flags
+        width: 8
+      - name: probe_in3
+        signal: current_layer
+        width: 8
+      - name: probe_in4
+        signal: cycle_count
+        width: 32
+      - name: probe_in5
+        signal: utilization
+        width: 8
+      - name: probe_in6
+        signal: fifo_status
+        width: 8
+      - name: probe_in7
+        signal: temperature
+        width: 12
+    
+    outputs:
+      - name: probe_out0
+        signal: force_start
+        width: 1
+        init: 0x0
+      - name: probe_out1
+        signal: force_reset
+        width: 1
+        init: 0x0
+      - name: probe_out2
+        signal: debug_mode
+        width: 1
+        init: 0x0
+      - name: probe_out3
+        signal: inject_error
+        width: 1
+        init: 0x0
+      - name: probe_out4
+        signal: layer_select
+        width: 8
+        init: 0x0
+      - name: probe_out5
+        signal: threshold_adj
+        width: 16
+        init: 0x8000
+      - name: probe_out6
+        signal: simd_enable
+        width: 27
+        init: 0x7FFFFFF
+      - name: probe_out7
+        signal: perf_counter_sel
+        width: 4
+        init: 0x0
+
+  resources:
+    luts: 400
+    ffs: 300
+    bram: 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ИНТЕГРАЦИЯ С ILA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+integration:
+  ila_triggers:
+    - vio_signal: force_start
+      ila_core: ila_engine
+      trigger_type: rising_edge
+      description: "Захват при ручном запуске inference"
+    
+    - vio_signal: debug_mode
+      ila_core: all
+      trigger_type: level_high
+      description: "Расширенный захват в debug режиме"
+    
+    - vio_signal: layer_select
+      ila_core: ila_engine
+      trigger_type: value_match
+      description: "Захват при переходе к выбранному слою"
+
+  clock_domain: pl_clk0
+  clock_freq_mhz: 200
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KOSCHEI IS IMMORTAL | GOLDEN CHAIN IS CLOSED | φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════

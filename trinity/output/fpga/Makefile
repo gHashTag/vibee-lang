@@ -100,26 +100,70 @@ hwmgr:
 	@echo "Открытие Hardware Manager..."
 	$(VIVADO) -mode gui -source $(SCRIPT_DIR)/debug_triggers.tcl &
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIO RUNTIME CONTROL TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Добавление VIO cores
+vio: $(BUILD_DIR)/.vio_added
+
+$(BUILD_DIR)/.vio_added: $(BUILD_DIR)/.bd_created
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Добавление VIO Runtime Control Cores"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	$(VIVADO) $(VIVADO_FLAGS) -source $(SCRIPT_DIR)/add_vio_cores.tcl
+	@touch $@
+
+# Полный flow с VIO
+zynq-vio: bd vio synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq VIO Flow завершен!"
+	@echo "VIO cores добавлены для runtime управления"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# Полный flow с ILA + VIO
+zynq-full-debug: bd debug vio synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq Full Debug Flow завершен!"
+	@echo "ILA + VIO cores добавлены"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# VIO Dashboard (интерактивный режим)
+dashboard:
+	@echo "Запуск VIO Dashboard..."
+	$(VIVADO) -mode tcl -source $(SCRIPT_DIR)/vio_dashboard.tcl
+
 # Help
 help:
 	@echo "═══════════════════════════════════════════════════════════════════════════════"
 	@echo "VIBEE BitNet FPGA Synthesis Makefile"
 	@echo "═══════════════════════════════════════════════════════════════════════════════"
 	@echo ""
-	@echo "Targets:"
-	@echo "  make create    - Create Vivado project"
-	@echo "  make synth     - Run synthesis"
-	@echo "  make impl      - Run implementation"
-	@echo "  make bitstream - Generate bitstream"
-	@echo "  make program   - Program FPGA"
-	@echo "  make all       - Full flow"
-	@echo "  make clean     - Clean build files"
-	@echo "  make report    - Generate reports"
+	@echo "Основные targets:"
+	@echo "  make create    - Создать Vivado проект"
+	@echo "  make synth     - Запустить синтез"
+	@echo "  make impl      - Запустить имплементацию"
+	@echo "  make bitstream - Сгенерировать bitstream"
+	@echo "  make program   - Прошить FPGA"
+	@echo "  make all       - Полный flow"
+	@echo "  make clean     - Очистить build файлы"
 	@echo ""
-	@echo "Configuration:"
+	@echo "Zynq targets:"
+	@echo "  make zynq           - Полный Zynq flow (BD → XSA)"
+	@echo "  make zynq-debug     - Zynq flow с ILA debug"
+	@echo "  make zynq-vio       - Zynq flow с VIO runtime control"
+	@echo "  make zynq-full-debug - Zynq flow с ILA + VIO"
+	@echo ""
+	@echo "Debug targets:"
+	@echo "  make debug     - Добавить ILA cores"
+	@echo "  make vio       - Добавить VIO cores"
+	@echo "  make hwmgr     - Открыть Hardware Manager"
+	@echo "  make dashboard - Запустить VIO Dashboard (интерактивный)"
+	@echo ""
+	@echo "Конфигурация:"
 	@echo "  PROJECT: $(PROJECT_NAME)"
 	@echo "  PART: $(PART)"
-	@echo "  SOURCES: $(words $(VERILOG_SRCS)) Verilog files"
+	@echo "  SOURCES: $(words $(VERILOG_SRCS)) Verilog файлов"
 	@echo ""
 	@echo "φ² + 1/φ² = 3 | PHOENIX = 999"
 	@echo "═══════════════════════════════════════════════════════════════════════════════"
