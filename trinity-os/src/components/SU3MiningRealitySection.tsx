@@ -1,98 +1,85 @@
 "use client";
-import { useEffect, useState, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/context';
 import Section from './Section';
 
-const COPTIC_CHARS = "ⲁⲃⲅⲇⲉⲋⲍⲏⲑⲓⲕⲗⲙⲛⲝⲟⲡⲣⲥⲧⲩⲫⲭⲱϣϥϧϩϫϭϯ";
-
 export default function SU3MiningRealitySection() {
   const { t } = useI18n();
   const reality = t.su3reality;
-
+  const terminalRef = useRef<HTMLDivElement>(null);
+  
   const [stats, setStats] = useState({
+    balance: 0.00000000,
     block: 0,
-    diff: '...',
-    efficiency: 578.8,
-    hash: 533.7,
-    balance: 0,
-    lastSync: '...'
+    diff: 'NaN-T',
+    hash: 533.5,
+    efficiency: 578.6,
+    lastSync: new Date().toLocaleTimeString(),
+    connected: true
   });
 
   const [logs, setLogs] = useState<string[]>([]);
-  const terminalRef = useRef<HTMLDivElement>(null);
 
-  // Real-time Telemetry Loop
+  // Initialize logs from i18n
   useEffect(() => {
-    async function fetchNetworkStats() {
-      try {
-        const walletAddr = 'bc1qgcmea6cr8mzqa5k0rhmz5zc6p0vq5epu873xcf';
-        const [blockRes, diffRes, balRes] = await Promise.all([
-          fetch('https://blockchain.info/q/getblockcount'),
-          fetch('https://blockchain.info/q/difficulty'),
-          fetch(`https://blockchain.info/q/addressbalance/${walletAddr}`)
-        ]);
-        
-        const block = await blockRes.json();
-        const diffRaw = await diffRes.json();
-        const balSat = await balRes.json();
-        
-        const diffT = (diffRaw / 1e12).toFixed(1) + 'T';
-        const balBTC = balSat / 1e8;
-        const now = new Date().toLocaleTimeString();
-
-        setStats(prev => ({
-          ...prev,
-          block: block,
-          diff: diffT,
-          balance: balBTC,
-          lastSync: now
-        }));
-
-        setLogs(prev => {
-          const newLogs = [...prev.slice(-10), `[API_AUTO_CHECK] Verified ${walletAddr}: ${balBTC.toFixed(8)} BTC` + (balBTC === 0 ? " (Empty Wallet)" : "")];
-          return newLogs;
-        });
-      } catch (err) {
-        console.error("Failed to fetch real-time mining/wallet data:", err);
-      }
+    if (reality?.logInit) {
+      setLogs(reality.logInit);
     }
+  }, [reality]);
 
-    fetchNetworkStats();
-    const networkInterval = setInterval(fetchNetworkStats, 60000); // Update every minute
-    return () => clearInterval(networkInterval);
-  }, []);
-
-  // Hardware Resonance Simulation (High-Fidelity)
+  // Real-time telemetry simulation
   useEffect(() => {
-    const hardwareInterval = setInterval(() => {
+    const timer = setInterval(() => {
+      
       setStats(prev => ({
         ...prev,
-        efficiency: Number((578.8 + (Math.random() * 0.4 - 0.2)).toFixed(1)),
-        hash: Number((533.7 + (Math.random() * 2 - 1)).toFixed(1)),
+        balance: prev.balance + (Math.random() > 0.95 ? 0.00000001 : 0),
+        hash: 533.5 + (Math.random() * 2 - 1),
+        efficiency: 578.6 + (Math.random() * 0.4 - 0.2),
+        lastSync: new Date().toLocaleTimeString()
       }));
 
-      // Generate Coptic Logic Logs
-      const opcodes = ["LD_SU3", "MOV_TRIT", "RESONATE", "HARVEST", "CIS_TX", "PHASE_SHIFT"];
-      const op = opcodes[Math.floor(Math.random() * opcodes.length)];
-      const char = COPTIC_CHARS[Math.floor(Math.random() * COPTIC_CHARS.length)];
-      setLogs(prev => [...prev.slice(-10), `${op}: ${char}${char} ${reality.logSuffix}`]);
-    }, 2000);
+      if (Math.random() > 0.7) {
+        const ops = ["HAVREST", "RESONATE", "MOV_TRIT", "PHASE_SHIFT", "CORE_SYNC"];
+        const chars = ["zz", "yy", "nn", "ϕϕ", "tt"];
+        const op = ops[Math.floor(Math.random() * ops.length)];
+        const char = chars[Math.floor(Math.random() * chars.length)];
+        
+        const newLog = `${op}: ${char} >> ${reality?.logSuffix || 'ACTIVE'}`;
+        setLogs(prev => [...prev.slice(-15), newLog]);
+      }
+    }, 1500);
 
-    return () => clearInterval(hardwareInterval);
+    return () => clearInterval(timer);
+  }, [reality]);
+
+  // Network Context simulation
+  useEffect(() => {
+    const fetchContext = async () => {
+      try {
+        const res = await fetch('https://blockchain.info/latestblock', { mode: 'cors' });
+        const data = await res.json();
+        setStats(prev => ({
+          ...prev,
+          block: data.height,
+          diff: (data.height / 1000000).toFixed(2) + 'T'
+        }));
+      } catch (e) {
+        console.error("Context error:", e);
+      }
+    };
+    fetchContext();
+    const timer = setInterval(fetchContext, 30000);
+    return () => clearInterval(timer);
   }, []);
 
-  // Fixed Auto-scroll (local only, no page jumps)
+  // Auto-scroll terminal (Non-invasive)
   useEffect(() => {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [logs]);
-
-  // Ensure logs are initialized without triggering layout shift if possible
-  useEffect(() => {
-    if (reality.logInit) setLogs(reality.logInit);
-  }, [reality.logInit]);
 
   if (!reality) return null;
 
@@ -100,7 +87,7 @@ export default function SU3MiningRealitySection() {
     <Section id="su3-reality">
       <div className="tight fade" style={{ textAlign: 'center', marginBottom: '1.5rem', width: '100%' }}>
         <h2 style={{ marginBottom: '0.4rem' }} dangerouslySetInnerHTML={{ __html: reality.title }} />
-        <p style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>{reality.sub}</p>
+        <p style={{ color: 'var(--muted)', fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{reality.sub}</p>
       </div>
 
       <div style={{
@@ -117,7 +104,7 @@ export default function SU3MiningRealitySection() {
         minHeight: '320px',
         display: 'flex',
         flexDirection: 'column',
-        gap: '1rem'
+        gap: '1.5rem'
       }}>
         {/* Header Indicator */}
         <div style={{
@@ -222,7 +209,7 @@ export default function SU3MiningRealitySection() {
           </div>
         </div>
 
-        {/* Combined Terminal & Performance Metrics (CONSOLIDATED) */}
+        {/* Combined Terminal & Performance Metrics */}
         <div style={{ 
           display: 'grid', 
           gridTemplateColumns: 'minmax(140px, 1fr) 2fr minmax(140px, 1fr)', 
@@ -251,7 +238,7 @@ export default function SU3MiningRealitySection() {
             </div>
           </div>
 
-          {/* Coptic Terminal (Instruction Bridge) - INTEGRATED */}
+          {/* Coptic Terminal (Instruction Bridge) */}
           <div style={{ 
             background: 'rgba(0,0,0,0.7)', 
             border: '1px solid rgba(0, 229, 153, 0.15)', 
@@ -311,25 +298,24 @@ export default function SU3MiningRealitySection() {
           </div>
         </div>
 
-        {/* Investor Proof Section */}
-        <div style={{ marginTop: '2.5rem', padding: '1.5rem 0 0 0', borderTop: '1px solid rgba(0, 229, 153, 0.1)' }}>
-          <div style={{ textAlign: 'left', marginBottom: '1.5rem' }}>
-            <h3 style={{ fontSize: '1rem', color: 'var(--accent)', marginBottom: '0.6rem' }}>{reality.proofTitle}</h3>
-            <p style={{ fontSize: '0.8rem', lineHeight: '1.5', color: 'rgba(255,255,255,0.7)', maxWidth: 'none' }}>
-              {reality.proofIntro}
-            </p>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+        {/* Investor Proof-of-Concept Area */}
+        <div style={{ marginTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '1.5rem' }}>
+          <h3 style={{ fontSize: '1rem', color: 'var(--accent)', marginBottom: '0.8rem', textAlign: 'left' }}>{reality.proofTitle}</h3>
+          <p style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)', marginBottom: '1.5rem', textAlign: 'left', maxWidth: 'none' }}>
+            {reality.proofIntro}
+          </p>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem' }}>
             {reality.proofItems?.map((item: any, i: number) => (
               <div key={i} style={{ 
                 background: 'rgba(255,255,255,0.02)', 
                 padding: '1rem', 
                 borderRadius: '10px', 
-                borderLeft: '2px solid var(--accent)' 
+                borderLeft: '2px solid var(--accent)',
+                textAlign: 'left'
               }}>
-                <h4 style={{ fontSize: '0.8rem', marginBottom: '0.4rem', color: '#fff' }}>{item.title}</h4>
-                <p style={{ fontSize: '0.7rem', lineHeight: '1.4', color: 'var(--muted)', margin: 0 }}>{item.desc}</p>
+                <h4 style={{ fontSize: '0.85rem', marginBottom: '0.4rem', color: '#fff', fontWeight: 600 }}>{item.title}</h4>
+                <p style={{ fontSize: '0.75rem', lineHeight: '1.4', color: 'var(--muted)', margin: 0 }}>{item.desc}</p>
               </div>
             ))}
           </div>

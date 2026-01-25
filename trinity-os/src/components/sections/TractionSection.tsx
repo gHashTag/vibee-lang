@@ -21,9 +21,9 @@ export default function TractionSection() {
       <h3 className="fade" style={{ fontSize: '0.85rem', color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '2rem' }}>{tr.techTitle}</h3>
       
       <div className="grid fade" style={{ 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(140px, 45%, 280px), 1fr))', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
         marginBottom: '3rem', 
-        gap: 'clamp(0.8rem, 2vw, 1.5rem)' 
+        gap: '1rem' 
       }}>
         {tr.techs?.map((tech: { title: string; desc: string; tests: string }, i: number) => (
           <div key={i} className="premium-card compact" style={{ 
