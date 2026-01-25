@@ -1,0 +1,243 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI4-STREAM BITNET DATA INTERFACE
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-bandwidth streaming interface for BitNet inference:
+# - Input activation streaming (host → FPGA)
+# - Output result streaming (FPGA → host)
+# - Weight streaming for runtime model loading
+# - Zero-copy data transfer with backpressure
+#
+# Based on: arXiv:1710.10296 (20 GOPS with AXI Stream)
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: axi_stream_bitnet
+version: "1.0.0"
+language: varlog
+module: axi_stream_bitnet
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI4-STREAM PROTOCOL
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Signals:
+#   TDATA  - Data payload (32/64/128 bits)
+#   TVALID - Data valid
+#   TREADY - Receiver ready (backpressure)
+#   TLAST  - End of packet
+#   TKEEP  - Byte enables
+#   TID    - Stream identifier (for multiple streams)
+#   TDEST  - Routing destination
+#   TUSER  - User-defined sideband
+#
+# Handshake: Transfer occurs when TVALID && TREADY
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  stream_width: 64
+  fifo_depth: 256
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # AXI4-Stream master interface
+  AxisMaster:
+    fields:
+      tdata: Int
+      tvalid: Bool
+      tlast: Bool
+      tkeep: Int
+      tid: Int
+    width: 80
+    bit_map: "0:63=tdata, 64=tvalid, 65=tlast, 66:73=tkeep, 74:77=tid"
+
+  # AXI4-Stream slave interface
+  AxisSlave:
+    fields:
+      tready: Bool
+    width: 1
+
+  # Stream packet header
+  PacketHeader:
+    fields:
+      packet_type: Int
+      sequence_num: Int
+      payload_len: Int
+      layer_id: Int
+    width: 32
+    packet_types: "INPUT=0, OUTPUT=1, WEIGHT=2, CONFIG=3"
+
+  # Input activation packet
+  InputPacket:
+    fields:
+      header: Int
+      neuron_idx: Int
+      activation_data: Int
+    width: 96
+
+  # Output result packet
+  OutputPacket:
+    fields:
+      header: Int
+      neuron_idx: Int
+      result_data: Int
+      confidence: Int
+    width: 128
+
+  # Weight packet (ternary packed)
+  WeightPacket:
+    fields:
+      header: Int
+      layer_id: Int
+      neuron_id: Int
+      chunk_id: Int
+      weight_data: Int
+    width: 160
+    encoding: "2 bits per weight: 00=0, 01=+1, 10=-1, 11=reserved"
+
+  # FIFO status
+  FifoStatus:
+    fields:
+      empty: Bool
+      full: Bool
+      almost_empty: Bool
+      almost_full: Bool
+      count: Int
+    width: 20
+
+  # Stream state machine
+  StreamState:
+    fields:
+      state: Int
+    width: 4
+    states: "IDLE=0, HEADER=1, PAYLOAD=2, WAIT=3, DONE=4"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Input stream receiver
+  - name: input_stream_rx
+    given: AXI4-Stream input with valid data
+    when: TVALID asserted and TREADY high
+    then: Capture TDATA, push to input FIFO, assert TREADY when space available
+
+  # Output stream transmitter
+  - name: output_stream_tx
+    given: Output FIFO has data
+    when: Downstream TREADY asserted
+    then: Pop from FIFO, drive TDATA/TVALID, set TLAST on packet end
+
+  # Weight stream receiver
+  - name: weight_stream_rx
+    given: Weight packet on stream
+    when: Packet type is WEIGHT
+    then: Parse header, extract layer/neuron/chunk, write to weight BRAM
+
+  # Backpressure handler
+  - name: backpressure_handler
+    given: Input FIFO almost full
+    when: Count exceeds threshold
+    then: Deassert TREADY to pause upstream
+
+  # Packet parser
+  - name: packet_parser
+    given: Stream data with header
+    when: New packet starts
+    then: Extract packet type, route to appropriate handler
+
+  # Packet assembler
+  - name: packet_assembler
+    given: Inference result ready
+    when: Output valid from engine
+    then: Build output packet with header, queue for transmission
+
+  # Stream arbiter
+  - name: stream_arbiter
+    given: Multiple output sources
+    when: Arbitration needed
+    then: Round-robin or priority-based stream selection
+
+  # Error handler
+  - name: stream_error_handler
+    given: Protocol violation or overflow
+    when: Error condition detected
+    then: Log error, optionally drop packet, signal to host
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # Input stream (from host DMA)
+  s_axis_input:
+    - s_axis_tdata: input [63:0]
+    - s_axis_tvalid: input
+    - s_axis_tready: output
+    - s_axis_tlast: input
+    - s_axis_tkeep: input [7:0]
+    - s_axis_tid: input [3:0]
+
+  # Output stream (to host DMA)
+  m_axis_output:
+    - m_axis_tdata: output [63:0]
+    - m_axis_tvalid: output
+    - m_axis_tready: input
+    - m_axis_tlast: output
+    - m_axis_tkeep: output [7:0]
+    - m_axis_tid: output [3:0]
+
+  # Weight stream (from host DMA)
+  s_axis_weight:
+    - s_axis_weight_tdata: input [63:0]
+    - s_axis_weight_tvalid: input
+    - s_axis_weight_tready: output
+    - s_axis_weight_tlast: input
+
+  # Engine interface (to BitNet compute)
+  engine_data:
+    - input_data: output [31:0]
+    - input_valid: output
+    - input_ready: input
+    - output_data: input [31:0]
+    - output_valid: input
+    - output_ready: output
+
+  # Weight BRAM interface
+  weight_bram:
+    - weight_addr: output [15:0]
+    - weight_data: output [53:0]
+    - weight_we: output
+    - weight_en: output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+timing:
+  target_clock: 300MHz
+  stream_latency: 2 cycles
+  fifo_read_latency: 1 cycle
+  fifo_write_latency: 1 cycle
+  packet_parse_latency: 1 cycle
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# LUTs: ~800 (stream logic + FIFOs)
+# FFs:  ~600 (state machines + registers)
+# BRAM: 2 (input FIFO + output FIFO, 256 × 64-bit each)
+#
+# Bandwidth: 64-bit × 300MHz = 19.2 Gbps per stream
+#
+# ═══════════════════════════════════════════════════════════════════════════════

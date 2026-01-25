@@ -1,0 +1,234 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET WEIGHT LOADER - Runtime Model Loading
+# ═══════════════════════════════════════════════════════════════════════════════
+# Efficient weight loading for BitNet b1.58 ternary models:
+# - Streaming weight reception from host
+# - Ternary weight unpacking (2 bits → {-1, 0, +1})
+# - Multi-bank BRAM management
+# - Layer-by-layer or full model loading
+#
+# Based on: BitNet b1.58 (arXiv:2402.17764)
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_weight_loader
+version: "1.0.0"
+language: varlog
+module: bitnet_weight_loader
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEIGHT ENCODING
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# BitNet b1.58 uses ternary weights: {-1, 0, +1}
+# Encoding: 2 bits per weight
+#   00 = 0 (zero)
+#   01 = +1 (positive)
+#   10 = -1 (negative)
+#   11 = reserved
+#
+# Packing: 32 weights per 64-bit word
+# Storage: 27 weights per SIMD chunk (54 bits)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  weights_per_word: 32
+  simd_width: 27
+  bits_per_weight: 2
+  max_layers: 64
+  max_neurons: 4096
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Weight load command
+  LoadCommand:
+    fields:
+      cmd_type: Int
+      layer_id: Int
+      start_neuron: Int
+      num_neurons: Int
+    width: 32
+    cmd_types: "LOAD_LAYER=0, LOAD_ALL=1, VERIFY=2, CLEAR=3"
+
+  # Weight address
+  WeightAddress:
+    fields:
+      layer: Int
+      neuron: Int
+      chunk: Int
+    width: 24
+    bit_map: "0:5=layer, 6:17=neuron, 18:23=chunk"
+
+  # Packed weight word (32 ternary weights)
+  PackedWeights:
+    fields:
+      weights: Int
+    width: 64
+    encoding: "2 bits per weight, LSB first"
+
+  # Unpacked SIMD chunk (27 ternary weights)
+  SimdChunk:
+    fields:
+      weights: Int
+    width: 54
+    encoding: "2 bits per weight for 27 weights"
+
+  # Loader state
+  LoaderState:
+    fields:
+      state: Int
+      current_layer: Int
+      current_neuron: Int
+      current_chunk: Int
+      words_loaded: Int
+    width: 64
+    states: "IDLE=0, RECEIVING=1, UNPACKING=2, WRITING=3, VERIFYING=4, DONE=5, ERROR=6"
+
+  # Load progress
+  LoadProgress:
+    fields:
+      layers_loaded: Int
+      neurons_loaded: Int
+      total_words: Int
+      checksum: Int
+    width: 64
+
+  # BRAM bank selector
+  BramBank:
+    fields:
+      bank_id: Int
+      active: Bool
+    width: 4
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Command parser
+  - name: parse_load_command
+    given: Load command from host
+    when: Command valid
+    then: Extract layer_id, neuron range, set loader state
+
+  # Weight receiver
+  - name: receive_weights
+    given: Weight stream active
+    when: Stream TVALID and TREADY
+    then: Capture packed weight word, increment counter
+
+  # Weight unpacker
+  - name: unpack_weights
+    given: Packed 64-bit word with 32 weights
+    when: Word received
+    then: Extract 27 weights for SIMD chunk, handle alignment
+
+  # BRAM writer
+  - name: write_to_bram
+    given: Unpacked SIMD chunk ready
+    when: BRAM not busy
+    then: Calculate address, write 54-bit chunk to weight BRAM
+
+  # Address calculator
+  - name: calculate_address
+    given: Layer, neuron, chunk indices
+    when: Write needed
+    then: Compute linear BRAM address from 3D indices
+
+  # Bank manager
+  - name: manage_bram_banks
+    given: Double-buffered weight storage
+    when: Layer transition
+    then: Switch active bank, enable prefetch to inactive bank
+
+  # Checksum calculator
+  - name: calculate_checksum
+    given: Weight data stream
+    when: Each word received
+    then: Update running CRC32 checksum
+
+  # Verification handler
+  - name: verify_weights
+    given: Load complete
+    when: Verify command received
+    then: Compare checksum with expected, report status
+
+  # Progress reporter
+  - name: report_progress
+    given: Load in progress
+    when: Status read requested
+    then: Return layers_loaded, neurons_loaded, percentage
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # Control interface (from AXI-Lite)
+  control:
+    - load_cmd: input [31:0]
+    - load_cmd_valid: input
+    - load_cmd_ready: output
+    - status: output [31:0]
+    - progress: output [31:0]
+
+  # Weight stream input
+  weight_stream:
+    - weight_data: input [63:0]
+    - weight_valid: input
+    - weight_ready: output
+    - weight_last: input
+
+  # BRAM bank A
+  bram_a:
+    - addr_a: output [15:0]
+    - data_a: output [53:0]
+    - we_a: output
+    - en_a: output
+
+  # BRAM bank B
+  bram_b:
+    - addr_b: output [15:0]
+    - data_b: output [53:0]
+    - we_b: output
+    - en_b: output
+
+  # Status signals
+  status_out:
+    - loading: output
+    - load_done: output
+    - load_error: output
+    - checksum_valid: output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+timing:
+  target_clock: 300MHz
+  unpack_latency: 1 cycle
+  bram_write_latency: 1 cycle
+  full_layer_load: "~1000 cycles for 768 neurons"
+  full_model_load: "~40000 cycles for 40 layers"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# LUTs: ~400 (unpacker + address calc + FSM)
+# FFs:  ~300 (state + counters + checksum)
+# BRAM: 0 (uses external weight BRAMs)
+#
+# Load bandwidth: 64-bit × 300MHz = 19.2 Gbps
+# Time to load 1B parameters: ~0.4 seconds
+#
+# ═══════════════════════════════════════════════════════════════════════════════

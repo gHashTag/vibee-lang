@@ -1,0 +1,262 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET E2E TEST SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# End-to-end testbench for complete BitNet FPGA system:
+# - Weight loading verification
+# - Single inference test
+# - Multi-layer pipeline test
+# - Performance benchmark
+# - Error injection and recovery
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_e2e_test
+version: "1.0.0"
+language: varlog
+module: bitnet_e2e_test
+author: "VIBEE Team"
+test_type: e2e_testbench
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_config:
+  clock_period_ns: 3.333
+  reset_cycles: 10
+  timeout_cycles: 100000
+  verbose: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST VECTORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_vectors:
+  # Simple 3-layer test model
+  simple_model:
+    num_layers: 3
+    neurons_per_layer: 27
+    chunks_per_neuron: 1
+    threshold: 14
+    
+  # Medium model (768 neurons)
+  medium_model:
+    num_layers: 12
+    neurons_per_layer: 768
+    chunks_per_neuron: 29
+    threshold: 384
+
+  # Input vectors
+  input_zero:
+    data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    expected_output: 0
+
+  input_all_positive:
+    data: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    expected_output: 27
+
+  input_mixed:
+    data: [1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0]
+    expected_output: 0
+
+  # Weight patterns
+  weights_identity:
+    pattern: "diagonal"
+    description: "Identity-like weights for pass-through"
+
+  weights_all_positive:
+    pattern: "all_ones"
+    description: "All +1 weights"
+
+  weights_alternating:
+    pattern: "alternating"
+    description: "+1, -1, +1, -1, ..."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  # Test 1: Reset and initialization
+  - name: test_reset
+    description: "Verify system initializes correctly after reset"
+    steps:
+      - assert_reset
+      - wait_cycles: 10
+      - release_reset
+      - wait_cycles: 5
+      - check_status: IDLE
+    expected:
+      status: IDLE
+      error: false
+
+  # Test 2: AXI-Lite register access
+  - name: test_axi_lite_rw
+    description: "Verify AXI-Lite read/write operations"
+    steps:
+      - write_reg: {addr: 0x34, data: 0xDEADBEEF}
+      - read_reg: {addr: 0x34}
+      - compare: 0xDEADBEEF
+    expected:
+      read_data: 0xDEADBEEF
+
+  # Test 3: Weight loading
+  - name: test_weight_load
+    description: "Load weights and verify checksum"
+    steps:
+      - configure: simple_model
+      - load_weights: weights_identity
+      - wait_for: load_done
+      - verify_checksum
+    expected:
+      load_done: true
+      checksum_valid: true
+
+  # Test 4: Single inference
+  - name: test_single_inference
+    description: "Run single inference with known input"
+    steps:
+      - configure: simple_model
+      - load_weights: weights_all_positive
+      - send_input: input_all_positive
+      - start_inference
+      - wait_for: inference_done
+      - read_output
+    expected:
+      inference_done: true
+      output_valid: true
+
+  # Test 5: Multi-layer pipeline
+  - name: test_pipeline
+    description: "Verify pipelined multi-layer execution"
+    steps:
+      - configure: simple_model
+      - load_weights: weights_identity
+      - send_input: input_mixed
+      - start_inference
+      - monitor_layers
+      - wait_for: inference_done
+    expected:
+      all_layers_executed: true
+      pipeline_stalls: 0
+
+  # Test 6: Continuous mode
+  - name: test_continuous
+    description: "Run multiple inferences in continuous mode"
+    steps:
+      - configure: simple_model
+      - set_continuous_mode: true
+      - load_weights: weights_identity
+      - send_inputs: [input_zero, input_all_positive, input_mixed]
+      - start_inference
+      - wait_for_count: 3
+    expected:
+      inference_count: 3
+      all_outputs_valid: true
+
+  # Test 7: Performance benchmark
+  - name: test_benchmark
+    description: "Measure throughput and latency"
+    steps:
+      - configure: medium_model
+      - load_weights: weights_identity
+      - enable_perf_counters
+      - run_inferences: 100
+      - read_perf_counters
+      - calculate_metrics
+    expected:
+      throughput_tok_s: ">50"
+      latency_ms: "<20"
+      utilization_pct: ">80"
+
+  # Test 8: Error recovery
+  - name: test_error_recovery
+    description: "Inject error and verify recovery"
+    steps:
+      - configure: simple_model
+      - inject_error: fifo_overflow
+      - check_error_flag
+      - soft_reset
+      - check_status: IDLE
+    expected:
+      error_detected: true
+      recovery_successful: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSERTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+assertions:
+  # Timing assertions
+  - name: inference_latency
+    condition: "latency_cycles < max_latency"
+    max_latency: 1000
+
+  - name: weight_load_time
+    condition: "load_cycles < max_load_cycles"
+    max_load_cycles: 10000
+
+  # Protocol assertions
+  - name: axi_handshake
+    condition: "valid && ready implies transfer"
+
+  - name: stream_backpressure
+    condition: "fifo_full implies !tready"
+
+  # Functional assertions
+  - name: output_valid
+    condition: "inference_done implies output_valid"
+
+  - name: no_data_loss
+    condition: "input_count == output_count"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COVERAGE GOALS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+coverage:
+  # State coverage
+  states:
+    - IDLE
+    - LOADING
+    - READY
+    - RUNNING
+    - DONE
+    - ERROR
+
+  # Transition coverage
+  transitions:
+    - IDLE -> LOADING
+    - LOADING -> READY
+    - READY -> RUNNING
+    - RUNNING -> DONE
+    - DONE -> IDLE
+    - "*" -> ERROR
+    - ERROR -> IDLE
+
+  # Feature coverage
+  features:
+    - single_inference
+    - continuous_mode
+    - weight_reload
+    - error_recovery
+    - backpressure
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXPECTED RESULTS SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Test Case              | Pass Criteria
+# -----------------------|----------------------------------
+# test_reset             | Status = IDLE, no errors
+# test_axi_lite_rw       | Read matches write
+# test_weight_load       | Checksum valid
+# test_single_inference  | Output matches expected
+# test_pipeline          | All layers execute, no stalls
+# test_continuous        | All 3 inferences complete
+# test_benchmark         | >50 tok/s, <20ms latency
+# test_error_recovery    | Error detected, recovery OK
+#
+# ═══════════════════════════════════════════════════════════════════════════════

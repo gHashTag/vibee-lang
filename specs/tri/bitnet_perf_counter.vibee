@@ -1,0 +1,273 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET PERFORMANCE COUNTER - Hardware Benchmarking
+# ═══════════════════════════════════════════════════════════════════════════════
+# Comprehensive performance monitoring for BitNet FPGA accelerator:
+# - Cycle-accurate timing measurements
+# - Throughput counters (inferences/second)
+# - Latency histograms
+# - Resource utilization tracking
+# - Comparison with theoretical maximum
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_perf_counter
+version: "1.0.0"
+language: varlog
+module: bitnet_perf_counter
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METRICS OVERVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Counters:
+#   - Total cycles (64-bit)
+#   - Inference count (32-bit)
+#   - Layer cycles (per layer, 32-bit each)
+#   - Stall cycles (memory, compute, stream)
+#   - MAC operations (64-bit)
+#
+# Derived Metrics:
+#   - Throughput = inferences / time
+#   - Latency = cycles / inference
+#   - Utilization = active_cycles / total_cycles
+#   - GMAC/s = mac_ops / time
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  clock_freq_mhz: 300
+  max_layers: 64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # 64-bit counter
+  Counter64:
+    fields:
+      value: Int
+    width: 64
+
+  # 32-bit counter
+  Counter32:
+    fields:
+      value: Int
+    width: 32
+
+  # Latency measurement
+  LatencyMeasure:
+    fields:
+      start_cycle: Int
+      end_cycle: Int
+      duration: Int
+    width: 96
+
+  # Throughput measurement
+  ThroughputMeasure:
+    fields:
+      count: Int
+      time_cycles: Int
+      rate_per_sec: Int
+    width: 96
+
+  # Stall breakdown
+  StallBreakdown:
+    fields:
+      memory_stalls: Int
+      compute_stalls: Int
+      stream_stalls: Int
+      other_stalls: Int
+    width: 128
+
+  # Layer statistics
+  LayerStats:
+    fields:
+      layer_id: Int
+      cycles: Int
+      mac_ops: Int
+      stalls: Int
+    width: 128
+
+  # Performance snapshot
+  PerfSnapshot:
+    fields:
+      timestamp: Int
+      total_cycles: Int
+      inference_count: Int
+      mac_count: Int
+      stall_count: Int
+    width: 256
+
+  # Histogram bin
+  HistogramBin:
+    fields:
+      min_latency: Int
+      max_latency: Int
+      count: Int
+    width: 64
+
+  # Counter control
+  CounterControl:
+    fields:
+      enable: Bool
+      reset: Bool
+      snapshot: Bool
+      layer_select: Int
+    width: 16
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Cycle counter
+  - name: count_cycles
+    given: Clock running and counter enabled
+    when: Each clock edge
+    then: Increment 64-bit cycle counter
+
+  # Inference counter
+  - name: count_inferences
+    given: Inference complete signal
+    when: Done pulse detected
+    then: Increment inference counter, record latency
+
+  # MAC counter
+  - name: count_mac_ops
+    given: SIMD unit active
+    when: MAC operation completes
+    then: Increment MAC counter by SIMD width (27)
+
+  # Stall tracker
+  - name: track_stalls
+    given: Pipeline stalled
+    when: Stall condition detected
+    then: Increment appropriate stall counter (memory/compute/stream)
+
+  # Layer timer
+  - name: time_layer
+    given: Layer processing
+    when: Layer start/end signals
+    then: Record layer duration, update layer statistics
+
+  # Latency histogram
+  - name: update_histogram
+    given: Inference latency measured
+    when: Inference complete
+    then: Find appropriate bin, increment count
+
+  # Throughput calculator
+  - name: calculate_throughput
+    given: Inference count and time
+    when: Snapshot requested
+    then: Compute inferences per second
+
+  # Utilization calculator
+  - name: calculate_utilization
+    given: Active and total cycles
+    when: Snapshot requested
+    then: Compute percentage utilization
+
+  # Snapshot handler
+  - name: take_snapshot
+    given: Snapshot command
+    when: Snapshot bit set
+    then: Capture all counters atomically
+
+  # Reset handler
+  - name: reset_counters
+    given: Reset command
+    when: Reset bit set
+    then: Clear all counters to zero
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # Control (from AXI-Lite)
+  control:
+    - ctrl_enable: input
+    - ctrl_reset: input
+    - ctrl_snapshot: input
+    - ctrl_layer_sel: input [5:0]
+
+  # Engine signals (from BitNet engine)
+  engine_signals:
+    - inference_start: input
+    - inference_done: input
+    - layer_start: input
+    - layer_done: input
+    - layer_id: input [5:0]
+    - simd_active: input
+    - stall_memory: input
+    - stall_compute: input
+    - stall_stream: input
+
+  # Counter outputs (to AXI-Lite)
+  counters:
+    - total_cycles_lo: output [31:0]
+    - total_cycles_hi: output [31:0]
+    - inference_count: output [31:0]
+    - mac_count_lo: output [31:0]
+    - mac_count_hi: output [31:0]
+    - stall_count: output [31:0]
+    - last_latency: output [31:0]
+    - avg_latency: output [31:0]
+    - layer_cycles: output [31:0]
+    - utilization_pct: output [7:0]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGISTER MAP (for AXI-Lite access)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 0x00: CTRL (R/W) - enable, reset, snapshot
+# 0x04: STATUS (R) - running, overflow flags
+# 0x08: CYCLES_LO (R) - total cycles [31:0]
+# 0x0C: CYCLES_HI (R) - total cycles [63:32]
+# 0x10: INFER_COUNT (R) - inference count
+# 0x14: MAC_COUNT_LO (R) - MAC operations [31:0]
+# 0x18: MAC_COUNT_HI (R) - MAC operations [63:32]
+# 0x1C: STALL_COUNT (R) - total stall cycles
+# 0x20: STALL_MEM (R) - memory stall cycles
+# 0x24: STALL_COMPUTE (R) - compute stall cycles
+# 0x28: STALL_STREAM (R) - stream stall cycles
+# 0x2C: LAST_LATENCY (R) - last inference latency
+# 0x30: AVG_LATENCY (R) - average latency
+# 0x34: MIN_LATENCY (R) - minimum latency
+# 0x38: MAX_LATENCY (R) - maximum latency
+# 0x3C: LAYER_SEL (R/W) - layer select for per-layer stats
+# 0x40: LAYER_CYCLES (R) - selected layer cycles
+# 0x44: UTILIZATION (R) - utilization percentage
+# 0x48: THROUGHPUT (R) - inferences per second
+# 0x4C: GMACS (R) - GMAC/s
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+timing:
+  target_clock: 300MHz
+  counter_update: 1 cycle
+  snapshot_latency: 1 cycle
+  derived_calc_latency: 4 cycles
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# LUTs: ~300 (counters + comparators + dividers)
+# FFs:  ~500 (64-bit counters + state)
+# BRAM: 0
+# DSP:  1 (for division in throughput calc)
+#
+# ═══════════════════════════════════════════════════════════════════════════════

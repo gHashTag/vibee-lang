@@ -213,6 +213,47 @@
 
 ---
 
+## NEW: Complete System Resource Estimate (v2.0)
+
+### Added Modules (January 2026)
+
+| Module | LUTs | FFs | BRAM | Description |
+|--------|------|-----|------|-------------|
+| axi_stream_bitnet | 800 | 600 | 2 | AXI4-Stream data interface |
+| bitnet_weight_loader | 400 | 300 | 0 | Runtime weight loading |
+| bitnet_perf_counter | 300 | 500 | 0 | Performance monitoring |
+| bitnet_top | 500 | 300 | 0 | Top-level integration |
+| **Subtotal (new)** | **2,000** | **1,700** | **2** | |
+
+### Complete System Total
+
+| Resource | Previous | New Modules | Total | VCU118 % |
+|----------|----------|-------------|-------|----------|
+| LUTs | 9,259 | 2,000 | 11,259 | 0.95% |
+| FFs | 3,065 | 1,700 | 4,765 | 0.20% |
+| BRAM | 16 | 2 | 18 | 0.83% |
+| DSP | 1 | 0 | 1 | 0.01% |
+
+### Bandwidth Analysis
+
+| Interface | Width | Clock | Bandwidth |
+|-----------|-------|-------|-----------|
+| AXI4-Stream Input | 64-bit | 300 MHz | 19.2 Gbps |
+| AXI4-Stream Output | 64-bit | 300 MHz | 19.2 Gbps |
+| AXI4-Stream Weight | 64-bit | 300 MHz | 19.2 Gbps |
+| Weight BRAM | 54-bit | 300 MHz | 16.2 Gbps |
+
+### Performance Projections
+
+| Metric | Conservative | Optimistic | Theoretical Max |
+|--------|--------------|------------|-----------------|
+| Throughput (tok/s) | 50 | 100 | 300 |
+| Latency (ms/tok) | 20 | 10 | 3.3 |
+| Power (W) | 12 | 10 | 8 |
+| Energy Efficiency (tok/J) | 4.2 | 10 | 37.5 |
+
+---
+
 ## Recommendations
 
 1. **Immediate:** Run actual synthesis to validate estimates

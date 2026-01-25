@@ -1,0 +1,333 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AXI-LITE BITNET CONTROLLER - Host Interface for Hybrid Streaming Engine
+# ═══════════════════════════════════════════════════════════════════════════════
+# Focused AXI-Lite slave interface for:
+# - Control/Status registers for BitNet inference
+# - Weight loading via memory-mapped writes
+# - Interrupt generation for completion notification
+# - Integration with Hybrid Streaming Engine (1 inference/cycle)
+#
+# Target: Xilinx Zynq/UltraScale+, Intel Cyclone/Arria
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: axi_lite_bitnet_ctrl
+version: "1.0.0"
+language: varlog
+module: axi_lite_bitnet_ctrl
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGISTER MAP (AXI-Lite Address Space)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Offset  Name            R/W   Description
+# ──────────────────────────────────────────────────────────────────────────────
+# 0x00    CTRL            R/W   Control register (start, reset, mode)
+# 0x04    STATUS          R     Status register (busy, done, error)
+# 0x08    IRQ_EN          R/W   Interrupt enable mask
+# 0x0C    IRQ_STAT        R/W1C Interrupt status (write 1 to clear)
+# 0x10    CONFIG0         R/W   Layer count, neurons per layer
+# 0x14    CONFIG1         R/W   Chunks per neuron, threshold
+# 0x18    INPUT_DATA      W     Input vector data (streaming write)
+# 0x1C    OUTPUT_DATA     R     Output vector data (streaming read)
+# 0x20    WEIGHT_ADDR     R/W   Weight BRAM address for loading
+# 0x24    WEIGHT_DATA     W     Weight data (ternary packed)
+# 0x28    CYCLE_COUNT_LO  R     Performance counter (low 32 bits)
+# 0x2C    CYCLE_COUNT_HI  R     Performance counter (high 32 bits)
+# 0x30    VERSION         R     IP version (0x00010000 = v1.0)
+# 0x34    SCRATCH         R/W   Scratch register for testing
+# 0x38    INPUT_COUNT     R     Number of inputs processed
+# 0x3C    OUTPUT_COUNT    R     Number of outputs generated
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  ip_version: 0x00010000
+  addr_width: 6
+  data_width: 32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # Control register (0x00)
+  CtrlReg:
+    fields:
+      start: Bool
+      soft_reset: Bool
+      continuous_mode: Bool
+      weight_load_en: Bool
+      irq_global_en: Bool
+    width: 32
+    bit_map: "0=start, 1=soft_reset, 2=continuous_mode, 3=weight_load_en, 4=irq_global_en"
+
+  # Status register (0x04)
+  StatusReg:
+    fields:
+      busy: Bool
+      done: Bool
+      error: Bool
+      weight_ready: Bool
+      input_fifo_full: Bool
+      output_fifo_empty: Bool
+      current_layer: Int
+    width: 32
+    bit_map: "0=busy, 1=done, 2=error, 3=weight_ready, 4=input_fifo_full, 5=output_fifo_empty, 8:15=current_layer"
+
+  # Interrupt enable/status (0x08, 0x0C)
+  IrqReg:
+    fields:
+      inference_done: Bool
+      layer_done: Bool
+      error: Bool
+      input_ready: Bool
+      output_valid: Bool
+    width: 32
+    bit_map: "0=inference_done, 1=layer_done, 2=error, 3=input_ready, 4=output_valid"
+
+  # Configuration register 0 (0x10)
+  Config0Reg:
+    fields:
+      num_layers: Int
+      neurons_per_layer: Int
+    width: 32
+    bit_map: "0:7=num_layers, 16:31=neurons_per_layer"
+
+  # Configuration register 1 (0x14)
+  Config1Reg:
+    fields:
+      chunks_per_neuron: Int
+      threshold: Int
+    width: 32
+    bit_map: "0:7=chunks_per_neuron, 16:31=threshold"
+
+  # Weight address register (0x20)
+  WeightAddrReg:
+    fields:
+      layer_sel: Int
+      neuron_sel: Int
+      chunk_sel: Int
+    width: 32
+    bit_map: "0:5=layer_sel, 8:19=neuron_sel, 20:27=chunk_sel"
+
+  # AXI-Lite write address channel
+  AxiLiteAW:
+    fields:
+      awaddr: Int
+      awprot: Int
+      awvalid: Bool
+    width: 12
+
+  # AXI-Lite write data channel
+  AxiLiteW:
+    fields:
+      wdata: Int
+      wstrb: Int
+      wvalid: Bool
+    width: 40
+
+  # AXI-Lite write response channel
+  AxiLiteB:
+    fields:
+      bresp: Int
+      bvalid: Bool
+    width: 4
+
+  # AXI-Lite read address channel
+  AxiLiteAR:
+    fields:
+      araddr: Int
+      arprot: Int
+      arvalid: Bool
+    width: 12
+
+  # AXI-Lite read data channel
+  AxiLiteR:
+    fields:
+      rdata: Int
+      rresp: Int
+      rvalid: Bool
+    width: 36
+
+  # Internal state machine
+  FsmState:
+    fields:
+      state: Int
+    width: 4
+    states: "IDLE=0, WRITE_ADDR=1, WRITE_DATA=2, WRITE_RESP=3, READ_ADDR=4, READ_DATA=5"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # AXI-Lite write transaction handler
+  - name: axi_write_handler
+    given: AW and W channel valid signals
+    when: Write transaction initiated by host
+    then: Decode address, write to register, respond on B channel
+
+  # AXI-Lite read transaction handler
+  - name: axi_read_handler
+    given: AR channel valid signal
+    when: Read transaction initiated by host
+    then: Decode address, read register, respond on R channel
+
+  # Control register handler
+  - name: ctrl_reg_handler
+    given: Write to CTRL register
+    when: Start bit set
+    then: Trigger inference engine start pulse
+
+  # Weight loading handler
+  - name: weight_load_handler
+    given: Weight load enable and write to WEIGHT_DATA
+    when: Weight address valid
+    then: Write ternary weights to BRAM at specified address
+
+  # Interrupt generation
+  - name: irq_generator
+    given: Inference complete or error condition
+    when: Corresponding IRQ enable bit set
+    then: Assert interrupt output signal
+
+  # Status aggregation
+  - name: status_aggregator
+    given: Engine state signals
+    when: Status read requested
+    then: Combine busy, done, error, layer into status word
+
+  # Performance counter
+  - name: cycle_counter
+    given: Inference running
+    when: Each clock cycle
+    then: Increment 64-bit cycle counter
+
+  # Input FIFO interface
+  - name: input_fifo_write
+    given: Write to INPUT_DATA register
+    when: Input FIFO not full
+    then: Push input vector to engine
+
+  # Output FIFO interface
+  - name: output_fifo_read
+    given: Read from OUTPUT_DATA register
+    when: Output FIFO not empty
+    then: Pop output vector from engine
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACE SIGNALS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # AXI-Lite Slave (from host)
+  axi_lite_slave:
+    - s_axi_aclk: input clock
+    - s_axi_aresetn: input reset_n
+    - s_axi_awaddr: input [5:0]
+    - s_axi_awprot: input [2:0]
+    - s_axi_awvalid: input
+    - s_axi_awready: output
+    - s_axi_wdata: input [31:0]
+    - s_axi_wstrb: input [3:0]
+    - s_axi_wvalid: input
+    - s_axi_wready: output
+    - s_axi_bresp: output [1:0]
+    - s_axi_bvalid: output
+    - s_axi_bready: input
+    - s_axi_araddr: input [5:0]
+    - s_axi_arprot: input [2:0]
+    - s_axi_arvalid: input
+    - s_axi_arready: output
+    - s_axi_rdata: output [31:0]
+    - s_axi_rresp: output [1:0]
+    - s_axi_rvalid: output
+    - s_axi_rready: input
+
+  # BitNet Engine Interface (to Hybrid Streaming Engine)
+  engine_ctrl:
+    - engine_start: output
+    - engine_reset: output
+    - engine_busy: input
+    - engine_done: input
+    - engine_error: input
+    - engine_layer: input [7:0]
+
+  # Weight BRAM Interface
+  weight_bram:
+    - weight_addr: output [15:0]
+    - weight_data: output [31:0]
+    - weight_we: output
+    - weight_en: output
+
+  # Input/Output Streaming
+  data_stream:
+    - input_data: output [31:0]
+    - input_valid: output
+    - input_ready: input
+    - output_data: input [31:0]
+    - output_valid: input
+    - output_ready: output
+
+  # Interrupt
+  interrupt:
+    - irq: output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING CONSTRAINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+timing:
+  target_clock: 100MHz
+  axi_latency: 2 cycles
+  register_read: 1 cycle
+  register_write: 1 cycle
+  weight_write: 1 cycle
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# LUTs: ~300 (register decode + FSM)
+# FFs:  ~200 (registers + state)
+# BRAM: 0 (weights in external BRAM)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USAGE EXAMPLE (C code for host)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# // Load weights
+# for (int l = 0; l < num_layers; l++) {
+#     for (int n = 0; n < neurons; n++) {
+#         for (int c = 0; c < chunks; c++) {
+#             uint32_t addr = (l << 20) | (n << 8) | c;
+#             WRITE_REG(WEIGHT_ADDR, addr);
+#             WRITE_REG(WEIGHT_DATA, weights[l][n][c]);
+#         }
+#     }
+# }
+#
+# // Configure
+# WRITE_REG(CONFIG0, (neurons << 16) | num_layers);
+# WRITE_REG(CONFIG1, (threshold << 16) | chunks);
+# WRITE_REG(IRQ_EN, 0x01);  // Enable inference_done IRQ
+#
+# // Start inference
+# WRITE_REG(INPUT_DATA, input_vector);
+# WRITE_REG(CTRL, 0x01);  // Start
+#
+# // Wait for completion (polling or IRQ)
+# while (!(READ_REG(STATUS) & 0x02));  // Wait for done
+#
+# // Read result
+# uint32_t result = READ_REG(OUTPUT_DATA);
+#
+# ═══════════════════════════════════════════════════════════════════════════════

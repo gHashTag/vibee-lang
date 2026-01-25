@@ -1,0 +1,304 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET TOP-LEVEL INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete BitNet b1.58 FPGA accelerator system:
+# - AXI-Lite control interface
+# - AXI4-Stream data interface
+# - Multi-layer inference engine
+# - Weight loader with double buffering
+# - Performance counters
+#
+# Target: Xilinx Zynq UltraScale+ / Intel Cyclone V
+# Based on: BitNet b1.58 (arXiv:2402.17764)
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_top
+version: "1.0.0"
+language: varlog
+module: bitnet_top
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SYSTEM ARCHITECTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#                    ┌─────────────────────────────────────────────────────┐
+#                    │              HOST (ARM/x86)                         │
+#                    └───────────────────┬─────────────────────────────────┘
+#                                        │
+#              ┌─────────────────────────┼─────────────────────────┐
+#              │                         │                         │
+#              ▼                         ▼                         ▼
+#     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+#     │   AXI-Lite      │     │  AXI4-Stream    │     │  AXI4-Stream    │
+#     │   Control       │     │  Input          │     │  Output         │
+#     └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+#              │                       │                       │
+#              ▼                       ▼                       ▼
+#     ┌─────────────────────────────────────────────────────────────────┐
+#     │                      BITNET_TOP                                 │
+#     │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+#     │  │ AXI-Lite    │  │ Stream      │  │ Weight      │             │
+#     │  │ Controller  │  │ Interface   │  │ Loader      │             │
+#     │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
+#     │         │                │                │                     │
+#     │         └────────────────┼────────────────┘                     │
+#     │                          ▼                                      │
+#     │              ┌─────────────────────┐                            │
+#     │              │  Multi-Layer Engine │                            │
+#     │              │  ┌───────────────┐  │                            │
+#     │              │  │ SIMD Core ×16 │  │                            │
+#     │              │  └───────────────┘  │                            │
+#     │              │  ┌───────────────┐  │                            │
+#     │              │  │ Weight BRAM   │  │                            │
+#     │              │  └───────────────┘  │                            │
+#     │              └─────────────────────┘                            │
+#     │                          │                                      │
+#     │              ┌─────────────────────┐                            │
+#     │              │  Perf Counters      │                            │
+#     │              └─────────────────────┘                            │
+#     └─────────────────────────────────────────────────────────────────┘
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  num_simd_cores: 16
+  simd_width: 27
+  max_layers: 64
+  max_neurons: 4096
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # System configuration
+  SystemConfig:
+    fields:
+      num_layers: Int
+      neurons_per_layer: Int
+      chunks_per_neuron: Int
+      threshold: Int
+      continuous_mode: Bool
+    width: 64
+
+  # System status
+  SystemStatus:
+    fields:
+      state: Int
+      current_layer: Int
+      inference_count: Int
+      error_code: Int
+    width: 64
+    states: "IDLE=0, LOADING=1, READY=2, RUNNING=3, DONE=4, ERROR=5"
+
+  # Interrupt status
+  InterruptStatus:
+    fields:
+      inference_done: Bool
+      load_done: Bool
+      error: Bool
+      fifo_overflow: Bool
+    width: 8
+
+  # Module enable flags
+  ModuleEnable:
+    fields:
+      engine_en: Bool
+      loader_en: Bool
+      stream_en: Bool
+      perf_en: Bool
+    width: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBMODULE INSTANTIATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+submodules:
+  # AXI-Lite control interface
+  - name: axi_lite_ctrl
+    module: axi_lite_bitnet_ctrl
+    instance: u_axi_lite
+
+  # AXI4-Stream data interface
+  - name: stream_if
+    module: axi_stream_bitnet
+    instance: u_stream
+
+  # Weight loader
+  - name: weight_loader
+    module: bitnet_weight_loader
+    instance: u_loader
+
+  # Multi-layer inference engine
+  - name: engine
+    module: bitnet_multilayer_engine
+    instance: u_engine
+
+  # Performance counters
+  - name: perf_counter
+    module: bitnet_perf_counter
+    instance: u_perf
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # System initialization
+  - name: system_init
+    given: Reset released
+    when: Power-on or soft reset
+    then: Initialize all submodules, set state to IDLE
+
+  # Configuration handler
+  - name: handle_config
+    given: Configuration write from host
+    when: Config registers written
+    then: Distribute config to engine and loader
+
+  # Start inference
+  - name: start_inference
+    given: Start command and weights loaded
+    when: Start bit set in control register
+    then: Enable engine, begin processing input stream
+
+  # Coordinate weight loading
+  - name: coordinate_loading
+    given: Load command from host
+    when: Weight stream active
+    then: Route stream to loader, track progress
+
+  # Route input data
+  - name: route_input
+    given: Input stream valid
+    when: Engine ready
+    then: Forward input from stream interface to engine
+
+  # Route output data
+  - name: route_output
+    given: Engine output valid
+    when: Output stream ready
+    then: Forward result from engine to output stream
+
+  # Interrupt generation
+  - name: generate_interrupts
+    given: Event occurred (done, error, etc.)
+    when: Corresponding interrupt enabled
+    then: Assert interrupt output
+
+  # Error handling
+  - name: handle_errors
+    given: Error condition detected
+    when: Overflow, timeout, or protocol error
+    then: Set error status, optionally halt engine
+
+  # Performance monitoring
+  - name: monitor_performance
+    given: Engine running
+    when: Perf counters enabled
+    then: Feed engine signals to performance counter
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # Clock and reset
+  clk_rst:
+    - aclk: input
+    - aresetn: input
+
+  # AXI-Lite slave (control)
+  s_axi_lite:
+    - s_axi_awaddr: input [7:0]
+    - s_axi_awvalid: input
+    - s_axi_awready: output
+    - s_axi_wdata: input [31:0]
+    - s_axi_wstrb: input [3:0]
+    - s_axi_wvalid: input
+    - s_axi_wready: output
+    - s_axi_bresp: output [1:0]
+    - s_axi_bvalid: output
+    - s_axi_bready: input
+    - s_axi_araddr: input [7:0]
+    - s_axi_arvalid: input
+    - s_axi_arready: output
+    - s_axi_rdata: output [31:0]
+    - s_axi_rresp: output [1:0]
+    - s_axi_rvalid: output
+    - s_axi_rready: input
+
+  # AXI4-Stream slave (input data)
+  s_axis_input:
+    - s_axis_tdata: input [63:0]
+    - s_axis_tvalid: input
+    - s_axis_tready: output
+    - s_axis_tlast: input
+    - s_axis_tkeep: input [7:0]
+
+  # AXI4-Stream master (output data)
+  m_axis_output:
+    - m_axis_tdata: output [63:0]
+    - m_axis_tvalid: output
+    - m_axis_tready: input
+    - m_axis_tlast: output
+    - m_axis_tkeep: output [7:0]
+
+  # AXI4-Stream slave (weight data)
+  s_axis_weight:
+    - s_axis_weight_tdata: input [63:0]
+    - s_axis_weight_tvalid: input
+    - s_axis_weight_tready: output
+    - s_axis_weight_tlast: input
+
+  # Interrupt output
+  interrupt:
+    - irq: output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+timing:
+  target_clock: 300MHz
+  inference_latency: "4 cycles per layer + pipeline fill"
+  throughput: "1 inference/cycle after warmup"
+  weight_load_time: "~0.4s for 1B parameters"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES (TOTAL SYSTEM)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Component          | LUTs  | FFs   | BRAM | DSP
+# -------------------|-------|-------|------|-----
+# AXI-Lite Ctrl      | 300   | 200   | 0    | 0
+# Stream Interface   | 800   | 600   | 2    | 0
+# Weight Loader      | 400   | 300   | 0    | 0
+# Multi-Layer Engine | 12,800| 9,600 | 16   | 0
+# Perf Counters      | 300   | 500   | 0    | 1
+# Interconnect       | 500   | 300   | 0    | 0
+# -------------------|-------|-------|------|-----
+# TOTAL              | 15,100| 11,500| 18   | 1
+#
+# VCU118 Utilization: ~1.3% LUTs, ~0.5% FFs, ~0.8% BRAM
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Metric              | Target    | Theoretical Max
+# --------------------|-----------|----------------
+# Throughput (tok/s)  | 100       | 300
+# Latency (ms/tok)    | 10        | 3.3
+# Power (W)           | <15       | -
+# Energy (tok/J)      | >6        | 31.6
+#
+# ═══════════════════════════════════════════════════════════════════════════════
