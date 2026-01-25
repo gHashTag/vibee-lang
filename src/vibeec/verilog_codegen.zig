@@ -563,6 +563,53 @@ pub const VerilogCodeGen = struct {
                 try self.writeInterruptController();
             } else if (std.mem.eql(u8, b.name, "host_interface_top")) {
                 try self.writeHostInterfaceTop();
+            // AXI-Lite behavior handlers
+            } else if (std.mem.eql(u8, b.name, "axi_write_handler")) {
+                try self.writeAxiWriteHandler();
+            } else if (std.mem.eql(u8, b.name, "axi_read_handler")) {
+                try self.writeAxiReadHandler();
+            } else if (std.mem.eql(u8, b.name, "ctrl_reg_handler")) {
+                try self.writeCtrlRegHandler();
+            } else if (std.mem.eql(u8, b.name, "irq_generator")) {
+                try self.writeIrqGenerator();
+            } else if (std.mem.eql(u8, b.name, "status_aggregator")) {
+                try self.writeStatusAggregator();
+            } else if (std.mem.eql(u8, b.name, "cycle_counter") or std.mem.eql(u8, b.name, "count_cycles")) {
+                try self.writeCycleCounter();
+            // AXI-Stream behavior handlers
+            } else if (std.mem.eql(u8, b.name, "input_stream_rx")) {
+                try self.writeAxisSlaveRx();
+            } else if (std.mem.eql(u8, b.name, "output_stream_tx")) {
+                try self.writeAxisMasterTx();
+            } else if (std.mem.eql(u8, b.name, "weight_stream_rx")) {
+                try self.writeWeightStreamRx();
+            } else if (std.mem.eql(u8, b.name, "backpressure_handler")) {
+                try self.writeBackpressureHandler();
+            } else if (std.mem.eql(u8, b.name, "packet_parser")) {
+                try self.writePacketParser();
+            } else if (std.mem.eql(u8, b.name, "packet_assembler")) {
+                try self.writePacketAssembler();
+            // Weight loader handlers
+            } else if (std.mem.eql(u8, b.name, "weight_load_handler") or std.mem.eql(u8, b.name, "receive_weights")) {
+                try self.writeWeightLoadHandler();
+            } else if (std.mem.eql(u8, b.name, "unpack_weights")) {
+                try self.writeUnpackWeights();
+            } else if (std.mem.eql(u8, b.name, "write_to_bram")) {
+                try self.writeWriteToBram();
+            // FIFO handlers
+            } else if (std.mem.eql(u8, b.name, "input_fifo_write")) {
+                try self.writeFifoWrite();
+            } else if (std.mem.eql(u8, b.name, "output_fifo_read")) {
+                try self.writeFifoRead();
+            // Performance counter handlers
+            } else if (std.mem.eql(u8, b.name, "count_inferences")) {
+                try self.writeInferenceCounter();
+            } else if (std.mem.eql(u8, b.name, "count_mac_ops")) {
+                try self.writeMacCounter();
+            } else if (std.mem.eql(u8, b.name, "track_stalls")) {
+                try self.writeStallTracker();
+            } else if (std.mem.eql(u8, b.name, "time_layer")) {
+                try self.writeLayerTimer();
             } else {
                 // Default generic behavior module
                 try self.writeGenericBehavior(b);
@@ -1707,6 +1754,295 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("                TRIT_Z;");
         self.builder.decIndent();
         try self.builder.newline();
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // NEW AXI BEHAVIOR HANDLERS
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    fn writeAxiWriteHandler(self: *Self) !void {
+        try self.builder.writeLine("// AXI-Lite Write Handler - Complete FSM");
+        try self.builder.writeLine("module axi_write_handler (");
+        self.builder.incIndent();
+        try self.builder.writeLine("input  wire        clk, input  wire        rst_n,");
+        try self.builder.writeLine("input  wire [7:0]  awaddr, input  wire        awvalid, output reg         awready,");
+        try self.builder.writeLine("input  wire [31:0] wdata,  input  wire        wvalid,  output reg         wready,");
+        try self.builder.writeLine("output reg  [1:0]  bresp,  output reg         bvalid,  input  wire        bready,");
+        try self.builder.writeLine("output reg  [7:0]  reg_addr, output reg  [31:0] reg_wdata, output reg         reg_wen");
+        self.builder.decIndent();
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  localparam IDLE=0, ADDR=1, DATA=2, RESP=3;");
+        try self.builder.writeLine("  reg [1:0] state;");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin state<=IDLE; awready<=1; wready<=1; bvalid<=0; reg_wen<=0; end");
+        try self.builder.writeLine("    else case(state)");
+        try self.builder.writeLine("      IDLE: if (awvalid && wvalid) begin reg_addr<=awaddr; reg_wdata<=wdata; reg_wen<=1; state<=RESP; end");
+        try self.builder.writeLine("      RESP: begin reg_wen<=0; bvalid<=1; bresp<=2'b00; if(bready) begin bvalid<=0; state<=IDLE; end end");
+        try self.builder.writeLine("    endcase");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeAxiReadHandler(self: *Self) !void {
+        try self.builder.writeLine("// AXI-Lite Read Handler - Complete FSM");
+        try self.builder.writeLine("module axi_read_handler (");
+        self.builder.incIndent();
+        try self.builder.writeLine("input  wire        clk, input  wire        rst_n,");
+        try self.builder.writeLine("input  wire [7:0]  araddr, input  wire        arvalid, output reg         arready,");
+        try self.builder.writeLine("output reg  [31:0] rdata,  output reg  [1:0]  rresp,   output reg         rvalid, input  wire        rready,");
+        try self.builder.writeLine("output reg  [7:0]  reg_addr, input  wire [31:0] reg_rdata");
+        self.builder.decIndent();
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  localparam IDLE=0, READ=1, RESP=2;");
+        try self.builder.writeLine("  reg [1:0] state;");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin state<=IDLE; arready<=1; rvalid<=0; end");
+        try self.builder.writeLine("    else case(state)");
+        try self.builder.writeLine("      IDLE: if (arvalid) begin reg_addr<=araddr; arready<=0; state<=READ; end");
+        try self.builder.writeLine("      READ: begin rdata<=reg_rdata; rvalid<=1; rresp<=2'b00; state<=RESP; end");
+        try self.builder.writeLine("      RESP: if (rready) begin rvalid<=0; arready<=1; state<=IDLE; end");
+        try self.builder.writeLine("    endcase");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeCtrlRegHandler(self: *Self) !void {
+        try self.builder.writeLine("// Control Register Handler - Start pulse generation");
+        try self.builder.writeLine("module ctrl_reg_handler (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [31:0] ctrl_reg,");
+        try self.builder.writeLine("  output reg start_pulse, output reg soft_reset");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  reg start_d;");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin start_d<=0; start_pulse<=0; soft_reset<=0; end");
+        try self.builder.writeLine("    else begin start_d<=ctrl_reg[0]; start_pulse<=ctrl_reg[0]&&!start_d; soft_reset<=ctrl_reg[1]; end");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeIrqGenerator(self: *Self) !void {
+        try self.builder.writeLine("// IRQ Generator - Interrupt output logic");
+        try self.builder.writeLine("module irq_generator (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [31:0] irq_en, input wire [31:0] irq_stat, output wire irq");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign irq = |(irq_en & irq_stat);");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeStatusAggregator(self: *Self) !void {
+        try self.builder.writeLine("// Status Aggregator - Combine status signals");
+        try self.builder.writeLine("module status_aggregator (");
+        try self.builder.writeLine("  input wire busy, input wire done, input wire error, input wire [7:0] layer,");
+        try self.builder.writeLine("  output wire [31:0] status");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign status = {16'd0, layer, 4'd0, 1'b0, error, done, busy};");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeCycleCounter(self: *Self) !void {
+        try self.builder.writeLine("// 64-bit Cycle Counter");
+        try self.builder.writeLine("module cycle_counter (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire enable, input wire clear,");
+        try self.builder.writeLine("  output reg [63:0] count");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n || clear) count <= 64'd0;");
+        try self.builder.writeLine("    else if (enable) count <= count + 1;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeAxisSlaveRx(self: *Self) !void {
+        try self.builder.writeLine("// AXI-Stream Slave Receiver");
+        try self.builder.writeLine("module axis_slave_rx (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n,");
+        try self.builder.writeLine("  input wire [63:0] tdata, input wire tvalid, output reg tready, input wire tlast,");
+        try self.builder.writeLine("  output reg [63:0] data_out, output reg valid_out, input wire ready_in");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin tready<=1; valid_out<=0; end");
+        try self.builder.writeLine("    else begin tready<=ready_in; if(tvalid&&tready) begin data_out<=tdata; valid_out<=1; end else valid_out<=0; end");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeAxisMasterTx(self: *Self) !void {
+        try self.builder.writeLine("// AXI-Stream Master Transmitter");
+        try self.builder.writeLine("module axis_master_tx (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n,");
+        try self.builder.writeLine("  output reg [63:0] tdata, output reg tvalid, input wire tready, output reg tlast,");
+        try self.builder.writeLine("  input wire [63:0] data_in, input wire valid_in, output wire ready_out, input wire last_in");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign ready_out = !tvalid || tready;");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) tvalid<=0;");
+        try self.builder.writeLine("    else if(ready_out&&valid_in) begin tdata<=data_in; tvalid<=1; tlast<=last_in; end");
+        try self.builder.writeLine("    else if(tready) tvalid<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeWeightStreamRx(self: *Self) !void {
+        try self.builder.writeLine("// Weight Stream Receiver");
+        try self.builder.writeLine("module weight_stream_rx (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n,");
+        try self.builder.writeLine("  input wire [63:0] tdata, input wire tvalid, output reg tready, input wire tlast,");
+        try self.builder.writeLine("  output reg [63:0] weight_data, output reg [15:0] weight_addr, output reg weight_we");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin tready<=1; weight_we<=0; weight_addr<=0; end");
+        try self.builder.writeLine("    else if(tvalid&&tready) begin weight_data<=tdata; weight_we<=1; weight_addr<=weight_addr+1; end");
+        try self.builder.writeLine("    else weight_we<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeBackpressureHandler(self: *Self) !void {
+        try self.builder.writeLine("// Backpressure Handler");
+        try self.builder.writeLine("module backpressure_handler (");
+        try self.builder.writeLine("  input wire [7:0] fifo_count, input wire [7:0] threshold, output wire tready");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign tready = (fifo_count < threshold);");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writePacketParser(self: *Self) !void {
+        try self.builder.writeLine("// Packet Parser - Extract header and route");
+        try self.builder.writeLine("module packet_parser (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [63:0] data, input wire valid,");
+        try self.builder.writeLine("  output reg [3:0] pkt_type, output reg [31:0] payload, output reg pkt_valid");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) pkt_valid<=0;");
+        try self.builder.writeLine("    else if(valid) begin pkt_type<=data[63:60]; payload<=data[31:0]; pkt_valid<=1; end");
+        try self.builder.writeLine("    else pkt_valid<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writePacketAssembler(self: *Self) !void {
+        try self.builder.writeLine("// Packet Assembler - Build output packet");
+        try self.builder.writeLine("module packet_assembler (");
+        try self.builder.writeLine("  input wire [3:0] pkt_type, input wire [31:0] payload, input wire valid,");
+        try self.builder.writeLine("  output wire [63:0] packet");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign packet = {pkt_type, 28'd0, payload};");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeWeightLoadHandler(self: *Self) !void {
+        try self.builder.writeLine("// Weight Load Handler");
+        try self.builder.writeLine("module weight_load_handler (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [63:0] data, input wire valid,");
+        try self.builder.writeLine("  output reg [53:0] weight_chunk, output reg [15:0] addr, output reg we");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin we<=0; addr<=0; end");
+        try self.builder.writeLine("    else if(valid) begin weight_chunk<=data[53:0]; we<=1; addr<=addr+1; end");
+        try self.builder.writeLine("    else we<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeUnpackWeights(self: *Self) !void {
+        try self.builder.writeLine("// Unpack 32 ternary weights from 64-bit word to 27-weight SIMD chunk");
+        try self.builder.writeLine("module unpack_weights (");
+        try self.builder.writeLine("  input wire [63:0] packed, output wire [53:0] unpacked");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign unpacked = packed[53:0]; // Take first 27 weights (54 bits)");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeWriteToBram(self: *Self) !void {
+        try self.builder.writeLine("// Write to BRAM");
+        try self.builder.writeLine("module write_to_bram (");
+        try self.builder.writeLine("  input wire clk, input wire [15:0] addr, input wire [53:0] data, input wire we,");
+        try self.builder.writeLine("  output reg [15:0] bram_addr, output reg [53:0] bram_data, output reg bram_we");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk) begin bram_addr<=addr; bram_data<=data; bram_we<=we; end");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeFifoWrite(self: *Self) !void {
+        try self.builder.writeLine("// FIFO Write Interface");
+        try self.builder.writeLine("module fifo_write (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [31:0] data, input wire wr_en, input wire full,");
+        try self.builder.writeLine("  output reg [31:0] fifo_data, output reg fifo_wr, output wire ready");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  assign ready = !full;");
+        try self.builder.writeLine("  always @(posedge clk) if(wr_en && !full) begin fifo_data<=data; fifo_wr<=1; end else fifo_wr<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeFifoRead(self: *Self) !void {
+        try self.builder.writeLine("// FIFO Read Interface");
+        try self.builder.writeLine("module fifo_read (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire [31:0] fifo_data, input wire empty, input wire rd_en,");
+        try self.builder.writeLine("  output reg [31:0] data, output reg valid");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk) if(rd_en && !empty) begin data<=fifo_data; valid<=1; end else valid<=0;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeInferenceCounter(self: *Self) !void {
+        try self.builder.writeLine("// Inference Counter");
+        try self.builder.writeLine("module inference_counter (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire done_pulse, input wire clear,");
+        try self.builder.writeLine("  output reg [31:0] count");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n || clear) count<=0; else if(done_pulse) count<=count+1;");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeMacCounter(self: *Self) !void {
+        try self.builder.writeLine("// MAC Operations Counter");
+        try self.builder.writeLine("module mac_counter (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire simd_active, input wire clear,");
+        try self.builder.writeLine("  output reg [63:0] count");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n || clear) count<=0; else if(simd_active) count<=count+27; // 27 MACs per SIMD op");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeStallTracker(self: *Self) !void {
+        try self.builder.writeLine("// Stall Cycle Tracker");
+        try self.builder.writeLine("module stall_tracker (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire mem_stall, input wire compute_stall, input wire clear,");
+        try self.builder.writeLine("  output reg [31:0] mem_stalls, output reg [31:0] compute_stalls");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n || clear) begin mem_stalls<=0; compute_stalls<=0; end");
+        try self.builder.writeLine("    else begin if(mem_stall) mem_stalls<=mem_stalls+1; if(compute_stall) compute_stalls<=compute_stalls+1; end");
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+    
+    fn writeLayerTimer(self: *Self) !void {
+        try self.builder.writeLine("// Layer Timer");
+        try self.builder.writeLine("module layer_timer (");
+        try self.builder.writeLine("  input wire clk, input wire rst_n, input wire layer_start, input wire layer_done,");
+        try self.builder.writeLine("  output reg [31:0] layer_cycles");
+        try self.builder.writeLine(");");
+        try self.builder.writeLine("  reg running; reg [31:0] counter;");
+        try self.builder.writeLine("  always @(posedge clk or negedge rst_n)");
+        try self.builder.writeLine("    if (!rst_n) begin running<=0; counter<=0; end");
+        try self.builder.writeLine("    else if(layer_start) begin running<=1; counter<=0; end");
+        try self.builder.writeLine("    else if(layer_done) begin running<=0; layer_cycles<=counter; end");
+        try self.builder.writeLine("    else if(running) counter<=counter+1;");
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
