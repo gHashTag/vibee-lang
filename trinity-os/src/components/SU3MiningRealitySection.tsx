@@ -1,32 +1,78 @@
 "use client";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/context';
 import Section from './Section';
+
+const COPTIC_CHARS = "ⲁⲃⲅⲇⲉⲋⲍⲏⲑⲓⲕⲗⲙⲛⲝⲟⲡⲣⲥⲧⲩⲫⲭⲱϣϥϧϩϫϭϯ";
 
 export default function SU3MiningRealitySection() {
   const { t } = useI18n();
   const reality = t.su3reality;
 
   const [stats, setStats] = useState({
-    block: 876194,
-    diff: '92.1T',
-    efficiency: 579.2,
+    block: 0,
+    diff: '...',
+    efficiency: 578.8,
     hash: 533.7,
   });
 
-  // Simulated live updates
+  const [logs, setLogs] = useState<string[]>([]);
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Real-time Telemetry Loop
   useEffect(() => {
-    const interval = setInterval(() => {
+    async function fetchNetworkStats() {
+      try {
+        const [blockRes, diffRes] = await Promise.all([
+          fetch('https://blockchain.info/q/getblockcount'),
+          fetch('https://blockchain.info/q/difficulty')
+        ]);
+        
+        const block = await blockRes.json();
+        const diffRaw = await diffRes.json();
+        
+        // Convert difficulty to readable 'T' format
+        const diffT = (diffRaw / 1e12).toFixed(1) + 'T';
+
+        setStats(prev => ({
+          ...prev,
+          block: block,
+          diff: diffT
+        }));
+      } catch (err) {
+        console.error("Failed to fetch real-time mining data:", err);
+      }
+    }
+
+    fetchNetworkStats();
+    const networkInterval = setInterval(fetchNetworkStats, 60000); // Update every minute
+    return () => clearInterval(networkInterval);
+  }, []);
+
+  // Hardware Resonance Simulation (High-Fidelity)
+  useEffect(() => {
+    const hardwareInterval = setInterval(() => {
       setStats(prev => ({
         ...prev,
-        block: Math.random() > 0.95 ? prev.block + 1 : prev.block,
-        efficiency: Number((prev.efficiency + (Math.random() * 0.4 - 0.2)).toFixed(1)),
-        hash: Number((prev.hash + (Math.random() * 2 - 1)).toFixed(1)),
+        efficiency: Number((578.8 + (Math.random() * 0.4 - 0.2)).toFixed(1)),
+        hash: Number((533.7 + (Math.random() * 2 - 1)).toFixed(1)),
       }));
-    }, 3000);
-    return () => clearInterval(interval);
+
+      // Generate Coptic Logic Logs
+      const opcodes = ["LD_SU3", "MOV_TRIT", "RESONATE", "HARVEST", "CIS_TX", "PHASE_SHIFT"];
+      const op = opcodes[Math.floor(Math.random() * opcodes.length)];
+      const char = COPTIC_CHARS[Math.floor(Math.random() * COPTIC_CHARS.length)];
+      setLogs(prev => [...prev.slice(-10), `${op}: ${char}${char} >> SU3_NATIVE_PULSE_ACTIVE`]);
+    }, 2000);
+
+    return () => clearInterval(hardwareInterval);
   }, []);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
 
   if (!reality) return null;
 
@@ -40,158 +86,163 @@ export default function SU3MiningRealitySection() {
       <div className="fade" style={{
         maxWidth: '800px',
         margin: '0 auto',
-        background: 'rgba(0,0,0,0.4)',
-        border: '1px solid rgba(0, 229, 153, 0.2)',
+        background: 'rgba(10, 10, 10, 0.8)',
+        border: '1px solid rgba(0, 229, 153, 0.3)',
         borderRadius: '24px',
-        padding: '2rem',
+        padding: '2.5rem',
         position: 'relative',
         overflow: 'hidden',
-        boxShadow: '0 0 50px rgba(0, 229, 153, 0.1)'
+        boxShadow: '0 0 60px rgba(0, 229, 153, 0.15)',
+        backdropFilter: 'blur(10px)'
       }}>
         {/* Header Indicator */}
         <div style={{
-          background: 'rgba(0, 163, 224, 0.1)',
+          background: 'rgba(0, 163, 224, 0.15)',
           border: '1px solid #00A3E0',
           borderRadius: '4px',
-          padding: '0.4rem 1rem',
-          fontSize: '0.7rem',
+          padding: '0.5rem 1.2rem',
+          fontSize: '0.75rem',
           fontWeight: '700',
           color: '#00A3E0',
           textAlign: 'center',
-          letterSpacing: '0.05em',
-          marginBottom: '2rem'
+          letterSpacing: '0.08em',
+          marginBottom: '2.5rem',
+          textTransform: 'uppercase'
         }}>
           {reality.mode}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginBottom: '3rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem', marginBottom: '3.5rem' }}>
           {/* Wallet Info */}
           <div style={{
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            borderRadius: '12px',
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '16px',
             padding: '1.5rem',
           }}>
-            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', marginBottom: '0.5rem' }}>
+            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.6rem' }}>
               {reality.wallet}
             </div>
-            <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#fff', letterSpacing: '0.05em' }}>
+            <div style={{ fontSize: '1.4rem', fontWeight: '800', color: '#fff', letterSpacing: '0.05em', fontFamily: 'monospace' }}>
               {reality.ledger}
             </div>
           </div>
 
-          {/* Network Target */}
+          {/* Network Target (REAL DATA) */}
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', marginBottom: '0.5rem' }}>
+            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.6rem' }}>
               {reality.target}
             </div>
-            <div style={{ fontSize: '1.2rem', fontWeight: '700', color: '#fff' }}>
-              {reality.block}{stats.block.toLocaleString()}
+            <div style={{ fontSize: '1.3rem', fontWeight: '800', color: '#fff' }}>
+              {reality.block} {stats.block === 0 ? 'Loading...' : stats.block.toLocaleString()}
             </div>
-            <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.4)' }}>
+            <div style={{ fontSize: '0.85rem', color: 'var(--accent)', fontWeight: 600, marginTop: '0.4rem' }}>
               {reality.diff}: {stats.diff}
             </div>
           </div>
         </div>
 
-        {/* Central SU(3) Pulse */}
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', margin: '4rem 0' }}>
+        {/* Central SU(3) Core Resonance */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', margin: '3rem 0' }}>
           <div style={{ position: 'relative' }}>
-            {/* Outer Glows */}
             <motion.div
-              animate={{ opacity: [0.1, 0.3, 0.1], scale: [1, 1.1, 1] }}
-              transition={{ duration: 4, repeat: Infinity }}
+              animate={{ opacity: [0.2, 0.4, 0.2], scale: [1, 1.05, 1] }}
+              transition={{ duration: 3, repeat: Infinity }}
               style={{
                 position: 'absolute',
-                top: '-20px', left: '-20px', right: '-20px', bottom: '-20px',
-                background: 'radial-gradient(circle, rgba(0, 229, 153, 0.2) 0%, transparent 70%)',
+                top: '-30px', left: '-30px', right: '-30px', bottom: '-30px',
+                background: 'radial-gradient(circle, rgba(0, 229, 153, 0.25) 0%, transparent 75%)',
                 zIndex: 0
               }}
             />
             
             <motion.div
               animate={{ rotate: 360 }}
-              transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+              transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
               style={{
-                width: '280px',
-                height: '280px',
+                width: '240px',
+                height: '240px',
                 borderRadius: '50%',
-                border: '3px solid #00E599',
+                border: '4px double #00E599',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
                 alignItems: 'center',
-                background: 'rgba(0,0,0,0.8)',
+                background: 'rgba(0,0,0,0.9)',
                 zIndex: 1,
                 position: 'relative',
-                boxShadow: '0 0 30px rgba(0, 229, 153, 0.4), inset 0 0 20px rgba(0, 229, 153, 0.2)'
+                boxShadow: '0 0 40px rgba(0, 229, 153, 0.3)',
+                padding: '1rem'
               }}
             >
-              <div style={{ 
-                fontSize: '0.7rem', 
-                fontWeight: '700', 
-                color: 'rgba(255,255,255,0.6)', 
-                letterSpacing: '0.3em', 
-                marginBottom: '0.5rem',
-                transform: 'rotate(180deg)'
-              }}>
-                SINGULARITY
-              </div>
-              <div style={{ fontSize: '4rem', fontWeight: '900', color: '#00E599', transform: 'rotate(180deg)' }}>
-                SU(3)
-              </div>
+              <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.2em', marginBottom: '0.8rem' }}>TRINITY_CORE</div>
+              <div style={{ fontSize: '3.5rem', fontWeight: '900', color: '#00E599', lineHeight: 1 }}>SU(3)</div>
+              <div style={{ fontSize: '0.6rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.8 }}>PHASE_LOCKED</div>
             </motion.div>
           </div>
         </div>
 
-        {/* Bottom Metrics */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        {/* Coptic Terminal (Instruction Bridge) */}
+        <div style={{ 
+          height: '100px', 
+          background: 'rgba(0,0,0,0.4)', 
+          border: '1px solid rgba(255,255,255,0.05)', 
+          borderRadius: '12px', 
+          marginBottom: '2rem',
+          padding: '0.8rem',
+          overflow: 'hidden',
+          fontFamily: '"JetBrains Mono", monospace',
+          fontSize: '0.65rem'
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column-reverse' }}>
+            <div ref={logEndRef} />
+            {logs.map((log, i) => (
+              <div key={i} style={{ marginBottom: '0.2rem', color: i === 0 ? 'var(--accent)' : 'rgba(255,255,255,0.3)' }}>
+                <span style={{ opacity: 0.4, marginRight: '10px' }}>[{new Date().toLocaleTimeString()}]</span>
+                {log}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Bottom Efficiency/Performance Metrics */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.2rem' }}>
           <div style={{
             border: '2px solid #00E599',
             borderRadius: '16px',
-            padding: '1.5rem',
+            padding: '1.2rem',
             textAlign: 'center',
-            background: 'rgba(0, 229, 153, 0.03)'
+            background: 'rgba(0, 229, 153, 0.05)'
           }}>
-            <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.15em', marginBottom: '0.5rem' }}>
+            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.5rem' }}>
               {reality.efficiency}
             </div>
-            <div style={{ fontSize: '2.5rem', fontWeight: '800', color: '#00E599' }}>
+            <div style={{ fontSize: '2.2rem', fontWeight: '800', color: '#00E599' }}>
                {stats.efficiency.toFixed(1)}x
             </div>
-            <div style={{ fontSize: '0.55rem', color: '#00E599', fontWeight: '700', letterSpacing: '0.05em', marginTop: '0.5rem' }}>
+            <div style={{ fontSize: '0.6rem', color: '#00E599', fontWeight: '700', marginTop: '0.5rem' }}>
               {reality.active}
             </div>
           </div>
 
           <div style={{
             background: 'rgba(255,255,255,0.02)',
-            border: '1px solid rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.1)',
             borderRadius: '16px',
-            padding: '1.5rem',
+            padding: '1.2rem',
             textAlign: 'center'
           }}>
-            <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.15em', marginBottom: '0.5rem' }}>
+            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '0.5rem' }}>
               {reality.hash}
             </div>
-            <div style={{ fontSize: '2.5rem', fontWeight: '800', color: '#fff' }}>
+            <div style={{ fontSize: '2.2rem', fontWeight: '800', color: '#fff' }}>
               {stats.hash.toFixed(1)} EH
             </div>
-            <div style={{ fontSize: '0.55rem', color: 'rgba(255,255,255,0.3)', letterSpacing: '0.05em', marginTop: '0.5rem' }}>
+            <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.3)', marginTop: '0.5rem' }}>
               {reality.pulse}
             </div>
           </div>
         </div>
-
-        {/* Particle Overlay (CSS only for speed) */}
-        <div style={{
-          position: 'absolute',
-          top: 0, left: 0, right: 0, bottom: 0,
-          pointerEvents: 'none',
-          backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(255,255,255,0.05) 1px, transparent 1px)',
-          backgroundSize: '30px 30px',
-          opacity: 0.5
-        }} />
       </div>
     </Section>
   );
