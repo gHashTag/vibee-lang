@@ -229,11 +229,11 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
         }
       }
 
-      // === TOP LEFT: Protocol Stack ===
-      const boxW = 160 * scale;
-      const boxH = 120 * scale;
+      // === LEFT SIDE: Protocol Stack (moved down to avoid logo) ===
+      const boxW = 140 * scale;
+      const boxH = 110 * scale;
       const boxX = 20 * scale;
-      const boxY = 60 * scale;
+      const boxY = h / 2 - boxH - 20 * scale; // Upper middle left
 
       ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
       ctx.fillRect(boxX, boxY, boxW, boxH);
@@ -242,32 +242,51 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
       ctx.strokeRect(boxX, boxY, boxW, boxH);
 
       ctx.fillStyle = '#0ff';
-      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.font = `bold ${10 * scale}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText('PROTOCOL STACK', boxX + boxW / 2, boxY + 15 * scale);
+      ctx.fillText('PROTOCOL STACK', boxX + boxW / 2, boxY + 14 * scale);
 
       const layers = ['Application', 'Transport', 'Network', 'Link', 'Physical'];
       const layerColors = ['#f0f', '#ff0', '#0f0', '#0ff', '#8a2be2'];
       layers.forEach((layer, i) => {
-        const ly = boxY + 25 * scale + i * 18 * scale;
+        const ly = boxY + 22 * scale + i * 16 * scale;
         ctx.fillStyle = layerColors[i] + '40';
-        ctx.fillRect(boxX + 10 * scale, ly, boxW - 20 * scale, 14 * scale);
+        ctx.fillRect(boxX + 8 * scale, ly, boxW - 16 * scale, 13 * scale);
         ctx.fillStyle = '#fff';
-        ctx.font = `${10 * scale}px monospace`;
-        ctx.fillText(layer, boxX + boxW / 2, ly + 11 * scale);
+        ctx.font = `${9 * scale}px monospace`;
+        ctx.fillText(layer, boxX + boxW / 2, ly + 10 * scale);
       });
 
-      // === TOP RIGHT: SSOT Invariants ===
+      // === LEFT SIDE: Sacred Constants (below Protocol Stack) ===
+      const sacredY = h / 2 + 20 * scale;
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.1)';
+      ctx.fillRect(boxX, sacredY, boxW, 70 * scale);
+      ctx.strokeStyle = '#ffd700';
+      ctx.strokeRect(boxX, sacredY, boxW, 70 * scale);
+
+      ctx.fillStyle = '#ffd700';
+      ctx.font = `bold ${10 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('SACRED CONSTANTS', boxX + boxW / 2, sacredY + 14 * scale);
+
+      ctx.font = `${9 * scale}px monospace`;
+      ctx.textAlign = 'left';
+      ctx.fillText('φ = 1.618033...', boxX + 8 * scale, sacredY + 30 * scale);
+      ctx.fillText('π × φ × e = 13.82', boxX + 8 * scale, sacredY + 44 * scale);
+      ctx.fillText('L(10) = 123', boxX + 8 * scale, sacredY + 58 * scale);
+
+      // === RIGHT SIDE: SSOT Invariants (moved down to avoid menu button) ===
       const invX = w - boxW - 20 * scale;
+      const invY = h / 2 - 60 * scale; // Upper middle right
       ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
-      ctx.fillRect(invX, boxY, boxW, 80 * scale);
+      ctx.fillRect(invX, invY, boxW, 70 * scale);
       ctx.strokeStyle = '#0ff';
-      ctx.strokeRect(invX, boxY, boxW, 80 * scale);
+      ctx.strokeRect(invX, invY, boxW, 70 * scale);
 
       ctx.fillStyle = '#0ff';
-      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.font = `bold ${10 * scale}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText('SSOT INVARIANTS', invX + boxW / 2, boxY + 15 * scale);
+      ctx.fillText('SSOT INVARIANTS', invX + boxW / 2, invY + 14 * scale);
 
       const invariants = [
         { name: 'φ² + 1/φ² = 3', ok: true },
@@ -276,62 +295,36 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
       ];
       invariants.forEach((inv, i) => {
         ctx.fillStyle = inv.ok ? '#0f0' : '#f00';
-        ctx.font = `${10 * scale}px monospace`;
+        ctx.font = `${9 * scale}px monospace`;
         ctx.textAlign = 'left';
-        ctx.fillText((inv.ok ? '✓ ' : '✗ ') + inv.name, invX + 10 * scale, boxY + 32 * scale + i * 16 * scale);
+        ctx.fillText((inv.ok ? '✓ ' : '✗ ') + inv.name, invX + 8 * scale, invY + 30 * scale + i * 14 * scale);
       });
 
-      // === BOTTOM LEFT: Sacred Constants ===
-      const sacredY = h - 100 * scale;
-      ctx.fillStyle = 'rgba(255, 215, 0, 0.1)';
-      ctx.fillRect(boxX, sacredY, boxW, 80 * scale);
-      ctx.strokeStyle = '#ffd700';
-      ctx.strokeRect(boxX, sacredY, boxW, 80 * scale);
-
-      ctx.fillStyle = '#ffd700';
-      ctx.font = `bold ${11 * scale}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText('SACRED CONSTANTS', boxX + boxW / 2, sacredY + 15 * scale);
-
-      ctx.font = `${10 * scale}px monospace`;
-      ctx.textAlign = 'left';
-      ctx.fillText('φ = 1.618033...', boxX + 10 * scale, sacredY + 32 * scale);
-      ctx.fillText('π × φ × e = 13.82', boxX + 10 * scale, sacredY + 48 * scale);
-      ctx.fillText('L(10) = 123', boxX + 10 * scale, sacredY + 64 * scale);
-
-      // === BOTTOM RIGHT: QKD Exchange ===
+      // === RIGHT SIDE: QKD Exchange (below SSOT) ===
+      const qkdY = h / 2 + 20 * scale;
       ctx.fillStyle = 'rgba(0, 255, 0, 0.1)';
-      ctx.fillRect(invX, sacredY, boxW, 80 * scale);
+      ctx.fillRect(invX, qkdY, boxW, 70 * scale);
       ctx.strokeStyle = '#0f0';
-      ctx.strokeRect(invX, sacredY, boxW, 80 * scale);
+      ctx.strokeRect(invX, qkdY, boxW, 70 * scale);
 
       ctx.fillStyle = '#0f0';
-      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.font = `bold ${10 * scale}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText('QKD EXCHANGE', invX + boxW / 2, sacredY + 15 * scale);
+      ctx.fillText('QKD EXCHANGE', invX + boxW / 2, qkdY + 14 * scale);
 
       // Animated key bits
       const keyBits = '10110010';
       for (let i = 0; i < 8; i++) {
         const bit = keyBits[(i + Math.floor(t * 5)) % 8];
         ctx.fillStyle = bit === '1' ? '#0f0' : '#f00';
-        ctx.font = `${12 * scale}px monospace`;
-        ctx.fillText(bit, invX + 15 * scale + i * 18 * scale, sacredY + 38 * scale);
+        ctx.font = `${11 * scale}px monospace`;
+        ctx.fillText(bit, invX + 12 * scale + i * 15 * scale, qkdY + 35 * scale);
       }
 
       ctx.fillStyle = '#fff';
-      ctx.font = `${9 * scale}px monospace`;
+      ctx.font = `${8 * scale}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText('Dilithium + Kyber', invX + boxW / 2, sacredY + 60 * scale);
-
-      // === Title ===
-      ctx.fillStyle = '#ffd700';
-      ctx.font = `bold ${18 * scale}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText('TRINITY QUANTUM COMPUTER', cx, 30 * scale);
-      ctx.fillStyle = '#0ff';
-      ctx.font = `${12 * scale}px monospace`;
-      ctx.fillText('Ternary Architecture • Post-Quantum Security • AI Integration', cx, 50 * scale);
+      ctx.fillText('Dilithium + Kyber', invX + boxW / 2, qkdY + 55 * scale);
     }
 
     let lastTime = performance.now();
