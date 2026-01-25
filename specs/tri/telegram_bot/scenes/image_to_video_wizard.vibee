@@ -1,0 +1,523 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMAGE TO VIDEO WIZARD - Animate Photos Flow
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete step-by-step wizard for animating images into videos
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: image_to_video_wizard
+version: "1.0.0"
+language: zig
+module: image_to_video_wizard
+
+description: |
+  Image-to-video wizard - animate photos into videos.
+  
+  Steps:
+  1. UPLOAD_IMAGE - User sends a photo
+  2. SELECT_MODEL - Choose animation model
+  3. ENTER_MOTION - Describe desired motion (optional)
+  4. SELECT_DURATION - Choose video length
+  5. CONFIRM - Review and confirm
+  6. PROCESSING - Wait for animation
+  7. COMPLETE - Show result video
+
+imports:
+  - ../core/state_manager
+  - ../core/telegram_client
+  - ../core/replicate_client
+  - ../menu/reply_keyboard
+  - ../utils/language
+
+types:
+  I2VStep:
+    description: "Image-to-video wizard step enum"
+    variants:
+      - UploadImage
+      - SelectModel
+      - EnterMotion
+      - SelectDuration
+      - Confirm
+      - Processing
+      - Complete
+      - Cancelled
+
+  I2VWizardState:
+    description: "Complete image-to-video wizard state"
+    fields:
+      step: I2VStep
+      image_file_id: Option<String>
+      image_url: Option<String>
+      image_width: Int
+      image_height: Int
+      model_id: Option<String>
+      model_name: Option<String>
+      motion_prompt: Option<String>
+      duration_seconds: Int
+      cost_stars: Int
+      job_id: Option<String>
+      result_url: Option<String>
+      error: Option<String>
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+      progress_percent: Int
+
+  I2VModel:
+    description: "Available image-to-video model"
+    fields:
+      id: String
+      name: String
+      description: String
+      cost_per_second: Int
+      max_duration: Int
+      supports_motion_prompt: Bool
+      best_for: String
+
+  I2VStepResult:
+    description: "Result of processing I2V step"
+    fields:
+      success: Bool
+      next_step: Option<I2VStep>
+      message: String
+      keyboard: Option<String>
+      error: Option<String>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # WIZARD LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: enter_wizard
+    given: Chat ID and language
+    when: User starts image-to-video
+    then: |
+      1. Create I2VWizardState with step=UploadImage
+      2. Save to state_manager
+      3. Return image upload request message
+
+  - name: exit_wizard
+    given: Chat ID
+    when: User cancels or completes
+    then: |
+      1. Clear wizard state
+      2. Delete temporary image if exists
+      3. Return to main menu
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 1: UPLOAD IMAGE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_upload_image
+    given: Language
+    when: Requesting image upload
+    then: |
+      RU: "📷 Отправьте фото для анимации:
+      
+      Требования:
+      • Формат: JPG, PNG
+      • Размер: минимум 512x512
+      • Качество: чем лучше фото, тем лучше видео
+      
+      💡 Лучше всего работает с:
+      • Портретами людей
+      • Пейзажами
+      • Животными"
+      
+      EN: "📷 Send a photo to animate:
+      
+      Requirements:
+      • Format: JPG, PNG
+      • Size: minimum 512x512
+      • Quality: better photo = better video
+      
+      💡 Works best with:
+      • Portraits
+      • Landscapes
+      • Animals"
+      
+      Keyboard:
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_upload_image
+    given: Chat ID and photo message
+    when: User sends photo
+    then: |
+      1. Get largest photo size
+      2. Validate dimensions (min 512x512)
+      3. Download and store temporarily
+      4. Update state: image_file_id, image_url, dimensions
+      5. Advance to SelectModel
+      6. Return model selection message
+
+  - name: validate_image
+    given: Photo sizes array
+    when: Validating uploaded image
+    then: |
+      Checks:
+        - Has at least one size
+        - Largest size >= 512x512
+        - File size <= 20MB
+      Return: {valid: bool, error: string, best_size: PhotoSize}
+
+  - name: download_image
+    given: File ID
+    when: Downloading for processing
+    then: |
+      1. Call getFile API
+      2. Download from file_path
+      3. Upload to temporary storage
+      4. Return public URL
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 2: SELECT MODEL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_model
+    given: Language
+    when: Displaying model selection
+    then: |
+      RU: "🎬 Выберите модель анимации:
+      
+      🌊 Stable Video - Плавные движения
+      ⚡ Runway I2V - Высокое качество
+      🎭 Kling I2V - Лица и портреты
+      ✨ Luma I2V - Креативные эффекты"
+      
+      EN: "🎬 Select animation model:
+      
+      🌊 Stable Video - Smooth motion
+      ⚡ Runway I2V - High quality
+      🎭 Kling I2V - Faces and portraits
+      ✨ Luma I2V - Creative effects"
+      
+      Keyboard:
+      [🌊 Stable Video] [⚡ Runway I2V]
+      [🎭 Kling I2V] [✨ Luma I2V]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_select_model
+    given: Chat ID and model button text
+    when: User selects model
+    then: |
+      1. Parse model from button
+      2. Update state: model_id, model_name
+      3. If model supports motion prompt -> EnterMotion
+      4. Else -> SelectDuration
+      5. Return next step message
+
+  - name: get_i2v_models
+    given: Nothing
+    when: Fetching model list
+    then: |
+      Return:
+        - stable_video: "🌊 Stable Video", 15 stars/sec, motion_prompt=true
+        - runway_i2v: "⚡ Runway I2V", 25 stars/sec, motion_prompt=true
+        - kling_i2v: "🎭 Kling I2V", 20 stars/sec, motion_prompt=false
+        - luma_i2v: "✨ Luma I2V", 18 stars/sec, motion_prompt=true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 3: ENTER MOTION (Optional)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_enter_motion
+    given: Language
+    when: Requesting motion description
+    then: |
+      RU: "🎬 Опишите желаемое движение (необязательно):
+      
+      Примеры:
+      • 'волосы развеваются на ветру'
+      • 'медленно поворачивает голову'
+      • 'облака плывут по небу'
+      • 'вода течёт в реке'
+      
+      Или нажмите 'Пропустить' для автоматической анимации."
+      
+      EN: "🎬 Describe desired motion (optional):
+      
+      Examples:
+      • 'hair blowing in the wind'
+      • 'slowly turns head'
+      • 'clouds moving across sky'
+      • 'water flowing in river'
+      
+      Or press 'Skip' for automatic animation."
+      
+      Keyboard:
+      [⏭️ Пропустить]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_enter_motion
+    given: Chat ID and text
+    when: User enters motion or skips
+    then: |
+      1. If "Пропустить"/"Skip" -> motion_prompt = null
+      2. Else -> validate and save motion_prompt
+      3. Advance to SelectDuration
+      4. Return duration selection message
+
+  - name: handle_skip_motion
+    given: Chat ID
+    when: User skips motion prompt
+    then: |
+      1. Set motion_prompt = null
+      2. Advance to SelectDuration
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 4: SELECT DURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_duration
+    given: Language and model
+    when: Displaying duration selection
+    then: |
+      RU: "⏱️ Выберите длительность видео:
+      
+      Модель: {model_name}
+      Стоимость: {cost_per_sec} ⭐/сек"
+      
+      EN: "⏱️ Select video duration:
+      
+      Model: {model_name}
+      Cost: {cost_per_sec} ⭐/sec"
+      
+      Keyboard:
+      [3 сек - {cost_3}⭐] [5 сек - {cost_5}⭐]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_select_duration
+    given: Chat ID and duration button
+    when: User selects duration
+    then: |
+      1. Parse duration from button
+      2. Calculate total cost
+      3. Update state: duration_seconds, cost_stars
+      4. Advance to Confirm
+      5. Return confirmation message
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 5: CONFIRM
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_confirm
+    given: Language and I2VWizardState
+    when: Displaying confirmation
+    then: |
+      RU: "📋 Подтвердите анимацию:
+      
+      📷 Изображение: {width}x{height}
+      🎬 Модель: {model_name}
+      🎭 Движение: {motion_prompt or 'Авто'}
+      ⏱️ Длительность: {duration} сек
+      ⭐ Стоимость: {cost_stars} звёзд
+      
+      Ваш баланс: {balance} звёзд"
+      
+      EN: "📋 Confirm animation:
+      
+      📷 Image: {width}x{height}
+      🎬 Model: {model_name}
+      🎭 Motion: {motion_prompt or 'Auto'}
+      ⏱️ Duration: {duration} sec
+      ⭐ Cost: {cost_stars} stars
+      
+      Your balance: {balance} stars"
+      
+      [Show thumbnail of uploaded image]
+      
+      Keyboard:
+      [✅ Подтвердить] [❌ Отмена]
+      [◀️ Изменить]
+
+  - name: handle_confirm
+    given: Chat ID
+    when: User confirms
+    then: |
+      1. Check balance >= cost
+      2. If insufficient -> show error
+      3. Deduct balance
+      4. Advance to Processing
+      5. Start animation job
+      6. Return processing message
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 6: PROCESSING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_processing
+    given: Language and progress
+    when: Animation in progress
+    then: |
+      RU: "⏳ Анимация изображения...
+      
+      Прогресс: {progress}%
+      
+      Это может занять 1-3 минуты."
+      
+      EN: "⏳ Animating image...
+      
+      Progress: {progress}%
+      
+      This may take 1-3 minutes."
+
+  - name: start_animation
+    given: I2VWizardState
+    when: Starting animation job
+    then: |
+      1. Build API request with image_url
+      2. Add motion_prompt if present
+      3. Submit job
+      4. Save job_id
+      5. Start polling
+
+  - name: poll_animation_progress
+    given: Job ID
+    when: Checking progress
+    then: |
+      1. Get job status
+      2. Update progress_percent
+      3. If completed -> handle_complete
+      4. If failed -> handle_error
+      5. Continue polling
+
+  - name: handle_animation_complete
+    given: Chat ID and result_url
+    when: Animation succeeded
+    then: |
+      1. Update state: result_url, completed_at
+      2. Advance to Complete
+      3. Send video
+      4. Show completion message
+
+  - name: handle_animation_error
+    given: Chat ID and error
+    when: Animation failed
+    then: |
+      1. Refund balance
+      2. Show error message
+      3. Offer retry
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 7: COMPLETE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_complete
+    given: Language and result
+    when: Animation complete
+    then: |
+      RU: "✅ Видео готово!
+      
+      🎬 Модель: {model_name}
+      ⏱️ Длительность: {duration} сек
+      ⏳ Время: {gen_time}
+      ⭐ Списано: {cost} звёзд"
+      
+      EN: "✅ Video ready!
+      
+      🎬 Model: {model_name}
+      ⏱️ Duration: {duration} sec
+      ⏳ Time: {gen_time}
+      ⭐ Charged: {cost} stars"
+      
+      Keyboard:
+      [🔄 Другое фото] [📋 Меню]
+
+  - name: handle_another_photo
+    given: Chat ID
+    when: User wants to animate another photo
+    then: |
+      1. Keep model and duration
+      2. Clear image data
+      3. Return to UploadImage step
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NAVIGATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_back
+    given: Chat ID and current step
+    when: User presses back
+    then: |
+      UploadImage -> exit_wizard
+      SelectModel -> UploadImage
+      EnterMotion -> SelectModel
+      SelectDuration -> EnterMotion (or SelectModel if no motion)
+      Confirm -> SelectDuration
+
+  - name: handle_cancel
+    given: Chat ID
+    when: User cancels
+    then: |
+      1. If Processing -> cannot cancel
+      2. Else -> cleanup and exit
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN ROUTER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_input
+    given: Chat ID, text, and optional photo
+    when: Any input received
+    then: |
+      1. Get wizard state
+      2. If photo and step=UploadImage -> handle_upload_image
+      3. Check navigation buttons
+      4. Route to current step handler
+      5. Return I2VStepResult
+
+constants:
+  WIZARD_ID: "image_to_video"
+  MIN_IMAGE_SIZE: 512
+  MAX_IMAGE_SIZE_MB: 20
+  DEFAULT_DURATION: 3
+  POLL_INTERVAL_MS: 3000
+  MAX_POLL_ATTEMPTS: 90
+  
+  # Model costs in stars per second
+  COST_STABLE_VIDEO: 15
+  COST_RUNWAY_I2V: 25
+  COST_KLING_I2V: 20
+  COST_LUMA_I2V: 18
+
+  # Duration options
+  DURATION_SHORT: 3
+  DURATION_MEDIUM: 5
+
+  # Model versions
+  MODEL_STABLE_VIDEO: "stability-ai/stable-video-diffusion"
+  MODEL_RUNWAY_I2V: "runway/gen-3-alpha-turbo"
+  MODEL_KLING_I2V: "kling-ai/kling-image-to-video"
+  MODEL_LUMA_I2V: "luma/dream-machine"
+
+test_cases:
+  - name: test_enter_wizard
+    input: {chat_id: 12345, lang: "ru"}
+    expected: {step: "UploadImage"}
+
+  - name: test_upload_valid_image
+    input: {photo: {width: 1024, height: 768}}
+    expected: {valid: true, next_step: "SelectModel"}
+
+  - name: test_upload_too_small
+    input: {photo: {width: 256, height: 256}}
+    expected: {valid: false, error: "image_too_small"}
+
+  - name: test_select_model_stable
+    input: {button: "🌊 Stable Video"}
+    expected: {model_id: "stable_video", next_step: "EnterMotion"}
+
+  - name: test_skip_motion
+    input: {button: "⏭️ Пропустить"}
+    expected: {motion_prompt: null, next_step: "SelectDuration"}
+
+  - name: test_enter_motion
+    input: {text: "hair blowing in wind"}
+    expected: {motion_prompt: "hair blowing in wind", next_step: "SelectDuration"}
+
+  - name: test_select_duration_5s
+    input: {button: "5 сек", model: "stable_video"}
+    expected: {duration: 5, cost: 75, next_step: "Confirm"}
+
+  - name: test_confirm_success
+    input: {balance: 100, cost: 75}
+    expected: {success: true, next_step: "Processing"}

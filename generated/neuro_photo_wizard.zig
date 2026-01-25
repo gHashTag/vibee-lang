@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// neuro_photo_wizard v1.0.0 - Generated from .vibee specification
+// neuro_photo_wizard v2.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -19,9 +19,31 @@ const math = std.math;
 
 pub const WIZARD_ID: f64 = 0;
 
+pub const DEFAULT_ASPECT_RATIO: f64 = 0;
+
 pub const DEFAULT_NUM_IMAGES: f64 = 1;
 
 pub const MAX_PROMPT_LENGTH: f64 = 2000;
+
+pub const MIN_PROMPT_LENGTH: f64 = 10;
+
+pub const POLL_INTERVAL_MS: f64 = 2000;
+
+pub const MAX_POLL_ATTEMPTS: f64 = 60;
+
+pub const COST_FLUX_PRO: f64 = 50;
+
+pub const COST_FLUX_DEV: f64 = 30;
+
+pub const COST_SDXL: f64 = 20;
+
+pub const COST_MIDJOURNEY: f64 = 100;
+
+pub const MODEL_FLUX_PRO: f64 = 0;
+
+pub const MODEL_FLUX_DEV: f64 = 0;
+
+pub const MODEL_SDXL: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -42,22 +64,64 @@ pub const PHOENIX: i64 = 999;
 pub const WizardStep = struct {
 };
 
-/// Wizard state
+/// Complete wizard state
 pub const WizardState = struct {
     step: WizardStep,
-    selected_model: ?[]const u8,
+    model_id: ?[]const u8,
+    model_name: ?[]const u8,
     prompt: ?[]const u8,
-    aspect_ratio: ?[]const u8,
+    negative_prompt: ?[]const u8,
+    aspect_ratio: []const u8,
     num_images: i64,
-    cost: ?[]const u8,
+    seed: ?[]const u8,
+    cost_stars: i64,
+    job_id: ?[]const u8,
+    result_urls: []const u8,
+    @"error": ?[]const u8,
+    started_at: i64,
+    completed_at: ?[]const u8,
 };
 
-/// Step processing result
+/// Available AI model
+pub const ModelOption = struct {
+    id: []const u8,
+    name: []const u8,
+    description: []const u8,
+    cost_per_image: i64,
+    supports_negative: bool,
+    max_images: i64,
+};
+
+/// Available size/aspect ratio
+pub const SizeOption = struct {
+    id: []const u8,
+    label: []const u8,
+    width: i64,
+    height: i64,
+    ratio: []const u8,
+};
+
+/// Message to display for step
+pub const StepMessage = struct {
+    text: []const u8,
+    keyboard: ?[]const u8,
+    parse_mode: []const u8,
+};
+
+/// Result of processing step input
 pub const StepResult = struct {
     success: bool,
     next_step: ?[]const u8,
-    message: ?[]const u8,
+    message: StepMessage,
     @"error": ?[]const u8,
+};
+
+/// Result from AI generation
+pub const GenerationResult = struct {
+    success: bool,
+    urls: []const u8,
+    @"error": ?[]const u8,
+    duration_ms: i64,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -137,86 +201,177 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 test "enter_wizard" {
-// Given: Context
-// When: Entering wizard
-// Then: Initializes state and shows first step
+// Given: Chat ID and language
+// When: User starts neuro photo
+// Then: |
     // TODO: Add test assertions
 }
 
-test "handle_step" {
-// Given: Context and input
-// When: Processing step
-// Then: Returns StepResult
+test "exit_wizard" {
+// Given: Chat ID
+// When: User cancels or completes
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_wizard_state" {
+// Given: Chat ID
+// When: Processing input
+// Then: Return current WizardState or null
+    // TODO: Add test assertions
+}
+
+test "show_select_model" {
+// Given: Language
+// When: Displaying model selection
+// Then: |
     // TODO: Add test assertions
 }
 
 test "handle_select_model" {
-// Given: Context and model ID
-// When: Model selected
-// Then: Saves model and proceeds
-    // TODO: Add test assertions
-}
-
-test "handle_enter_prompt" {
-// Given: Context and prompt text
-// When: Prompt entered
-// Then: Validates and saves prompt
-    // TODO: Add test assertions
-}
-
-test "handle_select_size" {
-// Given: Context and size
-// When: Size selected
-// Then: Saves aspect ratio
-    // TODO: Add test assertions
-}
-
-test "handle_confirm" {
-// Given: Context
-// When: User confirms
-// Then: Starts generation
-    // TODO: Add test assertions
-}
-
-test "handle_cancel" {
-// Given: Context
-// When: User cancels
-// Then: Exits wizard
-    // TODO: Add test assertions
-}
-
-test "show_step" {
-// Given: Context and step
-// When: Displaying step
-// Then: Sends appropriate message
+// Given: Chat ID and model button text
+// When: User selects model
+// Then: |
     // TODO: Add test assertions
 }
 
 test "get_available_models" {
-// Given: User ID
-// When: Fetching models
-// Then: Returns list of user models
+// Given: Nothing
+// When: Fetching model list
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "show_enter_prompt" {
+// Given: Language and model_name
+// When: Displaying prompt input
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_enter_prompt" {
+// Given: Chat ID and text
+// When: User enters prompt
+// Then: |
     // TODO: Add test assertions
 }
 
 test "validate_prompt" {
 // Given: Prompt text
 // When: Validating input
-// Then: Returns validation result
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "show_select_size" {
+// Given: Language
+// When: Displaying size selection
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_select_size" {
+// Given: Chat ID and size button text
+// When: User selects size
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "get_available_sizes" {
+// Given: Nothing
+// When: Fetching size options
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "show_confirm" {
+// Given: Language and WizardState
+// When: Displaying confirmation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_confirm" {
+// Given: Chat ID
+// When: User confirms
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "check_balance" {
+// Given: User ID and cost
+// When: Validating balance
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "show_processing" {
+// Given: Language
+// When: Generation in progress
+// Then: |
     // TODO: Add test assertions
 }
 
 test "start_generation" {
-// Given: Context and state
-// When: Starting generation
-// Then: Initiates AI generation
+// Given: WizardState
+// When: Starting AI generation
+// Then: |
     // TODO: Add test assertions
 }
 
-test "send_result" {
-// Given: Context and result URLs
+test "poll_generation" {
+// Given: Job ID
+// When: Checking generation status
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_generation_complete" {
+// Given: Chat ID and result URLs
+// When: Generation succeeded
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_generation_error" {
+// Given: Chat ID and error
+// When: Generation failed
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "show_complete" {
+// Given: Language and result_urls
 // When: Generation complete
-// Then: Sends generated images
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_again" {
+// Given: Chat ID
+// When: User wants another generation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_back" {
+// Given: Chat ID and current step
+// When: User presses back
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_cancel" {
+// Given: Chat ID
+// When: User cancels
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_input" {
+// Given: Chat ID, text, and optional photo
+// When: Any input received
+// Then: |
     // TODO: Add test assertions
 }
 

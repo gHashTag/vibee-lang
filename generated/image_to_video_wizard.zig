@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// text_to_video_wizard v2.0.0 - Generated from .vibee specification
+// image_to_video_wizard v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -19,39 +19,35 @@ const math = std.math;
 
 pub const WIZARD_ID: f64 = 0;
 
-pub const DEFAULT_ASPECT_RATIO: f64 = 0;
+pub const MIN_IMAGE_SIZE: f64 = 512;
 
-pub const DEFAULT_DURATION: f64 = 5;
+pub const MAX_IMAGE_SIZE_MB: f64 = 20;
 
-pub const DEFAULT_FPS: f64 = 24;
+pub const DEFAULT_DURATION: f64 = 3;
 
-pub const MAX_PROMPT_LENGTH: f64 = 1500;
+pub const POLL_INTERVAL_MS: f64 = 3000;
 
-pub const MIN_PROMPT_LENGTH: f64 = 15;
+pub const MAX_POLL_ATTEMPTS: f64 = 90;
 
-pub const POLL_INTERVAL_MS: f64 = 5000;
+pub const COST_STABLE_VIDEO: f64 = 15;
 
-pub const MAX_POLL_ATTEMPTS: f64 = 120;
+pub const COST_RUNWAY_I2V: f64 = 25;
 
-pub const COST_RUNWAY_GEN3: f64 = 20;
+pub const COST_KLING_I2V: f64 = 20;
 
-pub const COST_KLING_AI: f64 = 15;
+pub const COST_LUMA_I2V: f64 = 18;
 
-pub const COST_LUMA_DREAM: f64 = 18;
+pub const DURATION_SHORT: f64 = 3;
 
-pub const COST_MINIMAX: f64 = 10;
+pub const DURATION_MEDIUM: f64 = 5;
 
-pub const DURATION_SHORT: f64 = 5;
+pub const MODEL_STABLE_VIDEO: f64 = 0;
 
-pub const DURATION_MEDIUM: f64 = 10;
+pub const MODEL_RUNWAY_I2V: f64 = 0;
 
-pub const MODEL_RUNWAY: f64 = 0;
+pub const MODEL_KLING_I2V: f64 = 0;
 
-pub const MODEL_KLING: f64 = 0;
-
-pub const MODEL_LUMA: f64 = 0;
-
-pub const MODEL_MINIMAX: f64 = 0;
+pub const MODEL_LUMA_I2V: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -68,70 +64,47 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Video wizard step enum
-pub const VideoStep = struct {
+/// Image-to-video wizard step enum
+pub const I2VStep = struct {
 };
 
-/// Complete video wizard state
-pub const VideoWizardState = struct {
-    step: VideoStep,
+/// Complete image-to-video wizard state
+pub const I2VWizardState = struct {
+    step: I2VStep,
+    image_file_id: ?[]const u8,
+    image_url: ?[]const u8,
+    image_width: i64,
+    image_height: i64,
     model_id: ?[]const u8,
     model_name: ?[]const u8,
-    prompt: ?[]const u8,
-    negative_prompt: ?[]const u8,
-    aspect_ratio: []const u8,
+    motion_prompt: ?[]const u8,
     duration_seconds: i64,
-    fps: i64,
     cost_stars: i64,
     job_id: ?[]const u8,
     result_url: ?[]const u8,
-    thumbnail_url: ?[]const u8,
     @"error": ?[]const u8,
     started_at: i64,
     completed_at: ?[]const u8,
     progress_percent: i64,
 };
 
-/// Available video model
-pub const VideoModel = struct {
+/// Available image-to-video model
+pub const I2VModel = struct {
     id: []const u8,
     name: []const u8,
     description: []const u8,
     cost_per_second: i64,
     max_duration: i64,
-    supports_aspect: []const u8,
-    generation_time_estimate: []const u8,
+    supports_motion_prompt: bool,
+    best_for: []const u8,
 };
 
-/// Video aspect ratio option
-pub const AspectOption = struct {
-    id: []const u8,
-    label: []const u8,
-    width: i64,
-    height: i64,
-    use_case: []const u8,
-};
-
-/// Video duration option
-pub const DurationOption = struct {
-    seconds: i64,
-    label: []const u8,
-    cost_multiplier: f64,
-};
-
-/// Message for video step
-pub const VideoStepMessage = struct {
-    text: []const u8,
-    keyboard: ?[]const u8,
-    parse_mode: []const u8,
-    show_progress: bool,
-};
-
-/// Result of processing video step
-pub const VideoStepResult = struct {
+/// Result of processing I2V step
+pub const I2VStepResult = struct {
     success: bool,
     next_step: ?[]const u8,
-    message: VideoStepMessage,
+    message: []const u8,
+    keyboard: ?[]const u8,
     @"error": ?[]const u8,
 };
 
@@ -213,7 +186,7 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 
 test "enter_wizard" {
 // Given: Chat ID and language
-// When: User starts text-to-video
+// When: User starts image-to-video
 // Then: |
     // TODO: Add test assertions
 }
@@ -225,10 +198,31 @@ test "exit_wizard" {
     // TODO: Add test assertions
 }
 
-test "get_wizard_state" {
-// Given: Chat ID
-// When: Processing input
-// Then: Return current VideoWizardState or null
+test "show_upload_image" {
+// Given: Language
+// When: Requesting image upload
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_upload_image" {
+// Given: Chat ID and photo message
+// When: User sends photo
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "validate_image" {
+// Given: Photo sizes array
+// When: Validating uploaded image
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "download_image" {
+// Given: File ID
+// When: Downloading for processing
+// Then: |
     // TODO: Add test assertions
 }
 
@@ -246,71 +240,50 @@ test "handle_select_model" {
     // TODO: Add test assertions
 }
 
-test "get_available_models" {
+test "get_i2v_models" {
 // Given: Nothing
-// When: Fetching video model list
+// When: Fetching model list
 // Then: |
     // TODO: Add test assertions
 }
 
-test "show_enter_prompt" {
-// Given: Language and model_name
-// When: Displaying prompt input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_enter_prompt" {
-// Given: Chat ID and text
-// When: User enters prompt
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "validate_video_prompt" {
-// Given: Prompt text
-// When: Validating video prompt
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_select_aspect" {
+test "show_enter_motion" {
 // Given: Language
-// When: Displaying aspect selection
+// When: Requesting motion description
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_select_aspect" {
-// Given: Chat ID and aspect button text
-// When: User selects aspect
+test "handle_enter_motion" {
+// Given: Chat ID and text
+// When: User enters motion or skips
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_skip_motion" {
+// Given: Chat ID
+// When: User skips motion prompt
 // Then: |
     // TODO: Add test assertions
 }
 
 test "show_select_duration" {
-// Given: Language and model_name
+// Given: Language and model
 // When: Displaying duration selection
 // Then: |
     // TODO: Add test assertions
 }
 
 test "handle_select_duration" {
-// Given: Chat ID and duration button text
+// Given: Chat ID and duration button
 // When: User selects duration
 // Then: |
     // TODO: Add test assertions
 }
 
-test "calculate_video_cost" {
-// Given: Model ID and duration
-// When: Calculating cost
-// Then: |
-    // TODO: Add test assertions
-}
-
 test "show_confirm" {
-// Given: Language and VideoWizardState
+// Given: Language and I2VWizardState
 // When: Displaying confirmation
 // Then: |
     // TODO: Add test assertions
@@ -324,57 +297,50 @@ test "handle_confirm" {
 }
 
 test "show_processing" {
-// Given: Language and progress_percent
-// When: Generation in progress
+// Given: Language and progress
+// When: Animation in progress
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_video_generation" {
-// Given: VideoWizardState
-// When: Starting video generation
+test "start_animation" {
+// Given: I2VWizardState
+// When: Starting animation job
 // Then: |
     // TODO: Add test assertions
 }
 
-test "poll_video_progress" {
+test "poll_animation_progress" {
 // Given: Job ID
-// When: Checking generation progress
+// When: Checking progress
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_progress_message" {
-// Given: Chat ID and progress
-// When: Progress changed
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_video_complete" {
+test "handle_animation_complete" {
 // Given: Chat ID and result_url
-// When: Generation succeeded
+// When: Animation succeeded
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_video_error" {
+test "handle_animation_error" {
 // Given: Chat ID and error
-// When: Generation failed
+// When: Animation failed
 // Then: |
     // TODO: Add test assertions
 }
 
 test "show_complete" {
 // Given: Language and result
-// When: Generation complete
+// When: Animation complete
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_again" {
+test "handle_another_photo" {
 // Given: Chat ID
-// When: User wants another video
+// When: User wants to animate another photo
 // Then: |
     // TODO: Add test assertions
 }
@@ -394,7 +360,7 @@ test "handle_cancel" {
 }
 
 test "handle_input" {
-// Given: Chat ID and text
+// Given: Chat ID, text, and optional photo
 // When: Any input received
 // Then: |
     // TODO: Add test assertions

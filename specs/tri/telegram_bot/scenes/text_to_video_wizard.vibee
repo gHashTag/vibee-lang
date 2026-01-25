@@ -1,118 +1,555 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEXT TO VIDEO WIZARD - AI Video Generation Flow
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete step-by-step wizard for generating videos from text
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
 name: text_to_video_wizard
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: text_to_video_wizard
 
 description: |
-  Text-to-video wizard scene for VIBEE Telegram bot.
-  Handles the multi-step flow for generating videos from text.
+  Text-to-video wizard - complete flow for AI video generation.
+  
+  Steps:
+  1. SELECT_MODEL - Choose video model (Runway, Kling, etc.)
+  2. ENTER_PROMPT - Enter video description
+  3. SELECT_ASPECT - Choose aspect ratio (16:9, 9:16, 1:1)
+  4. SELECT_DURATION - Choose video length (5s, 10s)
+  5. CONFIRM - Review and confirm
+  6. PROCESSING - Wait for generation (longer than images)
+  7. COMPLETE - Show result video
 
 imports:
-  - telegram
-  - user
-  - text_to_video
-  - cost_calculator
+  - ../core/state_manager
+  - ../core/telegram_client
+  - ../core/replicate_client
+  - ../menu/reply_keyboard
+  - ../utils/language
 
 types:
-  VideoWizardStep:
+  VideoStep:
     description: "Video wizard step enum"
     variants:
       - SelectModel
       - EnterPrompt
-      - SelectAspectRatio
+      - SelectAspect
       - SelectDuration
-      - ConfirmGeneration
+      - Confirm
       - Processing
       - Complete
+      - Cancelled
 
   VideoWizardState:
-    description: "Video wizard state"
+    description: "Complete video wizard state"
     fields:
-      step: VideoWizardStep
-      selected_model: Option<String>
+      step: VideoStep
+      model_id: Option<String>
+      model_name: Option<String>
       prompt: Option<String>
-      aspect_ratio: Option<String>
-      duration: Option<Int>
-      cost: Option<Int>
+      negative_prompt: Option<String>
+      aspect_ratio: String
+      duration_seconds: Int
+      fps: Int
+      cost_stars: Int
       job_id: Option<String>
+      result_url: Option<String>
+      thumbnail_url: Option<String>
+      error: Option<String>
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+      progress_percent: Int
+
+  VideoModel:
+    description: "Available video model"
+    fields:
+      id: String
+      name: String
+      description: String
+      cost_per_second: Int
+      max_duration: Int
+      supports_aspect: List<String>
+      generation_time_estimate: String
+
+  AspectOption:
+    description: "Video aspect ratio option"
+    fields:
+      id: String
+      label: String
+      width: Int
+      height: Int
+      use_case: String
+
+  DurationOption:
+    description: "Video duration option"
+    fields:
+      seconds: Int
+      label: String
+      cost_multiplier: Float
+
+  VideoStepMessage:
+    description: "Message for video step"
+    fields:
+      text: String
+      keyboard: Option<String>
+      parse_mode: String
+      show_progress: Bool
 
   VideoStepResult:
-    description: "Step processing result"
+    description: "Result of processing video step"
     fields:
       success: Bool
-      next_step: Option<VideoWizardStep>
-      message: Option<String>
+      next_step: Option<VideoStep>
+      message: VideoStepMessage
       error: Option<String>
 
 behaviors:
-  - name: enter_wizard
-    given: Context
-    when: Entering wizard
-    then: Initializes state and shows first step
+  # ═══════════════════════════════════════════════════════════════════════════
+  # WIZARD LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: handle_step
-    given: Context and input
-    when: Processing step
-    then: Returns VideoStepResult
+  - name: enter_wizard
+    given: Chat ID and language
+    when: User starts text-to-video
+    then: |
+      1. Create VideoWizardState with step=SelectModel
+      2. Save to state_manager
+      3. Return model selection message
+
+  - name: exit_wizard
+    given: Chat ID
+    when: User cancels or completes
+    then: |
+      1. Clear wizard state
+      2. Return to main menu
+
+  - name: get_wizard_state
+    given: Chat ID
+    when: Processing input
+    then: Return current VideoWizardState or null
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 1: SELECT MODEL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_model
+    given: Language
+    when: Displaying model selection
+    then: |
+      RU: "🎬 Выберите модель для генерации видео:
+      
+      ⚡ Runway Gen-3 - Высокое качество, 2-3 мин
+      🎥 Kling AI - Быстрая генерация, 1-2 мин
+      🌊 Luma Dream - Плавные движения, 2-4 мин
+      ✨ Minimax - Экономичный вариант"
+      
+      EN: "🎬 Select a model for video generation:
+      
+      ⚡ Runway Gen-3 - High quality, 2-3 min
+      🎥 Kling AI - Fast generation, 1-2 min
+      🌊 Luma Dream - Smooth motion, 2-4 min
+      ✨ Minimax - Budget option"
+      
+      Keyboard:
+      [⚡ Runway Gen-3] [🎥 Kling AI]
+      [🌊 Luma Dream] [✨ Minimax]
+      [◀️ Назад]
 
   - name: handle_select_model
-    given: Context and model ID
-    when: Model selected
-    then: Saves model and proceeds
-
-  - name: handle_enter_prompt
-    given: Context and prompt text
-    when: Prompt entered
-    then: Validates and saves prompt
-
-  - name: handle_select_aspect_ratio
-    given: Context and ratio
-    when: Ratio selected
-    then: Saves aspect ratio
-
-  - name: handle_select_duration
-    given: Context and duration
-    when: Duration selected
-    then: Saves duration
-
-  - name: handle_confirm
-    given: Context
-    when: User confirms
-    then: Starts generation
-
-  - name: handle_cancel
-    given: Context
-    when: User cancels
-    then: Exits wizard
-
-  - name: show_step
-    given: Context and step
-    when: Displaying step
-    then: Sends appropriate message
+    given: Chat ID and model button text
+    when: User selects model
+    then: |
+      1. Parse model from button
+      2. Validate model exists
+      3. Update state: model_id, model_name
+      4. Advance to EnterPrompt
+      5. Return prompt input message
 
   - name: get_available_models
-    given: No parameters
-    when: Fetching models
-    then: Returns list of video models
+    given: Nothing
+    when: Fetching video model list
+    then: |
+      Return:
+        - runway_gen3: "⚡ Runway Gen-3", 20 stars/sec
+        - kling_ai: "🎥 Kling AI", 15 stars/sec
+        - luma_dream: "🌊 Luma Dream", 18 stars/sec
+        - minimax: "✨ Minimax", 10 stars/sec
 
-  - name: start_generation
-    given: Context and state
-    when: Starting generation
-    then: Initiates video generation
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 2: ENTER PROMPT
+  # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: check_generation_status
+  - name: show_enter_prompt
+    given: Language and model_name
+    when: Displaying prompt input
+    then: |
+      RU: "✏️ Опишите видео для {model_name}:
+      
+      Советы для хорошего результата:
+      • Опишите движение: 'камера летит над городом'
+      • Укажите стиль: 'кинематографичный, 4K'
+      • Добавьте детали: 'закат, золотой час'
+      
+      Примеры:
+      • A drone shot flying over a futuristic city at sunset
+      • A cat walking through a garden, slow motion
+      • Ocean waves crashing on rocks, cinematic"
+      
+      EN: "✏️ Describe the video for {model_name}:
+      
+      Tips for good results:
+      • Describe motion: 'camera flies over city'
+      • Specify style: 'cinematic, 4K'
+      • Add details: 'sunset, golden hour'
+      
+      Examples:
+      • A drone shot flying over a futuristic city at sunset
+      • A cat walking through a garden, slow motion
+      • Ocean waves crashing on rocks, cinematic"
+      
+      Keyboard:
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_enter_prompt
+    given: Chat ID and text
+    when: User enters prompt
+    then: |
+      1. Validate prompt (15-1500 chars)
+      2. Check for prohibited content
+      3. Update state: prompt
+      4. Advance to SelectAspect
+      5. Return aspect selection message
+
+  - name: validate_video_prompt
+    given: Prompt text
+    when: Validating video prompt
+    then: |
+      Checks:
+        - Length >= 15 characters (videos need more detail)
+        - Length <= 1500 characters
+        - Contains motion/action words (recommended)
+        - No prohibited content
+      Return: {valid: bool, error: string, warnings: list}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 3: SELECT ASPECT RATIO
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_aspect
+    given: Language
+    when: Displaying aspect selection
+    then: |
+      RU: "📐 Выберите формат видео:
+      
+      🖥️ 16:9 - Горизонтальное (YouTube, TV)
+      📱 9:16 - Вертикальное (TikTok, Reels)
+      🔲 1:1 - Квадратное (Instagram)"
+      
+      EN: "📐 Select video format:
+      
+      🖥️ 16:9 - Horizontal (YouTube, TV)
+      📱 9:16 - Vertical (TikTok, Reels)
+      🔲 1:1 - Square (Instagram)"
+      
+      Keyboard:
+      [🖥️ 16:9 Горизонт] [📱 9:16 Вертикаль]
+      [🔲 1:1 Квадрат]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_select_aspect
+    given: Chat ID and aspect button text
+    when: User selects aspect
+    then: |
+      1. Parse aspect ratio from button
+      2. Update state: aspect_ratio
+      3. Advance to SelectDuration
+      4. Return duration selection message
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 4: SELECT DURATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_duration
+    given: Language and model_name
+    when: Displaying duration selection
+    then: |
+      RU: "⏱️ Выберите длительность видео:
+      
+      Модель: {model_name}
+      Стоимость: {cost_per_sec} ⭐/сек"
+      
+      EN: "⏱️ Select video duration:
+      
+      Model: {model_name}
+      Cost: {cost_per_sec} ⭐/sec"
+      
+      Keyboard:
+      [5 сек - {cost_5}⭐] [10 сек - {cost_10}⭐]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_select_duration
+    given: Chat ID and duration button text
+    when: User selects duration
+    then: |
+      1. Parse duration from button
+      2. Calculate total cost
+      3. Update state: duration_seconds, cost_stars
+      4. Advance to Confirm
+      5. Return confirmation message
+
+  - name: calculate_video_cost
+    given: Model ID and duration
+    when: Calculating cost
+    then: |
+      cost = model.cost_per_second * duration
+      Return cost in stars
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 5: CONFIRM
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_confirm
+    given: Language and VideoWizardState
+    when: Displaying confirmation
+    then: |
+      RU: "📋 Подтвердите генерацию видео:
+      
+      🎬 Модель: {model_name}
+      ✏️ Промпт: {prompt}
+      📐 Формат: {aspect_ratio}
+      ⏱️ Длительность: {duration} сек
+      ⭐ Стоимость: {cost_stars} звёзд
+      
+      ⏳ Примерное время: 2-5 минут
+      
+      Ваш баланс: {balance} звёзд"
+      
+      EN: "📋 Confirm video generation:
+      
+      🎬 Model: {model_name}
+      ✏️ Prompt: {prompt}
+      📐 Format: {aspect_ratio}
+      ⏱️ Duration: {duration} sec
+      ⭐ Cost: {cost_stars} stars
+      
+      ⏳ Estimated time: 2-5 minutes
+      
+      Your balance: {balance} stars"
+      
+      Keyboard:
+      [✅ Подтвердить] [❌ Отмена]
+      [◀️ Изменить]
+
+  - name: handle_confirm
+    given: Chat ID
+    when: User confirms
+    then: |
+      1. Check user balance >= cost
+      2. If insufficient -> show error
+      3. Deduct balance
+      4. Advance to Processing
+      5. Start async video generation
+      6. Return processing message with progress
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 6: PROCESSING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_processing
+    given: Language and progress_percent
+    when: Generation in progress
+    then: |
+      RU: "⏳ Генерация видео...
+      
+      Прогресс: {progress}%
+      [████████░░░░░░░░░░░░] 
+      
+      Это может занять 2-5 минут.
+      Мы отправим уведомление когда будет готово."
+      
+      EN: "⏳ Generating video...
+      
+      Progress: {progress}%
+      [████████░░░░░░░░░░░░]
+      
+      This may take 2-5 minutes.
+      We'll notify you when it's ready."
+
+  - name: start_video_generation
+    given: VideoWizardState
+    when: Starting video generation
+    then: |
+      1. Build API request for selected model
+      2. Submit generation job
+      3. Save job_id to state
+      4. Start progress polling
+
+  - name: poll_video_progress
     given: Job ID
-    when: Checking status
-    then: Returns status info
+    when: Checking generation progress
+    then: |
+      1. Call API get job status
+      2. Update progress_percent
+      3. If completed -> handle_complete
+      4. If failed -> handle_error
+      5. If processing -> update progress message
 
-  - name: send_result
-    given: Context and video URL
+  - name: update_progress_message
+    given: Chat ID and progress
+    when: Progress changed
+    then: |
+      1. Edit existing message
+      2. Update progress bar
+      3. Show estimated time remaining
+
+  - name: handle_video_complete
+    given: Chat ID and result_url
+    when: Generation succeeded
+    then: |
+      1. Update state: result_url, completed_at
+      2. Advance to Complete
+      3. Send video file
+      4. Show completion message
+
+  - name: handle_video_error
+    given: Chat ID and error
+    when: Generation failed
+    then: |
+      1. Refund user balance
+      2. Update state: error
+      3. Show error message with reason
+      4. Offer retry or cancel
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 7: COMPLETE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_complete
+    given: Language and result
     when: Generation complete
-    then: Sends generated video
+    then: |
+      RU: "✅ Видео готово!
+      
+      🎬 Модель: {model_name}
+      ⏱️ Длительность: {duration} сек
+      ⏳ Время генерации: {gen_time}
+      ⭐ Списано: {cost} звёзд"
+      
+      EN: "✅ Video ready!
+      
+      🎬 Model: {model_name}
+      ⏱️ Duration: {duration} sec
+      ⏳ Generation time: {gen_time}
+      ⭐ Charged: {cost} stars"
+      
+      Keyboard:
+      [🔄 Ещё раз] [📋 Меню]
+      [💾 Сохранить промпт]
+
+  - name: handle_again
+    given: Chat ID
+    when: User wants another video
+    then: |
+      1. Keep model, aspect, duration
+      2. Clear prompt
+      3. Return to EnterPrompt step
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NAVIGATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_back
+    given: Chat ID and current step
+    when: User presses back
+    then: |
+      SelectModel -> exit_wizard
+      EnterPrompt -> SelectModel
+      SelectAspect -> EnterPrompt
+      SelectDuration -> SelectAspect
+      Confirm -> SelectDuration
+
+  - name: handle_cancel
+    given: Chat ID
+    when: User cancels
+    then: |
+      1. If Processing -> show warning (cannot cancel)
+      2. Else -> exit_wizard, return to menu
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN ROUTER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_input
+    given: Chat ID and text
+    when: Any input received
+    then: |
+      1. Get wizard state
+      2. If no state -> ignore
+      3. Check for navigation buttons
+      4. Route to current step handler
+      5. Return VideoStepResult
 
 constants:
-  WIZARD_ID: "text_to_video_wizard"
+  WIZARD_ID: "text_to_video"
+  DEFAULT_ASPECT_RATIO: "16:9"
   DEFAULT_DURATION: 5
-  MAX_DURATION: 60
-  ASPECT_RATIOS: ["16:9", "9:16", "1:1"]
-  DURATION_OPTIONS: [5, 10, 15, 30]
+  DEFAULT_FPS: 24
+  MAX_PROMPT_LENGTH: 1500
+  MIN_PROMPT_LENGTH: 15
+  POLL_INTERVAL_MS: 5000
+  MAX_POLL_ATTEMPTS: 120
+  
+  # Model costs in stars per second
+  COST_RUNWAY_GEN3: 20
+  COST_KLING_AI: 15
+  COST_LUMA_DREAM: 18
+  COST_MINIMAX: 10
+
+  # Duration options
+  DURATION_SHORT: 5
+  DURATION_MEDIUM: 10
+
+  # Replicate model versions
+  MODEL_RUNWAY: "runway/gen-3"
+  MODEL_KLING: "kling-ai/kling-video"
+  MODEL_LUMA: "luma/dream-machine"
+  MODEL_MINIMAX: "minimax/video-01"
+
+test_cases:
+  - name: test_enter_wizard
+    input: {chat_id: 12345, lang: "ru"}
+    expected: {step: "SelectModel", keyboard: true}
+
+  - name: test_select_model_runway
+    input: {button: "⚡ Runway Gen-3"}
+    expected: {model_id: "runway_gen3", next_step: "EnterPrompt"}
+
+  - name: test_prompt_too_short
+    input: {prompt: "a cat"}
+    expected: {valid: false, error: "min_length"}
+
+  - name: test_prompt_valid
+    input: {prompt: "A drone flying over mountains at sunset, cinematic"}
+    expected: {valid: true, next_step: "SelectAspect"}
+
+  - name: test_select_aspect_vertical
+    input: {button: "📱 9:16 Вертикаль"}
+    expected: {aspect_ratio: "9:16", next_step: "SelectDuration"}
+
+  - name: test_select_duration_10s
+    input: {button: "10 сек", model: "runway_gen3"}
+    expected: {duration: 10, cost: 200, next_step: "Confirm"}
+
+  - name: test_confirm_insufficient_balance
+    input: {balance: 50, cost: 200}
+    expected: {success: false, error: "insufficient_balance"}
+
+  - name: test_progress_update
+    input: {progress: 45}
+    expected: {message_updated: true, progress_bar: "████████░░░░░░░░░░░░"}
+
+  - name: test_cancel_during_processing
+    input: {step: "Processing", button: "❌ Отмена"}
+    expected: {success: false, error: "cannot_cancel_processing"}

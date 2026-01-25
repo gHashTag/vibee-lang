@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// text_to_video_wizard v2.0.0 - Generated from .vibee specification
+// scene_base v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,41 +17,43 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const WIZARD_ID: f64 = 0;
+pub const BTN_BACK_RU: f64 = 0;
 
-pub const DEFAULT_ASPECT_RATIO: f64 = 0;
+pub const BTN_BACK_EN: f64 = 0;
 
-pub const DEFAULT_DURATION: f64 = 5;
+pub const BTN_CANCEL_RU: f64 = 0;
 
-pub const DEFAULT_FPS: f64 = 24;
+pub const BTN_CANCEL_EN: f64 = 0;
 
-pub const MAX_PROMPT_LENGTH: f64 = 1500;
+pub const BTN_MENU_RU: f64 = 0;
 
-pub const MIN_PROMPT_LENGTH: f64 = 15;
+pub const BTN_MENU_EN: f64 = 0;
 
-pub const POLL_INTERVAL_MS: f64 = 5000;
+pub const BTN_CONFIRM_RU: f64 = 0;
 
-pub const MAX_POLL_ATTEMPTS: f64 = 120;
+pub const BTN_CONFIRM_EN: f64 = 0;
 
-pub const COST_RUNWAY_GEN3: f64 = 20;
+pub const BTN_AGAIN_RU: f64 = 0;
 
-pub const COST_KLING_AI: f64 = 15;
+pub const BTN_AGAIN_EN: f64 = 0;
 
-pub const COST_LUMA_DREAM: f64 = 18;
+pub const BTN_SKIP_RU: f64 = 0;
 
-pub const COST_MINIMAX: f64 = 10;
+pub const BTN_SKIP_EN: f64 = 0;
 
-pub const DURATION_SHORT: f64 = 5;
+pub const BTN_CHANGE_RU: f64 = 0;
 
-pub const DURATION_MEDIUM: f64 = 10;
+pub const BTN_CHANGE_EN: f64 = 0;
 
-pub const MODEL_RUNWAY: f64 = 0;
+pub const PARSE_HTML: f64 = 0;
 
-pub const MODEL_KLING: f64 = 0;
+pub const PARSE_MARKDOWN: f64 = 0;
 
-pub const MODEL_LUMA: f64 = 0;
+pub const PROGRESS_FULL: f64 = 0;
 
-pub const MODEL_MINIMAX: f64 = 0;
+pub const PROGRESS_EMPTY: f64 = 0;
+
+pub const PROGRESS_WIDTH: f64 = 20;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -68,71 +70,89 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Video wizard step enum
-pub const VideoStep = struct {
+/// Unique scene identifiers
+pub const SceneId = struct {
 };
 
-/// Complete video wizard state
-pub const VideoWizardState = struct {
-    step: VideoStep,
-    model_id: ?[]const u8,
-    model_name: ?[]const u8,
-    prompt: ?[]const u8,
-    negative_prompt: ?[]const u8,
-    aspect_ratio: []const u8,
-    duration_seconds: i64,
-    fps: i64,
-    cost_stars: i64,
-    job_id: ?[]const u8,
-    result_url: ?[]const u8,
-    thumbnail_url: ?[]const u8,
-    @"error": ?[]const u8,
+/// Context passed to all scene handlers
+pub const SceneContext = struct {
+    chat_id: i64,
+    user_id: i64,
+    username: ?[]const u8,
+    language: []const u8,
+    balance: i64,
+    message_id: ?[]const u8,
+    callback_id: ?[]const u8,
+};
+
+/// Base scene state
+pub const SceneState = struct {
+    scene_id: SceneId,
+    step: i64,
+    data: []const u8,
     started_at: i64,
-    completed_at: ?[]const u8,
-    progress_percent: i64,
+    last_activity: i64,
 };
 
-/// Available video model
-pub const VideoModel = struct {
-    id: []const u8,
-    name: []const u8,
-    description: []const u8,
-    cost_per_second: i64,
-    max_duration: i64,
-    supports_aspect: []const u8,
-    generation_time_estimate: []const u8,
+/// Standard navigation buttons
+pub const NavigationButton = struct {
 };
 
-/// Video aspect ratio option
-pub const AspectOption = struct {
-    id: []const u8,
-    label: []const u8,
-    width: i64,
-    height: i64,
-    use_case: []const u8,
+/// Transition between steps
+pub const StepTransition = struct {
+    from_step: i64,
+    to_step: i64,
+    reason: []const u8,
 };
 
-/// Video duration option
-pub const DurationOption = struct {
-    seconds: i64,
-    label: []const u8,
-    cost_multiplier: f64,
-};
-
-/// Message for video step
-pub const VideoStepMessage = struct {
+/// Message to send in scene
+pub const SceneMessage = struct {
     text: []const u8,
-    keyboard: ?[]const u8,
     parse_mode: []const u8,
-    show_progress: bool,
+    keyboard: ?[]const u8,
+    inline_keyboard: ?[]const u8,
+    photo_url: ?[]const u8,
+    video_url: ?[]const u8,
+    edit_message_id: ?[]const u8,
 };
 
-/// Result of processing video step
-pub const VideoStepResult = struct {
+/// Reply keyboard markup
+pub const ReplyKeyboard = struct {
+    buttons: []const u8,
+    resize: bool,
+    one_time: bool,
+};
+
+/// Inline keyboard markup
+pub const InlineKeyboard = struct {
+    buttons: []const u8,
+};
+
+/// Inline keyboard button
+pub const InlineButton = struct {
+    text: []const u8,
+    callback_data: []const u8,
+};
+
+/// Result from scene handler
+pub const SceneResult = struct {
     success: bool,
+    message: ?[]const u8,
     next_step: ?[]const u8,
-    message: VideoStepMessage,
+    exit_scene: bool,
     @"error": ?[]const u8,
+};
+
+/// Balance check result
+pub const BalanceCheck = struct {
+    sufficient: bool,
+    balance: i64,
+    required: i64,
+    deficit: i64,
+};
+
+/// Status of async processing
+pub const ProcessingStatus = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -211,191 +231,170 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "enter_wizard" {
-// Given: Chat ID and language
-// When: User starts text-to-video
+test "enter_scene" {
+// Given: SceneContext and SceneId
+// When: User enters a scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "exit_wizard" {
-// Given: Chat ID
-// When: User cancels or completes
+test "exit_scene" {
+// Given: SceneContext
+// When: User exits scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "get_wizard_state" {
-// Given: Chat ID
-// When: Processing input
-// Then: Return current VideoWizardState or null
+test "handle_scene_input" {
+// Given: SceneContext and input (text/photo/callback)
+// When: Input received while in scene
+// Then: |
     // TODO: Add test assertions
 }
 
-test "show_select_model" {
+test "is_back_button" {
+// Given: Text input
+// When: Checking for back navigation
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "is_cancel_button" {
+// Given: Text input
+// When: Checking for cancel
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "is_menu_button" {
+// Given: Text input
+// When: Checking for menu
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "is_skip_button" {
+// Given: Text input
+// When: Checking for skip
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "handle_navigation" {
+// Given: SceneContext and text
+// When: Processing navigation input
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_nav_keyboard" {
+// Given: Language and options
+// When: Building navigation keyboard
+// Then: |
+    // TODO: Add test assertions
+}
+
+test "build_confirm_keyboard" {
 // Given: Language
-// When: Displaying model selection
+// When: Building confirmation keyboard
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_select_model" {
-// Given: Chat ID and model button text
-// When: User selects model
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "get_available_models" {
-// Given: Nothing
-// When: Fetching video model list
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_enter_prompt" {
-// Given: Language and model_name
-// When: Displaying prompt input
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_enter_prompt" {
-// Given: Chat ID and text
-// When: User enters prompt
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "validate_video_prompt" {
-// Given: Prompt text
-// When: Validating video prompt
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_select_aspect" {
+test "build_complete_keyboard" {
 // Given: Language
-// When: Displaying aspect selection
+// When: Building completion keyboard
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_select_aspect" {
-// Given: Chat ID and aspect button text
-// When: User selects aspect
+test "build_options_keyboard" {
+// Given: Options list and language
+// When: Building selection keyboard
 // Then: |
     // TODO: Add test assertions
 }
 
-test "show_select_duration" {
-// Given: Language and model_name
-// When: Displaying duration selection
+test "check_balance" {
+// Given: User ID and required amount
+// When: Checking if user can afford
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_select_duration" {
-// Given: Chat ID and duration button text
-// When: User selects duration
+test "deduct_balance" {
+// Given: User ID and amount
+// When: Charging user
 // Then: |
     // TODO: Add test assertions
 }
 
-test "calculate_video_cost" {
-// Given: Model ID and duration
-// When: Calculating cost
+test "refund_balance" {
+// Given: User ID and amount
+// When: Refunding failed operation
 // Then: |
     // TODO: Add test assertions
 }
 
-test "show_confirm" {
-// Given: Language and VideoWizardState
-// When: Displaying confirmation
+test "format_balance_error" {
+// Given: Language and BalanceCheck
+// When: Showing insufficient balance
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_confirm" {
-// Given: Chat ID
-// When: User confirms
+test "send_scene_message" {
+// Given: SceneContext and SceneMessage
+// When: Sending message in scene
 // Then: |
     // TODO: Add test assertions
 }
 
-test "show_processing" {
-// Given: Language and progress_percent
-// When: Generation in progress
+test "send_processing_message" {
+// Given: SceneContext and language
+// When: Starting async operation
 // Then: |
     // TODO: Add test assertions
 }
 
-test "start_video_generation" {
-// Given: VideoWizardState
-// When: Starting video generation
+test "update_progress" {
+// Given: SceneContext, message_id, and progress
+// When: Updating progress display
 // Then: |
     // TODO: Add test assertions
 }
 
-test "poll_video_progress" {
-// Given: Job ID
-// When: Checking generation progress
+test "build_progress_bar" {
+// Given: Progress percent (0-100)
+// When: Creating visual progress
 // Then: |
     // TODO: Add test assertions
 }
 
-test "update_progress_message" {
-// Given: Chat ID and progress
-// When: Progress changed
+test "get_text" {
+// Given: Key and language
+// When: Getting localized text
+// Then: Return text for language or fallback to EN
+    // TODO: Add test assertions
+}
+
+test "format_cost" {
+// Given: Amount and language
+// When: Formatting cost display
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_video_complete" {
-// Given: Chat ID and result_url
-// When: Generation succeeded
+test "format_duration" {
+// Given: Seconds and language
+// When: Formatting duration
 // Then: |
     // TODO: Add test assertions
 }
 
-test "handle_video_error" {
-// Given: Chat ID and error
-// When: Generation failed
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "show_complete" {
-// Given: Language and result
-// When: Generation complete
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_again" {
-// Given: Chat ID
-// When: User wants another video
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_back" {
-// Given: Chat ID and current step
-// When: User presses back
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_cancel" {
-// Given: Chat ID
-// When: User cancels
-// Then: |
-    // TODO: Add test assertions
-}
-
-test "handle_input" {
-// Given: Chat ID and text
-// When: Any input received
+test "format_time_elapsed" {
+// Given: Milliseconds and language
+// When: Formatting elapsed time
 // Then: |
     // TODO: Add test assertions
 }

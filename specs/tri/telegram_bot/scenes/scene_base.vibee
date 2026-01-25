@@ -1,0 +1,434 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCENE BASE - Base Interface for All Wizard Scenes
+# ═══════════════════════════════════════════════════════════════════════════════
+# Common types and behaviors shared by all wizard scenes
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: scene_base
+version: "1.0.0"
+language: zig
+module: scene_base
+
+description: |
+  Base interface for all wizard scenes in VIBEE Telegram bot.
+  Provides common types, navigation patterns, and utility functions.
+  
+  All wizards should:
+  1. Implement enter_wizard, exit_wizard, handle_input
+  2. Use SceneContext for state management
+  3. Follow navigation patterns (back, cancel)
+  4. Handle balance checks before processing
+
+imports:
+  - ../core/state_manager
+  - ../core/telegram_client
+  - ../utils/language
+
+types:
+  SceneId:
+    description: "Unique scene identifiers"
+    variants:
+      - NeuroPhoto
+      - TextToVideo
+      - ImageToVideo
+      - DigitalAvatar
+      - VoiceAvatar
+      - TextToSpeech
+      - ImageToPrompt
+      - FaceSwap
+      - LipSync
+      - ChatWithAvatar
+
+  SceneContext:
+    description: "Context passed to all scene handlers"
+    fields:
+      chat_id: Int
+      user_id: Int
+      username: Option<String>
+      language: String
+      balance: Int
+      message_id: Option<Int>
+      callback_id: Option<String>
+
+  SceneState:
+    description: "Base scene state"
+    fields:
+      scene_id: SceneId
+      step: Int
+      data: Object
+      started_at: Timestamp
+      last_activity: Timestamp
+
+  NavigationButton:
+    description: "Standard navigation buttons"
+    variants:
+      - Back
+      - Cancel
+      - Menu
+      - Help
+      - Again
+      - Skip
+
+  StepTransition:
+    description: "Transition between steps"
+    fields:
+      from_step: Int
+      to_step: Int
+      reason: String
+
+  SceneMessage:
+    description: "Message to send in scene"
+    fields:
+      text: String
+      parse_mode: String
+      keyboard: Option<ReplyKeyboard>
+      inline_keyboard: Option<InlineKeyboard>
+      photo_url: Option<String>
+      video_url: Option<String>
+      edit_message_id: Option<Int>
+
+  ReplyKeyboard:
+    description: "Reply keyboard markup"
+    fields:
+      buttons: List<List<String>>
+      resize: Bool
+      one_time: Bool
+
+  InlineKeyboard:
+    description: "Inline keyboard markup"
+    fields:
+      buttons: List<List<InlineButton>>
+
+  InlineButton:
+    description: "Inline keyboard button"
+    fields:
+      text: String
+      callback_data: String
+
+  SceneResult:
+    description: "Result from scene handler"
+    fields:
+      success: Bool
+      message: Option<SceneMessage>
+      next_step: Option<Int>
+      exit_scene: Bool
+      error: Option<String>
+
+  BalanceCheck:
+    description: "Balance check result"
+    fields:
+      sufficient: Bool
+      balance: Int
+      required: Int
+      deficit: Int
+
+  ProcessingStatus:
+    description: "Status of async processing"
+    variants:
+      - Pending
+      - Processing
+      - Completed
+      - Failed
+      - Cancelled
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SCENE LIFECYCLE (Interface)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: enter_scene
+    given: SceneContext and SceneId
+    when: User enters a scene
+    then: |
+      1. Create initial SceneState
+      2. Save to state_manager
+      3. Return first step message
+      
+      Interface - must be implemented by each scene
+
+  - name: exit_scene
+    given: SceneContext
+    when: User exits scene
+    then: |
+      1. Clear scene state
+      2. Cleanup temporary data
+      3. Return to menu
+      
+      Interface - must be implemented by each scene
+
+  - name: handle_scene_input
+    given: SceneContext and input (text/photo/callback)
+    when: Input received while in scene
+    then: |
+      1. Get current scene state
+      2. Route to step handler
+      3. Return SceneResult
+      
+      Interface - must be implemented by each scene
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NAVIGATION UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: is_back_button
+    given: Text input
+    when: Checking for back navigation
+    then: |
+      Return true if text matches:
+        - "◀️ Назад"
+        - "◀️ Back"
+        - "back"
+
+  - name: is_cancel_button
+    given: Text input
+    when: Checking for cancel
+    then: |
+      Return true if text matches:
+        - "❌ Отмена"
+        - "❌ Cancel"
+        - "cancel"
+
+  - name: is_menu_button
+    given: Text input
+    when: Checking for menu
+    then: |
+      Return true if text matches:
+        - "📋 Меню"
+        - "📋 Menu"
+        - "menu"
+
+  - name: is_skip_button
+    given: Text input
+    when: Checking for skip
+    then: |
+      Return true if text matches:
+        - "⏭️ Пропустить"
+        - "⏭️ Skip"
+        - "skip"
+
+  - name: handle_navigation
+    given: SceneContext and text
+    when: Processing navigation input
+    then: |
+      1. If back -> go_back()
+      2. If cancel -> exit_scene()
+      3. If menu -> exit_scene()
+      4. Return handled or not
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # KEYBOARD BUILDERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: build_nav_keyboard
+    given: Language and options
+    when: Building navigation keyboard
+    then: |
+      Return keyboard with:
+        - [◀️ Назад] [❌ Отмена] (if both enabled)
+        - Or just [◀️ Назад]
+        - Or just [❌ Отмена]
+
+  - name: build_confirm_keyboard
+    given: Language
+    when: Building confirmation keyboard
+    then: |
+      RU: [[✅ Подтвердить], [❌ Отмена], [◀️ Изменить]]
+      EN: [[✅ Confirm], [❌ Cancel], [◀️ Change]]
+
+  - name: build_complete_keyboard
+    given: Language
+    when: Building completion keyboard
+    then: |
+      RU: [[🔄 Ещё раз], [📋 Меню]]
+      EN: [[🔄 Again], [📋 Menu]]
+
+  - name: build_options_keyboard
+    given: Options list and language
+    when: Building selection keyboard
+    then: |
+      1. Arrange options in rows of 2
+      2. Add navigation row at bottom
+      3. Return ReplyKeyboard
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BALANCE UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: check_balance
+    given: User ID and required amount
+    when: Checking if user can afford
+    then: |
+      1. Get user balance from DB
+      2. Compare with required
+      3. Return BalanceCheck
+
+  - name: deduct_balance
+    given: User ID and amount
+    when: Charging user
+    then: |
+      1. Verify balance sufficient
+      2. Deduct amount
+      3. Log transaction
+      4. Return new balance
+
+  - name: refund_balance
+    given: User ID and amount
+    when: Refunding failed operation
+    then: |
+      1. Add amount back
+      2. Log refund
+      3. Return new balance
+
+  - name: format_balance_error
+    given: Language and BalanceCheck
+    when: Showing insufficient balance
+    then: |
+      RU: "❌ Недостаточно звёзд!
+      
+      Требуется: {required} ⭐
+      Ваш баланс: {balance} ⭐
+      Не хватает: {deficit} ⭐
+      
+      Пополните баланс в разделе 💳 Оплата"
+      
+      EN: "❌ Insufficient stars!
+      
+      Required: {required} ⭐
+      Your balance: {balance} ⭐
+      Need: {deficit} ⭐
+      
+      Top up in 💳 Payment section"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MESSAGE UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: send_scene_message
+    given: SceneContext and SceneMessage
+    when: Sending message in scene
+    then: |
+      1. If edit_message_id -> edit message
+      2. Else -> send new message
+      3. Return message_id
+
+  - name: send_processing_message
+    given: SceneContext and language
+    when: Starting async operation
+    then: |
+      Send: "⏳ Обрабатываю..." / "⏳ Processing..."
+      Return message_id for later editing
+
+  - name: update_progress
+    given: SceneContext, message_id, and progress
+    when: Updating progress display
+    then: |
+      1. Build progress bar
+      2. Edit message with new progress
+      3. Return success
+
+  - name: build_progress_bar
+    given: Progress percent (0-100)
+    when: Creating visual progress
+    then: |
+      20 chars total:
+      0%:   [░░░░░░░░░░░░░░░░░░░░]
+      50%:  [██████████░░░░░░░░░░]
+      100%: [████████████████████]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LOCALIZATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: get_text
+    given: Key and language
+    when: Getting localized text
+    then: Return text for language or fallback to EN
+
+  - name: format_cost
+    given: Amount and language
+    when: Formatting cost display
+    then: |
+      RU: "{amount} ⭐ звёзд"
+      EN: "{amount} ⭐ stars"
+
+  - name: format_duration
+    given: Seconds and language
+    when: Formatting duration
+    then: |
+      RU: "{seconds} сек"
+      EN: "{seconds} sec"
+
+  - name: format_time_elapsed
+    given: Milliseconds and language
+    when: Formatting elapsed time
+    then: |
+      If < 60s: "{seconds}с" / "{seconds}s"
+      If >= 60s: "{minutes}м {seconds}с" / "{minutes}m {seconds}s"
+
+constants:
+  # Navigation button texts
+  BTN_BACK_RU: "◀️ Назад"
+  BTN_BACK_EN: "◀️ Back"
+  BTN_CANCEL_RU: "❌ Отмена"
+  BTN_CANCEL_EN: "❌ Cancel"
+  BTN_MENU_RU: "📋 Меню"
+  BTN_MENU_EN: "📋 Menu"
+  BTN_CONFIRM_RU: "✅ Подтвердить"
+  BTN_CONFIRM_EN: "✅ Confirm"
+  BTN_AGAIN_RU: "🔄 Ещё раз"
+  BTN_AGAIN_EN: "🔄 Again"
+  BTN_SKIP_RU: "⏭️ Пропустить"
+  BTN_SKIP_EN: "⏭️ Skip"
+  BTN_CHANGE_RU: "◀️ Изменить"
+  BTN_CHANGE_EN: "◀️ Change"
+
+  # Parse modes
+  PARSE_HTML: "HTML"
+  PARSE_MARKDOWN: "MarkdownV2"
+
+  # Progress bar chars
+  PROGRESS_FULL: "█"
+  PROGRESS_EMPTY: "░"
+  PROGRESS_WIDTH: 20
+
+test_cases:
+  - name: test_is_back_button_ru
+    input: {text: "◀️ Назад"}
+    expected: {is_back: true}
+
+  - name: test_is_back_button_en
+    input: {text: "◀️ Back"}
+    expected: {is_back: true}
+
+  - name: test_is_cancel_button
+    input: {text: "❌ Отмена"}
+    expected: {is_cancel: true}
+
+  - name: test_check_balance_sufficient
+    input: {balance: 100, required: 50}
+    expected: {sufficient: true, deficit: 0}
+
+  - name: test_check_balance_insufficient
+    input: {balance: 30, required: 50}
+    expected: {sufficient: false, deficit: 20}
+
+  - name: test_build_progress_bar_0
+    input: {progress: 0}
+    expected: {bar: "░░░░░░░░░░░░░░░░░░░░"}
+
+  - name: test_build_progress_bar_50
+    input: {progress: 50}
+    expected: {bar: "██████████░░░░░░░░░░"}
+
+  - name: test_build_progress_bar_100
+    input: {progress: 100}
+    expected: {bar: "████████████████████"}
+
+  - name: test_format_cost_ru
+    input: {amount: 50, lang: "ru"}
+    expected: {text: "50 ⭐ звёзд"}
+
+  - name: test_format_duration
+    input: {seconds: 10, lang: "ru"}
+    expected: {text: "10 сек"}

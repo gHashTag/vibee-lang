@@ -1,17 +1,32 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEURO PHOTO WIZARD - AI Image Generation Flow
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete step-by-step wizard for generating AI photos
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
 name: neuro_photo_wizard
-version: "1.0.0"
+version: "2.0.0"
 language: zig
 module: neuro_photo_wizard
 
 description: |
-  Neuro photo wizard scene for VIBEE Telegram bot.
-  Handles the multi-step flow for generating AI photos.
+  Neuro photo wizard - complete flow for AI image generation.
+  
+  Steps:
+  1. SELECT_MODEL - Choose AI model (Flux, SDXL, etc.)
+  2. ENTER_PROMPT - Enter text description
+  3. SELECT_SIZE - Choose aspect ratio
+  4. CONFIRM - Review and confirm
+  5. PROCESSING - Wait for generation
+  6. COMPLETE - Show result
 
 imports:
-  - telegram
-  - user
-  - neuro_photo
-  - cost_calculator
+  - ../core/state_manager
+  - ../core/telegram_client
+  - ../services/replicate_api
+  - ../menu/reply_keyboard
+  - ../utils/language
 
 types:
   WizardStep:
@@ -20,90 +35,434 @@ types:
       - SelectModel
       - EnterPrompt
       - SelectSize
-      - ConfirmGeneration
+      - Confirm
       - Processing
       - Complete
+      - Cancelled
 
   WizardState:
-    description: "Wizard state"
+    description: "Complete wizard state"
     fields:
       step: WizardStep
-      selected_model: Option<String>
+      model_id: Option<String>
+      model_name: Option<String>
       prompt: Option<String>
-      aspect_ratio: Option<String>
+      negative_prompt: Option<String>
+      aspect_ratio: String
       num_images: Int
-      cost: Option<Int>
+      seed: Option<Int>
+      cost_stars: Int
+      job_id: Option<String>
+      result_urls: List<String>
+      error: Option<String>
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  ModelOption:
+    description: "Available AI model"
+    fields:
+      id: String
+      name: String
+      description: String
+      cost_per_image: Int
+      supports_negative: Bool
+      max_images: Int
+
+  SizeOption:
+    description: "Available size/aspect ratio"
+    fields:
+      id: String
+      label: String
+      width: Int
+      height: Int
+      ratio: String
+
+  StepMessage:
+    description: "Message to display for step"
+    fields:
+      text: String
+      keyboard: Option<String>
+      parse_mode: String
 
   StepResult:
-    description: "Step processing result"
+    description: "Result of processing step input"
     fields:
       success: Bool
       next_step: Option<WizardStep>
-      message: Option<String>
+      message: StepMessage
       error: Option<String>
 
-behaviors:
-  - name: enter_wizard
-    given: Context
-    when: Entering wizard
-    then: Initializes state and shows first step
+  GenerationResult:
+    description: "Result from AI generation"
+    fields:
+      success: Bool
+      urls: List<String>
+      error: Option<String>
+      duration_ms: Int
 
-  - name: handle_step
-    given: Context and input
-    when: Processing step
-    then: Returns StepResult
+behaviors:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # WIZARD LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: enter_wizard
+    given: Chat ID and language
+    when: User starts neuro photo
+    then: |
+      1. Create WizardState with step=SelectModel
+      2. Save to state_manager
+      3. Return step message with model keyboard
+
+  - name: exit_wizard
+    given: Chat ID
+    when: User cancels or completes
+    then: |
+      1. Clear wizard state
+      2. Return to main menu
+
+  - name: get_wizard_state
+    given: Chat ID
+    when: Processing input
+    then: Return current WizardState or null
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 1: SELECT MODEL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_model
+    given: Language
+    when: Displaying model selection
+    then: |
+      RU: "🎨 Выберите модель для генерации:"
+      EN: "🎨 Select a model for generation:"
+      
+      Keyboard:
+      [⚡ Flux Pro] [🎨 Flux Dev]
+      [🖼️ SDXL] [✨ Midjourney]
+      [◀️ Назад]
 
   - name: handle_select_model
-    given: Context and model ID
-    when: Model selected
-    then: Saves model and proceeds
-
-  - name: handle_enter_prompt
-    given: Context and prompt text
-    when: Prompt entered
-    then: Validates and saves prompt
-
-  - name: handle_select_size
-    given: Context and size
-    when: Size selected
-    then: Saves aspect ratio
-
-  - name: handle_confirm
-    given: Context
-    when: User confirms
-    then: Starts generation
-
-  - name: handle_cancel
-    given: Context
-    when: User cancels
-    then: Exits wizard
-
-  - name: show_step
-    given: Context and step
-    when: Displaying step
-    then: Sends appropriate message
+    given: Chat ID and model button text
+    when: User selects model
+    then: |
+      1. Parse model from button text
+      2. Validate model exists
+      3. Update state: model_id, model_name
+      4. Calculate base cost
+      5. Advance to EnterPrompt
+      6. Return prompt input message
 
   - name: get_available_models
-    given: User ID
-    when: Fetching models
-    then: Returns list of user models
+    given: Nothing
+    when: Fetching model list
+    then: |
+      Return:
+        - flux_pro: "⚡ Flux Pro", 50 stars
+        - flux_dev: "🎨 Flux Dev", 30 stars
+        - sdxl: "🖼️ SDXL", 20 stars
+        - midjourney: "✨ Midjourney", 100 stars
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 2: ENTER PROMPT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_enter_prompt
+    given: Language and model_name
+    when: Displaying prompt input
+    then: |
+      RU: "✏️ Введите описание изображения для {model_name}:
+      
+      Примеры:
+      • a cat astronaut in space, digital art
+      • portrait of a woman, oil painting style
+      • futuristic city at sunset, cyberpunk"
+      
+      EN: "✏️ Enter image description for {model_name}:
+      
+      Examples:
+      • a cat astronaut in space, digital art
+      • portrait of a woman, oil painting style
+      • futuristic city at sunset, cyberpunk"
+      
+      Keyboard:
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_enter_prompt
+    given: Chat ID and text
+    when: User enters prompt
+    then: |
+      1. Validate prompt length (10-2000 chars)
+      2. Check for prohibited content
+      3. Update state: prompt
+      4. Advance to SelectSize
+      5. Return size selection message
 
   - name: validate_prompt
     given: Prompt text
     when: Validating input
-    then: Returns validation result
+    then: |
+      Checks:
+        - Length >= 10 characters
+        - Length <= 2000 characters
+        - No prohibited words
+        - Contains meaningful text
+      Return: {valid: bool, error: string}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 3: SELECT SIZE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_select_size
+    given: Language
+    when: Displaying size selection
+    then: |
+      RU: "📐 Выберите размер изображения:"
+      EN: "📐 Select image size:"
+      
+      Keyboard:
+      [🖼️ 1:1 Квадрат] [📱 9:16 Портрет]
+      [🖥️ 16:9 Пейзаж] [📷 4:3 Фото]
+      [◀️ Назад] [❌ Отмена]
+
+  - name: handle_select_size
+    given: Chat ID and size button text
+    when: User selects size
+    then: |
+      1. Parse aspect ratio from button
+      2. Update state: aspect_ratio
+      3. Calculate final cost
+      4. Advance to Confirm
+      5. Return confirmation message
+
+  - name: get_available_sizes
+    given: Nothing
+    when: Fetching size options
+    then: |
+      Return:
+        - square: "1:1", 1024x1024
+        - portrait: "9:16", 768x1344
+        - landscape: "16:9", 1344x768
+        - photo: "4:3", 1152x896
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 4: CONFIRM
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_confirm
+    given: Language and WizardState
+    when: Displaying confirmation
+    then: |
+      RU: "📋 Подтвердите генерацию:
+      
+      🎨 Модель: {model_name}
+      ✏️ Промпт: {prompt}
+      📐 Размер: {aspect_ratio}
+      ⭐ Стоимость: {cost_stars} звёзд
+      
+      Ваш баланс: {balance} звёзд"
+      
+      EN: "📋 Confirm generation:
+      
+      🎨 Model: {model_name}
+      ✏️ Prompt: {prompt}
+      📐 Size: {aspect_ratio}
+      ⭐ Cost: {cost_stars} stars
+      
+      Your balance: {balance} stars"
+      
+      Keyboard:
+      [✅ Подтвердить] [❌ Отмена]
+      [◀️ Изменить]
+
+  - name: handle_confirm
+    given: Chat ID
+    when: User confirms
+    then: |
+      1. Check user balance >= cost
+      2. If insufficient -> show error, stay on Confirm
+      3. Deduct balance
+      4. Advance to Processing
+      5. Start async generation
+      6. Return processing message
+
+  - name: check_balance
+    given: User ID and cost
+    when: Validating balance
+    then: |
+      1. Get user balance from DB
+      2. Return balance >= cost
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 5: PROCESSING
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_processing
+    given: Language
+    when: Generation in progress
+    then: |
+      RU: "⏳ Генерация изображения...
+      
+      Это может занять 10-60 секунд.
+      Пожалуйста, подождите."
+      
+      EN: "⏳ Generating image...
+      
+      This may take 10-60 seconds.
+      Please wait."
 
   - name: start_generation
-    given: Context and state
-    when: Starting generation
-    then: Initiates AI generation
+    given: WizardState
+    when: Starting AI generation
+    then: |
+      1. Build Replicate API request
+      2. Submit prediction
+      3. Save job_id to state
+      4. Start polling for result
 
-  - name: send_result
-    given: Context and result URLs
+  - name: poll_generation
+    given: Job ID
+    when: Checking generation status
+    then: |
+      1. Call Replicate API get prediction
+      2. If status=succeeded -> handle_complete
+      3. If status=failed -> handle_error
+      4. If status=processing -> continue polling
+
+  - name: handle_generation_complete
+    given: Chat ID and result URLs
+    when: Generation succeeded
+    then: |
+      1. Update state: result_urls, completed_at
+      2. Advance to Complete
+      3. Send result images
+      4. Show completion message
+
+  - name: handle_generation_error
+    given: Chat ID and error
+    when: Generation failed
+    then: |
+      1. Refund user balance
+      2. Update state: error
+      3. Show error message
+      4. Offer retry or cancel
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 6: COMPLETE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: show_complete
+    given: Language and result_urls
     when: Generation complete
-    then: Sends generated images
+    then: |
+      RU: "✅ Готово! Ваше изображение:
+      
+      ⏱️ Время: {duration}с
+      ⭐ Списано: {cost} звёзд"
+      
+      EN: "✅ Done! Your image:
+      
+      ⏱️ Time: {duration}s
+      ⭐ Charged: {cost} stars"
+      
+      Keyboard:
+      [🔄 Ещё раз] [📋 Меню]
+      [💾 Сохранить промпт]
+
+  - name: handle_again
+    given: Chat ID
+    when: User wants another generation
+    then: |
+      1. Keep model and size
+      2. Clear prompt
+      3. Return to EnterPrompt step
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NAVIGATION
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_back
+    given: Chat ID and current step
+    when: User presses back
+    then: |
+      SelectModel -> exit_wizard
+      EnterPrompt -> SelectModel
+      SelectSize -> EnterPrompt
+      Confirm -> SelectSize
+
+  - name: handle_cancel
+    given: Chat ID
+    when: User cancels
+    then: |
+      1. If Processing -> cannot cancel
+      2. Else -> exit_wizard, return to menu
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MAIN ROUTER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: handle_input
+    given: Chat ID, text, and optional photo
+    when: Any input received
+    then: |
+      1. Get wizard state
+      2. If no state -> ignore
+      3. Check for navigation buttons (back, cancel)
+      4. Route to current step handler
+      5. Return StepResult
 
 constants:
-  WIZARD_ID: "neuro_photo_wizard"
+  WIZARD_ID: "neuro_photo"
+  DEFAULT_ASPECT_RATIO: "1:1"
   DEFAULT_NUM_IMAGES: 1
   MAX_PROMPT_LENGTH: 2000
+  MIN_PROMPT_LENGTH: 10
+  POLL_INTERVAL_MS: 2000
+  MAX_POLL_ATTEMPTS: 60
+  
+  # Model costs in stars
+  COST_FLUX_PRO: 50
+  COST_FLUX_DEV: 30
+  COST_SDXL: 20
+  COST_MIDJOURNEY: 100
+
+  # Replicate model versions
+  MODEL_FLUX_PRO: "black-forest-labs/flux-pro"
+  MODEL_FLUX_DEV: "black-forest-labs/flux-dev"
+  MODEL_SDXL: "stability-ai/sdxl"
+
+test_cases:
+  - name: test_enter_wizard
+    input: {chat_id: 12345, lang: "ru"}
+    expected: {step: "SelectModel", keyboard: true}
+
+  - name: test_select_model_flux
+    input: {button: "⚡ Flux Pro"}
+    expected: {model_id: "flux_pro", cost: 50, next_step: "EnterPrompt"}
+
+  - name: test_prompt_too_short
+    input: {prompt: "cat"}
+    expected: {valid: false, error: "min_length"}
+
+  - name: test_prompt_valid
+    input: {prompt: "a beautiful sunset over mountains"}
+    expected: {valid: true, next_step: "SelectSize"}
+
+  - name: test_select_size_portrait
+    input: {button: "📱 9:16 Портрет"}
+    expected: {aspect_ratio: "9:16", next_step: "Confirm"}
+
+  - name: test_confirm_insufficient_balance
+    input: {balance: 10, cost: 50}
+    expected: {success: false, error: "insufficient_balance"}
+
+  - name: test_confirm_success
+    input: {balance: 100, cost: 50}
+    expected: {success: true, next_step: "Processing"}
+
+  - name: test_back_from_prompt
+    input: {step: "EnterPrompt", button: "◀️ Назад"}
+    expected: {next_step: "SelectModel"}
+
+  - name: test_cancel_during_processing
+    input: {step: "Processing", button: "❌ Отмена"}
+    expected: {success: false, error: "cannot_cancel_processing"}
