@@ -49,7 +49,7 @@ export default function InvestSection() {
         </div>
       </div>
 
-      <div className="fade" style={{ marginTop: '4rem' }}>
+      <div className="fade" style={{ marginTop: '4rem', marginBottom: 'clamp(4rem, 15vh, 8rem)' }}>
         <a href={inv?.contact?.github} className="btn secondary" target="_blank" rel="noopener">{inv.ctaGithub}</a>
       </div>
     </Section>

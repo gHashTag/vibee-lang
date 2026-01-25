@@ -20,12 +20,23 @@ export default function TractionSection() {
       </div>
       <h3 className="fade" style={{ fontSize: '0.85rem', color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '2rem' }}>{tr.techTitle}</h3>
       
-      <div className="grid fade" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(160px, 20vw, 250px), 1fr))', marginBottom: '4rem', gap: '1.5rem' }}>
+      <div className="grid fade" style={{ 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(clamp(140px, 45%, 280px), 1fr))', 
+        marginBottom: '3rem', 
+        gap: 'clamp(0.8rem, 2vw, 1.5rem)' 
+      }}>
         {tr.techs?.map((tech: { title: string; desc: string; tests: string }, i: number) => (
-          <div key={i} className="premium-card compact" style={{ textAlign: 'left', border: 'none', borderLeft: '2px solid var(--border)', borderRadius: 0, background: 'transparent', padding: '1rem' }}>
-            <h4 style={{ color: 'var(--accent)', marginBottom: '0.4rem', fontSize: '1rem' }}>{tech.title}</h4>
-            <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.8 }}>{tech.desc}</p>
-            <div style={{ marginTop: '0.8rem', fontSize: '0.7rem', color: 'var(--accent)', opacity: 0.7, fontWeight: 500 }}>{tech.tests}</div>
+          <div key={i} className="premium-card compact" style={{ 
+            textAlign: 'left', 
+            border: 'none', 
+            borderLeft: '1px solid var(--border)', 
+            borderRadius: 0, 
+            background: 'transparent', 
+            padding: '0.8rem 1rem' 
+          }}>
+            <h4 style={{ color: 'var(--accent)', marginBottom: '0.3rem', fontSize: '0.9rem', fontWeight: 600 }}>{tech.title}</h4>
+            <p style={{ margin: 0, fontSize: '0.75rem', opacity: 0.7, lineHeight: 1.3 }}>{tech.desc}</p>
+            <div style={{ marginTop: '0.6rem', fontSize: '0.65rem', color: 'var(--accent)', opacity: 0.8, fontWeight: 500 }}>{tech.tests}</div>
           </div>
         ))}
       </div>
