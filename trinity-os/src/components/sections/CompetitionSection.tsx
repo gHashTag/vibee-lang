@@ -37,9 +37,9 @@ export default function CompetitionSection() {
             <tbody>
               {c.rows?.map((row: { company: string; arch: string; val: string; ternary: boolean; open: boolean }, i: number) => (
                 <tr key={i} style={{ background: row.company === 'TRINITY' ? 'rgba(0, 229, 153, 0.05)' : 'transparent' }}>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.company === 'TRINITY' ? 'var(--accent)' : 'var(--text)', fontWeight: 500 }}>{row.company}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)' }}>{row.arch}</td>
-                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)' }}>{row.val}</td>
+                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.company === 'TRINITY' ? 'var(--accent)' : 'var(--text)', fontWeight: 500, textAlign: 'center' }}>{row.company}</td>
+                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.arch}</td>
+                  <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center' }}>{row.val}</td>
                   <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.ternary ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.ternary ? '✓' : '✗'}</td>
                   <td style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: row.open ? 'var(--accent)' : '#ff453a', fontSize: '1.2rem', textAlign: 'center' }}>{row.open ? '✓' : '✗'}</td>
                 </tr>

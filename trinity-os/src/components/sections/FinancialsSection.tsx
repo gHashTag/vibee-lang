@@ -23,7 +23,7 @@ export default function FinancialsSection() {
             <thead>
               <tr>
                 {f.headers?.map((h: string, i: number) => (
-                  <th key={i} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'left', fontWeight: '500' }}>{h}</th>
+                  <th key={i} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', textAlign: 'center', fontWeight: '500' }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -31,7 +31,7 @@ export default function FinancialsSection() {
               {f.rows?.map((row: string[], i: number) => (
                 <tr key={i}>
                   {row.map((cell: string, j: number) => (
-                    <td key={j} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', color: j === 0 ? 'var(--accent)' : 'var(--text)' }}>{cell}</td>
+                    <td key={j} style={{ padding: '1rem', borderBottom: '1px solid var(--border)', textAlign: 'center', color: j === 0 ? 'var(--accent)' : 'var(--text)' }}>{cell}</td>
                   ))}
                 </tr>
               ))}
