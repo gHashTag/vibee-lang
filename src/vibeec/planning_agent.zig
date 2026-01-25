@@ -843,6 +843,262 @@ pub fn routeToAgent(task_description: []const u8) AgentRole {
     return .action;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MULTI-AGENT ORCHESTRATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const MultiAgentOrchestrator = struct {
+    allocator: Allocator,
+    planning_agent: *PlanningAgent,
+    config: MultiAgentConfig,
+    execution_log: std.ArrayList(ExecutionLogEntry),
+
+    const Self = @This();
+
+    pub const ExecutionLogEntry = struct {
+        agent: AgentRole,
+        task: []const u8,
+        success: bool,
+        result: []const u8,
+        duration_ms: u64,
+    };
+
+    pub fn init(allocator: Allocator, planning_agent: *PlanningAgent) Self {
+        return Self{
+            .allocator = allocator,
+            .planning_agent = planning_agent,
+            .config = MultiAgentConfig{},
+            .execution_log = std.ArrayList(ExecutionLogEntry).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.execution_log.deinit();
+    }
+
+    /// Main orchestration loop - coordinates multiple agents
+    pub fn orchestrate(self: *Self, goal: []const u8) ![]const u8 {
+        const start_time = std.time.milliTimestamp();
+
+        // Step 1: Analyze task and determine agent routing
+        const primary_agent = routeToAgent(goal);
+
+        // Step 2: Execute with appropriate agent(s)
+        var result: []const u8 = "";
+        var success = false;
+
+        switch (primary_agent) {
+            .vision => {
+                // Try vision first, fall back to DOM
+                result = self.executeWithVisionAgent(goal) catch |err| blk: {
+                    std.debug.print("Vision agent failed: {}, trying DOM\n", .{err});
+                    break :blk self.executeWithDOMAgent(goal) catch "Failed";
+                };
+                success = !std.mem.eql(u8, result, "Failed");
+            },
+            .dom => {
+                result = self.executeWithDOMAgent(goal) catch "Failed";
+                success = !std.mem.eql(u8, result, "Failed");
+            },
+            .verification => {
+                result = self.executeWithVerification(goal) catch "Failed";
+                success = !std.mem.eql(u8, result, "Failed");
+            },
+            .planning, .action => {
+                // Use standard planning agent
+                result = self.planning_agent.run() catch "Failed";
+                success = !std.mem.eql(u8, result, "Failed");
+            },
+        }
+
+        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+
+        // Log execution
+        try self.execution_log.append(ExecutionLogEntry{
+            .agent = primary_agent,
+            .task = goal,
+            .success = success,
+            .result = result,
+            .duration_ms = duration,
+        });
+
+        return result;
+    }
+
+    /// Execute task using vision agent (screenshot analysis)
+    pub fn executeWithVisionAgent(self: *Self, goal: []const u8) ![]const u8 {
+        // Capture screenshot
+        const screenshot = try self.planning_agent.browser.captureScreenshot();
+        defer self.allocator.free(screenshot);
+
+        // Build vision prompt
+        var prompt_buf: [2048]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&prompt_buf,
+            \\Look at this webpage screenshot.
+            \\Goal: {s}
+            \\
+            \\Identify the element I should interact with to achieve this goal.
+            \\Return a JSON object with:
+            \\- "element": description of the element
+            \\- "action": "click", "type", or "scroll"
+            \\- "selector": CSS selector if identifiable
+            \\- "coordinates": {{"x": N, "y": N}} approximate click position
+        , .{goal}) catch return error.OutOfMemory;
+
+        // Use vision analysis
+        const analysis = try self.planning_agent.analyzeWithVision(prompt);
+        defer self.allocator.free(analysis);
+
+        // Parse and execute action from vision response
+        return self.executeVisionAction(analysis);
+    }
+
+    /// Execute action based on vision analysis
+    fn executeVisionAction(self: *Self, analysis: []const u8) ![]const u8 {
+        // Parse JSON response for action
+        if (std.mem.indexOf(u8, analysis, "\"action\":\"click\"")) |_| {
+            // Extract selector or coordinates
+            if (std.mem.indexOf(u8, analysis, "\"selector\":\"")) |sel_start| {
+                const start = sel_start + 12;
+                var end = start;
+                while (end < analysis.len and analysis[end] != '"') : (end += 1) {}
+                const selector = analysis[start..end];
+
+                // Execute click
+                try self.planning_agent.browser.click(selector);
+                return "Clicked element via vision";
+            }
+        }
+
+        if (std.mem.indexOf(u8, analysis, "\"action\":\"type\"")) |_| {
+            if (std.mem.indexOf(u8, analysis, "\"text\":\"")) |text_start| {
+                const start = text_start + 8;
+                var end = start;
+                while (end < analysis.len and analysis[end] != '"') : (end += 1) {}
+                const text = analysis[start..end];
+
+                try self.planning_agent.browser.typeText(text);
+                return "Typed text via vision";
+            }
+        }
+
+        return "Vision action not recognized";
+    }
+
+    /// Execute task using DOM/A11y agent
+    pub fn executeWithDOMAgent(self: *Self, goal: []const u8) ![]const u8 {
+        // Get accessibility tree
+        const a11y_tree = try self.planning_agent.browser.getAccessibilityTree();
+        defer self.allocator.free(a11y_tree);
+
+        // Get interactive elements
+        const interactive = try self.planning_agent.browser.getInteractiveFromA11y();
+        defer self.allocator.free(interactive);
+
+        // Build prompt with DOM context
+        var prompt_buf: [4096]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&prompt_buf,
+            \\Goal: {s}
+            \\
+            \\Interactive elements on page:
+            \\{s}
+            \\
+            \\Which element should I interact with? Return JSON:
+            \\{{"action": "click|type|scroll", "selector": "CSS selector", "text": "text to type if action=type"}}
+        , .{ goal, interactive }) catch return error.OutOfMemory;
+
+        // Call LLM for decision
+        const response = try self.planning_agent.callLLM(prompt);
+        defer self.allocator.free(response);
+
+        // Execute action
+        return self.executeDOMAction(response);
+    }
+
+    /// Execute action based on DOM analysis
+    fn executeDOMAction(self: *Self, response: []const u8) ![]const u8 {
+        if (std.mem.indexOf(u8, response, "\"action\":\"click\"")) |_| {
+            if (std.mem.indexOf(u8, response, "\"selector\":\"")) |sel_start| {
+                const start = sel_start + 12;
+                var end = start;
+                while (end < response.len and response[end] != '"') : (end += 1) {}
+                const selector = response[start..end];
+
+                try self.planning_agent.browser.click(selector);
+                return "Clicked via DOM";
+            }
+        }
+
+        if (std.mem.indexOf(u8, response, "\"action\":\"type\"")) |_| {
+            if (std.mem.indexOf(u8, response, "\"text\":\"")) |text_start| {
+                const start = text_start + 8;
+                var end = start;
+                while (end < response.len and response[end] != '"') : (end += 1) {}
+                const text = response[start..end];
+
+                try self.planning_agent.browser.typeText(text);
+                return "Typed via DOM";
+            }
+        }
+
+        return "DOM action not recognized";
+    }
+
+    /// Execute with verification (before/after comparison)
+    pub fn executeWithVerification(self: *Self, goal: []const u8) ![]const u8 {
+        // Capture before state
+        const before_screenshot = try self.planning_agent.browser.captureScreenshot();
+        defer self.allocator.free(before_screenshot);
+
+        // Execute action
+        const action_result = self.executeWithDOMAgent(goal) catch |err| {
+            return std.fmt.allocPrint(self.allocator, "Action failed: {}", .{err}) catch "Action failed";
+        };
+
+        // Wait for page to update
+        std.time.sleep(500 * std.time.ns_per_ms);
+
+        // Capture after state
+        const after_screenshot = try self.planning_agent.browser.captureScreenshot();
+        defer self.allocator.free(after_screenshot);
+
+        // Verify change occurred
+        var verify_prompt_buf: [2048]u8 = undefined;
+        const verify_prompt = std.fmt.bufPrint(&verify_prompt_buf,
+            \\I performed an action to: {s}
+            \\Result: {s}
+            \\
+            \\Compare the before and after screenshots.
+            \\Did the action succeed? Return JSON:
+            \\{{"success": true/false, "reason": "explanation"}}
+        , .{ goal, action_result }) catch return error.OutOfMemory;
+
+        const verification = try self.planning_agent.analyzeWithVision(verify_prompt);
+        defer self.allocator.free(verification);
+
+        // Check verification result
+        if (std.mem.indexOf(u8, verification, "\"success\":true") != null or
+            std.mem.indexOf(u8, verification, "\"success\": true") != null)
+        {
+            return "Action verified successful";
+        }
+
+        return "Action verification failed";
+    }
+
+    /// Get execution statistics
+    pub fn getStats(self: *Self) struct { total: usize, success: usize, by_agent: [5]usize } {
+        var stats = .{ .total = self.execution_log.items.len, .success = 0, .by_agent = [_]usize{ 0, 0, 0, 0, 0 } };
+
+        for (self.execution_log.items) |entry| {
+            if (entry.success) stats.success += 1;
+            stats.by_agent[@intFromEnum(entry.agent)] += 1;
+        }
+
+        return stats;
+    }
+};
+
 pub const PlanningAgent = struct {
     allocator: Allocator,
     browser: real_agent.RealAgent,
