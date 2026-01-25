@@ -61,7 +61,7 @@ export default function GrowthChart() {
              const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
              const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
              return (
-               <g key={i} className={`anim-fade-in-up anim-delay-${i * 2 + 5}`}>
+               <g key={i} className={`anim-fade-in-up anim-delay-${Math.min(i + 1, 5)}`}>
                  <circle cx={x} cy={y} r="5" fill="var(--bg)" stroke="var(--accent)" strokeWidth="2" />
                  <text x={x} y={y - 15} textAnchor="middle" fill="var(--text)" fontSize="12" fontWeight="600">
                    ${d.valuation >= 1000 ? d.valuation / 1000 + 'B' : d.valuation + 'M'}
