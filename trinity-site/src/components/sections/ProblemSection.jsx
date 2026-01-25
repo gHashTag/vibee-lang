@@ -22,7 +22,7 @@ export default function ProblemSection() {
 
         <div className="premium-card" style={{ borderLeft: '4px solid var(--accent)' }}>
           <h4 style={{ color: 'var(--accent)', marginBottom: '1rem' }}>{p.trinityTitle}</h4>
-          <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>Native ternary execution removes 50% waste and provides 5x faster inference.</p>
+          <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>Native SU(3) core removes 99.8% waste and provides 100x faster inference.</p>
           <div style={{ fontSize: '0.85rem', color: 'var(--accent)', fontFamily: 'monospace' }}>
             {p.trinityFlow?.join(' → ')}
           </div>
