@@ -35,11 +35,6 @@ export default function App() {
       <Navigation />
       <HeroSection />
       
-      {/* TRINITY HARDWARE TRUTH: LIVE MINING MVP */}
-      <section id="mining-live" style={{ minHeight: '100vh', borderBottom: '1px solid var(--border)' }}>
-        <MiningMVP />
-      </section>
-
       <ProblemSection />
       <SolutionSection />
       <WhyNowSection />
@@ -51,6 +46,19 @@ export default function App() {
       <FinancialsSection />
       <BusinessModelSection />
       <TechnologySection />
+
+      {/* TRINITY HARDWARE TRUTH: LIVE MINING MVP */}
+      <section id="mining-live" style={{ minHeight: '100vh', borderBottom: '1px solid var(--border)', background: 'rgba(0, 229, 153, 0.01)' }}>
+        <div className="tight fade" style={{ padding: '4rem 1.5rem 0', textAlign: 'center' }}>
+          <h2 className="grad">Hardware Truth Demo</h2>
+          <p style={{ maxWidth: '800px', margin: '1rem auto', fontSize: '0.9rem', opacity: 0.8 }}>
+            Для инвестора этот блок — **гарантия реализации**. Мы не просто пишем код, мы симулируем нативную работу SU(3) ядра с реальной сетью Bitcoin. 
+            Это доказывает дееспособность алгоритмов до массового выпуска чипов и открывает триллионный рынок мобильного майнинга.
+          </p>
+        </div>
+        <MiningMVP />
+      </section>
+
       <TechAssetsSection />
       <CalculatorLogicSection />
       <BenchmarksSection />
