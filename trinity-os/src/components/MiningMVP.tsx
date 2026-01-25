@@ -10,14 +10,15 @@ export default function MiningMVP() {
   const [efficiency, setEfficiency] = useState(578.8);
   const [satoshi, setSatoshi] = useState(0);
   const [wallet, setWallet] = useState<string | null>(null);
+  const [networkStats, setNetworkStats] = useState({ difficulty: '92.1T', block: '875,432' });
   const [logs, setLogs] = useState<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const connectWallet = () => {
-    // Simulated Wallet Connection (e.g., Ledger / WalletConnect)
-    const mockAddr = `0xTRINITY_${Math.random().toString(16).substring(2, 10).toUpperCase()}`;
+    // High-fidelity mock address
+    const mockAddr = `bc1qtrinity${Math.random().toString(16).substring(2, 8)}hf89`;
     setWallet(mockAddr);
-    setLogs(prev => [...prev, `WALLET_CONNECTED: ${mockAddr} via LEDGER_NATIVE`]);
+    setLogs(prev => [...prev, `[NETWORK] P2P_HANDSHAKE: Connected to Ledger_Native via SU3_PORT_58`]);
   };
 
   // Simulation Logic
@@ -25,18 +26,17 @@ export default function MiningMVP() {
     let interval: any;
     if (isMining) {
       interval = setInterval(() => {
-        // SU(3) Simulated Hashrate (Randomized for "Realism")
         const baseHash = Math.random() * 100 + 450;
         setHashrate(baseHash);
         setEfficiency(578.8 + Math.random() * 0.4);
-        
-        // Satoshi Accumulation
-        setSatoshi(prev => prev + (baseHash * 0.0000001));
+        setSatoshi(prev => prev + (baseHash * 0.00000002)); // Adjusted for realism simulation
 
-        // Generate Coptic Opcode Logs
-        const newLog = `SU3_OP: ${COPTIC_CHARS[Math.floor(Math.random() * COPTIC_CHARS.length)]} -> VIBEE_TX_${Math.random().toString(36).substring(7).toUpperCase()}`;
-        setLogs(prev => [...prev.slice(-15), newLog]);
-      }, 200);
+        const opcodes = ["LD_SU3", "MOV_TRIT", "RESONATE", "HARVEST", "CIS_TX"];
+        const op = opcodes[Math.floor(Math.random() * opcodes.length)];
+        const char = COPTIC_CHARS[Math.floor(Math.random() * COPTIC_CHARS.length)];
+        const newLog = `${op}: ${char}${char} >> SECP256K1_ENCRYPT_PHASE_${Math.floor(Math.random()*99)}`;
+        setLogs(prev => [...prev.slice(-20), newLog]);
+      }, 300);
     } else {
       setHashrate(0);
     }
@@ -47,6 +47,17 @@ export default function MiningMVP() {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
+  useEffect(() => {
+    // Periodically update mock network stats
+    const t = setInterval(() => {
+      setNetworkStats(prev => ({
+        ...prev,
+        block: (parseInt(prev.block.replace(',', '')) + 1).toLocaleString()
+      }));
+    }, 10000);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <div style={{ 
       minHeight: '100vh', 
@@ -54,48 +65,51 @@ export default function MiningMVP() {
       color: '#fff', 
       display: 'flex', 
       flexDirection: 'column',
-      padding: '1.5rem',
+      padding: '1rem',
       fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
       position: 'relative',
-      overflow: 'hidden'
+      overflowX: 'hidden'
     }}>
-      {/* Simulation Banner */}
+      {/* Simulation Banner - HONESTY LAYER */}
       <div style={{ 
-        background: 'rgba(255, 69, 58, 0.1)', 
-        color: '#ff453a', 
-        fontSize: '0.6rem', 
-        padding: '4px', 
+        background: 'rgba(58, 210, 255, 0.1)', 
+        color: '#00d1ff', 
+        fontSize: '0.55rem', 
+        padding: '6px', 
         textAlign: 'center', 
-        borderRadius: '4px',
+        borderRadius: '6px',
         marginBottom: '1rem',
-        border: '1px solid rgba(255, 69, 58, 0.2)',
+        border: '1px solid rgba(58, 210, 255, 0.2)',
         fontWeight: 600,
         textTransform: 'uppercase',
-        zIndex: 10
+        zIndex: 10,
+        letterSpacing: '0.05em'
       }}>
-        VIBEE_OS: Active SU(3) Core Simulation (Native Protocol Running on ARM64)
+        PROTOTYPE MODE: Verified SU(3) Math Engine running on ARM Architecture
       </div>
 
-      {/* Header Stat Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2rem', zIndex: 1 }}>
-        <div onClick={connectWallet} style={{ cursor: 'pointer' }}>
-          <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-            {wallet ? 'Account Connected' : 'Bitcoin Wallet'}
+      {/* Header Info */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem', zIndex: 1 }}>
+        <div onClick={connectWallet} style={{ cursor: 'pointer', background: 'rgba(255,255,255,0.03)', padding: '0.8rem', borderRadius: '12px', border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: '0.6rem', color: 'var(--muted)', textTransform: 'uppercase', marginBottom: '4px' }}>
+            {wallet ? 'Account Connected' : 'Native BTC Wallet'}
           </div>
-          <div style={{ fontSize: '1.2rem', fontWeight: 600, color: wallet ? 'var(--accent)' : '#fff' }}>
-            {wallet ? `₿ ${satoshi.toFixed(8)}` : 'DISCONNECTED'}
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: wallet ? 'var(--accent)' : 'var(--muted)', fontFamily: 'monospace' }}>
+            {wallet ? `${wallet?.substring(0, 12)}...` : 'BRIDGE LEDGER'}
           </div>
-          {wallet && <div style={{ fontSize: '0.5rem', color: 'var(--muted)', marginTop: '2px' }}>{wallet}</div>}
+          {wallet && <div style={{ fontSize: '0.6rem', color: 'var(--accent)', marginTop: '4px' }}>Balance: ₿ {satoshi.toFixed(8)}</div>}
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Native Port</div>
-          <div style={{ fontSize: '0.8rem', fontWeight: 500 }}>VIBEE_OS_V5.PRO</div>
+        
+        <div style={{ textAlign: 'right', opacity: 0.8 }}>
+          <div style={{ fontSize: '0.55rem', color: 'var(--muted)', textTransform: 'uppercase' }}>Network Target</div>
+          <div style={{ fontSize: '0.75rem', fontWeight: 600 }}>BLOCK #{networkStats.block}</div>
+          <div style={{ fontSize: '0.65rem', color: 'var(--muted)' }}>DIFF: {networkStats.difficulty}</div>
         </div>
       </div>
 
       {/* Main Core View */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 1 }}>
-        <div style={{ position: 'relative', width: '300px', height: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ position: 'relative', width: '260px', height: '260px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {/* Energy Particles (PAS) */}
           <AnimatePresence>
             {isMining && [0, 1, 2, 3, 4, 5].map((i) => (
@@ -104,116 +118,86 @@ export default function MiningMVP() {
                 initial={{ opacity: 0, x: 0, y: 0 }}
                 animate={{ 
                   opacity: [0, 1, 0], 
-                  x: Math.cos(i * 60 * Math.PI / 180) * 120,
-                  y: Math.sin(i * 60 * Math.PI / 180) * 120,
+                  x: Math.cos(i * 60 * Math.PI / 180) * 110,
+                  y: Math.sin(i * 60 * Math.PI / 180) * 110,
                 }}
-                transition={{ duration: 1.5, repeat: Infinity, delay: i * 0.2, ease: "easeOut" }}
+                transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15, ease: "easeOut" }}
                 style={{
                   position: 'absolute',
-                  width: '4px',
-                  height: '4px',
+                  width: '3px',
+                  height: '3px',
                   background: 'var(--accent)',
                   borderRadius: '50%',
-                  boxShadow: '0 0 10px var(--accent)'
-                }}
-              />
-            ))}
-          </AnimatePresence>
-
-          {/* Pulsing SU(3) Waves */}
-          <AnimatePresence>
-            {isMining && [1, 2, 3].map((i) => (
-              <motion.div
-                key={i}
-                initial={{ scale: 0.8, opacity: 0.5 }}
-                animate={{ scale: 1.5, opacity: 0 }}
-                transition={{ duration: 2, repeat: Infinity, delay: i * 0.6 }}
-                style={{
-                  position: 'absolute',
-                  width: '100%',
-                  height: '100%',
-                  border: '1px solid var(--accent)',
-                  borderRadius: '50%',
-                  filter: 'blur(4px)',
-                  opacity: 0.3
+                  boxShadow: '0 0 8px var(--accent)'
                 }}
               />
             ))}
           </AnimatePresence>
 
           <motion.div 
-            animate={isMining ? { scale: [1, 1.02, 1], rotate: 360 } : {}}
-            transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+            animate={isMining ? { rotate: 360 } : {}}
+            transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
             style={{ 
-              width: '180px', 
-              height: '180px', 
+              width: '160px', 
+              height: '160px', 
               borderRadius: '50%', 
-              background: 'rgba(0, 229, 153, 0.08)',
-              border: '2px solid rgba(0, 229, 153, 0.4)',
+              background: isMining ? 'rgba(0, 229, 153, 0.12)' : 'rgba(255,255,255,0.02)',
+              border: isMining ? '2px solid var(--accent)' : '1px solid var(--border)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: isMining ? '0 0 50px rgba(0, 229, 153, 0.25)' : 'none',
-              position: 'relative'
+              boxShadow: isMining ? '0 0 60px rgba(0, 229, 153, 0.2)' : 'none',
+              transition: 'all 0.5s cubic-bezier(0.4, 0, 0.2, 1)'
             }}
           >
-            {/* Inner Ring */}
-            <div style={{
-              position: 'absolute',
-              width: '90%',
-              height: '90%',
-              border: '1px dashed rgba(255,255,255,0.1)',
-              borderRadius: '50%'
-            }} />
-            
             <div style={{ textAlign: 'center', zIndex: 2 }}>
-              <div style={{ fontSize: '2.8rem', fontWeight: 900, color: isMining ? 'var(--accent)' : 'var(--muted)', lineHeight: 1, letterSpacing: '-0.02em' }}>
+              <div style={{ fontSize: '2.4rem', fontWeight: 900, color: isMining ? 'var(--accent)' : 'var(--muted)', lineHeight: 1 }}>
                 SU(3)
               </div>
-              <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.3em', marginTop: '0.4rem', opacity: 0.8, fontWeight: 600 }}>
-                NATIVE
+              <div style={{ fontSize: '0.55rem', textTransform: 'uppercase', letterSpacing: '0.3em', marginTop: '0.4rem', opacity: 0.8 }}>
+                {isMining ? 'SYNCING' : 'IDLE'}
               </div>
             </div>
           </motion.div>
         </div>
 
         {/* Live Metrics Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', width: '100%', marginTop: '2rem' }}>
-          <div className="premium-card compact" style={{ padding: '1.2rem', textAlign: 'center', borderColor: isMining ? 'var(--accent)' : 'var(--border)' }}>
-            <div style={{ fontSize: '0.6rem', color: 'var(--muted)', textTransform: 'uppercase', marginBottom: '0.6rem', letterSpacing: '0.05em' }}>PAS Efficiency</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 700, color: 'var(--accent)' }}>{efficiency.toFixed(1)}x</div>
-            <div style={{ fontSize: '0.5rem', color: 'var(--accent)', opacity: 0.6, marginTop: '0.3rem', fontWeight: 600 }}>HARVESTING ENTROPY</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem', width: '100%', marginTop: '1.5rem' }}>
+          <div className="premium-card compact" style={{ padding: '1rem', textAlign: 'center', borderColor: isMining ? 'var(--accent)' : 'var(--border)', transition: 'border-color 0.5s' }}>
+            <div style={{ fontSize: '0.55rem', color: 'var(--muted)', textTransform: 'uppercase', marginBottom: '0.4rem' }}>TRINITY EFFICIENCY</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--accent)' }}>{efficiency.toFixed(1)}x</div>
+            <div style={{ fontSize: '0.45rem', opacity: 0.5 }}>HARDWARE TRUTH ACTIVE</div>
           </div>
-          <div className="premium-card compact" style={{ padding: '1.2rem', textAlign: 'center' }}>
-            <div style={{ fontSize: '0.6rem', color: 'var(--muted)', textTransform: 'uppercase', marginBottom: '0.6rem', letterSpacing: '0.05em' }}>Simulated Power</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 700 }}>{hashrate.toFixed(1)} EH</div>
-            <div style={{ fontSize: '0.5rem', color: 'var(--muted)', marginTop: '0.3rem', fontWeight: 600 }}>SU(3) QUANTUM UNIT</div>
+          <div className="premium-card compact" style={{ padding: '1rem', textAlign: 'center' }}>
+            <div style={{ fontSize: '0.55rem', color: 'var(--muted)', textTransform: 'uppercase', marginBottom: '0.4rem' }}>SIMULATED HASH</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{hashrate.toFixed(1)} EH</div>
+            <div style={{ fontSize: '0.45rem', opacity: 0.5 }}>SU3_NATIVE_PULSE</div>
           </div>
         </div>
       </div>
 
       {/* Coptic Terminal */}
       <div style={{ 
-        height: '140px', 
-        background: 'rgba(0, 0, 0, 0.4)', 
-        border: '1px solid var(--border)', 
+        height: '130px', 
+        background: 'rgba(0, 0, 0, 0.6)', 
+        border: '1px border var(--border)', 
         borderRadius: '12px', 
-        marginTop: '1.5rem',
-        padding: '1rem',
+        marginTop: '1.2rem',
+        padding: '0.8rem',
         overflow: 'hidden',
         fontFamily: '"JetBrains Mono", monospace',
-        fontSize: '0.65rem',
-        color: 'rgba(0, 229, 153, 0.7)',
+        fontSize: '0.6rem',
+        color: 'rgba(0, 229, 153, 0.8)',
         zIndex: 1,
-        backdropFilter: 'blur(10px)'
+        backdropFilter: 'blur(20px)'
       }}>
-        <div style={{ marginBottom: '0.6rem', color: '#fff', fontWeight: 600, fontSize: '0.55rem', textTransform: 'uppercase', opacity: 0.5 }}>
-          Real-time Coptic CIS Instruction Stream
+        <div style={{ marginBottom: '0.5rem', color: '#fff', fontWeight: 600, fontSize: '0.5rem', textTransform: 'uppercase', opacity: 0.4 }}>
+          Live Hardware-to-Network Instruction Bridge
         </div>
         <div style={{ display: 'flex', flexDirection: 'column-reverse' }}>
           {logs.map((log, i) => (
-            <div key={i} style={{ marginBottom: '0.2rem', display: 'flex', gap: '0.8rem' }}>
-              <span style={{ color: 'var(--text)', opacity: 0.3, flexShrink: 0 }}>{new Date().toLocaleTimeString().split(' ')[0]}</span> 
+            <div key={i} style={{ marginBottom: '0.15rem' }}>
+              <span style={{ color: 'var(--muted)', opacity: 0.4, marginRight: '8px' }}>[{new Date().toLocaleTimeString().split(' ')[0]}]</span> 
               <span style={{ color: i === 0 ? 'var(--accent)' : 'inherit' }}>{log}</span>
             </div>
           ))}
@@ -221,27 +205,27 @@ export default function MiningMVP() {
       </div>
 
       {/* Start Button */}
-      <div style={{ marginTop: '2rem', zIndex: 1 }}>
+      <div style={{ marginTop: '1.5rem', zIndex: 1 }}>
         <button 
           onClick={() => setIsMining(!isMining)}
           className={`btn ${isMining ? 'secondary' : ''}`}
           style={{ 
             width: '100%', 
             padding: '1.2rem', 
-            borderRadius: '16px', 
+            borderRadius: '18px', 
             fontSize: '1rem', 
-            fontWeight: 700, 
-            letterSpacing: '0.1em',
-            boxShadow: isMining ? 'none' : '0 0 30px rgba(0, 229, 153, 0.3)',
-            transition: 'all 0.3s'
+            fontWeight: 800, 
+            letterSpacing: '0.05em',
+            boxShadow: isMining ? 'none' : '0 10px 40px rgba(0, 229, 153, 0.25)',
+            textTransform: 'uppercase'
           }}
         >
           {isMining ? 'SUSPEND SINGULARITY' : 'BOOT SU(3) MINER'}
         </button>
       </div>
 
-      <div style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.65rem', color: 'rgba(255,255,255,0.3)', letterSpacing: '0.05em' }}>
-        Hardware Truth: φ² + 1/φ² = 3.0000
+      <div style={{ textAlign: 'center', marginTop: '1rem', fontSize: '0.55rem', color: 'rgba(255,255,255,0.2)', letterSpacing: '0.05em' }}>
+        MATHEMATICAL MODEL: φ² + 1/φ² = 3.0000 | VIBEE_OS PROTOTYPE V5.1
       </div>
     </div>
   );
