@@ -1,0 +1,611 @@
+name: achievement_system
+version: "1.0.0"
+language: zig
+module: achievement_system
+
+description: |
+  Achievement system for VIBEE Telegram bot.
+  Gamification with badges, levels, streaks, leaderboards.
+  Rewards users for engagement and milestones.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AchievementSystem:
+    description: "Achievement system"
+    fields:
+      config: SystemConfig
+      database: Object
+      cache: Object
+      notification_service: Object
+      stats: SystemStats
+      is_initialized: Bool
+
+  SystemConfig:
+    description: "System configuration"
+    fields:
+      enable_notifications: Bool
+      enable_leaderboards: Bool
+      xp_multiplier: Float
+      streak_bonus_multiplier: Float
+      cache_ttl_seconds: Int
+
+  SystemStats:
+    description: "System statistics"
+    fields:
+      total_achievements: Int
+      total_unlocked: Int
+      total_xp_awarded: Int
+      active_streaks: Int
+      leaderboard_participants: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACHIEVEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Achievement:
+    description: "Achievement definition"
+    fields:
+      achievement_id: String
+      name: String
+      description: String
+      category: AchievementCategory
+      tier: AchievementTier
+      icon: String
+      xp_reward: Int
+      stars_reward: Int
+      unlock_condition: UnlockCondition
+      is_hidden: Bool
+      is_active: Bool
+      created_at: Timestamp
+
+  AchievementCategory:
+    description: "Achievement category"
+    values:
+      - generation
+      - social
+      - exploration
+      - mastery
+      - loyalty
+      - special
+      - seasonal
+
+  AchievementTier:
+    description: "Achievement tier"
+    values:
+      - bronze
+      - silver
+      - gold
+      - platinum
+      - diamond
+
+  UnlockCondition:
+    description: "Unlock condition"
+    fields:
+      condition_type: ConditionType
+      target_value: Int
+      time_limit_hours: Option<Int>
+      additional_rules: Option<Object>
+
+  ConditionType:
+    description: "Condition type"
+    values:
+      - generation_count
+      - generation_type_count
+      - consecutive_days
+      - total_spent_stars
+      - referral_count
+      - avatar_created
+      - subscription_purchased
+      - level_reached
+      - streak_days
+      - unique_models_used
+      - community_engagement
+      - custom
+
+  UserAchievement:
+    description: "User achievement"
+    fields:
+      user_achievement_id: String
+      user_id: Int
+      achievement_id: String
+      progress: Int
+      target: Int
+      is_unlocked: Bool
+      unlocked_at: Option<Timestamp>
+      claimed: Bool
+      claimed_at: Option<Timestamp>
+
+  AchievementProgress:
+    description: "Achievement progress"
+    fields:
+      achievement: Achievement
+      current_progress: Int
+      target: Int
+      percentage: Float
+      is_unlocked: Bool
+      unlocked_at: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEVELS & XP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UserLevel:
+    description: "User level"
+    fields:
+      user_id: Int
+      level: Int
+      current_xp: Int
+      total_xp: Int
+      xp_to_next_level: Int
+      title: String
+      perks: List<LevelPerk>
+
+  LevelDefinition:
+    description: "Level definition"
+    fields:
+      level: Int
+      xp_required: Int
+      title: String
+      perks: List<LevelPerk>
+      badge_icon: String
+
+  LevelPerk:
+    description: "Level perk"
+    fields:
+      perk_type: PerkType
+      value: Float
+      description: String
+
+  PerkType:
+    description: "Perk type"
+    values:
+      - generation_discount
+      - priority_queue
+      - extra_storage
+      - exclusive_models
+      - bonus_stars
+      - custom_badge
+
+  XPEvent:
+    description: "XP event"
+    fields:
+      event_id: String
+      user_id: Int
+      xp_amount: Int
+      source: XPSource
+      multiplier: Float
+      created_at: Timestamp
+
+  XPSource:
+    description: "XP source"
+    values:
+      - generation
+      - daily_login
+      - achievement
+      - referral
+      - streak_bonus
+      - event_bonus
+      - purchase
+
+  LevelUpEvent:
+    description: "Level up event"
+    fields:
+      user_id: Int
+      old_level: Int
+      new_level: Int
+      new_perks: List<LevelPerk>
+      timestamp: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Streak:
+    description: "User streak"
+    fields:
+      streak_id: String
+      user_id: Int
+      streak_type: StreakType
+      current_count: Int
+      longest_count: Int
+      last_activity_date: String
+      started_at: Timestamp
+      broken_at: Option<Timestamp>
+
+  StreakType:
+    description: "Streak type"
+    values:
+      - daily_login
+      - daily_generation
+      - weekly_goal
+      - referral_streak
+
+  StreakReward:
+    description: "Streak reward"
+    fields:
+      streak_type: StreakType
+      day_count: Int
+      xp_reward: Int
+      stars_reward: Int
+      special_reward: Option<String>
+
+  StreakStatus:
+    description: "Streak status"
+    fields:
+      streak: Streak
+      is_active: Bool
+      hours_until_break: Int
+      next_reward: Option<StreakReward>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BADGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Badge:
+    description: "Badge"
+    fields:
+      badge_id: String
+      name: String
+      description: String
+      icon: String
+      rarity: BadgeRarity
+      category: BadgeCategory
+      unlock_achievement_id: Option<String>
+      is_displayable: Bool
+
+  BadgeRarity:
+    description: "Badge rarity"
+    values:
+      - common
+      - uncommon
+      - rare
+      - epic
+      - legendary
+
+  BadgeCategory:
+    description: "Badge category"
+    values:
+      - achievement
+      - level
+      - event
+      - special
+      - purchased
+
+  UserBadge:
+    description: "User badge"
+    fields:
+      user_id: Int
+      badge_id: String
+      earned_at: Timestamp
+      is_displayed: Bool
+      display_order: Option<Int>
+
+  BadgeShowcase:
+    description: "Badge showcase"
+    fields:
+      user_id: Int
+      displayed_badges: List<UserBadge>
+      total_badges: Int
+      rarity_counts: Object
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEADERBOARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Leaderboard:
+    description: "Leaderboard"
+    fields:
+      leaderboard_id: String
+      name: String
+      leaderboard_type: LeaderboardType
+      period: LeaderboardPeriod
+      entries: List<LeaderboardEntry>
+      last_updated: Timestamp
+
+  LeaderboardType:
+    description: "Leaderboard type"
+    values:
+      - xp
+      - generations
+      - referrals
+      - streak
+      - achievements
+      - spending
+
+  LeaderboardPeriod:
+    description: "Leaderboard period"
+    values:
+      - daily
+      - weekly
+      - monthly
+      - all_time
+
+  LeaderboardEntry:
+    description: "Leaderboard entry"
+    fields:
+      rank: Int
+      user_id: Int
+      username: Option<String>
+      score: Int
+      change: Int
+      badge_icon: Option<String>
+
+  UserRanking:
+    description: "User ranking"
+    fields:
+      user_id: Int
+      leaderboard_type: LeaderboardType
+      period: LeaderboardPeriod
+      rank: Int
+      score: Int
+      percentile: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHALLENGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Challenge:
+    description: "Challenge"
+    fields:
+      challenge_id: String
+      name: String
+      description: String
+      challenge_type: ChallengeType
+      goal: Int
+      xp_reward: Int
+      stars_reward: Int
+      start_at: Timestamp
+      end_at: Timestamp
+      is_active: Bool
+
+  ChallengeType:
+    description: "Challenge type"
+    values:
+      - daily
+      - weekly
+      - event
+      - community
+
+  UserChallenge:
+    description: "User challenge"
+    fields:
+      user_id: Int
+      challenge_id: String
+      progress: Int
+      is_completed: Bool
+      completed_at: Option<Timestamp>
+      claimed: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  AchievementError:
+    description: "Achievement error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - achievement_not_found
+      - already_unlocked
+      - already_claimed
+      - not_unlocked
+      - streak_broken
+      - challenge_expired
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_system
+    given: SystemConfig
+    when: Creating system
+    then: Return AchievementSystem
+
+  - name: initialize
+    given: No parameters
+    when: Initializing system
+    then: Load achievements
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return SystemStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACHIEVEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_achievements
+    given: Category filter
+    when: Getting achievements
+    then: Return achievement list
+
+  - name: get_user_achievements
+    given: User ID
+    when: Getting user achievements
+    then: Return progress list
+
+  - name: check_achievement
+    given: User ID and achievement ID
+    when: Checking achievement
+    then: Return AchievementProgress
+
+  - name: unlock_achievement
+    given: User ID and achievement ID
+    when: Unlocking achievement
+    then: Return UserAchievement
+
+  - name: claim_achievement
+    given: User ID and achievement ID
+    when: Claiming achievement
+    then: Return rewards
+
+  - name: update_progress
+    given: User ID, condition type, value
+    when: Updating progress
+    then: Return unlocked list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEVELS & XP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_level
+    given: User ID
+    when: Getting level
+    then: Return UserLevel
+
+  - name: award_xp
+    given: User ID, amount, source
+    when: Awarding XP
+    then: Return XPEvent
+
+  - name: get_xp_history
+    given: User ID and limit
+    when: Getting history
+    then: Return event list
+
+  - name: get_level_definition
+    given: Level number
+    when: Getting definition
+    then: Return LevelDefinition
+
+  - name: get_all_levels
+    given: No parameters
+    when: Getting all levels
+    then: Return level list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STREAKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_streak
+    given: User ID and streak type
+    when: Getting streak
+    then: Return StreakStatus
+
+  - name: update_streak
+    given: User ID and streak type
+    when: Updating streak
+    then: Return Streak
+
+  - name: check_streak_rewards
+    given: User ID
+    when: Checking rewards
+    then: Return reward list
+
+  - name: claim_streak_reward
+    given: User ID and streak type
+    when: Claiming reward
+    then: Return StreakReward
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BADGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_badges
+    given: User ID
+    when: Getting badges
+    then: Return badge list
+
+  - name: award_badge
+    given: User ID and badge ID
+    when: Awarding badge
+    then: Return UserBadge
+
+  - name: get_badge_showcase
+    given: User ID
+    when: Getting showcase
+    then: Return BadgeShowcase
+
+  - name: update_showcase
+    given: User ID and badge IDs
+    when: Updating showcase
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEADERBOARDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_leaderboard
+    given: Type and period
+    when: Getting leaderboard
+    then: Return Leaderboard
+
+  - name: get_user_ranking
+    given: User ID, type, period
+    when: Getting ranking
+    then: Return UserRanking
+
+  - name: update_leaderboards
+    given: No parameters
+    when: Updating leaderboards
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CHALLENGES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_active_challenges
+    given: No parameters
+    when: Getting challenges
+    then: Return challenge list
+
+  - name: get_user_challenges
+    given: User ID
+    when: Getting user challenges
+    then: Return progress list
+
+  - name: update_challenge_progress
+    given: User ID and challenge ID
+    when: Updating progress
+    then: Return UserChallenge
+
+  - name: claim_challenge_reward
+    given: User ID and challenge ID
+    when: Claiming reward
+    then: Return rewards
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_XP_MULTIPLIER: 1.0
+  DEFAULT_STREAK_BONUS: 1.5
+  DEFAULT_CACHE_TTL: 300
+
+  # XP rewards
+  XP_PER_GENERATION: 10
+  XP_PER_DAILY_LOGIN: 50
+  XP_PER_REFERRAL: 100
+  XP_STREAK_BONUS_PER_DAY: 5
+
+  # Level thresholds
+  LEVEL_1_XP: 0
+  LEVEL_2_XP: 100
+  LEVEL_5_XP: 500
+  LEVEL_10_XP: 2000
+  LEVEL_20_XP: 10000
+  LEVEL_50_XP: 100000
+  MAX_LEVEL: 100
+
+  # Streak settings
+  STREAK_GRACE_HOURS: 36
+  MAX_STREAK_MULTIPLIER: 3.0
+
+  # Leaderboard
+  LEADERBOARD_SIZE: 100
+  LEADERBOARD_UPDATE_INTERVAL: 3600

@@ -1,0 +1,532 @@
+name: system_config
+version: "1.0.0"
+language: zig
+module: system_config
+
+description: |
+  System configuration for VIBEE Telegram bot.
+  Feature flags, settings, maintenance mode, A/B tests.
+  Dynamic configuration without redeployment.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ConfigManager:
+    description: "Configuration manager"
+    fields:
+      config: ManagerConfig
+      database: Object
+      cache: Object
+      audit_log: Object
+      is_initialized: Bool
+
+  ManagerConfig:
+    description: "Manager configuration"
+    fields:
+      cache_ttl_seconds: Int
+      refresh_interval_seconds: Int
+      enable_hot_reload: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FEATURE FLAGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FeatureFlag:
+    description: "Feature flag"
+    fields:
+      flag_id: String
+      name: String
+      description: String
+      enabled: Bool
+      rollout_percentage: Int
+      target_users: Option<List<Int>>
+      target_tiers: Option<List<String>>
+      conditions: Option<FlagConditions>
+      created_at: Timestamp
+      updated_at: Timestamp
+      updated_by: Int
+
+  FlagConditions:
+    description: "Flag conditions"
+    fields:
+      min_user_age_days: Option<Int>
+      min_generations: Option<Int>
+      countries: Option<List<String>>
+      platforms: Option<List<String>>
+      custom_rules: Option<Object>
+
+  FlagEvaluation:
+    description: "Flag evaluation result"
+    fields:
+      flag_id: String
+      enabled: Bool
+      reason: EvaluationReason
+      variant: Option<String>
+
+  EvaluationReason:
+    description: "Evaluation reason"
+    values:
+      - globally_enabled
+      - globally_disabled
+      - user_targeted
+      - tier_targeted
+      - rollout_included
+      - rollout_excluded
+      - condition_met
+      - condition_not_met
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SETTINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Setting:
+    description: "System setting"
+    fields:
+      setting_id: String
+      category: SettingCategory
+      key: String
+      value: String
+      value_type: ValueType
+      description: String
+      is_sensitive: Bool
+      is_readonly: Bool
+      default_value: String
+      validation_rules: Option<ValidationRules>
+      updated_at: Timestamp
+      updated_by: Int
+
+  SettingCategory:
+    description: "Setting category"
+    values:
+      - general
+      - limits
+      - pricing
+      - ai_models
+      - storage
+      - notifications
+      - security
+      - integrations
+
+  ValueType:
+    description: "Value type"
+    values:
+      - string
+      - integer
+      - float
+      - boolean
+      - json
+      - list
+
+  ValidationRules:
+    description: "Validation rules"
+    fields:
+      min_value: Option<Float>
+      max_value: Option<Float>
+      min_length: Option<Int>
+      max_length: Option<Int>
+      pattern: Option<String>
+      allowed_values: Option<List<String>>
+
+  SettingUpdate:
+    description: "Setting update"
+    fields:
+      key: String
+      value: String
+      reason: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  MaintenanceMode:
+    description: "Maintenance mode"
+    fields:
+      is_active: Bool
+      mode_type: MaintenanceType
+      message: String
+      allowed_users: List<Int>
+      started_at: Option<Timestamp>
+      scheduled_end: Option<Timestamp>
+      started_by: Option<Int>
+
+  MaintenanceType:
+    description: "Maintenance type"
+    values:
+      - full
+      - partial
+      - read_only
+      - degraded
+
+  MaintenanceSchedule:
+    description: "Maintenance schedule"
+    fields:
+      schedule_id: String
+      mode_type: MaintenanceType
+      message: String
+      start_at: Timestamp
+      end_at: Timestamp
+      notify_before_minutes: Int
+      created_by: Int
+      created_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # A/B TESTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ABTest:
+    description: "A/B test"
+    fields:
+      test_id: String
+      name: String
+      description: String
+      status: TestStatus
+      variants: List<TestVariant>
+      traffic_allocation: List<Int>
+      target_metric: String
+      start_date: Timestamp
+      end_date: Option<Timestamp>
+      created_by: Int
+      created_at: Timestamp
+
+  TestStatus:
+    description: "Test status"
+    values:
+      - draft
+      - running
+      - paused
+      - completed
+      - cancelled
+
+  TestVariant:
+    description: "Test variant"
+    fields:
+      variant_id: String
+      name: String
+      description: String
+      config: Object
+      participants: Int
+      conversions: Int
+
+  TestAssignment:
+    description: "Test assignment"
+    fields:
+      test_id: String
+      user_id: Int
+      variant_id: String
+      assigned_at: Timestamp
+
+  TestResult:
+    description: "Test result"
+    fields:
+      test_id: String
+      variants: List<VariantResult>
+      winner: Option<String>
+      confidence: Float
+      sample_size: Int
+
+  VariantResult:
+    description: "Variant result"
+    fields:
+      variant_id: String
+      participants: Int
+      conversions: Int
+      conversion_rate: Float
+      improvement: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMITS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RateLimitConfig:
+    description: "Rate limit config"
+    fields:
+      config_id: String
+      name: String
+      endpoint: String
+      tier: String
+      requests_per_minute: Int
+      requests_per_hour: Int
+      requests_per_day: Int
+      burst_limit: Int
+      is_active: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANNOUNCEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Announcement:
+    description: "System announcement"
+    fields:
+      announcement_id: String
+      title: String
+      message: String
+      announcement_type: AnnouncementType
+      priority: AnnouncementPriority
+      target_tiers: Option<List<String>>
+      start_at: Timestamp
+      end_at: Option<Timestamp>
+      is_dismissible: Bool
+      action_url: Option<String>
+      action_text: Option<String>
+      created_by: Int
+      created_at: Timestamp
+
+  AnnouncementType:
+    description: "Announcement type"
+    values:
+      - info
+      - warning
+      - maintenance
+      - feature
+      - promotion
+
+  AnnouncementPriority:
+    description: "Announcement priority"
+    values:
+      - low
+      - normal
+      - high
+      - critical
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ConfigError:
+    description: "Config error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - setting_not_found
+      - flag_not_found
+      - invalid_value
+      - validation_failed
+      - readonly_setting
+      - permission_denied
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: ManagerConfig
+    when: Creating manager
+    then: Return ConfigManager
+
+  - name: initialize
+    given: No parameters
+    when: Initializing manager
+    then: Load all configs
+
+  - name: refresh_cache
+    given: No parameters
+    when: Refreshing cache
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FEATURE FLAGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_flag
+    given: Flag details
+    when: Creating flag
+    then: Return FeatureFlag
+
+  - name: get_flag
+    given: Flag ID
+    when: Getting flag
+    then: Return FeatureFlag
+
+  - name: update_flag
+    given: Flag ID and updates
+    when: Updating flag
+    then: Return FeatureFlag
+
+  - name: delete_flag
+    given: Flag ID
+    when: Deleting flag
+    then: Return success
+
+  - name: evaluate_flag
+    given: Flag ID and user ID
+    when: Evaluating flag
+    then: Return FlagEvaluation
+
+  - name: is_enabled
+    given: Flag ID and user ID
+    when: Checking if enabled
+    then: Return boolean
+
+  - name: get_all_flags
+    given: No parameters
+    when: Getting all flags
+    then: Return flag list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SETTINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_setting
+    given: Key
+    when: Getting setting
+    then: Return Setting
+
+  - name: get_setting_value
+    given: Key
+    when: Getting value
+    then: Return value string
+
+  - name: set_setting
+    given: SettingUpdate
+    when: Setting value
+    then: Return Setting
+
+  - name: get_settings_by_category
+    given: Category
+    when: Getting by category
+    then: Return setting list
+
+  - name: get_all_settings
+    given: No parameters
+    when: Getting all
+    then: Return setting list
+
+  - name: reset_to_default
+    given: Key
+    when: Resetting
+    then: Return Setting
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enable_maintenance
+    given: Type and message
+    when: Enabling maintenance
+    then: Return MaintenanceMode
+
+  - name: disable_maintenance
+    given: No parameters
+    when: Disabling maintenance
+    then: Return success
+
+  - name: get_maintenance_status
+    given: No parameters
+    when: Getting status
+    then: Return MaintenanceMode
+
+  - name: schedule_maintenance
+    given: MaintenanceSchedule
+    when: Scheduling
+    then: Return schedule
+
+  - name: cancel_scheduled_maintenance
+    given: Schedule ID
+    when: Cancelling
+    then: Return success
+
+  - name: is_maintenance_active
+    given: No parameters
+    when: Checking
+    then: Return boolean
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # A/B TESTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_test
+    given: Test details
+    when: Creating test
+    then: Return ABTest
+
+  - name: get_test
+    given: Test ID
+    when: Getting test
+    then: Return ABTest
+
+  - name: start_test
+    given: Test ID
+    when: Starting test
+    then: Return ABTest
+
+  - name: pause_test
+    given: Test ID
+    when: Pausing test
+    then: Return ABTest
+
+  - name: complete_test
+    given: Test ID
+    when: Completing test
+    then: Return TestResult
+
+  - name: get_user_variant
+    given: Test ID and user ID
+    when: Getting variant
+    then: Return TestAssignment
+
+  - name: record_conversion
+    given: Test ID and user ID
+    when: Recording conversion
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ANNOUNCEMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_announcement
+    given: Announcement details
+    when: Creating announcement
+    then: Return Announcement
+
+  - name: get_active_announcements
+    given: User tier
+    when: Getting announcements
+    then: Return announcement list
+
+  - name: dismiss_announcement
+    given: Announcement ID and user ID
+    when: Dismissing
+    then: Return success
+
+  - name: delete_announcement
+    given: Announcement ID
+    when: Deleting
+    then: Return success
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CACHE_TTL: 60
+  DEFAULT_REFRESH_INTERVAL: 300
+
+  # Feature flags
+  DEFAULT_ROLLOUT_PERCENTAGE: 0
+  MAX_ROLLOUT_PERCENTAGE: 100
+
+  # A/B tests
+  MIN_SAMPLE_SIZE: 100
+  DEFAULT_CONFIDENCE_LEVEL: 0.95
+
+  # Maintenance
+  DEFAULT_NOTIFY_BEFORE_MINUTES: 30
+  MAX_MAINTENANCE_DURATION_HOURS: 24
+
+  # Settings categories
+  CATEGORY_GENERAL: "general"
+  CATEGORY_LIMITS: "limits"
+  CATEGORY_PRICING: "pricing"
+  CATEGORY_AI_MODELS: "ai_models"

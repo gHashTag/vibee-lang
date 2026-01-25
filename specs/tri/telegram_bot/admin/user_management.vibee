@@ -1,0 +1,606 @@
+name: user_management
+version: "1.0.0"
+language: zig
+module: user_management
+
+description: |
+  User management for VIBEE Telegram bot admin.
+  User CRUD, roles, permissions, bans, verification.
+  Supports bulk operations and user search.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  UserManager:
+    description: "User manager"
+    fields:
+      config: ManagerConfig
+      database: Object
+      cache: Object
+      audit_log: Object
+      stats: ManagerStats
+      is_initialized: Bool
+
+  ManagerConfig:
+    description: "Manager configuration"
+    fields:
+      cache_ttl_seconds: Int
+      max_bulk_operations: Int
+      require_2fa_for_admin: Bool
+      auto_ban_threshold: Int
+      verification_required: Bool
+
+  ManagerStats:
+    description: "Manager statistics"
+    fields:
+      total_users: Int
+      active_users: Int
+      banned_users: Int
+      admin_users: Int
+      verified_users: Int
+      operations_today: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  User:
+    description: "User record"
+    fields:
+      user_id: String
+      telegram_id: Int
+      username: Option<String>
+      first_name: String
+      last_name: Option<String>
+      language_code: Option<String>
+      role: UserRole
+      status: UserStatus
+      verification: VerificationStatus
+      subscription: Option<SubscriptionInfo>
+      stats: UserStats
+      flags: UserFlags
+      created_at: Timestamp
+      updated_at: Timestamp
+      last_active_at: Option<Timestamp>
+      metadata: Object
+
+  UserRole:
+    description: "User role"
+    values:
+      - user
+      - premium
+      - moderator
+      - admin
+      - super_admin
+
+  UserStatus:
+    description: "User status"
+    values:
+      - active
+      - inactive
+      - suspended
+      - banned
+      - deleted
+
+  VerificationStatus:
+    description: "Verification status"
+    values:
+      - unverified
+      - pending
+      - verified
+      - rejected
+
+  SubscriptionInfo:
+    description: "Subscription info"
+    fields:
+      tier: String
+      expires_at: Timestamp
+      auto_renew: Bool
+
+  UserStats:
+    description: "User stats"
+    fields:
+      total_generations: Int
+      total_spent_stars: Int
+      total_messages: Int
+      referrals_count: Int
+      reports_received: Int
+      warnings_count: Int
+
+  UserFlags:
+    description: "User flags"
+    fields:
+      is_bot: Bool
+      is_premium_telegram: Bool
+      has_avatar: Bool
+      email_verified: Bool
+      phone_verified: Bool
+      two_factor_enabled: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CreateUserInput:
+    description: "Create user input"
+    fields:
+      telegram_id: Int
+      username: Option<String>
+      first_name: String
+      last_name: Option<String>
+      language_code: Option<String>
+      referrer_id: Option<Int>
+
+  UpdateUserInput:
+    description: "Update user input"
+    fields:
+      user_id: String
+      username: Option<String>
+      first_name: Option<String>
+      last_name: Option<String>
+      language_code: Option<String>
+      role: Option<UserRole>
+      metadata: Option<Object>
+
+  UserSearchQuery:
+    description: "User search query"
+    fields:
+      query: Option<String>
+      telegram_id: Option<Int>
+      username: Option<String>
+      role: Option<UserRole>
+      status: Option<UserStatus>
+      subscription_tier: Option<String>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      min_generations: Option<Int>
+      max_generations: Option<Int>
+      sort_by: SortField
+      sort_order: SortOrder
+      page: Int
+      page_size: Int
+
+  SortField:
+    description: "Sort field"
+    values:
+      - created_at
+      - last_active_at
+      - total_generations
+      - total_spent_stars
+      - username
+
+  SortOrder:
+    description: "Sort order"
+    values:
+      - asc
+      - desc
+
+  UserSearchResult:
+    description: "User search result"
+    fields:
+      users: List<User>
+      total_count: Int
+      page: Int
+      page_size: Int
+      has_more: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BANS & SUSPENSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Ban:
+    description: "User ban"
+    fields:
+      ban_id: String
+      user_id: String
+      telegram_id: Int
+      ban_type: BanType
+      reason: String
+      evidence: Option<List<String>>
+      banned_by: Int
+      expires_at: Option<Timestamp>
+      is_active: Bool
+      created_at: Timestamp
+      lifted_at: Option<Timestamp>
+      lifted_by: Option<Int>
+
+  BanType:
+    description: "Ban type"
+    values:
+      - temporary
+      - permanent
+      - shadow
+      - feature_restricted
+
+  BanInput:
+    description: "Ban input"
+    fields:
+      user_id: String
+      ban_type: BanType
+      reason: String
+      evidence: Option<List<String>>
+      duration_hours: Option<Int>
+      notify_user: Bool
+
+  Warning:
+    description: "User warning"
+    fields:
+      warning_id: String
+      user_id: String
+      reason: String
+      severity: WarningSeverity
+      issued_by: Int
+      acknowledged: Bool
+      created_at: Timestamp
+
+  WarningSeverity:
+    description: "Warning severity"
+    values:
+      - low
+      - medium
+      - high
+      - critical
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROLES & PERMISSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Permission:
+    description: "Permission"
+    values:
+      - view_users
+      - edit_users
+      - ban_users
+      - delete_users
+      - view_analytics
+      - manage_content
+      - manage_payments
+      - manage_subscriptions
+      - manage_avatars
+      - manage_system
+      - super_admin
+
+  RolePermissions:
+    description: "Role permissions"
+    fields:
+      role: UserRole
+      permissions: List<Permission>
+
+  PermissionCheck:
+    description: "Permission check result"
+    fields:
+      allowed: Bool
+      missing_permissions: List<Permission>
+      reason: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VERIFICATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  VerificationRequest:
+    description: "Verification request"
+    fields:
+      request_id: String
+      user_id: String
+      verification_type: VerificationType
+      status: VerificationStatus
+      documents: List<Document>
+      reviewer_id: Option<Int>
+      review_notes: Option<String>
+      created_at: Timestamp
+      reviewed_at: Option<Timestamp>
+
+  VerificationType:
+    description: "Verification type"
+    values:
+      - identity
+      - age
+      - creator
+      - business
+
+  Document:
+    description: "Verification document"
+    fields:
+      document_id: String
+      document_type: String
+      file_url: String
+      uploaded_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BULK OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  BulkOperation:
+    description: "Bulk operation"
+    fields:
+      operation_id: String
+      operation_type: BulkOperationType
+      user_ids: List<String>
+      parameters: Object
+      status: BulkStatus
+      processed: Int
+      failed: Int
+      errors: List<BulkError>
+      started_by: Int
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  BulkOperationType:
+    description: "Bulk operation type"
+    values:
+      - ban
+      - unban
+      - warn
+      - update_role
+      - send_notification
+      - delete
+      - export
+
+  BulkStatus:
+    description: "Bulk status"
+    values:
+      - pending
+      - processing
+      - completed
+      - failed
+      - cancelled
+
+  BulkError:
+    description: "Bulk error"
+    fields:
+      user_id: String
+      error_code: String
+      error_message: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UserError:
+    description: "User error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - user_not_found
+      - user_already_exists
+      - invalid_role
+      - permission_denied
+      - already_banned
+      - not_banned
+      - invalid_input
+      - bulk_limit_exceeded
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: ManagerConfig
+    when: Creating manager
+    then: Return UserManager
+
+  - name: initialize
+    given: No parameters
+    when: Initializing manager
+    then: Setup connections
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ManagerStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER CRUD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_user
+    given: CreateUserInput
+    when: Creating user
+    then: Return User
+
+  - name: get_user
+    given: User ID
+    when: Getting user
+    then: Return User
+
+  - name: get_user_by_telegram_id
+    given: Telegram ID
+    when: Getting user
+    then: Return User
+
+  - name: update_user
+    given: UpdateUserInput
+    when: Updating user
+    then: Return User
+
+  - name: delete_user
+    given: User ID
+    when: Deleting user
+    then: Return success
+
+  - name: search_users
+    given: UserSearchQuery
+    when: Searching users
+    then: Return UserSearchResult
+
+  - name: get_recent_users
+    given: Limit
+    when: Getting recent
+    then: Return user list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BANS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: ban_user
+    given: BanInput
+    when: Banning user
+    then: Return Ban
+
+  - name: unban_user
+    given: User ID and admin ID
+    when: Unbanning user
+    then: Return success
+
+  - name: get_ban
+    given: Ban ID
+    when: Getting ban
+    then: Return Ban
+
+  - name: get_user_bans
+    given: User ID
+    when: Getting user bans
+    then: Return ban list
+
+  - name: is_banned
+    given: User ID
+    when: Checking ban
+    then: Return boolean
+
+  - name: get_active_bans
+    given: Page and limit
+    when: Getting active bans
+    then: Return ban list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WARNINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: warn_user
+    given: User ID, reason, severity
+    when: Warning user
+    then: Return Warning
+
+  - name: get_user_warnings
+    given: User ID
+    when: Getting warnings
+    then: Return warning list
+
+  - name: acknowledge_warning
+    given: Warning ID
+    when: Acknowledging
+    then: Return success
+
+  - name: clear_warnings
+    given: User ID
+    when: Clearing warnings
+    then: Return cleared count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROLES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_role
+    given: User ID and role
+    when: Setting role
+    then: Return User
+
+  - name: check_permission
+    given: User ID and permission
+    when: Checking permission
+    then: Return PermissionCheck
+
+  - name: get_role_permissions
+    given: Role
+    when: Getting permissions
+    then: Return RolePermissions
+
+  - name: get_users_by_role
+    given: Role
+    when: Getting users
+    then: Return user list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VERIFICATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: submit_verification
+    given: User ID and documents
+    when: Submitting verification
+    then: Return VerificationRequest
+
+  - name: review_verification
+    given: Request ID and decision
+    when: Reviewing
+    then: Return VerificationRequest
+
+  - name: get_pending_verifications
+    given: Page and limit
+    when: Getting pending
+    then: Return request list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BULK OPERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: bulk_ban
+    given: User IDs and reason
+    when: Bulk banning
+    then: Return BulkOperation
+
+  - name: bulk_update_role
+    given: User IDs and role
+    when: Bulk updating
+    then: Return BulkOperation
+
+  - name: bulk_notify
+    given: User IDs and message
+    when: Bulk notifying
+    then: Return BulkOperation
+
+  - name: get_bulk_operation
+    given: Operation ID
+    when: Getting operation
+    then: Return BulkOperation
+
+  - name: cancel_bulk_operation
+    given: Operation ID
+    when: Cancelling
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPORT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: export_users
+    given: Query and format
+    when: Exporting users
+    then: Return export URL
+
+  - name: export_user_data
+    given: User ID
+    when: Exporting user data
+    then: Return export data
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CACHE_TTL: 300
+  DEFAULT_PAGE_SIZE: 50
+  MAX_PAGE_SIZE: 100
+  MAX_BULK_OPERATIONS: 1000
+
+  # Ban defaults
+  DEFAULT_BAN_DURATION_HOURS: 24
+  MAX_BAN_DURATION_HOURS: 8760
+  AUTO_BAN_WARNING_THRESHOLD: 3
+
+  # Roles
+  ROLE_USER_PERMISSIONS: "view_users"
+  ROLE_MODERATOR_PERMISSIONS: "view_users,ban_users,manage_content"
+  ROLE_ADMIN_PERMISSIONS: "view_users,edit_users,ban_users,view_analytics,manage_content,manage_payments"
+  ROLE_SUPER_ADMIN_PERMISSIONS: "super_admin"

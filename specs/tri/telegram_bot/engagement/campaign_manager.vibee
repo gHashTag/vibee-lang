@@ -1,0 +1,574 @@
+name: campaign_manager
+version: "1.0.0"
+language: zig
+module: campaign_manager
+
+description: |
+  Campaign manager for VIBEE Telegram bot.
+  Engagement campaigns, re-engagement flows, drip sequences.
+  Supports targeting, scheduling, A/B testing.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  CampaignManager:
+    description: "Campaign manager"
+    fields:
+      config: ManagerConfig
+      database: Object
+      scheduler: Object
+      notification_service: Object
+      stats: ManagerStats
+      is_initialized: Bool
+
+  ManagerConfig:
+    description: "Manager configuration"
+    fields:
+      max_active_campaigns: Int
+      max_messages_per_day: Int
+      default_send_window_start: Int
+      default_send_window_end: Int
+      enable_ab_testing: Bool
+
+  ManagerStats:
+    description: "Manager statistics"
+    fields:
+      active_campaigns: Int
+      total_campaigns: Int
+      messages_sent_today: Int
+      total_messages_sent: Int
+      avg_open_rate: Float
+      avg_click_rate: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGNS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Campaign:
+    description: "Engagement campaign"
+    fields:
+      campaign_id: String
+      name: String
+      description: String
+      campaign_type: CampaignType
+      status: CampaignStatus
+      targeting: TargetingRules
+      content: CampaignContent
+      schedule: CampaignSchedule
+      ab_test: Option<ABTestConfig>
+      metrics: CampaignMetrics
+      budget: Option<CampaignBudget>
+      created_by: Int
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  CampaignType:
+    description: "Campaign type"
+    values:
+      - one_time
+      - recurring
+      - drip_sequence
+      - triggered
+      - re_engagement
+      - onboarding
+      - promotional
+
+  CampaignStatus:
+    description: "Campaign status"
+    values:
+      - draft
+      - scheduled
+      - active
+      - paused
+      - completed
+      - cancelled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TARGETING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TargetingRules:
+    description: "Targeting rules"
+    fields:
+      include_all: Bool
+      user_segments: Option<List<String>>
+      subscription_tiers: Option<List<String>>
+      user_status: Option<List<String>>
+      registration_date_range: Option<DateRange>
+      last_active_range: Option<DateRange>
+      generation_count_range: Option<IntRange>
+      spent_stars_range: Option<IntRange>
+      countries: Option<List<String>>
+      languages: Option<List<String>>
+      has_avatar: Option<Bool>
+      exclude_users: Option<List<Int>>
+
+  DateRange:
+    description: "Date range"
+    fields:
+      start: Option<Timestamp>
+      end: Option<Timestamp>
+
+  IntRange:
+    description: "Integer range"
+    fields:
+      min: Option<Int>
+      max: Option<Int>
+
+  TargetAudience:
+    description: "Target audience"
+    fields:
+      total_users: Int
+      estimated_reach: Int
+      segments_breakdown: List<SegmentCount>
+
+  SegmentCount:
+    description: "Segment count"
+    fields:
+      segment: String
+      count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CampaignContent:
+    description: "Campaign content"
+    fields:
+      messages: List<CampaignMessage>
+      default_language: String
+      personalization: PersonalizationConfig
+
+  CampaignMessage:
+    description: "Campaign message"
+    fields:
+      message_id: String
+      language: String
+      text: String
+      parse_mode: ParseMode
+      media: Option<MediaAttachment>
+      buttons: Option<List<MessageButton>>
+      preview_disabled: Bool
+
+  ParseMode:
+    description: "Parse mode"
+    values:
+      - plain
+      - markdown
+      - html
+
+  MediaAttachment:
+    description: "Media attachment"
+    fields:
+      media_type: MediaType
+      url: String
+      caption: Option<String>
+
+  MediaType:
+    description: "Media type"
+    values:
+      - photo
+      - video
+      - animation
+      - document
+
+  MessageButton:
+    description: "Message button"
+    fields:
+      text: String
+      button_type: ButtonType
+      data: String
+
+  ButtonType:
+    description: "Button type"
+    values:
+      - url
+      - callback
+      - webapp
+
+  PersonalizationConfig:
+    description: "Personalization config"
+    fields:
+      use_first_name: Bool
+      use_username: Bool
+      use_language: Bool
+      custom_variables: List<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCHEDULE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CampaignSchedule:
+    description: "Campaign schedule"
+    fields:
+      schedule_type: ScheduleType
+      start_at: Timestamp
+      end_at: Option<Timestamp>
+      send_window: Option<SendWindow>
+      recurrence: Option<RecurrenceRule>
+      drip_steps: Option<List<DripStep>>
+      trigger: Option<TriggerConfig>
+
+  ScheduleType:
+    description: "Schedule type"
+    values:
+      - immediate
+      - scheduled
+      - recurring
+      - drip
+      - triggered
+
+  SendWindow:
+    description: "Send window"
+    fields:
+      start_hour: Int
+      end_hour: Int
+      timezone: String
+      days_of_week: List<Int>
+
+  RecurrenceRule:
+    description: "Recurrence rule"
+    fields:
+      frequency: RecurrenceFrequency
+      interval: Int
+      max_occurrences: Option<Int>
+
+  RecurrenceFrequency:
+    description: "Recurrence frequency"
+    values:
+      - daily
+      - weekly
+      - monthly
+
+  DripStep:
+    description: "Drip step"
+    fields:
+      step_id: String
+      step_number: Int
+      delay_hours: Int
+      message_id: String
+      condition: Option<StepCondition>
+
+  StepCondition:
+    description: "Step condition"
+    fields:
+      condition_type: ConditionType
+      value: String
+
+  ConditionType:
+    description: "Condition type"
+    values:
+      - opened_previous
+      - clicked_previous
+      - completed_action
+      - has_subscription
+
+  TriggerConfig:
+    description: "Trigger config"
+    fields:
+      trigger_type: TriggerType
+      trigger_value: String
+      delay_minutes: Int
+
+  TriggerType:
+    description: "Trigger type"
+    values:
+      - user_signup
+      - first_generation
+      - subscription_expired
+      - inactive_days
+      - achievement_unlocked
+      - referral_signup
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # A/B TESTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ABTestConfig:
+    description: "A/B test config"
+    fields:
+      variants: List<ABVariant>
+      traffic_split: List<Int>
+      winning_metric: WinningMetric
+      min_sample_size: Int
+      auto_select_winner: Bool
+
+  ABVariant:
+    description: "A/B variant"
+    fields:
+      variant_id: String
+      name: String
+      content: CampaignContent
+
+  WinningMetric:
+    description: "Winning metric"
+    values:
+      - open_rate
+      - click_rate
+      - conversion_rate
+      - engagement_score
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CampaignMetrics:
+    description: "Campaign metrics"
+    fields:
+      total_targeted: Int
+      total_sent: Int
+      total_delivered: Int
+      total_opened: Int
+      total_clicked: Int
+      total_converted: Int
+      total_unsubscribed: Int
+      delivery_rate: Float
+      open_rate: Float
+      click_rate: Float
+      conversion_rate: Float
+      unsubscribe_rate: Float
+
+  CampaignBudget:
+    description: "Campaign budget"
+    fields:
+      max_messages: Int
+      max_cost_stars: Int
+      messages_sent: Int
+      cost_spent_stars: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELIVERY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  DeliveryRecord:
+    description: "Delivery record"
+    fields:
+      record_id: String
+      campaign_id: String
+      user_id: Int
+      message_id: String
+      variant_id: Option<String>
+      status: DeliveryStatus
+      sent_at: Timestamp
+      delivered_at: Option<Timestamp>
+      opened_at: Option<Timestamp>
+      clicked_at: Option<Timestamp>
+      error: Option<String>
+
+  DeliveryStatus:
+    description: "Delivery status"
+    values:
+      - pending
+      - sent
+      - delivered
+      - failed
+      - blocked
+      - unsubscribed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CampaignError:
+    description: "Campaign error"
+    fields:
+      code: ErrorCode
+      message: String
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - campaign_not_found
+      - invalid_targeting
+      - invalid_schedule
+      - budget_exceeded
+      - rate_limited
+      - permission_denied
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: ManagerConfig
+    when: Creating manager
+    then: Return CampaignManager
+
+  - name: initialize
+    given: No parameters
+    when: Initializing manager
+    then: Setup connections
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ManagerStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGN CRUD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_campaign
+    given: Campaign details
+    when: Creating campaign
+    then: Return Campaign
+
+  - name: get_campaign
+    given: Campaign ID
+    when: Getting campaign
+    then: Return Campaign
+
+  - name: update_campaign
+    given: Campaign ID and updates
+    when: Updating campaign
+    then: Return Campaign
+
+  - name: delete_campaign
+    given: Campaign ID
+    when: Deleting campaign
+    then: Return success
+
+  - name: list_campaigns
+    given: Filters and pagination
+    when: Listing campaigns
+    then: Return campaign list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CAMPAIGN CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_campaign
+    given: Campaign ID
+    when: Starting campaign
+    then: Return Campaign
+
+  - name: pause_campaign
+    given: Campaign ID
+    when: Pausing campaign
+    then: Return Campaign
+
+  - name: resume_campaign
+    given: Campaign ID
+    when: Resuming campaign
+    then: Return Campaign
+
+  - name: cancel_campaign
+    given: Campaign ID
+    when: Cancelling campaign
+    then: Return Campaign
+
+  - name: duplicate_campaign
+    given: Campaign ID
+    when: Duplicating campaign
+    then: Return Campaign
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TARGETING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_audience
+    given: TargetingRules
+    when: Estimating audience
+    then: Return TargetAudience
+
+  - name: preview_recipients
+    given: Campaign ID and limit
+    when: Previewing recipients
+    then: Return user list
+
+  - name: validate_targeting
+    given: TargetingRules
+    when: Validating targeting
+    then: Return validation result
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DELIVERY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: send_campaign
+    given: Campaign ID
+    when: Sending campaign
+    then: Return delivery count
+
+  - name: send_test
+    given: Campaign ID and user IDs
+    when: Sending test
+    then: Return delivery results
+
+  - name: get_delivery_records
+    given: Campaign ID and filters
+    when: Getting records
+    then: Return record list
+
+  - name: retry_failed
+    given: Campaign ID
+    when: Retrying failed
+    then: Return retry count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_metrics
+    given: Campaign ID
+    when: Getting metrics
+    then: Return CampaignMetrics
+
+  - name: record_open
+    given: Record ID
+    when: Recording open
+    then: Return success
+
+  - name: record_click
+    given: Record ID and button
+    when: Recording click
+    then: Return success
+
+  - name: record_conversion
+    given: Record ID
+    when: Recording conversion
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # A/B TESTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_ab_results
+    given: Campaign ID
+    when: Getting A/B results
+    then: Return variant results
+
+  - name: select_winner
+    given: Campaign ID and variant ID
+    when: Selecting winner
+    then: Return Campaign
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_ACTIVE_CAMPAIGNS: 10
+  DEFAULT_MAX_MESSAGES_PER_DAY: 100000
+  DEFAULT_SEND_WINDOW_START: 9
+  DEFAULT_SEND_WINDOW_END: 21
+
+  # Rate limits
+  MESSAGES_PER_SECOND: 30
+  MESSAGES_PER_MINUTE: 1000
+
+  # A/B testing
+  DEFAULT_MIN_SAMPLE_SIZE: 100
+  DEFAULT_CONFIDENCE_LEVEL: 0.95
+
+  # Drip campaigns
+  MAX_DRIP_STEPS: 20
+  MIN_DRIP_DELAY_HOURS: 1
