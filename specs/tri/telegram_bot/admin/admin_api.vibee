@@ -1,0 +1,473 @@
+name: admin_api
+version: "1.0.0"
+language: zig
+module: admin_api
+
+description: |
+  Admin API for VIBEE Telegram bot.
+  User management, system configuration, dashboard data.
+  Role-based access control.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AdminService:
+    description: "Admin service instance"
+    fields:
+      config: AdminConfig
+      is_initialized: Bool
+
+  AdminConfig:
+    description: "Admin configuration"
+    fields:
+      super_admins: List<Int>
+      admin_chat_id: Option<Int>
+      require_2fa: Bool
+      session_timeout_hours: Int
+
+  AdminUser:
+    description: "Admin user"
+    fields:
+      admin_id: String
+      telegram_id: Int
+      username: String
+      role: AdminRole
+      permissions: List<Permission>
+      is_active: Bool
+      last_login: Option<Timestamp>
+      created_at: Timestamp
+      created_by: Int
+
+  AdminRole:
+    description: "Admin role"
+    values:
+      - super_admin
+      - admin
+      - moderator
+      - support
+      - analyst
+      - readonly
+
+  Permission:
+    description: "Admin permission"
+    values:
+      - users_view
+      - users_edit
+      - users_ban
+      - users_delete
+      - payments_view
+      - payments_refund
+      - subscriptions_view
+      - subscriptions_edit
+      - generations_view
+      - generations_cancel
+      - broadcasts_create
+      - broadcasts_send
+      - settings_view
+      - settings_edit
+      - admins_view
+      - admins_edit
+      - logs_view
+      - analytics_view
+      - moderation_view
+      - moderation_action
+
+  AdminSession:
+    description: "Admin session"
+    fields:
+      session_id: String
+      admin_id: String
+      telegram_id: Int
+      ip_address: Option<String>
+      user_agent: Option<String>
+      created_at: Timestamp
+      expires_at: Timestamp
+      is_active: Bool
+
+  DashboardData:
+    description: "Dashboard overview"
+    fields:
+      users: UserStats
+      revenue: RevenueStats
+      generations: GenerationStats
+      system: SystemStats
+      updated_at: Timestamp
+
+  UserStats:
+    description: "User statistics"
+    fields:
+      total_users: Int
+      active_today: Int
+      active_week: Int
+      active_month: Int
+      new_today: Int
+      new_week: Int
+      premium_users: Int
+      banned_users: Int
+
+  RevenueStats:
+    description: "Revenue statistics"
+    fields:
+      today_stars: Int
+      today_usd: Float
+      week_stars: Int
+      week_usd: Float
+      month_stars: Int
+      month_usd: Float
+      total_stars: Int
+      total_usd: Float
+      avg_transaction: Float
+
+  GenerationStats:
+    description: "Generation statistics"
+    fields:
+      today_count: Int
+      week_count: Int
+      month_count: Int
+      total_count: Int
+      success_rate: Float
+      avg_time_ms: Int
+      by_type: Object
+      by_model: Object
+
+  SystemStats:
+    description: "System statistics"
+    fields:
+      uptime_seconds: Int
+      memory_used_mb: Int
+      memory_total_mb: Int
+      cpu_percent: Float
+      queue_size: Int
+      active_sessions: Int
+      error_rate: Float
+
+  UserSearchResult:
+    description: "User search result"
+    fields:
+      users: List<Object>
+      total_count: Int
+      page: Int
+      per_page: Int
+
+  UserFilter:
+    description: "User filter"
+    fields:
+      telegram_id: Option<Int>
+      username: Option<String>
+      is_premium: Option<Bool>
+      is_banned: Option<Bool>
+      balance_min: Option<Int>
+      balance_max: Option<Int>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      last_active_after: Option<Timestamp>
+      page: Int
+      per_page: Int
+
+  SystemConfig:
+    description: "System configuration"
+    fields:
+      maintenance_mode: Bool
+      registration_enabled: Bool
+      payments_enabled: Bool
+      generations_enabled: Bool
+      rate_limits: Object
+      feature_flags: Object
+
+  ConfigUpdate:
+    description: "Configuration update"
+    fields:
+      key: String
+      value: String
+      updated_by: Int
+      updated_at: Timestamp
+
+  AdminAction:
+    description: "Admin action record"
+    fields:
+      action_id: String
+      admin_id: String
+      action_type: ActionType
+      target_type: String
+      target_id: String
+      details: Object
+      timestamp: Timestamp
+
+  ActionType:
+    description: "Action type"
+    values:
+      - user_view
+      - user_edit
+      - user_ban
+      - user_unban
+      - user_delete
+      - balance_adjust
+      - subscription_change
+      - refund_issue
+      - broadcast_send
+      - config_change
+      - admin_create
+      - admin_edit
+      - admin_delete
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: AdminConfig
+    when: Initializing service
+    then: Return AdminService
+
+  - name: is_super_admin
+    given: Telegram ID
+    when: Checking super admin
+    then: Return true if super admin
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ADMIN MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_admin
+    given: AdminUser data
+    when: Creating admin
+    then: Return AdminUser
+
+  - name: get_admin
+    given: Admin ID
+    when: Getting admin
+    then: Return AdminUser or null
+
+  - name: get_admin_by_telegram_id
+    given: Telegram ID
+    when: Finding admin
+    then: Return AdminUser or null
+
+  - name: update_admin
+    given: Admin ID and updates
+    when: Updating admin
+    then: Return updated AdminUser
+
+  - name: delete_admin
+    given: Admin ID
+    when: Deleting admin
+    then: Remove admin
+
+  - name: list_admins
+    given: Optional filter
+    when: Listing admins
+    then: Return admin list
+
+  - name: set_admin_role
+    given: Admin ID and role
+    when: Setting role
+    then: Update role
+
+  - name: add_permission
+    given: Admin ID and permission
+    when: Adding permission
+    then: Add to permissions
+
+  - name: remove_permission
+    given: Admin ID and permission
+    when: Removing permission
+    then: Remove from permissions
+
+  - name: has_permission
+    given: Admin ID and permission
+    when: Checking permission
+    then: Return true if has
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_session
+    given: Admin ID
+    when: Creating session
+    then: Return AdminSession
+
+  - name: validate_session
+    given: Session ID
+    when: Validating session
+    then: Return true if valid
+
+  - name: end_session
+    given: Session ID
+    when: Ending session
+    then: Invalidate session
+
+  - name: end_all_sessions
+    given: Admin ID
+    when: Ending all sessions
+    then: Invalidate all
+
+  - name: get_active_sessions
+    given: Admin ID
+    when: Getting sessions
+    then: Return active sessions
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DASHBOARD
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_dashboard
+    given: No parameters
+    when: Getting dashboard
+    then: Return DashboardData
+
+  - name: get_user_stats
+    given: Date range
+    when: Getting user stats
+    then: Return UserStats
+
+  - name: get_revenue_stats
+    given: Date range
+    when: Getting revenue stats
+    then: Return RevenueStats
+
+  - name: get_generation_stats
+    given: Date range
+    when: Getting generation stats
+    then: Return GenerationStats
+
+  - name: get_system_stats
+    given: No parameters
+    when: Getting system stats
+    then: Return SystemStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: search_users
+    given: UserFilter
+    when: Searching users
+    then: Return UserSearchResult
+
+  - name: get_user_details
+    given: Telegram ID
+    when: Getting user details
+    then: Return full user info
+
+  - name: ban_user
+    given: Telegram ID and reason
+    when: Banning user
+    then: Ban user
+
+  - name: unban_user
+    given: Telegram ID
+    when: Unbanning user
+    then: Unban user
+
+  - name: adjust_balance
+    given: Telegram ID, amount, reason
+    when: Adjusting balance
+    then: Update balance
+
+  - name: reset_user_data
+    given: Telegram ID
+    when: Resetting user
+    then: Clear user data
+
+  - name: delete_user
+    given: Telegram ID
+    when: Deleting user
+    then: Remove user
+
+  - name: export_users
+    given: UserFilter and format
+    when: Exporting users
+    then: Return export file
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONFIGURATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_config
+    given: No parameters
+    when: Getting config
+    then: Return SystemConfig
+
+  - name: update_config
+    given: Key and value
+    when: Updating config
+    then: Update and return
+
+  - name: set_maintenance_mode
+    given: Enabled flag
+    when: Setting maintenance
+    then: Enable/disable
+
+  - name: toggle_feature
+    given: Feature name and enabled
+    when: Toggling feature
+    then: Update feature flag
+
+  - name: get_config_history
+    given: Key and limit
+    when: Getting history
+    then: Return changes
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_action
+    given: AdminAction
+    when: Logging action
+    then: Store action
+
+  - name: get_admin_actions
+    given: Admin ID and limit
+    when: Getting actions
+    then: Return action list
+
+  - name: get_recent_actions
+    given: Limit
+    when: Getting recent
+    then: Return recent actions
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # NOTIFICATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: notify_admins
+    given: Message and priority
+    when: Notifying admins
+    then: Send to admin chat
+
+  - name: alert_super_admins
+    given: Alert message
+    when: Alerting super admins
+    then: Send urgent alert
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_SESSION_TIMEOUT_HOURS: 24
+  MAX_SESSION_TIMEOUT_HOURS: 168
+  MAX_ADMINS: 100
+
+  ROLE_SUPER_ADMIN: "super_admin"
+  ROLE_ADMIN: "admin"
+  ROLE_MODERATOR: "moderator"
+  ROLE_SUPPORT: "support"
+  ROLE_ANALYST: "analyst"
+
+  PERMISSION_ALL: "*"
+
+  EXPORT_FORMAT_CSV: "csv"
+  EXPORT_FORMAT_JSON: "json"
+  EXPORT_FORMAT_XLSX: "xlsx"
+
+  ACTION_LOG_RETENTION_DAYS: 365

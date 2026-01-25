@@ -1,0 +1,532 @@
+name: moderation
+version: "1.0.0"
+language: zig
+module: moderation
+
+description: |
+  Content moderation for VIBEE Telegram bot.
+  NSFW detection, prompt filtering, user reports, appeals.
+  Automated and manual moderation workflows.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ModerationService:
+    description: "Moderation service instance"
+    fields:
+      config: ModerationConfig
+      is_running: Bool
+
+  ModerationConfig:
+    description: "Moderation configuration"
+    fields:
+      auto_moderation_enabled: Bool
+      nsfw_threshold: Float
+      toxicity_threshold: Float
+      spam_threshold: Float
+      require_manual_review: Bool
+      appeal_enabled: Bool
+      appeal_cooldown_hours: Int
+
+  ContentReport:
+    description: "Content report"
+    fields:
+      report_id: String
+      content_type: ContentType
+      content_id: String
+      content_url: Option<String>
+      reported_by: Int
+      reported_user: Int
+      reason: ReportReason
+      description: Option<String>
+      status: ReportStatus
+      assigned_to: Option<String>
+      resolution: Option<Resolution>
+      created_at: Timestamp
+      resolved_at: Option<Timestamp>
+      metadata: Object
+
+  ContentType:
+    description: "Content type"
+    values:
+      - prompt
+      - generated_image
+      - generated_video
+      - generated_audio
+      - user_message
+      - profile
+
+  ReportReason:
+    description: "Report reason"
+    values:
+      - nsfw
+      - violence
+      - hate_speech
+      - harassment
+      - spam
+      - copyright
+      - illegal
+      - misinformation
+      - other
+
+  ReportStatus:
+    description: "Report status"
+    values:
+      - pending
+      - under_review
+      - resolved
+      - dismissed
+      - escalated
+
+  Resolution:
+    description: "Report resolution"
+    fields:
+      action: ModerationAction
+      reason: String
+      resolved_by: String
+      notes: Option<String>
+
+  ModerationAction:
+    description: "Moderation action"
+    values:
+      - no_action
+      - content_removed
+      - content_hidden
+      - warning_issued
+      - user_muted
+      - user_banned
+      - escalated
+
+  AutoModerationResult:
+    description: "Auto moderation result"
+    fields:
+      content_id: String
+      is_flagged: Bool
+      flags: List<ContentFlag>
+      confidence: Float
+      action_taken: Option<ModerationAction>
+      requires_review: Bool
+
+  ContentFlag:
+    description: "Content flag"
+    fields:
+      category: FlagCategory
+      confidence: Float
+      details: Option<String>
+
+  FlagCategory:
+    description: "Flag category"
+    values:
+      - nsfw_sexual
+      - nsfw_nudity
+      - violence_graphic
+      - violence_threat
+      - hate_speech
+      - harassment
+      - self_harm
+      - spam
+      - copyright
+      - pii
+
+  UserWarning:
+    description: "User warning"
+    fields:
+      warning_id: String
+      telegram_id: Int
+      reason: String
+      severity: WarningSeverity
+      issued_by: String
+      issued_at: Timestamp
+      expires_at: Option<Timestamp>
+      acknowledged: Bool
+
+  WarningSeverity:
+    description: "Warning severity"
+    values:
+      - minor
+      - moderate
+      - severe
+
+  UserBan:
+    description: "User ban"
+    fields:
+      ban_id: String
+      telegram_id: Int
+      reason: String
+      ban_type: BanType
+      banned_by: String
+      banned_at: Timestamp
+      expires_at: Option<Timestamp>
+      is_active: Bool
+      appeal: Option<Appeal>
+
+  BanType:
+    description: "Ban type"
+    values:
+      - temporary
+      - permanent
+      - shadow
+
+  Appeal:
+    description: "Ban appeal"
+    fields:
+      appeal_id: String
+      ban_id: String
+      telegram_id: Int
+      reason: String
+      status: AppealStatus
+      submitted_at: Timestamp
+      reviewed_by: Option<String>
+      reviewed_at: Option<Timestamp>
+      decision: Option<String>
+
+  AppealStatus:
+    description: "Appeal status"
+    values:
+      - pending
+      - under_review
+      - approved
+      - denied
+
+  ForbiddenWord:
+    description: "Forbidden word/phrase"
+    fields:
+      word_id: String
+      word: String
+      category: FlagCategory
+      is_regex: Bool
+      action: ModerationAction
+      is_active: Bool
+      added_by: String
+      added_at: Timestamp
+
+  ModerationQueue:
+    description: "Moderation queue"
+    fields:
+      queue_id: String
+      name: String
+      priority: Int
+      pending_count: Int
+      assigned_count: Int
+
+  ModerationStats:
+    description: "Moderation statistics"
+    fields:
+      total_reports: Int
+      pending_reports: Int
+      resolved_reports: Int
+      avg_resolution_time_hours: Float
+      by_reason: Object
+      by_action: Object
+      auto_flagged: Int
+      false_positives: Int
+
+  ReportFilter:
+    description: "Report filter"
+    fields:
+      status: Option<ReportStatus>
+      reason: Option<ReportReason>
+      content_type: Option<ContentType>
+      reported_user: Option<Int>
+      assigned_to: Option<String>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: ModerationConfig
+    when: Initializing service
+    then: Return ModerationService
+
+  - name: update_config
+    given: Config updates
+    when: Updating config
+    then: Apply updates
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUTO MODERATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_content
+    given: Content type and content
+    when: Checking content
+    then: Return AutoModerationResult
+
+  - name: check_prompt
+    given: Prompt text
+    when: Checking prompt
+    then: Return AutoModerationResult
+
+  - name: check_image
+    given: Image URL
+    when: Checking image
+    then: Return AutoModerationResult
+
+  - name: check_text
+    given: Text content
+    when: Checking text
+    then: Return AutoModerationResult
+
+  - name: is_content_allowed
+    given: Content and user
+    when: Checking if allowed
+    then: Return true if allowed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPORTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_report
+    given: ContentReport data
+    when: Creating report
+    then: Return ContentReport
+
+  - name: get_report
+    given: Report ID
+    when: Getting report
+    then: Return ContentReport or null
+
+  - name: update_report
+    given: Report ID and updates
+    when: Updating report
+    then: Return updated report
+
+  - name: assign_report
+    given: Report ID and moderator
+    when: Assigning report
+    then: Assign to moderator
+
+  - name: resolve_report
+    given: Report ID and resolution
+    when: Resolving report
+    then: Mark as resolved
+
+  - name: dismiss_report
+    given: Report ID and reason
+    when: Dismissing report
+    then: Mark as dismissed
+
+  - name: escalate_report
+    given: Report ID and reason
+    when: Escalating report
+    then: Escalate to senior
+
+  - name: find_reports
+    given: ReportFilter
+    when: Finding reports
+    then: Return filtered list
+
+  - name: get_pending_reports
+    given: Limit
+    when: Getting pending
+    then: Return pending reports
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WARNINGS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: issue_warning
+    given: UserWarning data
+    when: Issuing warning
+    then: Return UserWarning
+
+  - name: get_user_warnings
+    given: Telegram ID
+    when: Getting warnings
+    then: Return warning list
+
+  - name: get_active_warnings
+    given: Telegram ID
+    when: Getting active
+    then: Return active warnings
+
+  - name: acknowledge_warning
+    given: Warning ID
+    when: Acknowledging
+    then: Mark as acknowledged
+
+  - name: expire_warning
+    given: Warning ID
+    when: Expiring warning
+    then: Mark as expired
+
+  - name: get_warning_count
+    given: Telegram ID
+    when: Counting warnings
+    then: Return count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BANS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: ban_user
+    given: UserBan data
+    when: Banning user
+    then: Return UserBan
+
+  - name: unban_user
+    given: Telegram ID and reason
+    when: Unbanning user
+    then: Remove ban
+
+  - name: get_ban
+    given: Telegram ID
+    when: Getting ban
+    then: Return UserBan or null
+
+  - name: is_banned
+    given: Telegram ID
+    when: Checking ban
+    then: Return true if banned
+
+  - name: get_ban_history
+    given: Telegram ID
+    when: Getting history
+    then: Return ban list
+
+  - name: extend_ban
+    given: Ban ID and duration
+    when: Extending ban
+    then: Update expiry
+
+  - name: reduce_ban
+    given: Ban ID and new expiry
+    when: Reducing ban
+    then: Update expiry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # APPEALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: submit_appeal
+    given: Appeal data
+    when: Submitting appeal
+    then: Return Appeal
+
+  - name: get_appeal
+    given: Appeal ID
+    when: Getting appeal
+    then: Return Appeal or null
+
+  - name: review_appeal
+    given: Appeal ID and decision
+    when: Reviewing appeal
+    then: Update appeal
+
+  - name: approve_appeal
+    given: Appeal ID
+    when: Approving appeal
+    then: Unban user
+
+  - name: deny_appeal
+    given: Appeal ID and reason
+    when: Denying appeal
+    then: Keep ban
+
+  - name: can_appeal
+    given: Telegram ID
+    when: Checking appeal eligibility
+    then: Return true if can appeal
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FORBIDDEN WORDS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_forbidden_word
+    given: ForbiddenWord data
+    when: Adding word
+    then: Return ForbiddenWord
+
+  - name: remove_forbidden_word
+    given: Word ID
+    when: Removing word
+    then: Remove word
+
+  - name: list_forbidden_words
+    given: Optional category
+    when: Listing words
+    then: Return word list
+
+  - name: check_forbidden_words
+    given: Text
+    when: Checking text
+    then: Return matched words
+
+  - name: import_forbidden_words
+    given: Word list
+    when: Importing words
+    then: Import all
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_moderation_stats
+    given: Time range
+    when: Getting stats
+    then: Return ModerationStats
+
+  - name: get_moderator_stats
+    given: Moderator ID
+    when: Getting moderator stats
+    then: Return stats
+
+  - name: get_queue_stats
+    given: No parameters
+    when: Getting queue stats
+    then: Return queue stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: expire_old_bans
+    given: No parameters
+    when: Expiring bans
+    then: Expire temporary bans
+
+  - name: expire_old_warnings
+    given: No parameters
+    when: Expiring warnings
+    then: Expire old warnings
+
+  - name: cleanup_old_reports
+    given: Days old
+    when: Cleaning up
+    then: Archive old reports
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_NSFW_THRESHOLD: 0.8
+  DEFAULT_TOXICITY_THRESHOLD: 0.7
+  DEFAULT_SPAM_THRESHOLD: 0.9
+
+  WARNING_EXPIRY_DAYS: 90
+  APPEAL_COOLDOWN_HOURS: 168
+  MAX_WARNINGS_BEFORE_BAN: 3
+
+  BAN_DURATION_SHORT_HOURS: 24
+  BAN_DURATION_MEDIUM_DAYS: 7
+  BAN_DURATION_LONG_DAYS: 30
+
+  REPORT_RETENTION_DAYS: 365
+  AUTO_ESCALATE_AFTER_HOURS: 24
+
+  QUEUE_PRIORITY_HIGH: 1
+  QUEUE_PRIORITY_NORMAL: 5
+  QUEUE_PRIORITY_LOW: 10

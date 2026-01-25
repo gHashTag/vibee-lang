@@ -1,0 +1,515 @@
+name: analytics
+version: "1.0.0"
+language: zig
+module: analytics
+
+description: |
+  Analytics service for VIBEE Telegram bot.
+  Metrics collection, reporting, insights, trends.
+  Supports real-time and historical data.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AnalyticsService:
+    description: "Analytics service instance"
+    fields:
+      config: AnalyticsConfig
+      is_running: Bool
+
+  AnalyticsConfig:
+    description: "Analytics configuration"
+    fields:
+      retention_days: Int
+      aggregation_interval_minutes: Int
+      real_time_enabled: Bool
+      export_enabled: Bool
+
+  MetricType:
+    description: "Metric type"
+    values:
+      - counter
+      - gauge
+      - histogram
+      - summary
+
+  Metric:
+    description: "Metric definition"
+    fields:
+      metric_id: String
+      name: String
+      type: MetricType
+      description: String
+      unit: String
+      labels: List<String>
+
+  MetricValue:
+    description: "Metric value"
+    fields:
+      metric_id: String
+      value: Float
+      labels: Object
+      timestamp: Timestamp
+
+  TimeRange:
+    description: "Time range"
+    fields:
+      start: Timestamp
+      end: Timestamp
+      granularity: Granularity
+
+  Granularity:
+    description: "Data granularity"
+    values:
+      - minute
+      - hour
+      - day
+      - week
+      - month
+
+  DataPoint:
+    description: "Data point"
+    fields:
+      timestamp: Timestamp
+      value: Float
+      labels: Option<Object>
+
+  TimeSeries:
+    description: "Time series data"
+    fields:
+      metric_id: String
+      data: List<DataPoint>
+      aggregation: Aggregation
+      granularity: Granularity
+
+  Aggregation:
+    description: "Aggregation type"
+    values:
+      - sum
+      - avg
+      - min
+      - max
+      - count
+      - last
+      - first
+      - percentile_50
+      - percentile_95
+      - percentile_99
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPORTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Report:
+    description: "Analytics report"
+    fields:
+      report_id: String
+      name: String
+      type: ReportType
+      time_range: TimeRange
+      metrics: List<String>
+      filters: Object
+      data: Object
+      generated_at: Timestamp
+
+  ReportType:
+    description: "Report type"
+    values:
+      - daily_summary
+      - weekly_summary
+      - monthly_summary
+      - user_activity
+      - revenue
+      - generations
+      - retention
+      - funnel
+      - cohort
+      - custom
+
+  DailySummary:
+    description: "Daily summary report"
+    fields:
+      date: String
+      new_users: Int
+      active_users: Int
+      total_generations: Int
+      total_revenue_stars: Int
+      total_payments: Int
+      avg_session_duration: Int
+      top_features: List<Object>
+
+  UserActivityReport:
+    description: "User activity report"
+    fields:
+      time_range: TimeRange
+      dau: List<DataPoint>
+      wau: List<DataPoint>
+      mau: List<DataPoint>
+      retention_rate: Float
+      churn_rate: Float
+      avg_sessions_per_user: Float
+
+  RevenueReport:
+    description: "Revenue report"
+    fields:
+      time_range: TimeRange
+      total_revenue: Float
+      revenue_by_day: List<DataPoint>
+      revenue_by_source: Object
+      arpu: Float
+      arppu: Float
+      ltv: Float
+      conversion_rate: Float
+
+  GenerationReport:
+    description: "Generation report"
+    fields:
+      time_range: TimeRange
+      total_generations: Int
+      by_type: Object
+      by_model: Object
+      success_rate: Float
+      avg_duration_ms: Int
+      peak_hours: List<Int>
+
+  RetentionReport:
+    description: "Retention report"
+    fields:
+      cohort_date: String
+      cohort_size: Int
+      retention_by_day: List<Float>
+      retention_by_week: List<Float>
+
+  FunnelReport:
+    description: "Funnel report"
+    fields:
+      funnel_id: String
+      name: String
+      steps: List<FunnelStep>
+      overall_conversion: Float
+
+  FunnelStep:
+    description: "Funnel step"
+    fields:
+      step_name: String
+      users_count: Int
+      conversion_rate: Float
+      drop_off_rate: Float
+
+  CohortReport:
+    description: "Cohort analysis"
+    fields:
+      cohorts: List<Cohort>
+      metric: String
+      time_range: TimeRange
+
+  Cohort:
+    description: "User cohort"
+    fields:
+      cohort_date: String
+      size: Int
+      values: List<Float>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INSIGHTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Insight:
+    description: "Analytics insight"
+    fields:
+      insight_id: String
+      type: InsightType
+      title: String
+      description: String
+      severity: InsightSeverity
+      metric: String
+      current_value: Float
+      previous_value: Float
+      change_percent: Float
+      detected_at: Timestamp
+
+  InsightType:
+    description: "Insight type"
+    values:
+      - anomaly
+      - trend
+      - milestone
+      - warning
+      - opportunity
+
+  InsightSeverity:
+    description: "Insight severity"
+    values:
+      - info
+      - low
+      - medium
+      - high
+      - critical
+
+  Trend:
+    description: "Trend analysis"
+    fields:
+      metric: String
+      direction: TrendDirection
+      change_percent: Float
+      confidence: Float
+      forecast: List<DataPoint>
+
+  TrendDirection:
+    description: "Trend direction"
+    values:
+      - up
+      - down
+      - stable
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: AnalyticsConfig
+    when: Initializing service
+    then: Return AnalyticsService
+
+  - name: start_collection
+    given: No parameters
+    when: Starting collection
+    then: Begin collecting metrics
+
+  - name: stop_collection
+    given: No parameters
+    when: Stopping collection
+    then: Stop collecting
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: record_metric
+    given: Metric ID and value
+    when: Recording metric
+    then: Store metric value
+
+  - name: record_metric_with_labels
+    given: Metric ID, value, labels
+    when: Recording with labels
+    then: Store with labels
+
+  - name: increment_counter
+    given: Metric ID and delta
+    when: Incrementing counter
+    then: Add to counter
+
+  - name: set_gauge
+    given: Metric ID and value
+    when: Setting gauge
+    then: Set gauge value
+
+  - name: record_histogram
+    given: Metric ID and value
+    when: Recording histogram
+    then: Add to histogram
+
+  - name: get_metric
+    given: Metric ID and time range
+    when: Getting metric
+    then: Return TimeSeries
+
+  - name: get_metric_aggregated
+    given: Metric ID, time range, aggregation
+    when: Getting aggregated
+    then: Return aggregated value
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: track_event
+    given: Event name and properties
+    when: Tracking event
+    then: Store event
+
+  - name: track_user_event
+    given: Telegram ID, event, properties
+    when: Tracking user event
+    then: Store user event
+
+  - name: track_generation
+    given: Generation details
+    when: Tracking generation
+    then: Record generation metrics
+
+  - name: track_payment
+    given: Payment details
+    when: Tracking payment
+    then: Record payment metrics
+
+  - name: track_session
+    given: Session details
+    when: Tracking session
+    then: Record session metrics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPORTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_daily_summary
+    given: Date
+    when: Generating daily
+    then: Return DailySummary
+
+  - name: generate_user_activity_report
+    given: TimeRange
+    when: Generating activity
+    then: Return UserActivityReport
+
+  - name: generate_revenue_report
+    given: TimeRange
+    when: Generating revenue
+    then: Return RevenueReport
+
+  - name: generate_generation_report
+    given: TimeRange
+    when: Generating gen report
+    then: Return GenerationReport
+
+  - name: generate_retention_report
+    given: Cohort date
+    when: Generating retention
+    then: Return RetentionReport
+
+  - name: generate_funnel_report
+    given: Funnel ID and time range
+    when: Generating funnel
+    then: Return FunnelReport
+
+  - name: generate_cohort_report
+    given: Metric and time range
+    when: Generating cohort
+    then: Return CohortReport
+
+  - name: generate_custom_report
+    given: Report config
+    when: Generating custom
+    then: Return Report
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INSIGHTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: detect_anomalies
+    given: Metric and time range
+    when: Detecting anomalies
+    then: Return anomalies
+
+  - name: analyze_trends
+    given: Metric and time range
+    when: Analyzing trends
+    then: Return Trend
+
+  - name: get_insights
+    given: Time range
+    when: Getting insights
+    then: Return insight list
+
+  - name: forecast_metric
+    given: Metric and days ahead
+    when: Forecasting
+    then: Return forecast
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: query_time_series
+    given: Query parameters
+    when: Querying time series
+    then: Return TimeSeries
+
+  - name: compare_periods
+    given: Metric, period1, period2
+    when: Comparing periods
+    then: Return comparison
+
+  - name: get_top_users
+    given: Metric and limit
+    when: Getting top users
+    then: Return ranked users
+
+  - name: get_top_features
+    given: Time range and limit
+    when: Getting top features
+    then: Return ranked features
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPORT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: export_report
+    given: Report and format
+    when: Exporting report
+    then: Return export file
+
+  - name: export_raw_data
+    given: Metric and time range
+    when: Exporting raw data
+    then: Return data file
+
+  - name: schedule_report
+    given: Report config and schedule
+    when: Scheduling report
+    then: Create scheduled report
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: aggregate_data
+    given: Granularity
+    when: Aggregating data
+    then: Aggregate old data
+
+  - name: cleanup_old_data
+    given: Days to keep
+    when: Cleaning up
+    then: Remove old data
+
+  - name: rebuild_aggregates
+    given: Time range
+    when: Rebuilding
+    then: Recalculate aggregates
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_RETENTION_DAYS: 365
+  DEFAULT_AGGREGATION_INTERVAL: 5
+  MAX_QUERY_RANGE_DAYS: 90
+
+  METRIC_USERS_ACTIVE: "users.active"
+  METRIC_USERS_NEW: "users.new"
+  METRIC_GENERATIONS_COUNT: "generations.count"
+  METRIC_GENERATIONS_TIME: "generations.time"
+  METRIC_REVENUE_STARS: "revenue.stars"
+  METRIC_PAYMENTS_COUNT: "payments.count"
+  METRIC_ERRORS_COUNT: "errors.count"
+
+  EVENT_USER_REGISTERED: "user.registered"
+  EVENT_USER_ACTIVATED: "user.activated"
+  EVENT_GENERATION_STARTED: "generation.started"
+  EVENT_GENERATION_COMPLETED: "generation.completed"
+  EVENT_PAYMENT_COMPLETED: "payment.completed"
+  EVENT_SUBSCRIPTION_STARTED: "subscription.started"
+
+  EXPORT_FORMAT_CSV: "csv"
+  EXPORT_FORMAT_JSON: "json"
+  EXPORT_FORMAT_PARQUET: "parquet"

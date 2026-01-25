@@ -1,0 +1,493 @@
+name: audit_log
+version: "1.0.0"
+language: zig
+module: audit_log
+
+description: |
+  Audit logging for VIBEE Telegram bot.
+  Tracks all system events, admin actions, security events.
+  Supports compliance, forensics, and debugging.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AuditService:
+    description: "Audit service instance"
+    fields:
+      config: AuditConfig
+      is_running: Bool
+
+  AuditConfig:
+    description: "Audit configuration"
+    fields:
+      retention_days: Int
+      log_level: LogLevel
+      include_request_body: Bool
+      include_response_body: Bool
+      mask_sensitive_data: Bool
+      export_enabled: Bool
+
+  LogLevel:
+    description: "Log level"
+    values:
+      - debug
+      - info
+      - warning
+      - error
+      - critical
+
+  AuditEntry:
+    description: "Audit log entry"
+    fields:
+      entry_id: String
+      timestamp: Timestamp
+      event_type: EventType
+      category: EventCategory
+      actor: Actor
+      target: Option<Target>
+      action: String
+      status: ActionStatus
+      details: Object
+      request: Option<RequestInfo>
+      response: Option<ResponseInfo>
+      metadata: Object
+
+  EventType:
+    description: "Event type"
+    values:
+      - user_action
+      - admin_action
+      - system_event
+      - security_event
+      - api_call
+      - webhook
+      - scheduled_task
+      - error
+
+  EventCategory:
+    description: "Event category"
+    values:
+      - authentication
+      - authorization
+      - user_management
+      - payment
+      - generation
+      - subscription
+      - moderation
+      - configuration
+      - data_access
+      - data_modification
+      - data_deletion
+      - system
+      - security
+
+  Actor:
+    description: "Action actor"
+    fields:
+      actor_type: ActorType
+      actor_id: String
+      telegram_id: Option<Int>
+      username: Option<String>
+      ip_address: Option<String>
+      user_agent: Option<String>
+      session_id: Option<String>
+
+  ActorType:
+    description: "Actor type"
+    values:
+      - user
+      - admin
+      - system
+      - api
+      - webhook
+      - scheduler
+
+  Target:
+    description: "Action target"
+    fields:
+      target_type: String
+      target_id: String
+      target_name: Option<String>
+
+  ActionStatus:
+    description: "Action status"
+    values:
+      - success
+      - failure
+      - partial
+      - denied
+
+  RequestInfo:
+    description: "Request information"
+    fields:
+      method: String
+      path: String
+      query: Option<Object>
+      headers: Option<Object>
+      body: Option<Object>
+
+  ResponseInfo:
+    description: "Response information"
+    fields:
+      status_code: Int
+      headers: Option<Object>
+      body: Option<Object>
+      duration_ms: Int
+
+  AuditFilter:
+    description: "Audit filter"
+    fields:
+      event_type: Option<EventType>
+      category: Option<EventCategory>
+      actor_type: Option<ActorType>
+      actor_id: Option<String>
+      target_type: Option<String>
+      target_id: Option<String>
+      status: Option<ActionStatus>
+      timestamp_after: Option<Timestamp>
+      timestamp_before: Option<Timestamp>
+      search: Option<String>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  AuditStats:
+    description: "Audit statistics"
+    fields:
+      total_entries: Int
+      by_event_type: Object
+      by_category: Object
+      by_status: Object
+      by_actor_type: Object
+      error_count: Int
+      security_events: Int
+
+  SecurityAlert:
+    description: "Security alert"
+    fields:
+      alert_id: String
+      severity: AlertSeverity
+      type: SecurityAlertType
+      description: String
+      actor: Option<Actor>
+      details: Object
+      created_at: Timestamp
+      acknowledged: Bool
+      acknowledged_by: Option<String>
+      acknowledged_at: Option<Timestamp>
+
+  AlertSeverity:
+    description: "Alert severity"
+    values:
+      - low
+      - medium
+      - high
+      - critical
+
+  SecurityAlertType:
+    description: "Security alert type"
+    values:
+      - failed_login_attempts
+      - suspicious_activity
+      - unauthorized_access
+      - rate_limit_exceeded
+      - data_breach_attempt
+      - privilege_escalation
+      - unusual_pattern
+
+  ComplianceReport:
+    description: "Compliance report"
+    fields:
+      report_id: String
+      report_type: ComplianceType
+      time_range: Object
+      generated_at: Timestamp
+      generated_by: String
+      data: Object
+
+  ComplianceType:
+    description: "Compliance type"
+    values:
+      - gdpr_access
+      - gdpr_deletion
+      - data_retention
+      - admin_actions
+      - security_events
+      - payment_audit
+
+  DataAccessLog:
+    description: "Data access log"
+    fields:
+      access_id: String
+      accessor: Actor
+      data_type: String
+      data_id: String
+      access_type: AccessType
+      purpose: String
+      timestamp: Timestamp
+
+  AccessType:
+    description: "Access type"
+    values:
+      - read
+      - write
+      - delete
+      - export
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_service
+    given: AuditConfig
+    when: Initializing service
+    then: Return AuditService
+
+  - name: update_config
+    given: Config updates
+    when: Updating config
+    then: Apply updates
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log
+    given: AuditEntry
+    when: Logging entry
+    then: Store entry
+
+  - name: log_user_action
+    given: User, action, details
+    when: Logging user action
+    then: Create and store entry
+
+  - name: log_admin_action
+    given: Admin, action, target, details
+    when: Logging admin action
+    then: Create and store entry
+
+  - name: log_system_event
+    given: Event, details
+    when: Logging system event
+    then: Create and store entry
+
+  - name: log_security_event
+    given: Event, actor, details
+    when: Logging security event
+    then: Create and store entry
+
+  - name: log_api_call
+    given: Request, response, actor
+    when: Logging API call
+    then: Create and store entry
+
+  - name: log_error
+    given: Error, context
+    when: Logging error
+    then: Create and store entry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_entry
+    given: Entry ID
+    when: Getting entry
+    then: Return AuditEntry or null
+
+  - name: find_entries
+    given: AuditFilter
+    when: Finding entries
+    then: Return filtered list
+
+  - name: count_entries
+    given: AuditFilter
+    when: Counting entries
+    then: Return count
+
+  - name: get_user_activity
+    given: Telegram ID and limit
+    when: Getting user activity
+    then: Return entries
+
+  - name: get_admin_activity
+    given: Admin ID and limit
+    when: Getting admin activity
+    then: Return entries
+
+  - name: get_target_history
+    given: Target type, ID, limit
+    when: Getting target history
+    then: Return entries
+
+  - name: search_logs
+    given: Search query and filter
+    when: Searching logs
+    then: Return matching entries
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SECURITY ALERTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_alert
+    given: SecurityAlert data
+    when: Creating alert
+    then: Return SecurityAlert
+
+  - name: get_alert
+    given: Alert ID
+    when: Getting alert
+    then: Return SecurityAlert or null
+
+  - name: get_active_alerts
+    given: Severity filter
+    when: Getting active alerts
+    then: Return unacknowledged alerts
+
+  - name: acknowledge_alert
+    given: Alert ID and admin
+    when: Acknowledging alert
+    then: Mark as acknowledged
+
+  - name: detect_anomalies
+    given: Time window
+    when: Detecting anomalies
+    then: Return detected anomalies
+
+  - name: check_failed_logins
+    given: Actor and threshold
+    when: Checking failed logins
+    then: Create alert if exceeded
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DATA ACCESS LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_data_access
+    given: DataAccessLog
+    when: Logging data access
+    then: Store access log
+
+  - name: get_data_access_log
+    given: Data type, ID
+    when: Getting access log
+    then: Return access history
+
+  - name: get_user_data_access
+    given: Telegram ID
+    when: Getting user data access
+    then: Return all access to user data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COMPLIANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_compliance_report
+    given: ComplianceType and time range
+    when: Generating report
+    then: Return ComplianceReport
+
+  - name: generate_gdpr_report
+    given: Telegram ID
+    when: Generating GDPR report
+    then: Return user data report
+
+  - name: generate_admin_audit
+    given: Time range
+    when: Generating admin audit
+    then: Return admin actions report
+
+  - name: generate_security_report
+    given: Time range
+    when: Generating security report
+    then: Return security events report
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Time range
+    when: Getting stats
+    then: Return AuditStats
+
+  - name: get_error_rate
+    given: Time range
+    when: Getting error rate
+    then: Return error percentage
+
+  - name: get_security_summary
+    given: Time range
+    when: Getting security summary
+    then: Return security stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXPORT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: export_logs
+    given: Filter and format
+    when: Exporting logs
+    then: Return export file
+
+  - name: export_user_logs
+    given: Telegram ID and format
+    when: Exporting user logs
+    then: Return user logs file
+
+  - name: stream_logs
+    given: Filter
+    when: Streaming logs
+    then: Return log stream
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_old_logs
+    given: Days to keep
+    when: Cleaning up
+    then: Delete old entries
+
+  - name: archive_logs
+    given: Time range
+    when: Archiving logs
+    then: Archive to cold storage
+
+  - name: verify_integrity
+    given: Time range
+    when: Verifying integrity
+    then: Check log integrity
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_RETENTION_DAYS: 365
+  SECURITY_RETENTION_DAYS: 730
+  MAX_QUERY_LIMIT: 10000
+
+  FAILED_LOGIN_THRESHOLD: 5
+  FAILED_LOGIN_WINDOW_MINUTES: 15
+  RATE_LIMIT_ALERT_THRESHOLD: 100
+
+  EXPORT_FORMAT_JSON: "json"
+  EXPORT_FORMAT_CSV: "csv"
+  EXPORT_FORMAT_JSONL: "jsonl"
+
+  SENSITIVE_FIELDS: ["password", "token", "api_key", "secret", "card_number"]
+  MASK_PATTERN: "***REDACTED***"
+
+  CATEGORY_AUTH: "authentication"
+  CATEGORY_ADMIN: "admin_action"
+  CATEGORY_SECURITY: "security"
+  CATEGORY_PAYMENT: "payment"
+  CATEGORY_DATA: "data_access"
