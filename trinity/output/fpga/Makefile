@@ -74,6 +74,32 @@ zynq: bd synth impl xsa
 	@echo "XSA файл: output/bitnet_zcu104_hw.xsa"
 	@echo "═══════════════════════════════════════════════════════════════════════════════"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEBUG TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Добавление ILA cores
+debug: $(BUILD_DIR)/.debug_added
+
+$(BUILD_DIR)/.debug_added: $(BUILD_DIR)/.bd_created
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Добавление ILA Debug Cores"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	$(VIVADO) $(VIVADO_FLAGS) -source $(SCRIPT_DIR)/add_ila_cores.tcl
+	@touch $@
+
+# Полный flow с debug
+zynq-debug: bd debug synth impl xsa
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+	@echo "Zynq Debug Flow завершен!"
+	@echo "ILA cores добавлены для отладки"
+	@echo "═══════════════════════════════════════════════════════════════════════════════"
+
+# Открытие Hardware Manager
+hwmgr:
+	@echo "Открытие Hardware Manager..."
+	$(VIVADO) -mode gui -source $(SCRIPT_DIR)/debug_triggers.tcl &
+
 # Help
 help:
 	@echo "═══════════════════════════════════════════════════════════════════════════════"

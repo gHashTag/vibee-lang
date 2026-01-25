@@ -1,0 +1,318 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ILA DEBUG INFRASTRUCTURE - Отладочная инфраструктура для BitNet FPGA
+# ═══════════════════════════════════════════════════════════════════════════════
+# Полная система отладки для BitNet акселератора:
+# - ILA (Integrated Logic Analyzer) для захвата сигналов
+# - VIO (Virtual I/O) для runtime управления
+# - Debug Hub для координации
+# - Предустановленные триггеры для типичных сценариев
+#
+# Целевая платформа: ZCU104 (xczu7ev-ffvc1156-2-e)
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: ila_debug_infrastructure
+version: "1.0.0"
+language: tcl_generator
+module: bitnet_debug
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНФИГУРАЦИЯ DEBUG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+debug_config:
+  # Глубина захвата (количество семплов)
+  sample_depth: 4096
+  # Ширина данных для каждого ILA
+  data_width: 256
+  # Количество компараторов для триггеров
+  num_comparators: 4
+  # Включить capture control
+  capture_control: true
+  # Включить advanced trigger
+  advanced_trigger: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ILA CORES - Логические анализаторы
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ila_cores:
+  # ILA для AXI-Lite интерфейса
+  ila_axi_lite:
+    name: "ila_axi_lite_ctrl"
+    description: "Мониторинг AXI-Lite транзакций"
+    sample_depth: 4096
+    probes:
+      - name: awaddr
+        width: 8
+        description: "Write address"
+      - name: awvalid
+        width: 1
+        description: "Write address valid"
+      - name: awready
+        width: 1
+        description: "Write address ready"
+      - name: wdata
+        width: 32
+        description: "Write data"
+      - name: wvalid
+        width: 1
+        description: "Write data valid"
+      - name: wready
+        width: 1
+        description: "Write data ready"
+      - name: bresp
+        width: 2
+        description: "Write response"
+      - name: bvalid
+        width: 1
+        description: "Write response valid"
+      - name: araddr
+        width: 8
+        description: "Read address"
+      - name: arvalid
+        width: 1
+        description: "Read address valid"
+      - name: rdata
+        width: 32
+        description: "Read data"
+      - name: rvalid
+        width: 1
+        description: "Read data valid"
+    triggers:
+      - name: write_transaction
+        condition: "awvalid && awready"
+      - name: read_transaction
+        condition: "arvalid && arready"
+      - name: error_response
+        condition: "bvalid && (bresp != 0)"
+
+  # ILA для AXI-Stream входных данных
+  ila_axis_input:
+    name: "ila_axis_input"
+    description: "Мониторинг входного потока данных"
+    sample_depth: 4096
+    probes:
+      - name: tdata
+        width: 64
+        description: "Stream data"
+      - name: tvalid
+        width: 1
+        description: "Data valid"
+      - name: tready
+        width: 1
+        description: "Ready to receive"
+      - name: tlast
+        width: 1
+        description: "Last transfer"
+      - name: tkeep
+        width: 8
+        description: "Byte enables"
+    triggers:
+      - name: data_transfer
+        condition: "tvalid && tready"
+      - name: backpressure
+        condition: "tvalid && !tready"
+      - name: packet_end
+        condition: "tvalid && tready && tlast"
+
+  # ILA для AXI-Stream выходных данных
+  ila_axis_output:
+    name: "ila_axis_output"
+    description: "Мониторинг выходного потока данных"
+    sample_depth: 4096
+    probes:
+      - name: tdata
+        width: 64
+        description: "Stream data"
+      - name: tvalid
+        width: 1
+        description: "Data valid"
+      - name: tready
+        width: 1
+        description: "Ready to receive"
+      - name: tlast
+        width: 1
+        description: "Last transfer"
+    triggers:
+      - name: output_valid
+        condition: "tvalid && tready"
+      - name: output_stall
+        condition: "tvalid && !tready"
+
+  # ILA для BitNet Engine
+  ila_engine:
+    name: "ila_bitnet_engine"
+    description: "Мониторинг состояния inference engine"
+    sample_depth: 8192
+    probes:
+      - name: engine_start
+        width: 1
+        description: "Start pulse"
+      - name: engine_busy
+        width: 1
+        description: "Engine busy"
+      - name: engine_done
+        width: 1
+        description: "Inference complete"
+      - name: engine_error
+        width: 1
+        description: "Error flag"
+      - name: current_layer
+        width: 8
+        description: "Current layer index"
+      - name: inference_count
+        width: 32
+        description: "Total inferences"
+      - name: cycle_count
+        width: 32
+        description: "Cycle counter"
+      - name: simd_active
+        width: 1
+        description: "SIMD unit active"
+      - name: weight_addr
+        width: 16
+        description: "Weight BRAM address"
+      - name: weight_data
+        width: 54
+        description: "Weight data (ternary)"
+    triggers:
+      - name: inference_start
+        condition: "engine_start"
+      - name: inference_complete
+        condition: "engine_done"
+      - name: error_detected
+        condition: "engine_error"
+      - name: layer_transition
+        condition: "current_layer != prev_layer"
+
+  # ILA для Performance Counters
+  ila_perf:
+    name: "ila_perf_counters"
+    description: "Мониторинг производительности"
+    sample_depth: 2048
+    probes:
+      - name: total_cycles
+        width: 64
+        description: "Total clock cycles"
+      - name: inference_count
+        width: 32
+        description: "Inference count"
+      - name: mac_count
+        width: 64
+        description: "MAC operations"
+      - name: stall_cycles
+        width: 32
+        description: "Stall cycles"
+      - name: mem_stalls
+        width: 32
+        description: "Memory stalls"
+      - name: compute_stalls
+        width: 32
+        description: "Compute stalls"
+      - name: utilization
+        width: 8
+        description: "Utilization %"
+    triggers:
+      - name: low_utilization
+        condition: "utilization < 50"
+      - name: high_stalls
+        condition: "stall_cycles > threshold"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIO CORES - Virtual I/O для runtime управления
+# ═══════════════════════════════════════════════════════════════════════════════
+
+vio_cores:
+  vio_control:
+    name: "vio_bitnet_ctrl"
+    description: "Runtime управление BitNet"
+    inputs:
+      - name: engine_status
+        width: 8
+        description: "Engine status readback"
+      - name: inference_count
+        width: 32
+        description: "Inference count readback"
+      - name: error_flags
+        width: 8
+        description: "Error flags readback"
+    outputs:
+      - name: force_start
+        width: 1
+        description: "Force start inference"
+        initial_value: 0
+      - name: force_reset
+        width: 1
+        description: "Force soft reset"
+        initial_value: 0
+      - name: debug_mode
+        width: 1
+        description: "Enable debug mode"
+        initial_value: 0
+      - name: inject_error
+        width: 1
+        description: "Inject error for testing"
+        initial_value: 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRIGGER CONDITIONS - Предустановленные триггеры
+# ═══════════════════════════════════════════════════════════════════════════════
+
+trigger_presets:
+  # Триггер на начало inference
+  inference_start:
+    description: "Захват при старте inference"
+    ila: ila_engine
+    condition: "engine_start == 1"
+    position: 512  # Захват 512 семплов до триггера
+
+  # Триггер на ошибку
+  error_capture:
+    description: "Захват при возникновении ошибки"
+    ila: ila_engine
+    condition: "engine_error == 1"
+    position: 1024
+
+  # Триггер на backpressure
+  backpressure_capture:
+    description: "Захват при backpressure на входе"
+    ila: ila_axis_input
+    condition: "tvalid == 1 && tready == 0"
+    position: 256
+
+  # Триггер на AXI ошибку
+  axi_error_capture:
+    description: "Захват при AXI error response"
+    ila: ila_axi_lite
+    condition: "bvalid == 1 && bresp != 0"
+    position: 512
+
+  # Триггер на завершение layer
+  layer_complete:
+    description: "Захват при завершении слоя"
+    ila: ila_engine
+    condition: "layer_done == 1"
+    position: 256
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# РЕСУРСЫ DEBUG
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Компонент              | LUTs   | FFs    | BRAM
+# -----------------------|--------|--------|------
+# ILA AXI-Lite           | 500    | 400    | 2
+# ILA AXIS Input         | 400    | 300    | 2
+# ILA AXIS Output        | 400    | 300    | 2
+# ILA Engine             | 800    | 600    | 4
+# ILA Perf               | 600    | 500    | 1
+# VIO Control            | 200    | 150    | 0
+# Debug Hub              | 300    | 200    | 0
+# -----------------------|--------|--------|------
+# ИТОГО                  | 3,200  | 2,450  | 11
+#
+# Дополнительная утилизация ZCU104: ~1.4% LUTs, ~0.5% FFs, ~3.5% BRAM
+#
+# ═══════════════════════════════════════════════════════════════════════════════
