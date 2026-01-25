@@ -96,73 +96,52 @@ export default function QuantumLab() {
       {/* Fullscreen Canvas */}
       <QuantumCanvas mode={currentMode} particleCount={2000} interactive={true} />
       
-      {/* Top Bar */}
+      {/* Top Left - Logo */}
       <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          padding: '1rem 1.5rem',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          zIndex: 100,
-          background: 'linear-gradient(to bottom, rgba(0,0,0,0.8), transparent)',
-        }}
-      >
-        <Link to="/" style={{ color: '#fff', textDecoration: 'none', fontWeight: 600, fontSize: '1.1rem' }}>
-          TRINITY
-        </Link>
-        
-        <div style={{ color: '#ffd700', fontFamily: 'monospace', fontSize: '0.9rem' }}>
-          φ² + 1/φ² = 3
-        </div>
-      </motion.div>
-
-      {/* Current Mode Info - Bottom Left */}
-      <motion.div
-        key={currentMode}
-        initial={{ opacity: 0, x: -30 }}
+        initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         style={{
           position: 'fixed',
-          bottom: '2rem',
-          left: '2rem',
+          top: '1.5rem',
+          left: '1.5rem',
           zIndex: 100,
         }}
       >
-        <div style={{ fontSize: '3rem', marginBottom: '0.5rem', filter: `drop-shadow(0 0 20px ${current.color})` }}>
-          {current.icon}
-        </div>
-        <h1 style={{ fontSize: '2rem', fontWeight: 600, color: '#fff', marginBottom: '0.25rem' }}>
-          {current.title}
-        </h1>
-        <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.9rem' }}>
-          Move cursor to interact
-        </p>
+        <Link to="/" style={{ 
+          color: '#fff', 
+          textDecoration: 'none', 
+          fontWeight: 600, 
+          fontSize: '1.1rem',
+          padding: '0.5rem 1rem',
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(10px)',
+          borderRadius: '8px',
+          border: '1px solid rgba(255,255,255,0.1)',
+        }}>
+          ← TRINITY
+        </Link>
       </motion.div>
 
-      {/* Menu Button - Bottom Right */}
+      {/* Top Right - Menu Button */}
       <motion.button
         onClick={() => setMenuOpen(!menuOpen)}
+        initial={{ opacity: 0, x: 20 }}
+        animate={{ opacity: 1, x: 0 }}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         style={{
           position: 'fixed',
-          bottom: '2rem',
-          right: '2rem',
+          top: '1.5rem',
+          right: '1.5rem',
           zIndex: 200,
-          padding: '1rem 1.5rem',
+          padding: '0.75rem 1.25rem',
           background: menuOpen ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.6)',
           backdropFilter: 'blur(20px)',
           border: '1px solid rgba(255,255,255,0.2)',
           borderRadius: '100px',
           color: '#fff',
           cursor: 'pointer',
-          fontSize: '1rem',
+          fontSize: '0.9rem',
           fontWeight: 500,
           display: 'flex',
           alignItems: 'center',
@@ -171,6 +150,44 @@ export default function QuantumLab() {
       >
         {menuOpen ? '✕ Close' : '☰ Modes'}
       </motion.button>
+
+      {/* Bottom Center - Current Mode Info */}
+      <motion.div
+        key={currentMode}
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
+        style={{
+          position: 'fixed',
+          bottom: '2rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 100,
+          textAlign: 'center',
+          padding: '1rem 2rem',
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(10px)',
+          borderRadius: '16px',
+          border: '1px solid rgba(255,255,255,0.1)',
+        }}
+      >
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center',
+          gap: '0.75rem',
+          marginBottom: '0.25rem'
+        }}>
+          <span style={{ fontSize: '2rem', filter: `drop-shadow(0 0 15px ${current.color})` }}>
+            {current.icon}
+          </span>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', margin: 0 }}>
+            {current.title}
+          </h1>
+        </div>
+        <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', margin: 0 }}>
+          Move cursor to interact • <span style={{ color: '#ffd700' }}>φ² + 1/φ² = 3</span>
+        </p>
+      </motion.div>
 
       {/* Menu Panel */}
       <AnimatePresence>
@@ -182,19 +199,20 @@ export default function QuantumLab() {
             transition={{ type: 'spring', damping: 25 }}
             style={{
               position: 'fixed',
-              top: 0,
-              right: 0,
-              bottom: 0,
-              width: 'min(400px, 90vw)',
-              background: 'rgba(0,0,0,0.95)',
+              top: '5rem',
+              right: '1rem',
+              bottom: '1rem',
+              width: 'min(360px, calc(100vw - 2rem))',
+              background: 'rgba(0,0,0,0.9)',
               backdropFilter: 'blur(30px)',
-              borderLeft: '1px solid rgba(255,255,255,0.1)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '16px',
               zIndex: 150,
               overflowY: 'auto',
-              padding: '2rem 1.5rem',
+              padding: '1.5rem',
             }}
           >
-            <h2 style={{ color: '#fff', fontSize: '1.5rem', marginBottom: '2rem', fontWeight: 600 }}>
+            <h2 style={{ color: '#fff', fontSize: '1.25rem', marginBottom: '1.5rem', fontWeight: 600 }}>
               Visualization Modes
             </h2>
             
@@ -257,14 +275,24 @@ export default function QuantumLab() {
         )}
       </AnimatePresence>
 
-      {/* Gradient Overlays */}
+      {/* Gradient Overlays - corners */}
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: '100px',
+        background: 'linear-gradient(to bottom, rgba(0,0,0,0.6), transparent)',
+        pointerEvents: 'none',
+        zIndex: 50
+      }} />
       <div style={{
         position: 'fixed',
         bottom: 0,
         left: 0,
         right: 0,
-        height: '150px',
-        background: 'linear-gradient(to top, rgba(0,0,0,0.7), transparent)',
+        height: '120px',
+        background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)',
         pointerEvents: 'none',
         zIndex: 50
       }} />
