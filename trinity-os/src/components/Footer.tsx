@@ -63,38 +63,38 @@ export default function Footer() {
             </h4>
             <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>⚛️</span> Quantum Wave
+                <a href="/quantum-runtime.html" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🔮</span> 999 OS Runtime
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
                 <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🌀</span> Vortex Field
+                  <span style={{ fontSize: '1rem' }}>⚛️</span> Quantum Particles
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>✨</span> Photon Field
+                <a href="/quantum-runtime.html#quantum59" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🌌</span> Quantum Trinity
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🔗</span> Entanglement
+                <a href="/quantum-runtime.html#quantumlife" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🧬</span> Quantum Life
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>💫</span> Beam Photon
+                <a href="/quantum-runtime.html#neuromorphic" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🧠</span> Neuromorphic
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>🌊</span> Interference
+                <a href="/quantum-runtime.html#consciousness" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>👁️</span> Consciousness
                 </a>
               </motion.li>
               <motion.li whileHover={{ x: 5 }}>
-                <a href="/quantum" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '1rem' }}>〰️</span> Soliton
+                <a href="/quantum-runtime.html#trinity" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1rem' }}>🔺</span> Trinity Core
                 </a>
               </motion.li>
             </ul>
