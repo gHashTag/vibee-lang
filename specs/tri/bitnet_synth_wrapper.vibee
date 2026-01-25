@@ -1,0 +1,237 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BITNET SYNTHESIS WRAPPER - Top-Level for Vivado Synthesis
+# ═══════════════════════════════════════════════════════════════════════════════
+# Complete synthesis-ready wrapper that instantiates:
+# - AXI-Lite control interface
+# - AXI4-Stream data interfaces
+# - BitNet multi-layer engine
+# - Weight loader
+# - Performance counters
+#
+# Target: Xilinx Zynq UltraScale+ (ZCU104) or VCU118
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bitnet_synth_wrapper
+version: "1.0.0"
+language: varlog
+module: bitnet_synth_wrapper
+author: "VIBEE Team"
+synthesis_target: vivado
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SYNTHESIS CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+synthesis_config:
+  target_device: "xczu7ev-ffvc1156-2-e"  # ZCU104
+  target_clock: 200MHz
+  optimization: area_optimized
+  flatten_hierarchy: rebuilt
+  retiming: enabled
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PARAMETERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+parameters:
+  C_S_AXI_DATA_WIDTH: 32
+  C_S_AXI_ADDR_WIDTH: 8
+  C_AXIS_DATA_WIDTH: 64
+  NUM_SIMD_CORES: 16
+  SIMD_WIDTH: 27
+  MAX_LAYERS: 64
+  MAX_NEURONS: 4096
+  WEIGHT_BRAM_DEPTH: 65536
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBMODULE INSTANTIATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+submodules:
+  # AXI-Lite control interface
+  - name: u_axi_lite_ctrl
+    module: axi_lite_bitnet_ctrl
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      s_axi_*: s_axi_lite_*
+      engine_start: engine_start_w
+      engine_reset: engine_reset_w
+      engine_busy: engine_busy_w
+      engine_done: engine_done_w
+
+  # Input stream interface
+  - name: u_input_stream
+    module: axi_stream_bitnet
+    instance_type: input
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      s_axis_*: s_axis_input_*
+      data_out: input_data_w
+      valid_out: input_valid_w
+      ready_in: input_ready_w
+
+  # Output stream interface
+  - name: u_output_stream
+    module: axi_stream_bitnet
+    instance_type: output
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      m_axis_*: m_axis_output_*
+      data_in: output_data_w
+      valid_in: output_valid_w
+      ready_out: output_ready_w
+
+  # Weight loader
+  - name: u_weight_loader
+    module: bitnet_weight_loader
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      weight_stream_*: s_axis_weight_*
+      bram_addr: weight_addr_w
+      bram_data: weight_data_w
+      bram_we: weight_we_w
+
+  # Multi-layer inference engine
+  - name: u_engine
+    module: bitnet_multilayer_engine
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      start: engine_start_w
+      input_data: input_data_w
+      input_valid: input_valid_w
+      output_data: output_data_w
+      output_valid: output_valid_w
+      busy: engine_busy_w
+      done: engine_done_w
+
+  # Performance counters
+  - name: u_perf
+    module: bitnet_perf_counter
+    connections:
+      clk: aclk
+      rst_n: aresetn
+      enable: perf_enable_w
+      inference_done: engine_done_w
+      simd_active: simd_active_w
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+interfaces:
+  # Clock and reset
+  clk_rst:
+    - aclk: input
+    - aresetn: input
+
+  # AXI-Lite Slave (Control)
+  s_axi_lite:
+    - s_axi_lite_awaddr: input [7:0]
+    - s_axi_lite_awprot: input [2:0]
+    - s_axi_lite_awvalid: input
+    - s_axi_lite_awready: output
+    - s_axi_lite_wdata: input [31:0]
+    - s_axi_lite_wstrb: input [3:0]
+    - s_axi_lite_wvalid: input
+    - s_axi_lite_wready: output
+    - s_axi_lite_bresp: output [1:0]
+    - s_axi_lite_bvalid: output
+    - s_axi_lite_bready: input
+    - s_axi_lite_araddr: input [7:0]
+    - s_axi_lite_arprot: input [2:0]
+    - s_axi_lite_arvalid: input
+    - s_axi_lite_arready: output
+    - s_axi_lite_rdata: output [31:0]
+    - s_axi_lite_rresp: output [1:0]
+    - s_axi_lite_rvalid: output
+    - s_axi_lite_rready: input
+
+  # AXI4-Stream Slave (Input Data)
+  s_axis_input:
+    - s_axis_input_tdata: input [63:0]
+    - s_axis_input_tkeep: input [7:0]
+    - s_axis_input_tlast: input
+    - s_axis_input_tvalid: input
+    - s_axis_input_tready: output
+
+  # AXI4-Stream Master (Output Data)
+  m_axis_output:
+    - m_axis_output_tdata: output [63:0]
+    - m_axis_output_tkeep: output [7:0]
+    - m_axis_output_tlast: output
+    - m_axis_output_tvalid: output
+    - m_axis_output_tready: input
+
+  # AXI4-Stream Slave (Weight Data)
+  s_axis_weight:
+    - s_axis_weight_tdata: input [63:0]
+    - s_axis_weight_tkeep: input [7:0]
+    - s_axis_weight_tlast: input
+    - s_axis_weight_tvalid: input
+    - s_axis_weight_tready: output
+
+  # Interrupt
+  interrupt:
+    - irq: output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # Clock domain management
+  - name: clock_domain
+    given: Single clock domain
+    when: All modules use aclk
+    then: No CDC required
+
+  # Reset synchronization
+  - name: reset_sync
+    given: Asynchronous reset input
+    when: aresetn deasserted
+    then: Synchronize to aclk domain
+
+  # Interrupt aggregation
+  - name: irq_aggregate
+    given: Multiple interrupt sources
+    when: Any source active
+    then: OR all sources to single irq output
+
+  # Data flow control
+  - name: data_flow
+    given: Input stream valid
+    when: Engine ready
+    then: Forward data to engine
+
+  # Weight loading coordination
+  - name: weight_coord
+    given: Weight stream active
+    when: Engine idle
+    then: Route weights to BRAM
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RESOURCE ESTIMATES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Component          | LUTs   | FFs    | BRAM | DSP
+# -------------------|--------|--------|------|-----
+# AXI-Lite Ctrl      | 500    | 300    | 0    | 0
+# Input Stream       | 400    | 300    | 1    | 0
+# Output Stream      | 400    | 300    | 1    | 0
+# Weight Loader      | 400    | 300    | 0    | 0
+# Multi-Layer Engine | 12,800 | 9,600  | 16   | 0
+# Perf Counters      | 300    | 500    | 0    | 1
+# Interconnect       | 500    | 300    | 0    | 0
+# -------------------|--------|--------|------|-----
+# TOTAL              | 15,300 | 11,600 | 18   | 1
+#
+# ZCU104 Utilization: ~5% LUTs, ~2% FFs, ~3% BRAM
+#
+# ═══════════════════════════════════════════════════════════════════════════════

@@ -246,10 +246,39 @@ axi_host_interface ───────────┼────────�
 | Code Completeness | ~20% | ~80% | +300% |
 | Synthesis Ready | No | Yes | ACHIEVED |
 
+## Synthesis Infrastructure (January 2026)
+
+### Files Created
+
+| File | Description |
+|------|-------------|
+| `Makefile` | Build automation for Vivado flow |
+| `constraints/zcu104_bitnet.xdc` | ZCU104 timing constraints |
+| `bitnet_synth_wrapper.v` | Top-level synthesis wrapper |
+| `README.md` | Synthesis documentation |
+
+### Build Commands
+
+```bash
+cd trinity/output/fpga
+make create    # Create Vivado project
+make synth     # Run synthesis
+make impl      # Run implementation
+make bitstream # Generate bitstream
+make program   # Program FPGA
+```
+
+### Target Devices
+
+| Device | Part Number | Clock | Status |
+|--------|-------------|-------|--------|
+| ZCU104 | xczu7ev-ffvc1156-2-e | 200 MHz | Ready |
+| VCU118 | xcvu9p-flga2104-2L-e | 300 MHz | Ready |
+
 ## Next Steps (Priority Order)
 
-1. **[HIGH]** Synthesis scripts for Vivado/Quartus
-2. **[HIGH]** Hardware validation on PYNQ-Z2 or ZCU104
+1. ✅ Synthesis scripts for Vivado (DONE)
+2. **[HIGH]** Hardware validation on ZCU104
 3. **[MEDIUM]** Driver development for Linux host
 4. **[MEDIUM]** Benchmark against GPU baseline
 5. **[LOW]** Multi-FPGA scaling for larger models

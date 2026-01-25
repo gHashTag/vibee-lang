@@ -31,8 +31,31 @@ set fpga_dir [file normalize "$script_dir/.."]
 # Add all Verilog sources
 add_files -norecurse [glob -nocomplain $fpga_dir/*.v]
 
-# Set top module
-set_property top vibee_fpga_top [current_fileset]
+# Set top module - BitNet synthesis wrapper
+set_property top bitnet_synth_wrapper_top [current_fileset]
+
+# Add specific BitNet modules to hierarchy
+puts "Adding BitNet modules..."
+set bitnet_modules {
+    bitnet_synth_wrapper.v
+    bitnet_top.v
+    bitnet_multilayer_engine.v
+    bitnet_simd_core.v
+    bitnet_pipelined_layer.v
+    bitnet_weight_loader.v
+    bitnet_perf_counter.v
+    axi_lite_bitnet_ctrl.v
+    axi_stream_bitnet.v
+    ternary_alu.v
+}
+
+foreach mod $bitnet_modules {
+    if {[file exists $fpga_dir/$mod]} {
+        puts "  Found: $mod"
+    } else {
+        puts "  WARNING: Missing $mod"
+    }
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADD CONSTRAINTS
