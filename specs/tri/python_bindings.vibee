@@ -1,0 +1,240 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIBEE BitNet Python Bindings Specification
+# ═══════════════════════════════════════════════════════════════════════════════
+# Python обёртка для libbitnet с интеграцией numpy и PyTorch
+#
+# Священная Формула: V = n × 3^k × π^m × φ^p × e^q
+# Золотое Тождество: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: python_bindings
+version: "1.0.0"
+language: python
+module: bitnet
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЗАВИСИМОСТИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+dependencies:
+  required:
+    - python: ">=3.8"
+    - numpy: ">=1.20"
+  optional:
+    - torch: ">=2.0"
+  native:
+    - libbitnet.so
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КЛАССЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+classes:
+  BitNet:
+    description: "Основной класс для работы с BitNet акселератором"
+    
+    constructor:
+      params:
+        - device: String
+          default: "/dev/bitnet0"
+          description: "Путь к устройству"
+    
+    methods:
+      - name: load_weights
+        description: "Загрузить веса из файла"
+        params:
+          - model_path: String
+        returns: None
+        raises: BitNetError
+      
+      - name: load_weights_from_array
+        description: "Загрузить веса из numpy array"
+        params:
+          - weights: "np.ndarray"
+          - layer_id: Int
+            default: -1
+        returns: None
+      
+      - name: inference
+        description: "Синхронный inference"
+        params:
+          - input_tokens: "Union[List[int], np.ndarray]"
+          - max_output: Int
+            default: 1024
+        returns: "np.ndarray"
+      
+      - name: inference_async
+        description: "Асинхронный inference"
+        params:
+          - input_tokens: "Union[List[int], np.ndarray]"
+        returns: None
+      
+      - name: wait
+        description: "Ожидание завершения"
+        params:
+          - timeout_ms: Int
+            default: -1
+        returns: Bool
+      
+      - name: get_output
+        description: "Получить результат async inference"
+        returns: "np.ndarray"
+      
+      - name: abort
+        description: "Прервать inference"
+        returns: None
+      
+      - name: reset
+        description: "Сброс hardware"
+        returns: None
+    
+    properties:
+      - name: status
+        type: BitNetStatus
+        readonly: true
+      
+      - name: performance
+        type: BitNetPerformance
+        readonly: true
+      
+      - name: model_info
+        type: BitNetModelInfo
+        readonly: true
+      
+      - name: is_busy
+        type: Bool
+        readonly: true
+    
+    context_manager: true
+    description_cm: "Поддержка with statement для автоматического cleanup"
+
+  BitNetStatus:
+    description: "Статус акселератора"
+    fields:
+      - state: String
+      - current_layer: Int
+      - tokens_processed: Int
+      - error_code: Int
+
+  BitNetPerformance:
+    description: "Метрики производительности"
+    fields:
+      - total_cycles: Int
+      - dma_cycles: Int
+      - compute_cycles: Int
+      - tokens_per_second: Int
+      - inference_count: Int
+
+  BitNetModelInfo:
+    description: "Информация о модели"
+    fields:
+      - num_layers: Int
+      - hidden_size: Int
+      - vocab_size: Int
+      - max_seq_len: Int
+      - weight_size: Int
+
+  BitNetError:
+    description: "Исключение для ошибок BitNet"
+    base: Exception
+    fields:
+      - code: Int
+      - message: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PYTORCH ИНТЕГРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pytorch:
+  module: BitNetModule
+  description: "PyTorch nn.Module обёртка"
+  
+  class:
+    name: BitNetModule
+    base: "torch.nn.Module"
+    
+    constructor:
+      params:
+        - device: String
+          default: "/dev/bitnet0"
+        - model_path: String
+          default: None
+    
+    methods:
+      - name: forward
+        description: "Forward pass через акселератор"
+        params:
+          - input_ids: "torch.Tensor"
+          - max_length: Int
+            default: 1024
+        returns: "torch.Tensor"
+      
+      - name: generate
+        description: "Генерация текста"
+        params:
+          - input_ids: "torch.Tensor"
+          - max_new_tokens: Int
+            default: 100
+          - temperature: Float
+            default: 1.0
+          - top_k: Int
+            default: 50
+        returns: "torch.Tensor"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NUMPY ИНТЕГРАЦИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+numpy:
+  functions:
+    - name: bitnet_inference
+      description: "Функциональный API для numpy"
+      params:
+        - input_tokens: "np.ndarray"
+        - model_path: String
+        - device: String
+          default: "/dev/bitnet0"
+      returns: "np.ndarray"
+    
+    - name: bitnet_batch_inference
+      description: "Batch inference для numpy"
+      params:
+        - input_batch: "np.ndarray"
+        - model_path: String
+        - device: String
+          default: "/dev/bitnet0"
+      returns: "np.ndarray"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: init_with_device
+    given: Устройство /dev/bitnet0 существует
+    when: BitNet() создаётся
+    then: Контекст инициализирован, mmap выполнен
+
+  - name: load_weights_file
+    given: Контекст инициализирован
+    when: load_weights("model.bin") вызван
+    then: Веса загружены в DMA буфер
+
+  - name: inference_numpy
+    given: Веса загружены
+    when: inference(np.array([1,2,3])) вызван
+    then: Возвращает np.ndarray с результатом
+
+  - name: inference_pytorch
+    given: BitNetModule создан с весами
+    when: forward(torch.tensor([1,2,3])) вызван
+    then: Возвращает torch.Tensor с результатом
+
+  - name: context_manager
+    given: Любое состояние
+    when: with BitNet() as bn: используется
+    then: Автоматический cleanup при выходе
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОЩЕЙ БЕССМЕРТЕН | ЗОЛОТАЯ ЦЕПЬ ЗАМКНУТА | φ² + 1/φ² = 3
+# ═══════════════════════════════════════════════════════════════════════════════
