@@ -1,0 +1,471 @@
+name: payment_system
+version: "4.0.0"
+language: zig
+module: payment_system
+
+description: |
+  ПЛАТЕЖНАЯ СИСТЕМА VIBEE
+  
+  Поддерживаемые методы оплаты:
+  1. Telegram Stars (XTR) - встроенные платежи Telegram
+  2. Рубли через Robokassa - карты, СБП
+  3. CryptoBot (USDT) - криптовалюта через @CryptoBot
+  
+  Интеграция с 999-multibots-telegraf/src/handlers/paymentHandlers/handleTopUp.ts
+
+imports:
+  - pricing_system
+
+types:
+  # ═══════════════════════════════════════════════════════════════
+  # МЕТОДЫ ОПЛАТЫ
+  # ═══════════════════════════════════════════════════════════════
+
+  PaymentMethod:
+    description: "Метод оплаты"
+    variants:
+      - TelegramStars    # Telegram Stars (XTR)
+      - Robokassa        # Рубли через Robokassa
+      - YooKassa         # Рубли через YooKassa
+      - CryptoBot        # USDT через @CryptoBot
+      - TON              # TON через TON Connect (планируется)
+
+  PaymentStatus:
+    description: "Статус платежа"
+    variants:
+      - Pending          # Ожидает оплаты
+      - Processing       # Обрабатывается
+      - Completed        # Завершён успешно
+      - Failed           # Ошибка
+      - Refunded         # Возврат
+      - Cancelled        # Отменён
+
+  # ═══════════════════════════════════════════════════════════════
+  # TELEGRAM STARS
+  # ═══════════════════════════════════════════════════════════════
+
+  StarInvoice:
+    description: "Счёт на оплату в Telegram Stars"
+    fields:
+      title: String
+      description: String
+      payload: String
+      currency: String           # "XTR"
+      prices: List<LabeledPrice>
+      provider_token: Option<String>
+
+  LabeledPrice:
+    description: "Позиция в счёте"
+    fields:
+      label: String
+      amount: Int                # В минимальных единицах (1 star = 1)
+
+  PreCheckoutQuery:
+    description: "Запрос подтверждения перед оплатой"
+    fields:
+      id: String
+      from_id: Int
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+
+  SuccessfulPayment:
+    description: "Успешный платёж"
+    fields:
+      currency: String
+      total_amount: Int
+      invoice_payload: String
+      telegram_payment_charge_id: String
+      provider_payment_charge_id: String
+
+  # ═══════════════════════════════════════════════════════════════
+  # ROBOKASSA
+  # ═══════════════════════════════════════════════════════════════
+
+  RobokassaConfig:
+    description: "Конфигурация Robokassa"
+    fields:
+      merchant_login: String
+      password1: String          # Для формирования подписи
+      password2: String          # Для проверки подписи
+      test_mode: Bool
+      result_url: String
+      success_url: String
+      fail_url: String
+
+  RobokassaInvoice:
+    description: "Счёт Robokassa"
+    fields:
+      inv_id: Int
+      out_sum: Float
+      description: String
+      signature: String
+      is_test: Bool
+
+  RobokassaCallback:
+    description: "Callback от Robokassa"
+    fields:
+      out_sum: Float
+      inv_id: Int
+      signature: String
+      is_valid: Bool
+
+  # ═══════════════════════════════════════════════════════════════
+  # CRYPTOBOT (USDT)
+  # Из 999-multibots-telegraf/src/handlers/paymentHandlers/handleTopUp.ts
+  # ═══════════════════════════════════════════════════════════════
+
+  CryptoBotConfig:
+    description: "Конфигурация CryptoBot"
+    fields:
+      api_token: String          # Токен от @CryptoBot
+      api_url: String            # https://pay.crypt.bot/api
+      webhook_url: String        # URL для webhook
+      test_mode: Bool
+
+  CryptoBotAsset:
+    description: "Поддерживаемые криптовалюты"
+    variants:
+      - USDT                     # Tether USD
+      - TON                      # Toncoin
+      - BTC                      # Bitcoin
+      - ETH                      # Ethereum
+      - USDC                     # USD Coin
+
+  CryptoBotInvoice:
+    description: "Счёт CryptoBot"
+    fields:
+      invoice_id: Int
+      bot_invoice_url: String    # URL для оплаты
+      mini_app_invoice_url: String
+      web_app_invoice_url: String
+      asset: CryptoBotAsset
+      amount: String             # Сумма в криптовалюте
+      description: String
+      status: String             # active, paid, expired
+      created_at: Timestamp
+      paid_at: Option<Timestamp>
+      expiration_date: Option<Timestamp>
+
+  CryptoBotPayment:
+    description: "Платёж CryptoBot"
+    fields:
+      payment_id: Int
+      invoice_id: Int
+      user_id: String            # Telegram ID плательщика
+      asset: CryptoBotAsset
+      amount: String
+      paid_at: Timestamp
+      fee: Option<String>
+
+  CryptoBotWebhook:
+    description: "Webhook от CryptoBot"
+    fields:
+      update_id: Int
+      update_type: String        # invoice_paid
+      request_date: Timestamp
+      payload: CryptoBotPayment
+
+  # ═══════════════════════════════════════════════════════════════
+  # ЗАПИСИ ПЛАТЕЖЕЙ
+  # ═══════════════════════════════════════════════════════════════
+
+  PaymentRecord:
+    description: "Запись о платеже в БД"
+    fields:
+      id: String
+      user_id: String
+      telegram_id: String
+      method: PaymentMethod
+      status: PaymentStatus
+      amount_stars: Int
+      amount_rubles: Option<Float>
+      amount_usd: Option<Float>
+      service: Option<String>
+      description: String
+      external_id: Option<String>
+      created_at: Timestamp
+      completed_at: Option<Timestamp>
+      metadata: Option<Object>
+
+  PaymentIntent:
+    description: "Намерение платежа"
+    fields:
+      user_id: String
+      telegram_id: String
+      amount_stars: Int
+      service: Option<String>
+      description: String
+      method: PaymentMethod
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════
+  # TELEGRAM STARS
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: create_star_invoice
+    given: Количество звёзд и описание
+    when: Создание счёта
+    then: Возвращает StarInvoice
+
+  - name: send_invoice
+    given: Context и StarInvoice
+    when: Отправка счёта пользователю
+    then: Отправляет invoice message
+
+  - name: handle_pre_checkout
+    given: PreCheckoutQuery
+    when: Подтверждение перед оплатой
+    then: Возвращает ok или error
+
+  - name: handle_successful_payment
+    given: SuccessfulPayment
+    when: Обработка успешного платежа
+    then: Начисляет звёзды и сохраняет запись
+
+  # ═══════════════════════════════════════════════════════════════
+  # ROBOKASSA
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: create_robokassa_invoice
+    given: Сумма в рублях и описание
+    when: Создание счёта
+    then: Возвращает RobokassaInvoice с подписью
+
+  - name: get_robokassa_payment_url
+    given: RobokassaInvoice
+    when: Получение URL для оплаты
+    then: Возвращает URL
+
+  - name: verify_robokassa_callback
+    given: RobokassaCallback
+    when: Проверка подписи
+    then: Возвращает true если подпись верна
+
+  - name: handle_robokassa_result
+    given: RobokassaCallback
+    when: Обработка результата
+    then: Начисляет звёзды если подпись верна
+
+  # ═══════════════════════════════════════════════════════════════
+  # CRYPTOBOT (USDT)
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: create_cryptobot_invoice
+    given: Сумма в USDT и описание
+    when: Создание счёта через CryptoBot API
+    then: Возвращает CryptoBotInvoice с URL для оплаты
+
+  - name: get_cryptobot_invoice_status
+    given: Invoice ID
+    when: Проверка статуса счёта
+    then: Возвращает текущий статус (active/paid/expired)
+
+  - name: handle_cryptobot_webhook
+    given: CryptoBotWebhook
+    when: Получение webhook о платеже
+    then: Начисляет звёзды и обновляет статус
+
+  - name: verify_cryptobot_signature
+    given: Webhook body и signature header
+    when: Проверка подписи webhook
+    then: Возвращает true если подпись верна
+
+  - name: convert_usdt_to_stars
+    given: Сумма в USDT
+    when: Конвертация в звёзды
+    then: Возвращает количество звёзд (1 USDT = 62.5 stars)
+    formula: floor(usdt_amount / STAR_COST_USD)
+
+  # ═══════════════════════════════════════════════════════════════
+  # ОБЩИЕ ФУНКЦИИ
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: create_payment_intent
+    given: PaymentIntent
+    when: Создание намерения платежа
+    then: Сохраняет в БД и возвращает ID
+
+  - name: complete_payment
+    given: Payment ID и external ID
+    when: Завершение платежа
+    then: Обновляет статус и начисляет звёзды
+
+  - name: refund_payment
+    given: Payment ID
+    when: Возврат платежа
+    then: Возвращает звёзды и обновляет статус
+
+  - name: get_payment_history
+    given: User ID и пагинация
+    when: Получение истории
+    then: Возвращает список PaymentRecord
+
+  # ═══════════════════════════════════════════════════════════════
+  # БАЛАНС
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: get_user_balance
+    given: Telegram ID
+    when: Получение баланса
+    then: Возвращает количество звёзд
+
+  - name: add_stars
+    given: Telegram ID и количество
+    when: Начисление звёзд
+    then: Обновляет баланс
+
+  - name: deduct_stars
+    given: Telegram ID и количество
+    when: Списание звёзд
+    then: Обновляет баланс или возвращает ошибку
+
+  - name: check_balance
+    given: Telegram ID и требуемая сумма
+    when: Проверка баланса
+    then: Возвращает true если достаточно
+
+  # ═══════════════════════════════════════════════════════════════
+  # UI ФУНКЦИИ
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: show_payment_menu
+    given: Context
+    when: Показ меню оплаты
+    then: Отображает варианты пополнения
+
+  - name: show_star_packages
+    given: Context и язык
+    when: Показ пакетов звёзд
+    then: Отображает пакеты с ценами
+
+  - name: show_balance
+    given: Context
+    when: Показ баланса
+    then: Отображает текущий баланс
+
+  - name: show_insufficient_balance
+    given: Context и требуемая сумма
+    when: Недостаточно средств
+    then: Показывает сообщение с кнопкой пополнения
+
+constants:
+  # ═══════════════════════════════════════════════════════════════
+  # TELEGRAM STARS
+  # ═══════════════════════════════════════════════════════════════
+
+  CURRENCY_XTR: "XTR"
+  MIN_STARS_INVOICE: 1
+  MAX_STARS_INVOICE: 10000
+  STAR_COST_USD: 0.016
+
+  # ═══════════════════════════════════════════════════════════════
+  # ROBOKASSA
+  # ═══════════════════════════════════════════════════════════════
+
+  ROBOKASSA_URL: "https://auth.robokassa.ru/Merchant/Index.aspx"
+  ROBOKASSA_TEST_URL: "https://auth.robokassa.ru/Merchant/Index.aspx"
+
+  # ═══════════════════════════════════════════════════════════════
+  # CRYPTOBOT
+  # ═══════════════════════════════════════════════════════════════
+
+  CRYPTOBOT_API_URL: "https://pay.crypt.bot/api"
+  CRYPTOBOT_DEFAULT_ASSET: "USDT"
+  CRYPTOBOT_INVOICE_LIFETIME: 3600  # 1 час в секундах
+  
+  # Конвертация: 1 USDT = 1 USD = 62.5 stars (1 / 0.016)
+  USDT_TO_STARS_RATE: 62.5
+
+  # ═══════════════════════════════════════════════════════════════
+  # СООБЩЕНИЯ
+  # ═══════════════════════════════════════════════════════════════
+
+  MESSAGES:
+    BALANCE:
+      ru: "💎 Ваш баланс: {balance}⭐"
+      en: "💎 Your balance: {balance}⭐"
+
+    INSUFFICIENT:
+      ru: "❌ Недостаточно звёзд!\n\nНужно: {required}⭐\nУ вас: {current}⭐\nНе хватает: {shortfall}⭐"
+      en: "❌ Not enough stars!\n\nNeed: {required}⭐\nYou have: {current}⭐\nShortfall: {shortfall}⭐"
+
+    PAYMENT_SUCCESS:
+      ru: "✅ Оплата прошла успешно!\n\nЗачислено: {amount}⭐\nНовый баланс: {balance}⭐"
+      en: "✅ Payment successful!\n\nAdded: {amount}⭐\nNew balance: {balance}⭐"
+
+    PAYMENT_FAILED:
+      ru: "❌ Ошибка оплаты. Попробуйте ещё раз."
+      en: "❌ Payment failed. Please try again."
+
+    SELECT_PACKAGE:
+      ru: "💰 Выберите пакет звёзд для пополнения:"
+      en: "💰 Select a star package to top up:"
+
+    SELECT_METHOD:
+      ru: "💳 Выберите способ оплаты:"
+      en: "💳 Select payment method:"
+
+  # ═══════════════════════════════════════════════════════════════
+  # КНОПКИ
+  # ═══════════════════════════════════════════════════════════════
+
+  BUTTONS:
+    PAY_STARS:
+      ru: "Оплатить звёздами"
+      en: "Pay with Stars"
+
+    PAY_RUBLES:
+      ru: "Оплатить рублями"
+      en: "Pay with Rubles"
+
+    PAY_CRYPTO:
+      ru: "Оплатить USDT"
+      en: "Pay with USDT"
+
+    TOP_UP:
+      ru: "Пополнить баланс"
+      en: "Top Up Balance"
+
+    HISTORY:
+      ru: "История платежей"
+      en: "Payment History"
+
+  # ═══════════════════════════════════════════════════════════════
+  # CRYPTOBOT СООБЩЕНИЯ
+  # ═══════════════════════════════════════════════════════════════
+
+  CRYPTO_MESSAGES:
+    INVOICE_CREATED:
+      ru: "Счет для оплаты создан!\n\nСумма: {amount} USDT\nID платежа: {payment_id}"
+      en: "Invoice created!\n\nAmount: {amount} USDT\nPayment ID: {payment_id}"
+
+    PAYMENT_RECEIVED:
+      ru: "Оплата получена!\n\nЗачислено: {stars} звёзд\nНовый баланс: {balance}"
+      en: "Payment received!\n\nAdded: {stars} stars\nNew balance: {balance}"
+
+    INVOICE_EXPIRED:
+      ru: "Срок действия счёта истёк. Создайте новый."
+      en: "Invoice expired. Please create a new one."
+
+  # ═══════════════════════════════════════════════════════════════
+  # ПАКЕТЫ ПОПОЛНЕНИЯ
+  # ═══════════════════════════════════════════════════════════════
+
+  TOP_UP_PACKAGES:
+    - stars: 100
+      usd: 1.60
+      usdt: 1.60
+      rubles: 160
+    - stars: 500
+      usd: 8.00
+      usdt: 8.00
+      rubles: 800
+    - stars: 1000
+      usd: 16.00
+      usdt: 16.00
+      rubles: 1600
+    - stars: 5000
+      usd: 80.00
+      usdt: 80.00
+      rubles: 8000

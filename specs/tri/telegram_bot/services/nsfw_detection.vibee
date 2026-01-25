@@ -1,0 +1,134 @@
+# NSFW Detection Service
+# Replicate model: falcons-ai/nsfw_image_detection
+# Cost: $0.001 per image (free tier available)
+
+name: nsfw_detection
+version: "1.0.0"
+language: zig
+module: nsfw_detection
+
+description: |
+  Детекция NSFW контента в изображениях.
+  Модель: falcons-ai/nsfw_image_detection
+  Используется для модерации контента перед публикацией.
+  Внутренний сервис - не показывается в меню пользователя.
+
+imports:
+  - replicate_client
+
+constants:
+  MODEL_ID: "falcons-ai/nsfw_image_detection"
+  BASE_COST_USD: 0.001
+  # Практически бесплатно - используем для модерации
+  COST_STARS: 0  # Бесплатно для пользователя (внутренний сервис)
+  
+  # Пороги детекции
+  NSFW_THRESHOLD: 0.7      # Выше = точно NSFW
+  WARNING_THRESHOLD: 0.4   # Между warning и nsfw = подозрительно
+
+types:
+  NSFWCategory:
+    description: "Категория NSFW контента"
+    variants:
+      - Safe          # Безопасно
+      - Suggestive    # Провокационно
+      - Explicit      # Откровенно
+      - Violence      # Насилие
+      - Gore          # Жестокость
+
+  NSFWDetectionRequest:
+    description: "Запрос на проверку"
+    fields:
+      image_url: String
+      check_violence: Bool
+      check_explicit: Bool
+
+  NSFWDetectionResponse:
+    description: "Результат проверки"
+    fields:
+      is_safe: Bool
+      category: NSFWCategory
+      confidence: Float
+      scores: NSFWScores
+      should_block: Bool
+      warning_message: Option<String>
+
+  NSFWScores:
+    description: "Оценки по категориям"
+    fields:
+      safe: Float
+      suggestive: Float
+      explicit: Float
+      violence: Float
+
+behaviors:
+  - name: check_image
+    given: URL изображения
+    when: Проверка на NSFW
+    then: Возвращает результат детекции
+    api_call: |
+      replicate.run("falcons-ai/nsfw_image_detection", {
+        input: { image: image_url }
+      })
+
+  - name: is_safe
+    given: URL изображения
+    when: Быстрая проверка
+    then: Возвращает true если изображение безопасно
+
+  - name: get_category
+    given: Scores от модели
+    when: Определение категории
+    then: Возвращает наиболее вероятную категорию
+
+  - name: should_block
+    given: NSFWDetectionResponse
+    when: Решение о блокировке
+    then: Возвращает true если контент должен быть заблокирован
+
+  - name: get_warning_message
+    given: Категория и язык
+    when: Формирование предупреждения
+    then: Возвращает локализованное предупреждение
+
+# Integration points
+integration:
+  # Проверять перед генерацией изображений
+  pre_generation:
+    - neuro_photo
+    - text_to_image
+    - face_swap
+  
+  # Проверять результаты генерации
+  post_generation:
+    - neuro_photo
+    - text_to_image
+    - image_to_video
+
+# Warning messages
+messages:
+  blocked:
+    ru: "Изображение заблокировано: обнаружен недопустимый контент"
+    en: "Image blocked: inappropriate content detected"
+  
+  warning:
+    ru: "Предупреждение: изображение может содержать нежелательный контент"
+    en: "Warning: image may contain inappropriate content"
+  
+  safe:
+    ru: "Изображение прошло проверку"
+    en: "Image passed moderation"
+
+# Admin settings
+admin:
+  # Логировать все проверки
+  log_all_checks: true
+  
+  # Сохранять заблокированные изображения для анализа
+  save_blocked: false
+  
+  # Уведомлять админов о блокировках
+  notify_admins: true
+  
+  # Автоматически банить за повторные нарушения
+  auto_ban_threshold: 3

@@ -1,0 +1,288 @@
+name: feedback_messages
+version: "2.0.0"
+language: zig
+module: feedback_messages
+
+description: |
+  User Feedback Messages with UX Best Practices
+  
+  Key improvements:
+  1. Clear, actionable error messages
+  2. Positive reinforcement for success
+  3. Helpful suggestions on failure
+  4. Progress updates during long operations
+  5. Contextual tips and guidance
+
+imports:
+  - ux_design_system
+  - telegram
+
+types:
+  # ═══════════════════════════════════════════════════════════════
+  # MESSAGE TYPES
+  # ═══════════════════════════════════════════════════════════════
+
+  FeedbackType:
+    description: "Type of feedback message"
+    variants:
+      - Success
+      - Error
+      - Warning
+      - Info
+      - Progress
+      - Tip
+
+  FeedbackMessage:
+    description: "Structured feedback message"
+    fields:
+      type: FeedbackType
+      title: String
+      body: String
+      suggestion: Option<String>
+      action_buttons: Option<List<ActionButton>>
+
+  ActionButton:
+    description: "Action button in feedback"
+    fields:
+      text: String
+      callback_data: String
+      is_primary: Bool
+
+  # ═══════════════════════════════════════════════════════════════
+  # ERROR CATEGORIES
+  # ═══════════════════════════════════════════════════════════════
+
+  ErrorCategory:
+    description: "Error category for appropriate messaging"
+    variants:
+      - ValidationError      # User input invalid
+      - InsufficientBalance  # Not enough stars
+      - NoModel              # No trained model
+      - ServiceUnavailable   # External service down
+      - RateLimit            # Too many requests
+      - NetworkError         # Connection issues
+      - PermissionDenied     # Not authorized
+      - ContentPolicy        # Content violation
+      - Unknown              # Unexpected error
+
+  ErrorContext:
+    description: "Error context for better messages"
+    fields:
+      category: ErrorCategory
+      operation: String
+      details: Option<String>
+      can_retry: Bool
+      retry_after: Option<Int>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════
+  # SUCCESS MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: send_success
+    given: Context, title, and body
+    when: Operation succeeded
+    then: Sends success message with celebration
+
+  - name: send_generation_complete
+    given: Context and result
+    when: AI generation finished
+    then: Sends result with share/save options
+
+  - name: send_payment_success
+    given: Context and amount
+    when: Payment completed
+    then: Sends confirmation with new balance
+
+  - name: send_training_complete
+    given: Context and model info
+    when: Model training finished
+    then: Sends success with next steps
+
+  # ═══════════════════════════════════════════════════════════════
+  # ERROR MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: send_error
+    given: Context and error context
+    when: Operation failed
+    then: Sends helpful error with suggestions
+
+  - name: send_validation_error
+    given: Context, field, and issue
+    when: Input validation failed
+    then: Sends specific error with example
+
+  - name: send_insufficient_balance
+    given: Context, required, and current
+    when: Balance too low
+    then: Sends error with top-up button
+
+  - name: send_no_model_error
+    given: Context
+    when: User has no trained model
+    then: Sends error with training link
+
+  - name: send_service_unavailable
+    given: Context and service name
+    when: External service down
+    then: Sends error with retry option
+
+  - name: send_rate_limit
+    given: Context and wait time
+    when: Rate limited
+    then: Sends error with countdown
+
+  # ═══════════════════════════════════════════════════════════════
+  # PROGRESS MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: send_progress_start
+    given: Context and operation name
+    when: Starting long operation
+    then: Sends initial progress message
+
+  - name: update_progress
+    given: Context, message_id, and percentage
+    when: Progress updated
+    then: Edits message with new progress
+
+  - name: send_progress_stage
+    given: Context and stage name
+    when: Entering new stage
+    then: Updates with stage info
+
+  # ═══════════════════════════════════════════════════════════════
+  # TIPS & GUIDANCE
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: send_tip
+    given: Context and tip key
+    when: Showing helpful tip
+    then: Sends tip message
+
+  - name: send_onboarding_tip
+    given: Context and step
+    when: Guiding new user
+    then: Sends onboarding message
+
+  - name: send_feature_highlight
+    given: Context and feature
+    when: Highlighting feature
+    then: Sends feature info with try button
+
+constants:
+  # ═══════════════════════════════════════════════════════════════
+  # SUCCESS MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  SUCCESS:
+    GENERATION_COMPLETE:
+      ru: "✨ Готово! Ваше изображение создано"
+      en: "✨ Done! Your image is ready"
+    VIDEO_COMPLETE:
+      ru: "🎬 Видео готово!"
+      en: "🎬 Video is ready!"
+    PAYMENT_SUCCESS:
+      ru: "✅ Оплата прошла успешно"
+      en: "✅ Payment successful"
+    TRAINING_COMPLETE:
+      ru: "🎉 Модель обучена! Теперь вы можете создавать фото"
+      en: "🎉 Model trained! Now you can create photos"
+    VOICE_CLONED:
+      ru: "🎤 Голос клонирован успешно"
+      en: "🎤 Voice cloned successfully"
+
+  # ═══════════════════════════════════════════════════════════════
+  # ERROR MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  ERRORS:
+    VALIDATION:
+      PROMPT_TOO_SHORT:
+        ru: "📝 Описание слишком короткое. Добавьте больше деталей (минимум 10 символов)"
+        en: "📝 Description too short. Add more details (minimum 10 characters)"
+      PROMPT_TOO_LONG:
+        ru: "📝 Описание слишком длинное. Сократите до 2000 символов"
+        en: "📝 Description too long. Limit to 2000 characters"
+      INVALID_IMAGE:
+        ru: "🖼️ Неподдерживаемый формат изображения. Используйте JPG, PNG или WebP"
+        en: "🖼️ Unsupported image format. Use JPG, PNG or WebP"
+      IMAGE_TOO_SMALL:
+        ru: "🖼️ Изображение слишком маленькое. Минимум 256x256 пикселей"
+        en: "🖼️ Image too small. Minimum 256x256 pixels"
+
+    BALANCE:
+      INSUFFICIENT:
+        ru: "💰 Недостаточно звёзд. Нужно: {required}⭐, у вас: {current}⭐"
+        en: "💰 Not enough stars. Need: {required}⭐, you have: {current}⭐"
+      SUGGESTION:
+        ru: "Пополните баланс, чтобы продолжить"
+        en: "Top up your balance to continue"
+
+    MODEL:
+      NO_MODEL:
+        ru: "🤖 У вас нет обученной модели. Сначала создайте цифровое тело"
+        en: "🤖 You don't have a trained model. Create a digital body first"
+      MODEL_EXPIRED:
+        ru: "🤖 Срок действия модели истёк. Обучите новую"
+        en: "🤖 Model has expired. Train a new one"
+
+    SERVICE:
+      UNAVAILABLE:
+        ru: "🔧 Сервис временно недоступен. Попробуйте через несколько минут"
+        en: "🔧 Service temporarily unavailable. Try again in a few minutes"
+      TIMEOUT:
+        ru: "⏱️ Превышено время ожидания. Попробуйте ещё раз"
+        en: "⏱️ Request timed out. Please try again"
+
+    RATE_LIMIT:
+      TOO_MANY:
+        ru: "⏳ Слишком много запросов. Подождите {seconds} секунд"
+        en: "⏳ Too many requests. Wait {seconds} seconds"
+
+    CONTENT:
+      POLICY_VIOLATION:
+        ru: "⚠️ Контент нарушает правила использования"
+        en: "⚠️ Content violates usage policy"
+
+    GENERIC:
+      UNKNOWN:
+        ru: "❌ Произошла ошибка. Попробуйте ещё раз или обратитесь в поддержку"
+        en: "❌ An error occurred. Try again or contact support"
+
+  # ═══════════════════════════════════════════════════════════════
+  # PROGRESS MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  PROGRESS:
+    STARTING:
+      ru: "🚀 Запускаем генерацию..."
+      en: "🚀 Starting generation..."
+    PROCESSING:
+      ru: "⏳ Обрабатываем... {percent}%"
+      en: "⏳ Processing... {percent}%"
+    UPLOADING:
+      ru: "📤 Загружаем файлы..."
+      en: "📤 Uploading files..."
+    TRAINING:
+      ru: "🧠 Обучаем модель... Это займёт 10-15 минут"
+      en: "🧠 Training model... This will take 10-15 minutes"
+    ALMOST_DONE:
+      ru: "✨ Почти готово!"
+      en: "✨ Almost done!"
+
+  # ═══════════════════════════════════════════════════════════════
+  # TIPS
+  # ═══════════════════════════════════════════════════════════════
+
+  TIPS:
+    PROMPT:
+      ru: "💡 Совет: Опишите детали — освещение, стиль, настроение"
+      en: "💡 Tip: Describe details — lighting, style, mood"
+    PHOTOS:
+      ru: "💡 Совет: Загрузите 15-20 разных фото для лучшего результата"
+      en: "💡 Tip: Upload 15-20 different photos for best results"
+    FIRST_TIME:
+      ru: "👋 Добро пожаловать! Начните с создания цифрового тела"
+      en: "👋 Welcome! Start by creating your digital body"

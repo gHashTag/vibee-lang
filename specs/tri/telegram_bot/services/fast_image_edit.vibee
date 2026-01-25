@@ -1,0 +1,193 @@
+# Fast Image Edit Service
+# Replicate model: prunaai/p-image-edit
+# Cost: $0.01 per edit
+
+name: fast_image_edit
+version: "1.0.0"
+language: zig
+module: fast_image_edit
+
+description: |
+  Супер быстрое редактирование изображений.
+  Модель: prunaai/p-image-edit
+  Редактирование за 1 секунду.
+  Идеально для production use cases.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "prunaai/p-image-edit"
+  BASE_COST_USD: 0.01
+  # stars = (0.01 / 0.016) * 1.5 = 0.9375 -> 1 star
+  COST_STARS: 1
+  EDIT_TIME_SECONDS: 1  # Менее 1 секунды!
+
+types:
+  EditType:
+    description: "Тип редактирования"
+    variants:
+      - Replace       # Заменить объект
+      - Remove        # Удалить объект
+      - Add           # Добавить объект
+      - Style         # Изменить стиль
+      - Recolor       # Перекрасить
+      - Enhance       # Улучшить качество
+
+  FastEditRequest:
+    description: "Запрос на редактирование"
+    fields:
+      image_url: String
+      edit_prompt: String
+      edit_type: EditType
+      mask_url: Option<String>  # Маска для точного редактирования
+      telegram_id: String
+      username: String
+
+  FastEditResponse:
+    description: "Результат редактирования"
+    fields:
+      success: Bool
+      result_url: Option<String>
+      error: Option<String>
+      edit_time_ms: Int
+      cost_stars: Int
+
+behaviors:
+  - name: edit_image
+    given: Изображение и инструкция
+    when: Запрос на редактирование
+    then: Возвращает отредактированное изображение
+    api_call: |
+      replicate.run("prunaai/p-image-edit", {
+        input: {
+          image: image_url,
+          prompt: edit_prompt,
+          mask: mask_url
+        }
+      })
+
+  - name: remove_object
+    given: Изображение и описание объекта
+    when: Удаление объекта
+    then: Возвращает изображение без объекта
+
+  - name: replace_object
+    given: Изображение, что заменить, на что заменить
+    when: Замена объекта
+    then: Возвращает изображение с заменённым объектом
+
+  - name: change_style
+    given: Изображение и целевой стиль
+    when: Изменение стиля
+    then: Возвращает изображение в новом стиле
+
+  - name: recolor
+    given: Изображение, объект, новый цвет
+    when: Перекраска объекта
+    then: Возвращает изображение с перекрашенным объектом
+
+# UI Integration
+menu_item:
+  group: photo
+  position: 3
+  icon: "✏️"
+  name:
+    ru: "Быстрое редактирование"
+    en: "Fast Edit"
+  description:
+    ru: "Редактирование за 1 секунду (1⭐)"
+    en: "Edit in 1 second (1⭐)"
+  cost_stars: 1
+
+# Wizard flow
+wizard:
+  steps:
+    - name: upload_image
+      prompt:
+        ru: |
+          ✏️ Быстрое редактирование
+          
+          Отправьте фото для редактирования.
+          
+          Возможности:
+          • Удаление объектов
+          • Замена объектов
+          • Изменение стиля
+          • Перекраска
+          
+          💎 Стоимость: 1 ⭐
+        en: |
+          ✏️ Fast Edit
+          
+          Send a photo to edit.
+          
+          Features:
+          • Remove objects
+          • Replace objects
+          • Change style
+          • Recolor
+          
+          💎 Cost: 1 ⭐
+
+    - name: select_edit_type
+      prompt:
+        ru: "Что хотите сделать?"
+        en: "What do you want to do?"
+      buttons:
+        - text: "🗑️ Удалить объект"
+          callback: "edit_remove"
+        - text: "🔄 Заменить объект"
+          callback: "edit_replace"
+        - text: "🎨 Изменить стиль"
+          callback: "edit_style"
+        - text: "🖌️ Перекрасить"
+          callback: "edit_recolor"
+
+    - name: enter_instruction
+      prompt:
+        ru: |
+          Опишите изменение:
+          
+          Примеры:
+          • "Удали человека на фоне"
+          • "Замени небо на закат"
+          • "Сделай в стиле аниме"
+          • "Перекрась машину в красный"
+        en: |
+          Describe the change:
+          
+          Examples:
+          • "Remove person in background"
+          • "Replace sky with sunset"
+          • "Make it anime style"
+          • "Recolor car to red"
+
+    - name: processing
+      message:
+        ru: "✏️ Редактирую..."
+        en: "✏️ Editing..."
+
+    - name: result
+      message:
+        ru: "✅ Готово!\n\n⏱ Время: {time} мс\n💎 Стоимость: 1 ⭐"
+        en: "✅ Done!\n\n⏱ Time: {time} ms\n💎 Cost: 1 ⭐"
+
+# Edit presets
+presets:
+  remove_background_person:
+    ru: "Удали людей на заднем плане"
+    en: "Remove people in background"
+  enhance_lighting:
+    ru: "Улучши освещение"
+    en: "Enhance lighting"
+  make_sunny:
+    ru: "Сделай солнечную погоду"
+    en: "Make it sunny weather"
+  add_snow:
+    ru: "Добавь снег"
+    en: "Add snow"
+  vintage_style:
+    ru: "Сделай в винтажном стиле"
+    en: "Make it vintage style"

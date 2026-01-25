@@ -1,0 +1,222 @@
+# Video Transcription Service
+# Replicate model: turian/insanely-fast-whisper-with-video
+# Cost: $0.003 per minute
+
+name: video_transcription
+version: "1.0.0"
+language: zig
+module: video_transcription
+
+description: |
+  Транскрипция видео и аудио в текст.
+  Модель: turian/insanely-fast-whisper-with-video
+  Whisper large-v3, невероятно быстрый.
+  Поддерживает 99+ языков.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "turian/insanely-fast-whisper-with-video"
+  # Real price from Replicate: $0.088 per run (~91 seconds typical)
+  # Can transcribe 150 min in ~98 seconds
+  BASE_COST_USD_PER_RUN: 0.088
+  # stars = (0.088 / 0.016) * 1.5 = 8.25 -> 8 stars per run
+  COST_STARS_PER_RUN: 8
+  # For short videos (<5 min) use minimum
+  COST_STARS_MINIMUM: 3
+  MAX_DURATION_MINUTES: 150  # 2.5 hours max (150 min in ~98 sec)
+  SUPPORTED_FORMATS: ["mp4", "mov", "webm", "mp3", "wav", "m4a", "ogg"]
+
+types:
+  TranscriptionLanguage:
+    description: "Язык транскрипции"
+    variants:
+      - Auto        # Автоопределение
+      - Russian
+      - English
+      - Spanish
+      - French
+      - German
+      - Chinese
+      - Japanese
+      - Korean
+      - Other
+
+  OutputFormat:
+    description: "Формат вывода"
+    variants:
+      - Text        # Простой текст
+      - SRT         # Субтитры SRT
+      - VTT         # Субтитры WebVTT
+      - JSON        # JSON с таймкодами
+
+  TranscriptionRequest:
+    description: "Запрос на транскрипцию"
+    fields:
+      media_url: String
+      language: TranscriptionLanguage
+      output_format: OutputFormat
+      include_timestamps: Bool
+      telegram_id: String
+      username: String
+
+  TranscriptionResponse:
+    description: "Результат транскрипции"
+    fields:
+      success: Bool
+      text: Option<String>
+      subtitles_url: Option<String>
+      detected_language: String
+      duration_minutes: Float
+      word_count: Int
+      processing_time_ms: Int
+      cost_stars: Int
+
+  TranscriptionSegment:
+    description: "Сегмент транскрипции"
+    fields:
+      start_time: Float
+      end_time: Float
+      text: String
+      confidence: Float
+
+behaviors:
+  - name: transcribe
+    given: URL медиафайла
+    when: Запрос на транскрипцию
+    then: Возвращает текст и/или субтитры
+    api_call: |
+      replicate.run("turian/insanely-fast-whisper-with-video", {
+        input: {
+          audio: media_url,
+          language: language,
+          batch_size: 64
+        }
+      })
+
+  - name: transcribe_with_timestamps
+    given: URL медиафайла
+    when: Транскрипция с таймкодами
+    then: Возвращает сегменты с временными метками
+
+  - name: generate_subtitles
+    given: URL медиафайла и формат
+    when: Генерация субтитров
+    then: Возвращает файл субтитров (SRT/VTT)
+
+  - name: detect_language
+    given: URL медиафайла
+    when: Определение языка
+    then: Возвращает определённый язык
+
+  - name: calculate_cost
+    given: Длительность в минутах
+    when: Расчёт стоимости
+    then: Возвращает стоимость в звёздах
+    formula: max(1, ceil(duration_minutes)) * COST_STARS_PER_MINUTE
+
+# UI Integration
+menu_item:
+  group: tools
+  position: 3
+  icon: "📝"
+  name:
+    ru: "Транскрипция видео"
+    en: "Video Transcription"
+  description:
+    ru: "Перевод видео/аудио в текст"
+    en: "Convert video/audio to text"
+  cost_stars: "1⭐/мин"
+
+# Wizard flow
+wizard:
+  steps:
+    - name: upload_media
+      prompt:
+        ru: |
+          📝 Транскрипция видео/аудио
+          
+          Отправьте видео или аудио для транскрипции.
+          
+          Поддерживаемые форматы:
+          • Видео: MP4, MOV, WebM
+          • Аудио: MP3, WAV, M4A, OGG
+          
+          Макс. длительность: 2 часа
+          
+          💎 Стоимость: 1 ⭐ за минуту
+        en: |
+          📝 Video/Audio Transcription
+          
+          Send video or audio for transcription.
+          
+          Supported formats:
+          • Video: MP4, MOV, WebM
+          • Audio: MP3, WAV, M4A, OGG
+          
+          Max duration: 2 hours
+          
+          💎 Cost: 1 ⭐ per minute
+
+    - name: select_language
+      prompt:
+        ru: "Выберите язык:"
+        en: "Select language:"
+      buttons:
+        - text: "🔄 Автоопределение"
+          callback: "trans_auto"
+        - text: "🇷🇺 Русский"
+          callback: "trans_ru"
+        - text: "🇬🇧 English"
+          callback: "trans_en"
+        - text: "🇪🇸 Español"
+          callback: "trans_es"
+        - text: "🇩🇪 Deutsch"
+          callback: "trans_de"
+
+    - name: select_format
+      prompt:
+        ru: "Выберите формат вывода:"
+        en: "Select output format:"
+      buttons:
+        - text: "📄 Текст"
+          callback: "trans_text"
+        - text: "🎬 Субтитры SRT"
+          callback: "trans_srt"
+        - text: "🌐 Субтитры VTT"
+          callback: "trans_vtt"
+
+    - name: processing
+      message:
+        ru: "📝 Транскрибирую... Это может занять несколько минут"
+        en: "📝 Transcribing... This may take a few minutes"
+
+    - name: result
+      message:
+        ru: |
+          ✅ Транскрипция готова!
+          
+          🌍 Язык: {language}
+          ⏱ Длительность: {duration} мин
+          📊 Слов: {words}
+          💎 Стоимость: {cost} ⭐
+        en: |
+          ✅ Transcription ready!
+          
+          🌍 Language: {language}
+          ⏱ Duration: {duration} min
+          📊 Words: {words}
+          💎 Cost: {cost} ⭐
+
+# Use cases
+use_cases:
+  - name: "youtube_subtitles"
+    description: "Создание субтитров для YouTube"
+  - name: "meeting_notes"
+    description: "Конспект совещания"
+  - name: "podcast_transcript"
+    description: "Транскрипт подкаста"
+  - name: "lecture_notes"
+    description: "Конспект лекции"

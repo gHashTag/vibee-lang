@@ -1,0 +1,289 @@
+name: wizard_ux
+version: "2.0.0"
+language: zig
+module: wizard_ux
+
+description: |
+  Improved Wizard UX Patterns
+  
+  Key improvements:
+  1. Clear step progress indicator
+  2. Inline validation with helpful errors
+  3. Smart defaults to reduce input
+  4. Preview before confirmation
+  5. Easy cancel/back at any step
+  6. Contextual help per step
+  7. Cost transparency throughout
+
+imports:
+  - ux_design_system
+  - telegram
+  - user
+
+types:
+  # ═══════════════════════════════════════════════════════════════
+  # WIZARD FRAMEWORK
+  # ═══════════════════════════════════════════════════════════════
+
+  WizardConfig:
+    description: "Wizard configuration"
+    fields:
+      id: String
+      name_ru: String
+      name_en: String
+      steps: List<WizardStepConfig>
+      allow_skip: Bool
+      show_progress: Bool
+      show_cost: Bool
+
+  WizardStepConfig:
+    description: "Step configuration"
+    fields:
+      id: String
+      type: StepType
+      title_ru: String
+      title_en: String
+      description_ru: String
+      description_en: String
+      tip_ru: Option<String>
+      tip_en: Option<String>
+      is_optional: Bool
+      default_value: Option<String>
+      validation: Option<ValidationRule>
+
+  StepType:
+    description: "Type of wizard step"
+    variants:
+      - TextInput       # Free text entry
+      - SingleSelect    # Select one option
+      - MultiSelect     # Select multiple
+      - PhotoUpload     # Upload photo(s)
+      - Confirmation    # Review and confirm
+      - Processing      # Show progress
+      - Result          # Show result
+
+  ValidationRule:
+    description: "Input validation rule"
+    fields:
+      type: String
+      min_length: Option<Int>
+      max_length: Option<Int>
+      pattern: Option<String>
+      error_ru: String
+      error_en: String
+
+  # ═══════════════════════════════════════════════════════════════
+  # WIZARD STATE
+  # ═══════════════════════════════════════════════════════════════
+
+  WizardState:
+    description: "Current wizard state"
+    fields:
+      wizard_id: String
+      current_step: Int
+      total_steps: Int
+      data: Object
+      errors: List<String>
+      started_at: Timestamp
+      last_activity: Timestamp
+
+  StepTransition:
+    description: "Step transition result"
+    fields:
+      success: Bool
+      next_step: Option<Int>
+      message: Option<String>
+      should_edit: Bool
+
+  # ═══════════════════════════════════════════════════════════════
+  # UI COMPONENTS
+  # ═══════════════════════════════════════════════════════════════
+
+  ProgressHeader:
+    description: "Progress header display"
+    fields:
+      step_number: Int
+      total_steps: Int
+      step_name: String
+      progress_bar: String
+
+  StepMessage:
+    description: "Step message content"
+    fields:
+      header: ProgressHeader
+      title: String
+      description: String
+      tip: Option<String>
+      input_placeholder: Option<String>
+      keyboard: Object
+
+  ConfirmationSummary:
+    description: "Confirmation step summary"
+    fields:
+      items: List<SummaryItem>
+      total_cost: Int
+      warnings: List<String>
+
+  SummaryItem:
+    description: "Summary item"
+    fields:
+      label: String
+      value: String
+      can_edit: Bool
+      edit_step: Option<Int>
+
+behaviors:
+  # ═══════════════════════════════════════════════════════════════
+  # WIZARD LIFECYCLE
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: start_wizard
+    given: Context and wizard config
+    when: Starting wizard
+    then: Initializes state and shows first step
+
+  - name: process_input
+    given: Context and user input
+    when: User provides input
+    then: Validates and transitions to next step
+
+  - name: go_back
+    given: Context
+    when: User presses back
+    then: Returns to previous step
+
+  - name: cancel_wizard
+    given: Context
+    when: User cancels
+    then: Clears state and returns to menu
+
+  - name: skip_step
+    given: Context
+    when: User skips optional step
+    then: Uses default and proceeds
+
+  # ═══════════════════════════════════════════════════════════════
+  # STEP RENDERING
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: render_step
+    given: Wizard state and step config
+    when: Displaying step
+    then: Returns formatted step message
+
+  - name: render_progress_header
+    given: Current step and total steps
+    when: Building header
+    then: Returns progress indicator string
+
+  - name: render_step_keyboard
+    given: Step config and state
+    when: Building keyboard
+    then: Returns appropriate keyboard for step type
+
+  - name: render_confirmation
+    given: Wizard state
+    when: Showing confirmation
+    then: Returns summary with edit options
+
+  - name: render_processing
+    given: Progress percentage
+    when: Showing processing
+    then: Returns animated progress message
+
+  - name: render_result
+    given: Result data
+    when: Showing result
+    then: Returns result with action buttons
+
+  # ═══════════════════════════════════════════════════════════════
+  # VALIDATION
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: validate_input
+    given: Input and validation rule
+    when: Validating user input
+    then: Returns validation result
+
+  - name: format_validation_error
+    given: Error type and language
+    when: Showing error
+    then: Returns user-friendly error message
+
+  - name: suggest_correction
+    given: Invalid input
+    when: Input is close to valid
+    then: Returns suggestion
+
+  # ═══════════════════════════════════════════════════════════════
+  # COST DISPLAY
+  # ═══════════════════════════════════════════════════════════════
+
+  - name: calculate_step_cost
+    given: Wizard state
+    when: Calculating cost
+    then: Returns current estimated cost
+
+  - name: format_cost_display
+    given: Cost in stars and language
+    when: Showing cost
+    then: Returns formatted cost string
+
+  - name: check_balance_sufficient
+    given: User balance and required cost
+    when: Checking balance
+    then: Returns true if sufficient
+
+constants:
+  # ═══════════════════════════════════════════════════════════════
+  # PROGRESS BAR
+  # ═══════════════════════════════════════════════════════════════
+
+  PROGRESS_FILLED: "▓"
+  PROGRESS_EMPTY: "░"
+  PROGRESS_LENGTH: 10
+
+  # Step indicators
+  STEP_CURRENT: "●"
+  STEP_DONE: "✓"
+  STEP_PENDING: "○"
+
+  # ═══════════════════════════════════════════════════════════════
+  # KEYBOARD BUTTONS
+  # ═══════════════════════════════════════════════════════════════
+
+  BTN_BACK_RU: "◀️ Назад"
+  BTN_BACK_EN: "◀️ Back"
+  BTN_CANCEL_RU: "✖️ Отмена"
+  BTN_CANCEL_EN: "✖️ Cancel"
+  BTN_SKIP_RU: "⏭️ Пропустить"
+  BTN_SKIP_EN: "⏭️ Skip"
+  BTN_CONFIRM_RU: "✅ Подтвердить"
+  BTN_CONFIRM_EN: "✅ Confirm"
+  BTN_EDIT_RU: "✏️ Изменить"
+  BTN_EDIT_EN: "✏️ Edit"
+  BTN_RETRY_RU: "🔄 Повторить"
+  BTN_RETRY_EN: "🔄 Retry"
+  BTN_DONE_RU: "✔️ Готово"
+  BTN_DONE_EN: "✔️ Done"
+  BTN_SHARE_RU: "📤 Поделиться"
+  BTN_SHARE_EN: "📤 Share"
+  BTN_SAVE_RU: "💾 Сохранить"
+  BTN_SAVE_EN: "💾 Save"
+
+  # ═══════════════════════════════════════════════════════════════
+  # MESSAGES
+  # ═══════════════════════════════════════════════════════════════
+
+  MSG_PROCESSING_RU: "⏳ Обработка..."
+  MSG_PROCESSING_EN: "⏳ Processing..."
+  MSG_ALMOST_DONE_RU: "🚀 Почти готово!"
+  MSG_ALMOST_DONE_EN: "🚀 Almost done!"
+  MSG_SUCCESS_RU: "✅ Готово!"
+  MSG_SUCCESS_EN: "✅ Done!"
+  MSG_ERROR_RU: "❌ Произошла ошибка"
+  MSG_ERROR_EN: "❌ An error occurred"
+
+  # Timeouts
+  WIZARD_TIMEOUT_MINUTES: 30
+  STEP_TIMEOUT_MINUTES: 10

@@ -1,0 +1,183 @@
+# Fast Image Generation Service
+# Replicate model: prunaai/z-image-turbo
+# Cost: $0.01 per image
+
+name: fast_image_gen
+version: "1.0.0"
+language: zig
+module: fast_image_gen
+
+description: |
+  Супер быстрая генерация изображений.
+  Модель: prunaai/z-image-turbo (6B params)
+  Генерация за 1-2 секунды.
+  Идеально для быстрых итераций.
+
+imports:
+  - replicate_client
+  - pricing_system
+  - nsfw_detection
+
+constants:
+  MODEL_ID: "prunaai/z-image-turbo"
+  # Real prices from Replicate:
+  # - Up to 0.5 MP (500,000 pixels): $0.0025
+  # - Up to 1 MP (1,000,000 pixels): $0.005
+  # - Up to 2 MP (2,000,000 pixels): $0.01
+  BASE_COST_USD_05MP: 0.0025
+  BASE_COST_USD_1MP: 0.005
+  BASE_COST_USD_2MP: 0.01
+  # stars = (0.005 / 0.016) * 1.5 = 0.47 -> 1 star (1MP default)
+  COST_STARS: 1
+  GENERATION_TIME_SECONDS: 1  # Sub-second on enterprise hardware
+
+types:
+  ImageSize:
+    description: "Размер изображения"
+    variants:
+      - Square_1024     # 1024x1024
+      - Landscape_1280  # 1280x720
+      - Portrait_720    # 720x1280
+      - Wide_1920       # 1920x1080
+
+  FastImageRequest:
+    description: "Запрос на быструю генерацию"
+    fields:
+      prompt: String
+      negative_prompt: Option<String>
+      size: ImageSize
+      seed: Option<Int>
+      telegram_id: String
+      username: String
+
+  FastImageResponse:
+    description: "Результат генерации"
+    fields:
+      success: Bool
+      image_url: Option<String>
+      error: Option<String>
+      generation_time_ms: Int
+      seed_used: Int
+      cost_stars: Int
+
+behaviors:
+  - name: generate_fast
+    given: Промпт для генерации
+    when: Запрос на быструю генерацию
+    then: Возвращает URL изображения за 1-2 секунды
+    api_call: |
+      replicate.run("prunaai/z-image-turbo", {
+        input: {
+          prompt: prompt,
+          negative_prompt: negative_prompt,
+          width: width,
+          height: height,
+          seed: seed
+        }
+      })
+
+  - name: generate_batch
+    given: Промпт и количество
+    when: Генерация нескольких вариантов
+    then: Возвращает массив URL изображений
+
+  - name: enhance_prompt
+    given: Простой промпт
+    when: Улучшение промпта
+    then: Добавляет качественные модификаторы
+
+  - name: get_size_dimensions
+    given: ImageSize
+    when: Получение размеров
+    then: Возвращает width и height
+
+# UI Integration
+menu_item:
+  group: photo
+  position: 2
+  icon: "⚡"
+  name:
+    ru: "Быстрая генерация"
+    en: "Fast Generation"
+  description:
+    ru: "Генерация за 2 секунды (1⭐)"
+    en: "Generation in 2 seconds (1⭐)"
+  cost_stars: 1
+
+# Wizard flow
+wizard:
+  steps:
+    - name: enter_prompt
+      prompt:
+        ru: |
+          ⚡ Быстрая генерация изображений
+          
+          Опишите что хотите создать.
+          
+          Особенности:
+          • Генерация за 1-2 секунды
+          • Идеально для быстрых идей
+          
+          💎 Стоимость: 1 ⭐
+        en: |
+          ⚡ Fast Image Generation
+          
+          Describe what you want to create.
+          
+          Features:
+          • Generation in 1-2 seconds
+          • Perfect for quick ideas
+          
+          💎 Cost: 1 ⭐
+
+    - name: select_size
+      prompt:
+        ru: "Выберите размер:"
+        en: "Select size:"
+      buttons:
+        - text: "⬜ Квадрат 1024x1024"
+          callback: "fast_square"
+        - text: "🖼️ Альбом 1280x720"
+          callback: "fast_landscape"
+        - text: "📱 Портрет 720x1280"
+          callback: "fast_portrait"
+
+    - name: processing
+      message:
+        ru: "⚡ Генерирую..."
+        en: "⚡ Generating..."
+
+    - name: result
+      message:
+        ru: "✅ Готово за {time} сек!\n\n💎 Стоимость: 1 ⭐"
+        en: "✅ Done in {time} sec!\n\n💎 Cost: 1 ⭐"
+
+# Quick prompts for one-click generation
+quick_prompts:
+  - name: "random_art"
+    prompt: "abstract digital art, vibrant colors, trending on artstation"
+    icon: "🎨"
+  - name: "landscape"
+    prompt: "beautiful landscape, mountains, sunset, photorealistic"
+    icon: "🏔️"
+  - name: "portrait"
+    prompt: "professional portrait photo, studio lighting, high quality"
+    icon: "👤"
+  - name: "fantasy"
+    prompt: "fantasy scene, magical, epic, detailed illustration"
+    icon: "🧙"
+
+# Comparison with other models
+comparison:
+  z_image_turbo:
+    speed: "1-2 sec"
+    cost: "1⭐"
+    quality: "Good"
+  flux_pro:
+    speed: "10-15 sec"
+    cost: "7⭐"
+    quality: "Excellent"
+  neuro_photo:
+    speed: "5-10 sec"
+    cost: "7⭐"
+    quality: "Very Good"

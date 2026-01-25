@@ -1,0 +1,102 @@
+# Background Removal Service
+# Replicate model: lucataco/remove-bg
+# Cost: $0.01 per image
+
+name: background_removal
+version: "1.0.0"
+language: zig
+module: background_removal
+
+description: |
+  Удаление фона с изображений с помощью AI.
+  Модель: lucataco/remove-bg
+  Использует U2-Net для точной сегментации.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "lucataco/remove-bg"
+  MODEL_VERSION: "95fcc2a26d3899cd6c2691c900465aaeff466285a65c14638cc5f36f34befaf1"
+  # Real price from Replicate: $0.00052 per run (~1923 runs per $1)
+  BASE_COST_USD: 0.00052
+  # stars = (0.00052 / 0.016) * 1.5 = 0.049 -> 1 star (minimum)
+  COST_STARS: 1
+
+types:
+  BackgroundRemovalRequest:
+    description: "Запрос на удаление фона"
+    fields:
+      image_url: String
+      telegram_id: String
+      username: String
+
+  BackgroundRemovalResponse:
+    description: "Результат удаления фона"
+    fields:
+      success: Bool
+      result_url: Option<String>
+      error: Option<String>
+      processing_time_ms: Int
+      cost_stars: Int
+
+  OutputFormat:
+    description: "Формат выходного изображения"
+    variants:
+      - PNG   # С прозрачностью
+      - WEBP  # С прозрачностью, меньше размер
+
+behaviors:
+  - name: remove_background
+    given: URL изображения
+    when: Запрос на удаление фона
+    then: Возвращает URL изображения без фона (PNG с прозрачностью)
+    api_call: |
+      replicate.run("lucataco/remove-bg", {
+        input: { image: image_url }
+      })
+
+  - name: remove_background_with_options
+    given: URL изображения и опции
+    when: Запрос с дополнительными параметрами
+    then: Возвращает результат с учётом опций
+
+  - name: validate_image
+    given: URL изображения
+    when: Проверка перед обработкой
+    then: Проверяет доступность и формат изображения
+
+  - name: get_cost
+    given: Ничего
+    when: Запрос стоимости
+    then: Возвращает 1 star (минимальная цена)
+
+# UI Integration
+menu_item:
+  group: photo
+  position: 5
+  icon: "🖼️"
+  name:
+    ru: "Удалить фон"
+    en: "Remove Background"
+  description:
+    ru: "Удаление фона с фото (PNG с прозрачностью)"
+    en: "Remove background from photo (PNG with transparency)"
+  cost_stars: 1
+
+# Wizard flow
+wizard:
+  steps:
+    - name: upload_image
+      prompt:
+        ru: "🖼️ Отправьте фото для удаления фона\n\n💎 Стоимость: 1 ⭐"
+        en: "🖼️ Send a photo to remove background\n\n💎 Cost: 1 ⭐"
+    - name: processing
+      message:
+        ru: "⏳ Удаляю фон..."
+        en: "⏳ Removing background..."
+    - name: result
+      message:
+        ru: "✅ Фон удалён!\n\n📥 Изображение в формате PNG с прозрачностью"
+        en: "✅ Background removed!\n\n📥 Image in PNG format with transparency"

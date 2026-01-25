@@ -1,0 +1,203 @@
+# Motion Control Service
+# Replicate model: kwaivgi/kling-v2.6-motion-control
+# Cost: $0.40 per 5 seconds
+
+name: motion_control
+version: "1.0.0"
+language: zig
+module: motion_control
+
+description: |
+  Управление движениями персонажа в видео.
+  Модель: kwaivgi/kling-v2.6-motion-control
+  Позволяет задавать позы, жесты и выражения лица.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "kwaivgi/kling-v2.6-motion-control"
+  BASE_COST_USD_5S: 0.40
+  # stars = (0.40 / 0.016) * 1.5 = 37.5 -> 38 stars per 5s
+  COST_STARS_5S: 38
+  DEFAULT_DURATION: 5
+  MAX_DURATION: 10
+
+types:
+  MotionType:
+    description: "Тип движения"
+    variants:
+      - Pose          # Поза тела
+      - Gesture       # Жест руками
+      - Expression    # Выражение лица
+      - Walk          # Ходьба
+      - Dance         # Танец
+      - Custom        # Произвольное движение
+
+  ControlMode:
+    description: "Режим управления"
+    variants:
+      - Skeleton      # Скелетная анимация
+      - Reference     # По референсному видео
+      - Text          # По текстовому описанию
+
+  MotionControlRequest:
+    description: "Запрос на управление движением"
+    fields:
+      image_url: String           # Исходное изображение персонажа
+      motion_prompt: String       # Описание движения
+      motion_type: MotionType
+      control_mode: ControlMode
+      reference_video: Option<String>  # Референсное видео (опционально)
+      duration_seconds: Int
+      telegram_id: String
+      username: String
+
+  MotionControlResponse:
+    description: "Результат генерации"
+    fields:
+      success: Bool
+      video_url: Option<String>
+      error: Option<String>
+      duration_seconds: Int
+      processing_time_ms: Int
+      cost_stars: Int
+
+  PosePreset:
+    description: "Пресет позы"
+    fields:
+      name: String
+      description: String
+      prompt: String
+
+behaviors:
+  - name: generate_motion
+    given: Изображение и описание движения
+    when: Запрос на генерацию
+    then: Возвращает видео с анимированным персонажем
+    api_call: |
+      replicate.run("kwaivgi/kling-v2.6-motion-control", {
+        input: {
+          image: image_url,
+          prompt: motion_prompt,
+          duration: duration_seconds
+        }
+      })
+
+  - name: generate_from_reference
+    given: Изображение и референсное видео
+    when: Копирование движений из референса
+    then: Персонаж повторяет движения из референса
+
+  - name: calculate_cost
+    given: Длительность в секундах
+    when: Расчёт стоимости
+    then: Возвращает стоимость в звёздах
+    formula: ceil(duration_seconds / 5) * COST_STARS_5S
+
+  - name: get_pose_presets
+    given: Язык
+    when: Получение списка пресетов
+    then: Возвращает список доступных пресетов поз
+
+# UI Integration
+menu_item:
+  group: video
+  position: 6
+  icon: "🕺"
+  name:
+    ru: "Управление движением"
+    en: "Motion Control"
+  description:
+    ru: "Анимация персонажа с контролем поз"
+    en: "Character animation with pose control"
+  cost_stars: "38⭐/5сек"
+
+# Wizard flow
+wizard:
+  steps:
+    - name: upload_image
+      prompt:
+        ru: |
+          🕺 Управление движением
+          
+          Отправьте фото персонажа для анимации.
+          
+          Требования:
+          • Персонаж в полный рост
+          • Хорошее освещение
+          • Чёткое изображение
+          
+          💎 Стоимость: 38 ⭐ за 5 сек
+        en: |
+          🕺 Motion Control
+          
+          Send a character photo for animation.
+          
+          Requirements:
+          • Full body character
+          • Good lighting
+          • Clear image
+          
+          💎 Cost: 38 ⭐ per 5 sec
+
+    - name: select_motion
+      prompt:
+        ru: "Выберите тип движения:"
+        en: "Select motion type:"
+      buttons:
+        - text: "🚶 Ходьба"
+          callback: "motion_walk"
+        - text: "💃 Танец"
+          callback: "motion_dance"
+        - text: "👋 Жест"
+          callback: "motion_gesture"
+        - text: "😊 Выражение лица"
+          callback: "motion_expression"
+        - text: "✍️ Своё описание"
+          callback: "motion_custom"
+
+    - name: enter_prompt
+      prompt:
+        ru: "Опишите желаемое движение:"
+        en: "Describe the desired motion:"
+      condition: "motion_type == Custom"
+
+    - name: select_duration
+      prompt:
+        ru: "Выберите длительность:"
+        en: "Select duration:"
+      buttons:
+        - text: "5 сек (38⭐)"
+          callback: "motion_5s"
+        - text: "10 сек (76⭐)"
+          callback: "motion_10s"
+
+    - name: processing
+      message:
+        ru: "🎬 Генерирую анимацию... Это может занять 2-3 минуты"
+        en: "🎬 Generating animation... This may take 2-3 minutes"
+
+    - name: result
+      message:
+        ru: "✅ Анимация готова!\n\n⏱ Длительность: {duration} сек\n💎 Стоимость: {cost} ⭐"
+        en: "✅ Animation ready!\n\n⏱ Duration: {duration} sec\n💎 Cost: {cost} ⭐"
+
+# Motion presets
+presets:
+  walk_forward:
+    ru: "Персонаж идёт вперёд уверенной походкой"
+    en: "Character walks forward confidently"
+  wave_hello:
+    ru: "Персонаж машет рукой в приветствии"
+    en: "Character waves hello"
+  dance_happy:
+    ru: "Персонаж танцует радостно"
+    en: "Character dances happily"
+  turn_around:
+    ru: "Персонаж поворачивается на 360 градусов"
+    en: "Character turns 360 degrees"
+  sit_down:
+    ru: "Персонаж садится на стул"
+    en: "Character sits down on a chair"

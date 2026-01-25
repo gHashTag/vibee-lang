@@ -1,0 +1,172 @@
+# Video Upscaler Service
+# Replicate model: philz1337x/crystal-video-upscaler
+# Cost: $0.10 per second of video
+
+name: video_upscaler
+version: "1.0.0"
+language: zig
+module: video_upscaler
+
+description: |
+  Апскейл видео с помощью AI.
+  Модель: philz1337x/crystal-video-upscaler
+  Оптимизирован для портретов, лиц и продуктов.
+  Увеличивает разрешение до 4K.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "philz1337x/crystal-video-upscaler"
+  BASE_COST_USD_PER_SECOND: 0.10
+  # stars = (0.10 / 0.016) * 1.5 = 9.375 -> 9 stars per second
+  COST_STARS_PER_SECOND: 9
+  MAX_VIDEO_DURATION: 60  # 60 seconds max
+  MAX_FILE_SIZE_MB: 100
+  SUPPORTED_FORMATS: ["mp4", "mov", "webm"]
+
+types:
+  UpscaleMode:
+    description: "Режим апскейла"
+    variants:
+      - Portrait    # Оптимизирован для лиц
+      - Product     # Оптимизирован для продуктов
+      - General     # Общий режим
+      - Cinematic   # Кинематографический
+
+  UpscaleScale:
+    description: "Масштаб увеличения"
+    variants:
+      - X2   # 2x увеличение
+      - X4   # 4x увеличение
+
+  VideoUpscaleRequest:
+    description: "Запрос на апскейл видео"
+    fields:
+      video_url: String
+      mode: UpscaleMode
+      scale: UpscaleScale
+      telegram_id: String
+      username: String
+
+  VideoUpscaleResponse:
+    description: "Результат апскейла"
+    fields:
+      success: Bool
+      result_url: Option<String>
+      error: Option<String>
+      original_duration: Float
+      output_resolution: String
+      processing_time_ms: Int
+      cost_stars: Int
+
+behaviors:
+  - name: upscale_video
+    given: URL видео
+    when: Запрос на апскейл
+    then: Возвращает URL видео в высоком разрешении
+    api_call: |
+      replicate.run("philz1337x/crystal-video-upscaler", {
+        input: {
+          video: video_url,
+          mode: mode,
+          scale: scale
+        }
+      })
+
+  - name: get_video_duration
+    given: URL видео
+    when: Определение длительности
+    then: Возвращает длительность в секундах
+
+  - name: calculate_cost
+    given: Длительность видео в секундах
+    when: Расчёт стоимости
+    then: Возвращает стоимость в звёздах
+    formula: ceil(duration_seconds) * COST_STARS_PER_SECOND
+
+  - name: validate_video
+    given: URL видео
+    when: Проверка перед обработкой
+    then: Проверяет формат, размер и длительность
+
+# UI Integration
+menu_item:
+  group: video
+  position: 5
+  icon: "📹"
+  name:
+    ru: "Апскейл видео"
+    en: "Video Upscaler"
+  description:
+    ru: "Увеличение качества видео до 4K"
+    en: "Upscale video quality to 4K"
+  cost_stars: "9⭐/сек"
+
+# Wizard flow
+wizard:
+  steps:
+    - name: upload_video
+      prompt:
+        ru: |
+          📹 Апскейл видео
+          
+          Отправьте видео для улучшения качества.
+          
+          Ограничения:
+          • Макс. длительность: 60 сек
+          • Макс. размер: 100 МБ
+          • Форматы: MP4, MOV, WebM
+          
+          💎 Стоимость: 9 ⭐ за секунду
+        en: |
+          📹 Video Upscaler
+          
+          Send a video to enhance quality.
+          
+          Limits:
+          • Max duration: 60 sec
+          • Max size: 100 MB
+          • Formats: MP4, MOV, WebM
+          
+          💎 Cost: 9 ⭐ per second
+
+    - name: select_mode
+      prompt:
+        ru: "Выберите режим апскейла:"
+        en: "Select upscale mode:"
+      buttons:
+        - text: "👤 Портрет (лица)"
+          callback: "upscale_portrait"
+        - text: "📦 Продукт"
+          callback: "upscale_product"
+        - text: "🎬 Кинематограф"
+          callback: "upscale_cinematic"
+        - text: "🔄 Общий"
+          callback: "upscale_general"
+
+    - name: confirm_cost
+      prompt:
+        ru: |
+          📊 Информация о видео:
+          • Длительность: {duration} сек
+          • Стоимость: {cost} ⭐
+          
+          Продолжить?
+        en: |
+          📊 Video info:
+          • Duration: {duration} sec
+          • Cost: {cost} ⭐
+          
+          Continue?
+
+    - name: processing
+      message:
+        ru: "⏳ Улучшаю качество видео... Это может занять несколько минут"
+        en: "⏳ Enhancing video quality... This may take several minutes"
+
+    - name: result
+      message:
+        ru: "✅ Видео улучшено!\n\n📐 Разрешение: {resolution}\n💎 Стоимость: {cost} ⭐"
+        en: "✅ Video enhanced!\n\n📐 Resolution: {resolution}\n💎 Cost: {cost} ⭐"

@@ -1,0 +1,193 @@
+# Fast Text-to-Speech Service
+# Replicate model: resemble-ai/chatterbox-turbo
+# Cost: $0.02 per 1000 characters
+
+name: fast_tts
+version: "1.0.0"
+language: zig
+module: fast_tts
+
+description: |
+  Быстрый Text-to-Speech с помощью AI.
+  Модель: resemble-ai/chatterbox-turbo
+  Самый быстрый open source TTS без потери качества.
+  Поддерживает клонирование голоса.
+
+imports:
+  - replicate_client
+  - pricing_system
+
+constants:
+  MODEL_ID: "resemble-ai/chatterbox-turbo"
+  BASE_COST_USD_1000_CHARS: 0.02
+  # stars = (0.02 / 0.016) * 1.5 = 1.875 -> 2 stars per 1000 chars
+  COST_STARS_1000_CHARS: 2
+  MAX_TEXT_LENGTH: 5000
+  MIN_TEXT_LENGTH: 10
+
+types:
+  VoiceStyle:
+    description: "Стиль голоса"
+    variants:
+      - Neutral       # Нейтральный
+      - Happy         # Радостный
+      - Sad           # Грустный
+      - Angry         # Злой
+      - Whisper       # Шёпот
+      - Excited       # Возбуждённый
+
+  VoiceGender:
+    description: "Пол голоса"
+    variants:
+      - Male
+      - Female
+
+  FastTTSRequest:
+    description: "Запрос на генерацию речи"
+    fields:
+      text: String
+      voice_style: VoiceStyle
+      voice_gender: VoiceGender
+      speed: Float              # 0.5 - 2.0
+      reference_audio: Option<String>  # Для клонирования
+      telegram_id: String
+      username: String
+
+  FastTTSResponse:
+    description: "Результат генерации"
+    fields:
+      success: Bool
+      audio_url: Option<String>
+      error: Option<String>
+      duration_seconds: Float
+      characters_count: Int
+      processing_time_ms: Int
+      cost_stars: Int
+
+behaviors:
+  - name: generate_speech
+    given: Текст для озвучки
+    when: Запрос на генерацию
+    then: Возвращает URL аудиофайла
+    api_call: |
+      replicate.run("resemble-ai/chatterbox-turbo", {
+        input: {
+          text: text,
+          voice_style: voice_style,
+          speed: speed
+        }
+      })
+
+  - name: clone_voice
+    given: Текст и референсное аудио
+    when: Генерация с клонированным голосом
+    then: Озвучивает текст голосом из референса
+
+  - name: calculate_cost
+    given: Количество символов
+    when: Расчёт стоимости
+    then: Возвращает стоимость в звёздах
+    formula: ceil(char_count / 1000) * COST_STARS_1000_CHARS
+
+  - name: validate_text
+    given: Текст
+    when: Проверка перед генерацией
+    then: Проверяет длину и содержимое текста
+
+# UI Integration
+menu_item:
+  group: audio
+  position: 2
+  icon: "🗣️"
+  name:
+    ru: "Быстрый TTS"
+    en: "Fast TTS"
+  description:
+    ru: "Озвучка текста (быстрее ElevenLabs)"
+    en: "Text to speech (faster than ElevenLabs)"
+  cost_stars: "2⭐/1000 символов"
+
+# Wizard flow
+wizard:
+  steps:
+    - name: enter_text
+      prompt:
+        ru: |
+          🗣️ Быстрый Text-to-Speech
+          
+          Отправьте текст для озвучки.
+          
+          Ограничения:
+          • Макс. 5000 символов
+          • Мин. 10 символов
+          
+          💎 Стоимость: 2 ⭐ за 1000 символов
+        en: |
+          🗣️ Fast Text-to-Speech
+          
+          Send text to convert to speech.
+          
+          Limits:
+          • Max 5000 characters
+          • Min 10 characters
+          
+          💎 Cost: 2 ⭐ per 1000 characters
+
+    - name: select_voice
+      prompt:
+        ru: "Выберите голос:"
+        en: "Select voice:"
+      buttons:
+        - text: "👨 Мужской"
+          callback: "tts_male"
+        - text: "👩 Женский"
+          callback: "tts_female"
+
+    - name: select_style
+      prompt:
+        ru: "Выберите стиль:"
+        en: "Select style:"
+      buttons:
+        - text: "😐 Нейтральный"
+          callback: "tts_neutral"
+        - text: "😊 Радостный"
+          callback: "tts_happy"
+        - text: "😢 Грустный"
+          callback: "tts_sad"
+        - text: "🤫 Шёпот"
+          callback: "tts_whisper"
+
+    - name: processing
+      message:
+        ru: "🎙️ Генерирую аудио..."
+        en: "🎙️ Generating audio..."
+
+    - name: result
+      message:
+        ru: "✅ Аудио готово!\n\n📝 Символов: {chars}\n⏱ Длительность: {duration} сек\n💎 Стоимость: {cost} ⭐"
+        en: "✅ Audio ready!\n\n📝 Characters: {chars}\n⏱ Duration: {duration} sec\n💎 Cost: {cost} ⭐"
+
+# Voice clone feature
+voice_clone:
+  enabled: true
+  min_reference_duration: 10  # seconds
+  max_reference_duration: 60  # seconds
+  prompt:
+    ru: |
+      🎤 Клонирование голоса
+      
+      Отправьте аудио с голосом для клонирования.
+      
+      Требования:
+      • Длительность: 10-60 сек
+      • Чистая запись без шума
+      • Один голос
+    en: |
+      🎤 Voice Cloning
+      
+      Send audio with voice to clone.
+      
+      Requirements:
+      • Duration: 10-60 sec
+      • Clean recording without noise
+      • Single voice
