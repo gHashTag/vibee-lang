@@ -1,0 +1,263 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# BIT WIDTH DEMO - Demonstrate explicit bit-width inference
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This module demonstrates proper bit-width handling for FPGA synthesis.
+# All signals have explicit widths for optimal resource utilization.
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: bit_width_demo
+version: "1.0.0"
+language: varlog
+module: bit_width_demo
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS WITH EXPLICIT WIDTHS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+
+constants:
+  # Counter parameters
+  COUNTER_WIDTH: 8
+  MAX_COUNT: 255
+  
+  # Data bus widths
+  DATA_WIDTH: 32
+  ADDR_WIDTH: 16
+  
+  # AXI parameters
+  AXI_DATA_WIDTH: 64
+  AXI_ADDR_WIDTH: 32
+  AXI_ID_WIDTH: 4
+  AXI_STRB_WIDTH: 8
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES WITH EXPLICIT BIT WIDTHS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  # 8-bit counter state
+  Counter8:
+    description: "8-bit counter with overflow detection"
+    fields:
+      value: Int
+      overflow: Bool
+      underflow: Bool
+    width: 8
+    
+  # 16-bit counter state
+  Counter16:
+    description: "16-bit counter for larger ranges"
+    fields:
+      value: Int
+      overflow: Bool
+    width: 16
+    
+  # 32-bit data register
+  DataReg32:
+    description: "32-bit data register"
+    fields:
+      data: Int
+      valid: Bool
+      ready: Bool
+    width: 32
+    
+  # AXI Stream interface signals
+  AxisSignals:
+    description: "AXI Stream interface"
+    fields:
+      tdata: Int
+      tvalid: Bool
+      tready: Bool
+      tlast: Bool
+      tkeep: Int
+    width: 64
+    tdata_width: 64
+    tkeep_width: 8
+    
+  # Memory interface
+  MemInterface:
+    description: "Memory read/write interface"
+    fields:
+      addr: Int
+      wdata: Int
+      rdata: Int
+      we: Bool
+      re: Bool
+      valid: Bool
+    addr_width: 16
+    data_width: 32
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNALS WITH EXPLICIT WIDTHS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+signals:
+  # Clock and reset
+  - name: clk
+    width: 1
+    direction: input
+    
+  - name: rst_n
+    width: 1
+    direction: input
+    
+  # NOTE: FSM control signals (start, mode, xfer_done) are AUTO-EXTRACTED
+  # from transition conditions - no need to declare them manually!
+    
+  # 8-bit counter signals
+  - name: count_8bit
+    width: 8
+    direction: output
+    signed: false
+    
+  - name: count_enable
+    width: 1
+    direction: input
+    
+  # 16-bit counter signals
+  - name: count_16bit
+    width: 16
+    direction: output
+    signed: false
+    
+  # 32-bit data bus
+  - name: data_in
+    width: 32
+    direction: input
+    signed: false
+    
+  - name: data_out
+    width: 32
+    direction: output
+    signed: false
+    
+  # AXI Stream signals
+  - name: s_axis_tdata
+    width: 64
+    direction: input
+    
+  - name: s_axis_tvalid
+    width: 1
+    direction: input
+    
+  - name: s_axis_tready
+    width: 1
+    direction: output
+    
+  - name: s_axis_tlast
+    width: 1
+    direction: input
+    
+  - name: s_axis_tkeep
+    width: 8
+    direction: input
+    
+  # Memory interface
+  - name: mem_addr
+    width: 16
+    direction: output
+    
+  - name: mem_wdata
+    width: 32
+    direction: output
+    
+  - name: mem_rdata
+    width: 32
+    direction: input
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: count_8bit_process
+    given: "8-bit counter enabled"
+    when: "Rising clock edge with enable"
+    then: "Increment 8-bit counter with overflow wrap"
+    hdl_type: sequential
+    clock: clk
+    reset: rst_n
+    
+  - name: count_16bit_process
+    given: "16-bit counter enabled"
+    when: "Rising clock edge"
+    then: "Increment 16-bit counter"
+    hdl_type: sequential
+    clock: clk
+    reset: rst_n
+    
+  - name: data_passthrough
+    given: "Valid data on input"
+    when: "Data valid signal asserted"
+    then: "Pass 32-bit data to output"
+    hdl_type: combinational
+    
+  - name: axis_receive
+    given: "AXI Stream data available"
+    when: "tvalid and tready both high"
+    then: "Capture 64-bit data word"
+    hdl_type: sequential
+    clock: clk
+    reset: rst_n
+    
+  - name: mem_write
+    given: "Write request with address and data"
+    when: "Write enable asserted"
+    then: "Write 32-bit data to 16-bit addressed memory"
+    hdl_type: sequential
+    clock: clk
+    reset: rst_n
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FSM FOR DEMO
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fsm:
+  - name: demo_fsm
+    initial: IDLE
+    encoding: onehot
+    states:
+      - IDLE
+      - COUNT_8
+      - COUNT_16
+      - DATA_XFER
+      - AXIS_RX
+      - MEM_ACCESS
+      - DONE
+    transitions:
+      - from: IDLE
+        to: COUNT_8
+        when: "start && mode == 2'b00"
+      - from: IDLE
+        to: COUNT_16
+        when: "start && mode == 2'b01"
+      - from: IDLE
+        to: DATA_XFER
+        when: "start && mode == 2'b10"
+      - from: IDLE
+        to: AXIS_RX
+        when: "start && mode == 2'b11"
+      - from: COUNT_8
+        to: DONE
+        when: "count_8bit == 8'hFF"
+      - from: COUNT_16
+        to: DONE
+        when: "count_16bit == 16'hFFFF"
+      - from: DATA_XFER
+        to: DONE
+        when: "xfer_done"
+      - from: AXIS_RX
+        to: DONE
+        when: "s_axis_tlast && s_axis_tvalid"
+      - from: DONE
+        to: IDLE
+        when: "!start"

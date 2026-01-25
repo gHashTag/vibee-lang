@@ -30,6 +30,9 @@ pub const VibeeSpec = struct {
     algorithms: ArrayList(Algorithm),
     wasm_exports: WasmExports,
     pas_predictions: ArrayList(PasPrediction),
+    // HDL-specific fields
+    signals: ArrayList(Signal),
+    fsms: ArrayList(FSMDef),
     
     pub fn init(allocator: Allocator) VibeeSpec {
         return VibeeSpec{
@@ -46,6 +49,8 @@ pub const VibeeSpec = struct {
             .algorithms = ArrayList(Algorithm).init(allocator),
             .wasm_exports = WasmExports.init(allocator),
             .pas_predictions = ArrayList(PasPrediction).init(allocator),
+            .signals = ArrayList(Signal).init(allocator),
+            .fsms = ArrayList(FSMDef).init(allocator),
         };
     }
     
@@ -61,6 +66,15 @@ pub const VibeeSpec = struct {
         for (self.algorithms.items) |*a| {
             a.steps.deinit();
         }
+        for (self.fsms.items) |*f| {
+            f.states.deinit();
+            f.transitions.deinit();
+            for (f.outputs.items) |*out| {
+                out.signals.deinit();
+            }
+            f.outputs.deinit();
+            f.timers.deinit();
+        }
         
         // Освобождаем основные списки
         self.targets.deinit();
@@ -71,6 +85,8 @@ pub const VibeeSpec = struct {
         self.algorithms.deinit();
         self.wasm_exports.deinit();
         self.pas_predictions.deinit();
+        self.signals.deinit();
+        self.fsms.deinit();
     }
 };
 
@@ -103,6 +119,69 @@ pub const TypeDef = struct {
 pub const Field = struct {
     name: []const u8,
     type_name: []const u8,
+};
+
+// HDL Signal definition for FPGA targets
+pub const Signal = struct {
+    name: []const u8,
+    width: u32,
+    direction: []const u8, // input, output, inout, wire, reg
+    signed: bool,
+    default_value: ?i64,
+};
+
+// FSM Transition
+pub const FSMTransition = struct {
+    from_state: []const u8,
+    to_state: []const u8,
+    condition: []const u8, // Verilog condition expression
+};
+
+// FSM Output assignment
+pub const FSMOutput = struct {
+    state: []const u8,
+    signals: std.StringHashMap([]const u8), // signal_name -> value (e.g., "busy" -> "1'b1")
+    
+    pub fn init(allocator: Allocator) FSMOutput {
+        return FSMOutput{
+            .state = "",
+            .signals = std.StringHashMap([]const u8).init(allocator),
+        };
+    }
+    
+    pub fn deinit(self: *FSMOutput) void {
+        self.signals.deinit();
+    }
+};
+
+// FSM Timer configuration
+pub const FSMTimer = struct {
+    state: []const u8,
+    timeout_constant: []const u8,
+    timeout_value: i64,
+};
+
+// FSM (Finite State Machine) definition
+pub const FSMDef = struct {
+    name: []const u8,
+    initial_state: []const u8,
+    encoding: []const u8, // onehot, binary, gray
+    states: ArrayList([]const u8),
+    transitions: ArrayList(FSMTransition),
+    outputs: ArrayList(FSMOutput),
+    timers: ArrayList(FSMTimer),
+    
+    pub fn init(allocator: Allocator) FSMDef {
+        return FSMDef{
+            .name = "",
+            .initial_state = "",
+            .encoding = "onehot",
+            .states = ArrayList([]const u8).init(allocator),
+            .transitions = ArrayList(FSMTransition).init(allocator),
+            .outputs = ArrayList(FSMOutput).init(allocator),
+            .timers = ArrayList(FSMTimer).init(allocator),
+        };
+    }
 };
 
 pub const CreationPattern = struct {
@@ -274,6 +353,12 @@ pub const VibeeParser = struct {
             } else if (std.mem.eql(u8, key, "pas_predictions")) {
                 self.skipToNextLine();
                 try self.parsePasPredictions(&spec.pas_predictions);
+            } else if (std.mem.eql(u8, key, "signals")) {
+                self.skipToNextLine();
+                try self.parseSignals(&spec.signals);
+            } else if (std.mem.eql(u8, key, "fsm")) {
+                self.skipToNextLine();
+                try self.parseFSMs(&spec.fsms);
             } else {
                 self.skipToNextLine();
             }
@@ -560,6 +645,344 @@ pub const VibeeParser = struct {
             const indent = self.countIndent();
             if (indent <= min_indent) break;
             self.skipToNextLine();
+        }
+    }
+    
+    fn parseSignals(self: *Self, signals: *ArrayList(Signal)) !void {
+        while (self.pos < self.source.len) {
+            self.skipEmptyLinesAndComments();
+            if (self.pos >= self.source.len) break;
+            
+            const indent = self.countIndent();
+            if (indent < 2) break;
+            self.pos += indent;
+            
+            // Check for list item
+            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                self.pos -= indent;
+                break;
+            }
+            self.pos += 1; // skip '-'
+            self.skipInlineWhitespace();
+            
+            var signal = Signal{
+                .name = "",
+                .width = 1,
+                .direction = "wire",
+                .signed = false,
+                .default_value = null,
+            };
+            
+            // Read signal properties
+            const first_key = self.readKey();
+            if (std.mem.eql(u8, first_key, "name")) {
+                self.skipColon();
+                signal.name = self.readValue();
+                self.skipToNextLine();
+                
+                // Read remaining properties
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const prop_indent = self.countIndent();
+                    if (prop_indent < 4) break;
+                    self.pos += prop_indent;
+                    
+                    const prop_key = self.readKey();
+                    if (prop_key.len == 0) break;
+                    self.skipColon();
+                    
+                    if (std.mem.eql(u8, prop_key, "width")) {
+                        const width_str = self.readValue();
+                        signal.width = std.fmt.parseInt(u32, width_str, 10) catch 1;
+                    } else if (std.mem.eql(u8, prop_key, "direction")) {
+                        signal.direction = self.readValue();
+                    } else if (std.mem.eql(u8, prop_key, "signed")) {
+                        const val = self.readValue();
+                        signal.signed = std.mem.eql(u8, val, "true");
+                    } else if (std.mem.eql(u8, prop_key, "default")) {
+                        const def_str = self.readValue();
+                        signal.default_value = std.fmt.parseInt(i64, def_str, 10) catch null;
+                    }
+                    self.skipToNextLine();
+                }
+            } else {
+                self.skipToNextLine();
+                continue;
+            }
+            
+            if (signal.name.len > 0) {
+                try signals.append(signal);
+            }
+        }
+    }
+    
+    fn parseFSMs(self: *Self, fsms: *ArrayList(FSMDef)) !void {
+        while (self.pos < self.source.len) {
+            self.skipEmptyLinesAndComments();
+            if (self.pos >= self.source.len) break;
+            
+            const indent = self.countIndent();
+            if (indent < 2) break;
+            self.pos += indent;
+            
+            // Check for list item
+            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                self.pos -= indent;
+                break;
+            }
+            self.pos += 1; // skip '-'
+            self.skipInlineWhitespace();
+            
+            var fsm = FSMDef.init(self.allocator);
+            
+            // Read FSM properties
+            const first_key = self.readKey();
+            if (std.mem.eql(u8, first_key, "name")) {
+                self.skipColon();
+                fsm.name = self.readValue();
+                self.skipToNextLine();
+                
+                // Read remaining properties
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const prop_indent = self.countIndent();
+                    if (prop_indent < 4) break;
+                    self.pos += prop_indent;
+                    
+                    const prop_key = self.readKey();
+                    if (prop_key.len == 0) break;
+                    self.skipColon();
+                    
+                    if (std.mem.eql(u8, prop_key, "initial")) {
+                        fsm.initial_state = self.readValue();
+                        self.skipToNextLine();
+                    } else if (std.mem.eql(u8, prop_key, "encoding")) {
+                        fsm.encoding = self.readValue();
+                        self.skipToNextLine();
+                    } else if (std.mem.eql(u8, prop_key, "states")) {
+                        self.skipToNextLine();
+                        // Parse states list
+                        while (self.pos < self.source.len) {
+                            self.skipEmptyLinesAndComments();
+                            if (self.pos >= self.source.len) break;
+                            
+                            const state_indent = self.countIndent();
+                            if (state_indent < 6) break;
+                            self.pos += state_indent;
+                            
+                            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                                self.pos -= state_indent;
+                                break;
+                            }
+                            self.pos += 1; // skip '-'
+                            self.skipInlineWhitespace();
+                            
+                            const state_name = self.readValue();
+                            if (state_name.len > 0) {
+                                try fsm.states.append(state_name);
+                            }
+                            self.skipToNextLine();
+                        }
+                    } else if (std.mem.eql(u8, prop_key, "transitions")) {
+                        self.skipToNextLine();
+                        try self.parseFSMTransitions(&fsm.transitions);
+                    } else if (std.mem.eql(u8, prop_key, "outputs")) {
+                        self.skipToNextLine();
+                        try self.parseFSMOutputs(&fsm.outputs);
+                    } else if (std.mem.eql(u8, prop_key, "timers")) {
+                        self.skipToNextLine();
+                        try self.parseFSMTimers(&fsm.timers);
+                    } else {
+                        self.skipToNextLine();
+                    }
+                }
+            } else {
+                self.skipToNextLine();
+                continue;
+            }
+            
+            if (fsm.name.len > 0) {
+                try fsms.append(fsm);
+            }
+        }
+    }
+    
+    fn parseFSMTransitions(self: *Self, transitions: *ArrayList(FSMTransition)) !void {
+        while (self.pos < self.source.len) {
+            self.skipEmptyLinesAndComments();
+            if (self.pos >= self.source.len) break;
+            
+            const indent = self.countIndent();
+            if (indent < 6) break;
+            self.pos += indent;
+            
+            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                self.pos -= indent;
+                break;
+            }
+            self.pos += 1; // skip '-'
+            self.skipInlineWhitespace();
+            
+            var trans = FSMTransition{
+                .from_state = "",
+                .to_state = "",
+                .condition = "",
+            };
+            
+            // Read first key (should be 'from')
+            const first_key = self.readKey();
+            if (std.mem.eql(u8, first_key, "from")) {
+                self.skipColon();
+                trans.from_state = self.readValue();
+                self.skipToNextLine();
+                
+                // Read remaining properties
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const prop_indent = self.countIndent();
+                    if (prop_indent < 8) break;
+                    self.pos += prop_indent;
+                    
+                    const prop_key = self.readKey();
+                    if (prop_key.len == 0) break;
+                    self.skipColon();
+                    
+                    if (std.mem.eql(u8, prop_key, "to")) {
+                        trans.to_state = self.readValue();
+                    } else if (std.mem.eql(u8, prop_key, "when") or std.mem.eql(u8, prop_key, "condition")) {
+                        trans.condition = self.readQuotedValue();
+                    }
+                    self.skipToNextLine();
+                }
+            } else {
+                self.skipToNextLine();
+                continue;
+            }
+            
+            if (trans.from_state.len > 0 and trans.to_state.len > 0) {
+                try transitions.append(trans);
+            }
+        }
+    }
+    
+    fn parseFSMOutputs(self: *Self, outputs: *ArrayList(FSMOutput)) !void {
+        while (self.pos < self.source.len) {
+            self.skipEmptyLinesAndComments();
+            if (self.pos >= self.source.len) break;
+            
+            const indent = self.countIndent();
+            if (indent < 6) break;
+            self.pos += indent;
+            
+            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                self.pos -= indent;
+                break;
+            }
+            self.pos += 1; // skip '-'
+            self.skipInlineWhitespace();
+            
+            var out = FSMOutput.init(self.allocator);
+            
+            // Read first key (should be 'state')
+            const first_key = self.readKey();
+            if (std.mem.eql(u8, first_key, "state")) {
+                self.skipColon();
+                out.state = self.readValue();
+                self.skipToNextLine();
+                
+                // Read output signal values (any key except 'state')
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const prop_indent = self.countIndent();
+                    if (prop_indent < 8) break;
+                    self.pos += prop_indent;
+                    
+                    const prop_key = self.readKey();
+                    if (prop_key.len == 0) break;
+                    self.skipColon();
+                    
+                    const val = self.readQuotedOrValue();
+                    // Store any signal name -> value mapping
+                    try out.signals.put(prop_key, val);
+                    self.skipToNextLine();
+                }
+            } else {
+                self.skipToNextLine();
+                continue;
+            }
+            
+            if (out.state.len > 0) {
+                try outputs.append(out);
+            }
+        }
+    }
+    
+    fn parseFSMTimers(self: *Self, timers: *ArrayList(FSMTimer)) !void {
+        while (self.pos < self.source.len) {
+            self.skipEmptyLinesAndComments();
+            if (self.pos >= self.source.len) break;
+            
+            const indent = self.countIndent();
+            if (indent < 6) break;
+            self.pos += indent;
+            
+            if (self.pos >= self.source.len or self.source[self.pos] != '-') {
+                self.pos -= indent;
+                break;
+            }
+            self.pos += 1; // skip '-'
+            self.skipInlineWhitespace();
+            
+            var timer = FSMTimer{
+                .state = "",
+                .timeout_constant = "",
+                .timeout_value = 0,
+            };
+            
+            // Read first key (should be 'state')
+            const first_key = self.readKey();
+            if (std.mem.eql(u8, first_key, "state")) {
+                self.skipColon();
+                timer.state = self.readValue();
+                self.skipToNextLine();
+                
+                // Read timer properties
+                while (self.pos < self.source.len) {
+                    self.skipEmptyLinesAndComments();
+                    if (self.pos >= self.source.len) break;
+                    
+                    const prop_indent = self.countIndent();
+                    if (prop_indent < 8) break;
+                    self.pos += prop_indent;
+                    
+                    const prop_key = self.readKey();
+                    if (prop_key.len == 0) break;
+                    self.skipColon();
+                    
+                    if (std.mem.eql(u8, prop_key, "timeout_constant")) {
+                        timer.timeout_constant = self.readValue();
+                    } else if (std.mem.eql(u8, prop_key, "timeout_value")) {
+                        const val_str = self.readValue();
+                        timer.timeout_value = std.fmt.parseInt(i64, val_str, 10) catch 0;
+                    }
+                    self.skipToNextLine();
+                }
+            } else {
+                self.skipToNextLine();
+                continue;
+            }
+            
+            if (timer.state.len > 0) {
+                try timers.append(timer);
+            }
         }
     }
     
