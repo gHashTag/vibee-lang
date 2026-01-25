@@ -1,0 +1,460 @@
+name: webhook_manager
+version: "1.0.0"
+language: zig
+module: webhook_manager
+
+description: |
+  Webhook management for VIBEE Telegram bot.
+  Handles incoming and outgoing webhooks, retries, signatures.
+  Supports multiple providers and event types.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  WebhookManager:
+    description: "Webhook manager instance"
+    fields:
+      config: ManagerConfig
+      endpoints: List<WebhookEndpoint>
+      subscriptions: List<WebhookSubscription>
+      is_running: Bool
+
+  ManagerConfig:
+    description: "Manager configuration"
+    fields:
+      secret_key: String
+      retry_attempts: Int
+      retry_delay_ms: Int
+      timeout_ms: Int
+      max_payload_size: Int
+      signature_header: String
+
+  WebhookEndpoint:
+    description: "Incoming webhook endpoint"
+    fields:
+      endpoint_id: String
+      path: String
+      provider: WebhookProvider
+      secret: String
+      is_active: Bool
+      handler: String
+      created_at: Timestamp
+
+  WebhookProvider:
+    description: "Webhook provider"
+    values:
+      - telegram
+      - replicate
+      - stripe
+      - robokassa
+      - cryptobot
+      - custom
+
+  WebhookSubscription:
+    description: "Outgoing webhook subscription"
+    fields:
+      subscription_id: String
+      url: String
+      events: List<WebhookEvent>
+      secret: String
+      is_active: Bool
+      owner_id: Int
+      created_at: Timestamp
+      last_triggered: Option<Timestamp>
+      failure_count: Int
+
+  WebhookEvent:
+    description: "Webhook event type"
+    values:
+      - generation_started
+      - generation_completed
+      - generation_failed
+      - payment_received
+      - payment_failed
+      - subscription_created
+      - subscription_cancelled
+      - subscription_renewed
+      - user_created
+      - user_banned
+
+  IncomingWebhook:
+    description: "Incoming webhook request"
+    fields:
+      webhook_id: String
+      endpoint_id: String
+      provider: WebhookProvider
+      headers: Object
+      body: Object
+      signature: Option<String>
+      ip_address: String
+      received_at: Timestamp
+
+  OutgoingWebhook:
+    description: "Outgoing webhook delivery"
+    fields:
+      delivery_id: String
+      subscription_id: String
+      event: WebhookEvent
+      payload: Object
+      status: DeliveryStatus
+      attempts: Int
+      last_attempt: Option<Timestamp>
+      next_retry: Option<Timestamp>
+      response_status: Option<Int>
+      response_body: Option<String>
+      created_at: Timestamp
+
+  DeliveryStatus:
+    description: "Delivery status"
+    values:
+      - pending
+      - sending
+      - delivered
+      - failed
+      - cancelled
+
+  WebhookPayload:
+    description: "Webhook payload"
+    fields:
+      event: WebhookEvent
+      timestamp: Timestamp
+      data: Object
+      signature: String
+
+  SignatureConfig:
+    description: "Signature configuration"
+    fields:
+      algorithm: SignatureAlgorithm
+      header_name: String
+      timestamp_tolerance_seconds: Int
+
+  SignatureAlgorithm:
+    description: "Signature algorithm"
+    values:
+      - hmac_sha256
+      - hmac_sha512
+      - ed25519
+
+  WebhookLog:
+    description: "Webhook log entry"
+    fields:
+      log_id: String
+      webhook_type: String
+      direction: String
+      endpoint_or_subscription: String
+      event: Option<WebhookEvent>
+      status: String
+      duration_ms: Int
+      error: Option<String>
+      timestamp: Timestamp
+
+  WebhookStats:
+    description: "Webhook statistics"
+    fields:
+      total_received: Int
+      total_sent: Int
+      successful_deliveries: Int
+      failed_deliveries: Int
+      avg_delivery_time_ms: Int
+      by_event: Object
+      by_status: Object
+
+  RetryPolicy:
+    description: "Retry policy"
+    fields:
+      max_attempts: Int
+      initial_delay_ms: Int
+      max_delay_ms: Int
+      backoff_multiplier: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MANAGER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_manager
+    given: ManagerConfig
+    when: Initializing manager
+    then: Return WebhookManager
+
+  - name: start
+    given: No parameters
+    when: Starting manager
+    then: Begin processing
+
+  - name: stop
+    given: No parameters
+    when: Stopping manager
+    then: Stop processing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INCOMING ENDPOINTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_endpoint
+    given: WebhookEndpoint
+    when: Registering endpoint
+    then: Add endpoint
+
+  - name: unregister_endpoint
+    given: Endpoint ID
+    when: Unregistering endpoint
+    then: Remove endpoint
+
+  - name: get_endpoint
+    given: Endpoint ID
+    when: Getting endpoint
+    then: Return endpoint or null
+
+  - name: get_endpoint_by_path
+    given: Path
+    when: Finding by path
+    then: Return endpoint or null
+
+  - name: list_endpoints
+    given: Optional provider filter
+    when: Listing endpoints
+    then: Return endpoint list
+
+  - name: enable_endpoint
+    given: Endpoint ID
+    when: Enabling endpoint
+    then: Set active
+
+  - name: disable_endpoint
+    given: Endpoint ID
+    when: Disabling endpoint
+    then: Set inactive
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INCOMING PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: receive_webhook
+    given: IncomingWebhook
+    when: Receiving webhook
+    then: Process and respond
+
+  - name: verify_signature
+    given: Webhook and secret
+    when: Verifying signature
+    then: Return true if valid
+
+  - name: verify_telegram_signature
+    given: Webhook and bot token
+    when: Verifying Telegram
+    then: Return true if valid
+
+  - name: verify_replicate_signature
+    given: Webhook and secret
+    when: Verifying Replicate
+    then: Return true if valid
+
+  - name: verify_stripe_signature
+    given: Webhook and secret
+    when: Verifying Stripe
+    then: Return true if valid
+
+  - name: process_telegram_webhook
+    given: Webhook payload
+    when: Processing Telegram
+    then: Handle update
+
+  - name: process_replicate_webhook
+    given: Webhook payload
+    when: Processing Replicate
+    then: Handle prediction
+
+  - name: process_payment_webhook
+    given: Webhook payload
+    when: Processing payment
+    then: Handle payment
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OUTGOING SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_subscription
+    given: WebhookSubscription
+    when: Creating subscription
+    then: Return subscription
+
+  - name: update_subscription
+    given: Subscription ID and updates
+    when: Updating subscription
+    then: Return updated
+
+  - name: delete_subscription
+    given: Subscription ID
+    when: Deleting subscription
+    then: Remove subscription
+
+  - name: get_subscription
+    given: Subscription ID
+    when: Getting subscription
+    then: Return subscription or null
+
+  - name: list_subscriptions
+    given: Owner ID
+    when: Listing subscriptions
+    then: Return subscription list
+
+  - name: enable_subscription
+    given: Subscription ID
+    when: Enabling subscription
+    then: Set active
+
+  - name: disable_subscription
+    given: Subscription ID
+    when: Disabling subscription
+    then: Set inactive
+
+  - name: test_subscription
+    given: Subscription ID
+    when: Testing subscription
+    then: Send test webhook
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OUTGOING DELIVERY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: trigger_event
+    given: Event and data
+    when: Triggering event
+    then: Queue deliveries
+
+  - name: send_webhook
+    given: OutgoingWebhook
+    when: Sending webhook
+    then: Deliver and update status
+
+  - name: retry_webhook
+    given: Delivery ID
+    when: Retrying webhook
+    then: Attempt redelivery
+
+  - name: cancel_webhook
+    given: Delivery ID
+    when: Cancelling webhook
+    then: Mark as cancelled
+
+  - name: get_pending_deliveries
+    given: Limit
+    when: Getting pending
+    then: Return pending list
+
+  - name: process_delivery_queue
+    given: No parameters
+    when: Processing queue
+    then: Send pending webhooks
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SIGNATURES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: sign_payload
+    given: Payload and secret
+    when: Signing payload
+    then: Return signature
+
+  - name: create_webhook_payload
+    given: Event and data
+    when: Creating payload
+    then: Return WebhookPayload
+
+  - name: verify_timestamp
+    given: Timestamp and tolerance
+    when: Verifying timestamp
+    then: Return true if valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOGGING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_webhook
+    given: WebhookLog
+    when: Logging webhook
+    then: Store log
+
+  - name: get_webhook_logs
+    given: Filter and limit
+    when: Getting logs
+    then: Return log list
+
+  - name: get_delivery_history
+    given: Subscription ID
+    when: Getting history
+    then: Return delivery list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Time range
+    when: Getting stats
+    then: Return WebhookStats
+
+  - name: get_subscription_stats
+    given: Subscription ID
+    when: Getting sub stats
+    then: Return stats
+
+  - name: get_endpoint_stats
+    given: Endpoint ID
+    when: Getting endpoint stats
+    then: Return stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_old_logs
+    given: Days to keep
+    when: Cleaning up
+    then: Delete old logs
+
+  - name: cleanup_failed_deliveries
+    given: Days old
+    when: Cleaning failed
+    then: Delete old failed
+
+  - name: reset_failure_count
+    given: Subscription ID
+    when: Resetting failures
+    then: Reset counter
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_RETRY_ATTEMPTS: 5
+  DEFAULT_RETRY_DELAY_MS: 5000
+  DEFAULT_TIMEOUT_MS: 30000
+  MAX_PAYLOAD_SIZE: 1048576
+  MAX_FAILURE_COUNT: 10
+
+  SIGNATURE_HEADER_DEFAULT: "X-Webhook-Signature"
+  SIGNATURE_HEADER_TELEGRAM: "X-Telegram-Bot-Api-Secret-Token"
+  SIGNATURE_HEADER_STRIPE: "Stripe-Signature"
+  SIGNATURE_HEADER_REPLICATE: "Webhook-Secret"
+
+  TIMESTAMP_TOLERANCE_SECONDS: 300
+
+  BACKOFF_MULTIPLIER: 2.0
+  MAX_RETRY_DELAY_MS: 3600000
+
+  LOG_RETENTION_DAYS: 30
+  FAILED_RETENTION_DAYS: 7
+
+  PATH_TELEGRAM: "/webhook/telegram"
+  PATH_REPLICATE: "/webhook/replicate"
+  PATH_STRIPE: "/webhook/stripe"
+  PATH_ROBOKASSA: "/webhook/robokassa"

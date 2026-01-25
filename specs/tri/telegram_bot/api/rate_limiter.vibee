@@ -1,0 +1,573 @@
+name: rate_limiter
+version: "1.0.0"
+language: zig
+module: rate_limiter
+
+description: |
+  Rate limiting for VIBEE Telegram bot API.
+  Implements token bucket, sliding window, and fixed window algorithms.
+  Supports per-user, per-endpoint, and global limits.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  RateLimiter:
+    description: "Rate limiter instance"
+    fields:
+      config: LimiterConfig
+      buckets: Map<String, TokenBucket>
+      windows: Map<String, SlidingWindow>
+      is_running: Bool
+
+  LimiterConfig:
+    description: "Limiter configuration"
+    fields:
+      algorithm: RateLimitAlgorithm
+      default_limit: Int
+      default_window_ms: Int
+      burst_multiplier: Float
+      enable_global_limit: Bool
+      global_limit: Int
+      global_window_ms: Int
+
+  RateLimitAlgorithm:
+    description: "Rate limiting algorithm"
+    values:
+      - token_bucket
+      - sliding_window
+      - fixed_window
+      - leaky_bucket
+
+  TokenBucket:
+    description: "Token bucket state"
+    fields:
+      bucket_id: String
+      capacity: Int
+      tokens: Float
+      refill_rate: Float
+      last_refill: Timestamp
+
+  SlidingWindow:
+    description: "Sliding window state"
+    fields:
+      window_id: String
+      requests: List<Timestamp>
+      limit: Int
+      window_ms: Int
+
+  FixedWindow:
+    description: "Fixed window state"
+    fields:
+      window_id: String
+      count: Int
+      limit: Int
+      window_start: Timestamp
+      window_ms: Int
+
+  LeakyBucket:
+    description: "Leaky bucket state"
+    fields:
+      bucket_id: String
+      capacity: Int
+      water_level: Float
+      leak_rate: Float
+      last_leak: Timestamp
+
+  RateLimitRule:
+    description: "Rate limit rule"
+    fields:
+      rule_id: String
+      name: String
+      scope: RateLimitScope
+      target: String
+      limit: Int
+      window_ms: Int
+      burst_limit: Option<Int>
+      priority: Int
+      is_active: Bool
+
+  RateLimitScope:
+    description: "Rate limit scope"
+    values:
+      - global
+      - per_user
+      - per_ip
+      - per_endpoint
+      - per_api_key
+      - per_subscription_tier
+
+  RateLimitKey:
+    description: "Rate limit key"
+    fields:
+      scope: RateLimitScope
+      identifier: String
+      endpoint: Option<String>
+
+  RateLimitResult:
+    description: "Rate limit check result"
+    fields:
+      allowed: Bool
+      remaining: Int
+      limit: Int
+      reset_at: Timestamp
+      retry_after_ms: Option<Int>
+
+  RateLimitHeaders:
+    description: "Rate limit response headers"
+    fields:
+      x_ratelimit_limit: Int
+      x_ratelimit_remaining: Int
+      x_ratelimit_reset: Int
+      retry_after: Option<Int>
+
+  RateLimitViolation:
+    description: "Rate limit violation"
+    fields:
+      violation_id: String
+      key: RateLimitKey
+      rule_id: String
+      requested_at: Timestamp
+      limit: Int
+      current_count: Int
+
+  RateLimitStats:
+    description: "Rate limit statistics"
+    fields:
+      total_requests: Int
+      allowed_requests: Int
+      denied_requests: Int
+      denial_rate: Float
+      by_scope: Object
+      by_endpoint: Object
+      top_violators: List<ViolatorStats>
+
+  ViolatorStats:
+    description: "Violator statistics"
+    fields:
+      identifier: String
+      scope: RateLimitScope
+      violation_count: Int
+      last_violation: Timestamp
+
+  TierLimits:
+    description: "Subscription tier limits"
+    fields:
+      tier: String
+      requests_per_minute: Int
+      requests_per_hour: Int
+      requests_per_day: Int
+      burst_limit: Int
+      concurrent_requests: Int
+
+  EndpointLimits:
+    description: "Per-endpoint limits"
+    fields:
+      endpoint: String
+      method: String
+      limit: Int
+      window_ms: Int
+      cost: Int
+
+  QuotaUsage:
+    description: "Quota usage"
+    fields:
+      user_id: Int
+      tier: String
+      minute_usage: Int
+      hour_usage: Int
+      day_usage: Int
+      reset_minute: Timestamp
+      reset_hour: Timestamp
+      reset_day: Timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_limiter
+    given: LimiterConfig
+    when: Initializing limiter
+    then: Return RateLimiter
+
+  - name: start
+    given: No parameters
+    when: Starting limiter
+    then: Begin processing
+
+  - name: stop
+    given: No parameters
+    when: Stopping limiter
+    then: Stop processing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE CHECKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_rate_limit
+    given: RateLimitKey
+    when: Checking rate limit
+    then: Return RateLimitResult
+
+  - name: consume
+    given: RateLimitKey and cost
+    when: Consuming tokens
+    then: Return RateLimitResult
+
+  - name: is_allowed
+    given: RateLimitKey
+    when: Checking if allowed
+    then: Return true if allowed
+
+  - name: get_remaining
+    given: RateLimitKey
+    when: Getting remaining
+    then: Return remaining count
+
+  - name: get_reset_time
+    given: RateLimitKey
+    when: Getting reset time
+    then: Return reset timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOKEN BUCKET
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_token_bucket
+    given: Bucket ID, capacity, refill rate
+    when: Creating bucket
+    then: Return TokenBucket
+
+  - name: refill_bucket
+    given: TokenBucket
+    when: Refilling bucket
+    then: Add tokens based on time
+
+  - name: try_consume_tokens
+    given: Bucket and count
+    when: Consuming tokens
+    then: Return true if consumed
+
+  - name: get_bucket_state
+    given: Bucket ID
+    when: Getting state
+    then: Return TokenBucket
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SLIDING WINDOW
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_sliding_window
+    given: Window ID, limit, window_ms
+    when: Creating window
+    then: Return SlidingWindow
+
+  - name: slide_window
+    given: SlidingWindow
+    when: Sliding window
+    then: Remove expired requests
+
+  - name: add_request
+    given: Window and timestamp
+    when: Adding request
+    then: Record request
+
+  - name: count_requests
+    given: SlidingWindow
+    when: Counting requests
+    then: Return count in window
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FIXED WINDOW
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_fixed_window
+    given: Window ID, limit, window_ms
+    when: Creating window
+    then: Return FixedWindow
+
+  - name: check_fixed_window
+    given: FixedWindow
+    when: Checking window
+    then: Reset if expired
+
+  - name: increment_fixed_window
+    given: FixedWindow
+    when: Incrementing
+    then: Increment count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEAKY BUCKET
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_leaky_bucket
+    given: Bucket ID, capacity, leak rate
+    when: Creating bucket
+    then: Return LeakyBucket
+
+  - name: leak_bucket
+    given: LeakyBucket
+    when: Leaking bucket
+    then: Reduce water level
+
+  - name: add_water
+    given: Bucket and amount
+    when: Adding water
+    then: Return true if added
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RULES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_rule
+    given: RateLimitRule
+    when: Adding rule
+    then: Store rule
+
+  - name: update_rule
+    given: Rule ID and updates
+    when: Updating rule
+    then: Update rule
+
+  - name: delete_rule
+    given: Rule ID
+    when: Deleting rule
+    then: Remove rule
+
+  - name: get_rule
+    given: Rule ID
+    when: Getting rule
+    then: Return rule or null
+
+  - name: list_rules
+    given: Optional scope filter
+    when: Listing rules
+    then: Return rule list
+
+  - name: enable_rule
+    given: Rule ID
+    when: Enabling rule
+    then: Set active
+
+  - name: disable_rule
+    given: Rule ID
+    when: Disabling rule
+    then: Set inactive
+
+  - name: get_matching_rules
+    given: RateLimitKey
+    when: Finding rules
+    then: Return matching rules
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TIER MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_tier_limits
+    given: TierLimits
+    when: Setting tier limits
+    then: Store limits
+
+  - name: get_tier_limits
+    given: Tier name
+    when: Getting tier limits
+    then: Return TierLimits
+
+  - name: check_tier_limit
+    given: User ID and tier
+    when: Checking tier limit
+    then: Return RateLimitResult
+
+  - name: get_user_tier
+    given: User ID
+    when: Getting user tier
+    then: Return tier name
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ENDPOINT LIMITS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_endpoint_limits
+    given: EndpointLimits
+    when: Setting endpoint limits
+    then: Store limits
+
+  - name: get_endpoint_limits
+    given: Endpoint and method
+    when: Getting endpoint limits
+    then: Return EndpointLimits
+
+  - name: check_endpoint_limit
+    given: Endpoint, method, key
+    when: Checking endpoint limit
+    then: Return RateLimitResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUOTA
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_quota_usage
+    given: User ID
+    when: Getting quota
+    then: Return QuotaUsage
+
+  - name: increment_quota
+    given: User ID and amount
+    when: Incrementing quota
+    then: Update usage
+
+  - name: reset_quota
+    given: User ID and period
+    when: Resetting quota
+    then: Reset usage
+
+  - name: check_quota
+    given: User ID
+    when: Checking quota
+    then: Return RateLimitResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEADERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_rate_limit_headers
+    given: RateLimitResult
+    when: Getting headers
+    then: Return RateLimitHeaders
+
+  - name: format_headers
+    given: RateLimitHeaders
+    when: Formatting headers
+    then: Return header map
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # VIOLATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: record_violation
+    given: RateLimitViolation
+    when: Recording violation
+    then: Store violation
+
+  - name: get_violations
+    given: Key and time range
+    when: Getting violations
+    then: Return violation list
+
+  - name: get_violation_count
+    given: Key and time range
+    when: Counting violations
+    then: Return count
+
+  - name: is_blocked
+    given: Key
+    when: Checking if blocked
+    then: Return true if blocked
+
+  - name: block_key
+    given: Key and duration
+    when: Blocking key
+    then: Add to blocklist
+
+  - name: unblock_key
+    given: Key
+    when: Unblocking key
+    then: Remove from blocklist
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: Time range
+    when: Getting stats
+    then: Return RateLimitStats
+
+  - name: get_top_violators
+    given: Limit and time range
+    when: Getting top violators
+    then: Return ViolatorStats list
+
+  - name: get_endpoint_stats
+    given: Endpoint
+    when: Getting endpoint stats
+    then: Return stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MAINTENANCE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_expired
+    given: No parameters
+    when: Cleaning up
+    then: Remove expired entries
+
+  - name: reset_all
+    given: No parameters
+    when: Resetting all
+    then: Clear all state
+
+  - name: reset_key
+    given: RateLimitKey
+    when: Resetting key
+    then: Clear key state
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  # Default limits
+  DEFAULT_REQUESTS_PER_MINUTE: 60
+  DEFAULT_REQUESTS_PER_HOUR: 1000
+  DEFAULT_REQUESTS_PER_DAY: 10000
+  DEFAULT_BURST_MULTIPLIER: 1.5
+
+  # Global limits
+  GLOBAL_REQUESTS_PER_SECOND: 10000
+  GLOBAL_REQUESTS_PER_MINUTE: 500000
+
+  # Tier limits - Free
+  TIER_FREE_RPM: 20
+  TIER_FREE_RPH: 200
+  TIER_FREE_RPD: 1000
+  TIER_FREE_BURST: 5
+
+  # Tier limits - Basic
+  TIER_BASIC_RPM: 60
+  TIER_BASIC_RPH: 1000
+  TIER_BASIC_RPD: 10000
+  TIER_BASIC_BURST: 15
+
+  # Tier limits - Pro
+  TIER_PRO_RPM: 300
+  TIER_PRO_RPH: 5000
+  TIER_PRO_RPD: 50000
+  TIER_PRO_BURST: 50
+
+  # Tier limits - Enterprise
+  TIER_ENTERPRISE_RPM: 1000
+  TIER_ENTERPRISE_RPH: 20000
+  TIER_ENTERPRISE_RPD: 200000
+  TIER_ENTERPRISE_BURST: 200
+
+  # Endpoint costs
+  COST_GENERATION: 10
+  COST_QUERY: 1
+  COST_UPLOAD: 5
+  COST_DOWNLOAD: 2
+
+  # Blocking
+  VIOLATION_THRESHOLD: 100
+  BLOCK_DURATION_MS: 3600000
+  MAX_BLOCK_DURATION_MS: 86400000
+
+  # Cleanup
+  CLEANUP_INTERVAL_MS: 60000
+  ENTRY_TTL_MS: 3600000

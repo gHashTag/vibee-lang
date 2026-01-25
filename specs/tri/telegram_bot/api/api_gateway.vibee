@@ -1,0 +1,449 @@
+name: api_gateway
+version: "1.0.0"
+language: zig
+module: api_gateway
+
+description: |
+  REST API Gateway for VIBEE Telegram bot.
+  Provides external API access, routing, middleware chain.
+  Supports versioning, documentation, and OpenAPI spec.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ApiGateway:
+    description: "API Gateway instance"
+    fields:
+      config: GatewayConfig
+      routes: List<Route>
+      middleware: List<Middleware>
+      is_running: Bool
+
+  GatewayConfig:
+    description: "Gateway configuration"
+    fields:
+      host: String
+      port: Int
+      base_path: String
+      api_version: String
+      cors_enabled: Bool
+      cors_origins: List<String>
+      rate_limit_enabled: Bool
+      auth_required: Bool
+      docs_enabled: Bool
+      max_request_size: Int
+      timeout_ms: Int
+
+  Route:
+    description: "API route"
+    fields:
+      route_id: String
+      method: HttpMethod
+      path: String
+      handler: String
+      middleware: List<String>
+      auth_required: Bool
+      rate_limit: Option<RateLimitConfig>
+      description: String
+      tags: List<String>
+      request_schema: Option<Object>
+      response_schema: Option<Object>
+
+  HttpMethod:
+    description: "HTTP method"
+    values:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+      - HEAD
+
+  Middleware:
+    description: "Middleware definition"
+    fields:
+      middleware_id: String
+      name: String
+      handler: String
+      order: Int
+      config: Object
+
+  Request:
+    description: "HTTP request"
+    fields:
+      request_id: String
+      method: HttpMethod
+      path: String
+      query: Object
+      headers: Object
+      body: Option<Object>
+      ip_address: String
+      user_agent: String
+      api_key: Option<String>
+      user_id: Option<Int>
+      timestamp: Timestamp
+
+  Response:
+    description: "HTTP response"
+    fields:
+      status: Int
+      headers: Object
+      body: Object
+      duration_ms: Int
+
+  ApiError:
+    description: "API error"
+    fields:
+      code: String
+      message: String
+      details: Option<Object>
+      request_id: String
+
+  RateLimitConfig:
+    description: "Rate limit config"
+    fields:
+      requests_per_minute: Int
+      requests_per_hour: Int
+      burst_limit: Int
+
+  ApiKey:
+    description: "API key"
+    fields:
+      key_id: String
+      key_hash: String
+      name: String
+      owner_id: Int
+      permissions: List<String>
+      rate_limit: RateLimitConfig
+      is_active: Bool
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+      last_used: Option<Timestamp>
+
+  ApiStats:
+    description: "API statistics"
+    fields:
+      total_requests: Int
+      successful_requests: Int
+      failed_requests: Int
+      avg_response_time_ms: Int
+      requests_by_endpoint: Object
+      requests_by_status: Object
+      requests_by_hour: List<Int>
+
+  EndpointDoc:
+    description: "Endpoint documentation"
+    fields:
+      path: String
+      method: HttpMethod
+      summary: String
+      description: String
+      tags: List<String>
+      parameters: List<ParamDoc>
+      request_body: Option<Object>
+      responses: Object
+      examples: List<Object>
+
+  ParamDoc:
+    description: "Parameter documentation"
+    fields:
+      name: String
+      in_location: String
+      required: Bool
+      type: String
+      description: String
+      example: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GATEWAY MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_gateway
+    given: GatewayConfig
+    when: Initializing gateway
+    then: Return ApiGateway
+
+  - name: start
+    given: No parameters
+    when: Starting gateway
+    then: Begin listening
+
+  - name: stop
+    given: No parameters
+    when: Stopping gateway
+    then: Stop listening
+
+  - name: reload_config
+    given: New config
+    when: Reloading config
+    then: Apply new config
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ROUTING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_route
+    given: Route
+    when: Registering route
+    then: Add to routes
+
+  - name: unregister_route
+    given: Route ID
+    when: Unregistering route
+    then: Remove from routes
+
+  - name: get_route
+    given: Method and path
+    when: Finding route
+    then: Return Route or null
+
+  - name: list_routes
+    given: Optional tag filter
+    when: Listing routes
+    then: Return route list
+
+  - name: match_route
+    given: Request
+    when: Matching route
+    then: Return matched Route
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REQUEST HANDLING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: handle_request
+    given: Request
+    when: Handling request
+    then: Return Response
+
+  - name: validate_request
+    given: Request and schema
+    when: Validating request
+    then: Return errors or null
+
+  - name: parse_request_body
+    given: Raw body and content type
+    when: Parsing body
+    then: Return parsed object
+
+  - name: build_response
+    given: Status, headers, body
+    when: Building response
+    then: Return Response
+
+  - name: send_error
+    given: ApiError and status
+    when: Sending error
+    then: Return error Response
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: use_middleware
+    given: Middleware
+    when: Adding middleware
+    then: Add to chain
+
+  - name: remove_middleware
+    given: Middleware ID
+    when: Removing middleware
+    then: Remove from chain
+
+  - name: execute_middleware_chain
+    given: Request and route
+    when: Executing chain
+    then: Process through middleware
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API ENDPOINTS - USERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: api_get_user
+    given: User ID
+    when: GET /users/:id
+    then: Return user data
+
+  - name: api_get_user_balance
+    given: User ID
+    when: GET /users/:id/balance
+    then: Return balance
+
+  - name: api_get_user_generations
+    given: User ID and pagination
+    when: GET /users/:id/generations
+    then: Return generations
+
+  - name: api_get_user_payments
+    given: User ID and pagination
+    when: GET /users/:id/payments
+    then: Return payments
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API ENDPOINTS - GENERATIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: api_create_generation
+    given: Generation request
+    when: POST /generations
+    then: Create and return job
+
+  - name: api_get_generation
+    given: Generation ID
+    when: GET /generations/:id
+    then: Return generation
+
+  - name: api_cancel_generation
+    given: Generation ID
+    when: DELETE /generations/:id
+    then: Cancel generation
+
+  - name: api_list_generations
+    given: Filters and pagination
+    when: GET /generations
+    then: Return generation list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API ENDPOINTS - PAYMENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: api_create_invoice
+    given: Invoice request
+    when: POST /invoices
+    then: Create and return invoice
+
+  - name: api_get_invoice
+    given: Invoice ID
+    when: GET /invoices/:id
+    then: Return invoice
+
+  - name: api_list_invoices
+    given: Filters and pagination
+    when: GET /invoices
+    then: Return invoice list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API ENDPOINTS - MODELS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: api_list_models
+    given: Category filter
+    when: GET /models
+    then: Return model list
+
+  - name: api_get_model
+    given: Model ID
+    when: GET /models/:id
+    then: Return model info
+
+  - name: api_get_model_pricing
+    given: Model ID
+    when: GET /models/:id/pricing
+    then: Return pricing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API KEYS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_api_key
+    given: Owner ID and permissions
+    when: Creating API key
+    then: Return ApiKey
+
+  - name: validate_api_key
+    given: Key string
+    when: Validating key
+    then: Return ApiKey or null
+
+  - name: revoke_api_key
+    given: Key ID
+    when: Revoking key
+    then: Deactivate key
+
+  - name: list_api_keys
+    given: Owner ID
+    when: Listing keys
+    then: Return key list
+
+  - name: rotate_api_key
+    given: Key ID
+    when: Rotating key
+    then: Return new ApiKey
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DOCUMENTATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_openapi_spec
+    given: No parameters
+    when: Generating spec
+    then: Return OpenAPI JSON
+
+  - name: get_endpoint_docs
+    given: Path and method
+    when: Getting docs
+    then: Return EndpointDoc
+
+  - name: serve_docs_ui
+    given: Request
+    when: Serving docs
+    then: Return HTML page
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_api_stats
+    given: Time range
+    when: Getting stats
+    then: Return ApiStats
+
+  - name: get_endpoint_stats
+    given: Path and method
+    when: Getting endpoint stats
+    then: Return stats
+
+  - name: record_request
+    given: Request and Response
+    when: Recording request
+    then: Update stats
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_PORT: 8080
+  DEFAULT_BASE_PATH: "/api"
+  DEFAULT_VERSION: "v1"
+  DEFAULT_TIMEOUT_MS: 30000
+  MAX_REQUEST_SIZE: 10485760
+
+  HEADER_API_KEY: "X-API-Key"
+  HEADER_REQUEST_ID: "X-Request-ID"
+  HEADER_RATE_LIMIT_REMAINING: "X-RateLimit-Remaining"
+  HEADER_RATE_LIMIT_RESET: "X-RateLimit-Reset"
+
+  STATUS_OK: 200
+  STATUS_CREATED: 201
+  STATUS_BAD_REQUEST: 400
+  STATUS_UNAUTHORIZED: 401
+  STATUS_FORBIDDEN: 403
+  STATUS_NOT_FOUND: 404
+  STATUS_RATE_LIMITED: 429
+  STATUS_SERVER_ERROR: 500
+
+  ERROR_INVALID_REQUEST: "INVALID_REQUEST"
+  ERROR_UNAUTHORIZED: "UNAUTHORIZED"
+  ERROR_FORBIDDEN: "FORBIDDEN"
+  ERROR_NOT_FOUND: "NOT_FOUND"
+  ERROR_RATE_LIMITED: "RATE_LIMITED"
+  ERROR_SERVER_ERROR: "SERVER_ERROR"

@@ -1,0 +1,601 @@
+name: api_auth
+version: "1.0.0"
+language: zig
+module: api_auth
+
+description: |
+  API authentication for VIBEE Telegram bot.
+  Supports API keys, JWT tokens, OAuth2, and Telegram auth.
+  Handles permissions, scopes, and session management.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AuthManager:
+    description: "Authentication manager"
+    fields:
+      config: AuthConfig
+      sessions: Map<String, Session>
+      api_keys: Map<String, ApiKey>
+      is_running: Bool
+
+  AuthConfig:
+    description: "Auth configuration"
+    fields:
+      jwt_secret: String
+      jwt_expiry_seconds: Int
+      refresh_expiry_seconds: Int
+      api_key_prefix: String
+      session_ttl_seconds: Int
+      max_sessions_per_user: Int
+      enable_telegram_auth: Bool
+      telegram_bot_token: String
+
+  AuthMethod:
+    description: "Authentication method"
+    values:
+      - api_key
+      - jwt_token
+      - telegram_auth
+      - oauth2
+      - basic_auth
+      - session_cookie
+
+  ApiKey:
+    description: "API key"
+    fields:
+      key_id: String
+      key_hash: String
+      key_prefix: String
+      name: String
+      owner_id: Int
+      scopes: List<String>
+      permissions: List<Permission>
+      is_active: Bool
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+      last_used_at: Option<Timestamp>
+      usage_count: Int
+      rate_limit: Option<Int>
+
+  JwtToken:
+    description: "JWT token"
+    fields:
+      token_id: String
+      user_id: Int
+      token_type: TokenType
+      scopes: List<String>
+      issued_at: Timestamp
+      expires_at: Timestamp
+      issuer: String
+      audience: String
+
+  TokenType:
+    description: "Token type"
+    values:
+      - access
+      - refresh
+      - api
+      - service
+
+  TokenPair:
+    description: "Access and refresh token pair"
+    fields:
+      access_token: String
+      refresh_token: String
+      token_type: String
+      expires_in: Int
+
+  Session:
+    description: "User session"
+    fields:
+      session_id: String
+      user_id: Int
+      auth_method: AuthMethod
+      ip_address: String
+      user_agent: String
+      scopes: List<String>
+      created_at: Timestamp
+      expires_at: Timestamp
+      last_activity: Timestamp
+      is_active: Bool
+
+  Permission:
+    description: "Permission"
+    values:
+      - read
+      - write
+      - delete
+      - admin
+      - generate
+      - upload
+      - download
+      - manage_users
+      - manage_api_keys
+      - view_analytics
+
+  Scope:
+    description: "API scope"
+    values:
+      - user_read
+      - user_write
+      - generation_read
+      - generation_write
+      - payment_read
+      - payment_write
+      - admin
+      - webhook_manage
+      - analytics_read
+
+  AuthRequest:
+    description: "Authentication request"
+    fields:
+      method: AuthMethod
+      credentials: Object
+      ip_address: String
+      user_agent: String
+      requested_scopes: List<String>
+
+  AuthResult:
+    description: "Authentication result"
+    fields:
+      success: Bool
+      user_id: Option<Int>
+      session: Option<Session>
+      tokens: Option<TokenPair>
+      error: Option<AuthError>
+      scopes: List<String>
+
+  AuthError:
+    description: "Authentication error"
+    values:
+      - invalid_credentials
+      - expired_token
+      - invalid_token
+      - invalid_api_key
+      - expired_api_key
+      - revoked_api_key
+      - insufficient_permissions
+      - invalid_scope
+      - session_expired
+      - max_sessions_exceeded
+      - ip_blocked
+      - rate_limited
+      - telegram_auth_failed
+
+  TelegramAuthData:
+    description: "Telegram auth data"
+    fields:
+      id: Int
+      first_name: String
+      last_name: Option<String>
+      username: Option<String>
+      photo_url: Option<String>
+      auth_date: Timestamp
+      hash: String
+
+  OAuth2Config:
+    description: "OAuth2 configuration"
+    fields:
+      provider: String
+      client_id: String
+      client_secret: String
+      authorize_url: String
+      token_url: String
+      redirect_uri: String
+      scopes: List<String>
+
+  OAuth2Token:
+    description: "OAuth2 token"
+    fields:
+      access_token: String
+      refresh_token: Option<String>
+      token_type: String
+      expires_in: Int
+      scope: String
+
+  AuthAuditLog:
+    description: "Auth audit log"
+    fields:
+      log_id: String
+      user_id: Option<Int>
+      action: AuthAction
+      method: AuthMethod
+      ip_address: String
+      user_agent: String
+      success: Bool
+      error: Option<AuthError>
+      timestamp: Timestamp
+
+  AuthAction:
+    description: "Auth action"
+    values:
+      - login
+      - logout
+      - token_refresh
+      - api_key_created
+      - api_key_revoked
+      - session_created
+      - session_terminated
+      - password_changed
+      - permission_changed
+
+  AuthStats:
+    description: "Auth statistics"
+    fields:
+      total_logins: Int
+      successful_logins: Int
+      failed_logins: Int
+      active_sessions: Int
+      active_api_keys: Int
+      by_method: Object
+      by_error: Object
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INITIALIZATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_auth_manager
+    given: AuthConfig
+    when: Initializing manager
+    then: Return AuthManager
+
+  - name: start
+    given: No parameters
+    when: Starting manager
+    then: Begin processing
+
+  - name: stop
+    given: No parameters
+    when: Stopping manager
+    then: Stop processing
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUTHENTICATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: authenticate
+    given: AuthRequest
+    when: Authenticating
+    then: Return AuthResult
+
+  - name: authenticate_api_key
+    given: API key string
+    when: Authenticating with API key
+    then: Return AuthResult
+
+  - name: authenticate_jwt
+    given: JWT token string
+    when: Authenticating with JWT
+    then: Return AuthResult
+
+  - name: authenticate_telegram
+    given: TelegramAuthData
+    when: Authenticating with Telegram
+    then: Return AuthResult
+
+  - name: authenticate_basic
+    given: Username and password
+    when: Authenticating with basic auth
+    then: Return AuthResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API KEYS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_api_key
+    given: Owner ID, name, scopes
+    when: Creating API key
+    then: Return ApiKey and raw key
+
+  - name: get_api_key
+    given: Key ID
+    when: Getting API key
+    then: Return ApiKey or null
+
+  - name: list_api_keys
+    given: Owner ID
+    when: Listing API keys
+    then: Return ApiKey list
+
+  - name: revoke_api_key
+    given: Key ID
+    when: Revoking API key
+    then: Set inactive
+
+  - name: rotate_api_key
+    given: Key ID
+    when: Rotating API key
+    then: Return new key
+
+  - name: validate_api_key
+    given: Raw key string
+    when: Validating API key
+    then: Return ApiKey or null
+
+  - name: update_api_key_scopes
+    given: Key ID and scopes
+    when: Updating scopes
+    then: Update ApiKey
+
+  - name: set_api_key_expiry
+    given: Key ID and expiry
+    when: Setting expiry
+    then: Update ApiKey
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JWT TOKENS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_tokens
+    given: User ID and scopes
+    when: Generating tokens
+    then: Return TokenPair
+
+  - name: generate_access_token
+    given: User ID and scopes
+    when: Generating access token
+    then: Return token string
+
+  - name: generate_refresh_token
+    given: User ID
+    when: Generating refresh token
+    then: Return token string
+
+  - name: verify_token
+    given: Token string
+    when: Verifying token
+    then: Return JwtToken or null
+
+  - name: refresh_tokens
+    given: Refresh token
+    when: Refreshing tokens
+    then: Return new TokenPair
+
+  - name: revoke_token
+    given: Token string
+    when: Revoking token
+    then: Add to blacklist
+
+  - name: is_token_revoked
+    given: Token ID
+    when: Checking revocation
+    then: Return true if revoked
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM AUTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: verify_telegram_auth
+    given: TelegramAuthData
+    when: Verifying Telegram auth
+    then: Return true if valid
+
+  - name: compute_telegram_hash
+    given: Auth data and bot token
+    when: Computing hash
+    then: Return hash string
+
+  - name: is_telegram_auth_expired
+    given: Auth date
+    when: Checking expiry
+    then: Return true if expired
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SESSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_session
+    given: User ID, method, IP, user agent
+    when: Creating session
+    then: Return Session
+
+  - name: get_session
+    given: Session ID
+    when: Getting session
+    then: Return Session or null
+
+  - name: list_user_sessions
+    given: User ID
+    when: Listing sessions
+    then: Return Session list
+
+  - name: terminate_session
+    given: Session ID
+    when: Terminating session
+    then: Set inactive
+
+  - name: terminate_all_sessions
+    given: User ID
+    when: Terminating all
+    then: Terminate all user sessions
+
+  - name: refresh_session
+    given: Session ID
+    when: Refreshing session
+    then: Update last activity
+
+  - name: is_session_valid
+    given: Session ID
+    when: Checking validity
+    then: Return true if valid
+
+  - name: cleanup_expired_sessions
+    given: No parameters
+    when: Cleaning up
+    then: Remove expired sessions
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PERMISSIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_permission
+    given: User ID and permission
+    when: Checking permission
+    then: Return true if allowed
+
+  - name: check_scope
+    given: Token and scope
+    when: Checking scope
+    then: Return true if allowed
+
+  - name: get_user_permissions
+    given: User ID
+    when: Getting permissions
+    then: Return Permission list
+
+  - name: get_token_scopes
+    given: Token
+    when: Getting scopes
+    then: Return Scope list
+
+  - name: has_any_permission
+    given: User ID and permissions
+    when: Checking any permission
+    then: Return true if any allowed
+
+  - name: has_all_permissions
+    given: User ID and permissions
+    when: Checking all permissions
+    then: Return true if all allowed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # OAUTH2
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_oauth2_authorize_url
+    given: OAuth2Config and state
+    when: Getting authorize URL
+    then: Return URL string
+
+  - name: exchange_oauth2_code
+    given: Config and code
+    when: Exchanging code
+    then: Return OAuth2Token
+
+  - name: refresh_oauth2_token
+    given: Config and refresh token
+    when: Refreshing OAuth2 token
+    then: Return OAuth2Token
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: log_auth_event
+    given: AuthAuditLog
+    when: Logging event
+    then: Store log
+
+  - name: get_auth_logs
+    given: User ID and time range
+    when: Getting logs
+    then: Return AuthAuditLog list
+
+  - name: get_failed_attempts
+    given: IP or user ID
+    when: Getting failed attempts
+    then: Return count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_auth_stats
+    given: Time range
+    when: Getting stats
+    then: Return AuthStats
+
+  - name: get_active_session_count
+    given: No parameters
+    when: Counting sessions
+    then: Return count
+
+  - name: get_api_key_usage
+    given: Key ID
+    when: Getting usage
+    then: Return usage stats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SECURITY
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: hash_api_key
+    given: Raw key
+    when: Hashing key
+    then: Return hash
+
+  - name: verify_api_key_hash
+    given: Raw key and hash
+    when: Verifying hash
+    then: Return true if match
+
+  - name: generate_secure_key
+    given: Length
+    when: Generating key
+    then: Return random key
+
+  - name: is_ip_blocked
+    given: IP address
+    when: Checking IP block
+    then: Return true if blocked
+
+  - name: block_ip
+    given: IP and duration
+    when: Blocking IP
+    then: Add to blocklist
+
+  - name: unblock_ip
+    given: IP address
+    when: Unblocking IP
+    then: Remove from blocklist
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  # JWT
+  JWT_ALGORITHM: "HS256"
+  JWT_ISSUER: "vibee-bot"
+  JWT_AUDIENCE: "vibee-api"
+  ACCESS_TOKEN_EXPIRY_SECONDS: 3600
+  REFRESH_TOKEN_EXPIRY_SECONDS: 604800
+
+  # API Keys
+  API_KEY_PREFIX: "vb_"
+  API_KEY_LENGTH: 32
+  API_KEY_HASH_ALGORITHM: "sha256"
+
+  # Sessions
+  SESSION_TTL_SECONDS: 86400
+  MAX_SESSIONS_PER_USER: 10
+  SESSION_REFRESH_THRESHOLD: 300
+
+  # Telegram
+  TELEGRAM_AUTH_EXPIRY_SECONDS: 86400
+
+  # Security
+  MAX_FAILED_ATTEMPTS: 5
+  LOCKOUT_DURATION_SECONDS: 900
+  IP_BLOCK_DURATION_SECONDS: 3600
+
+  # Scopes
+  SCOPE_SEPARATOR: " "
+  DEFAULT_SCOPES: "user_read generation_read"
+
+  # Headers
+  HEADER_AUTHORIZATION: "Authorization"
+  HEADER_API_KEY: "X-API-Key"
+  HEADER_SESSION_ID: "X-Session-ID"
+
+  # Prefixes
+  BEARER_PREFIX: "Bearer "
+  BASIC_PREFIX: "Basic "
