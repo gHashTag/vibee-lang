@@ -1,0 +1,540 @@
+name: ai_queue
+version: "1.0.0"
+language: zig
+module: ai_queue
+
+description: |
+  AI generation queue for VIBEE Telegram bot.
+  Manages async generation jobs, priorities, retries, webhooks.
+  Supports multiple providers (Replicate, OpenAI, local).
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  QueueConfig:
+    description: "Queue configuration"
+    fields:
+      max_concurrent: Int
+      max_queue_size: Int
+      default_timeout: Int
+      retry_attempts: Int
+      retry_delay_ms: Int
+      priority_boost_premium: Int
+
+  GenerationJob:
+    description: "AI generation job"
+    fields:
+      job_id: String
+      telegram_id: Int
+      chat_id: Int
+      job_type: JobType
+      provider: AIProvider
+      model: String
+      input: JobInput
+      priority: Priority
+      status: JobStatus
+      progress: Int
+      result: Option<JobResult>
+      error: Option<JobError>
+      created_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+      timeout_at: Timestamp
+      retry_count: Int
+      metadata: Object
+
+  JobType:
+    description: "Type of generation job"
+    values:
+      - image_generation
+      - image_to_video
+      - text_to_video
+      - image_edit
+      - image_upscale
+      - face_swap
+      - lip_sync
+      - voice_clone
+      - text_to_speech
+      - speech_to_text
+      - chat_completion
+      - embedding
+      - moderation
+
+  AIProvider:
+    description: "AI service provider"
+    values:
+      - replicate
+      - openai
+      - stability
+      - runway
+      - elevenlabs
+      - local
+
+  Priority:
+    description: "Job priority"
+    values:
+      - low
+      - normal
+      - high
+      - urgent
+      - premium
+
+  JobStatus:
+    description: "Job status"
+    values:
+      - pending
+      - queued
+      - starting
+      - processing
+      - completed
+      - failed
+      - cancelled
+      - timeout
+      - retrying
+
+  JobInput:
+    description: "Job input parameters"
+    fields:
+      prompt: Option<String>
+      negative_prompt: Option<String>
+      image_url: Option<String>
+      video_url: Option<String>
+      audio_url: Option<String>
+      text: Option<String>
+      model_version: Option<String>
+      width: Option<Int>
+      height: Option<Int>
+      duration: Option<Int>
+      steps: Option<Int>
+      guidance: Option<Float>
+      seed: Option<Int>
+      style: Option<String>
+      extra_params: Object
+
+  JobResult:
+    description: "Job result"
+    fields:
+      output_urls: List<String>
+      output_type: OutputType
+      duration_ms: Int
+      cost_stars: Int
+      provider_id: Option<String>
+      metadata: Object
+
+  OutputType:
+    description: "Output type"
+    values:
+      - image
+      - video
+      - audio
+      - text
+      - json
+
+  JobError:
+    description: "Job error details"
+    fields:
+      code: String
+      message: String
+      provider_error: Option<String>
+      is_retryable: Bool
+      retry_after: Option<Int>
+
+  QueueStats:
+    description: "Queue statistics"
+    fields:
+      pending_count: Int
+      processing_count: Int
+      completed_count: Int
+      failed_count: Int
+      avg_wait_time_ms: Int
+      avg_process_time_ms: Int
+      jobs_per_minute: Float
+
+  JobFilter:
+    description: "Filter for querying jobs"
+    fields:
+      telegram_id: Option<Int>
+      job_type: Option<JobType>
+      provider: Option<AIProvider>
+      status: Option<JobStatus>
+      created_after: Option<Timestamp>
+      created_before: Option<Timestamp>
+      limit: Option<Int>
+      offset: Option<Int>
+
+  WebhookConfig:
+    description: "Webhook configuration"
+    fields:
+      url: String
+      secret: String
+      events: List<WebhookEvent>
+      retry_count: Int
+
+  WebhookEvent:
+    description: "Webhook event types"
+    values:
+      - job_started
+      - job_progress
+      - job_completed
+      - job_failed
+      - job_cancelled
+
+  WebhookPayload:
+    description: "Webhook payload"
+    fields:
+      event: WebhookEvent
+      job_id: String
+      telegram_id: Int
+      status: JobStatus
+      progress: Option<Int>
+      result: Option<JobResult>
+      error: Option<JobError>
+      timestamp: Timestamp
+
+  RateLimitConfig:
+    description: "Rate limit configuration"
+    fields:
+      requests_per_minute: Int
+      requests_per_hour: Int
+      concurrent_per_user: Int
+      burst_limit: Int
+
+  RateLimitStatus:
+    description: "Rate limit status"
+    fields:
+      telegram_id: Int
+      remaining_minute: Int
+      remaining_hour: Int
+      active_jobs: Int
+      reset_at: Timestamp
+      is_limited: Bool
+
+  CostEstimate:
+    description: "Cost estimate for job"
+    fields:
+      job_type: JobType
+      provider: AIProvider
+      model: String
+      estimated_stars: Int
+      estimated_time_ms: Int
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUEUE MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: init_queue
+    given: QueueConfig
+    when: Initializing queue
+    then: Start queue processor
+
+  - name: shutdown_queue
+    given: No parameters
+    when: Shutting down
+    then: Stop processor, save state
+
+  - name: pause_queue
+    given: No parameters
+    when: Pausing processing
+    then: Stop accepting new jobs
+
+  - name: resume_queue
+    given: No parameters
+    when: Resuming processing
+    then: Continue processing
+
+  - name: get_queue_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return QueueStats
+
+  - name: clear_queue
+    given: Optional filter
+    when: Clearing jobs
+    then: Remove matching jobs
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB SUBMISSION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: submit_job
+    given: GenerationJob
+    when: Submitting new job
+    then: Return job ID or error
+
+  - name: submit_image_generation
+    given: Telegram ID, prompt, model, options
+    when: Submitting image gen
+    then: Return job ID
+
+  - name: submit_image_to_video
+    given: Telegram ID, image URL, options
+    when: Submitting img2vid
+    then: Return job ID
+
+  - name: submit_text_to_video
+    given: Telegram ID, prompt, options
+    when: Submitting txt2vid
+    then: Return job ID
+
+  - name: submit_face_swap
+    given: Telegram ID, source, target
+    when: Submitting face swap
+    then: Return job ID
+
+  - name: submit_upscale
+    given: Telegram ID, image URL, scale
+    when: Submitting upscale
+    then: Return job ID
+
+  - name: submit_tts
+    given: Telegram ID, text, voice
+    when: Submitting TTS
+    then: Return job ID
+
+  - name: submit_stt
+    given: Telegram ID, audio URL
+    when: Submitting STT
+    then: Return job ID
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_job
+    given: Job ID
+    when: Getting job details
+    then: Return GenerationJob or null
+
+  - name: get_job_status
+    given: Job ID
+    when: Checking status
+    then: Return JobStatus
+
+  - name: get_job_progress
+    given: Job ID
+    when: Checking progress
+    then: Return progress percentage
+
+  - name: cancel_job
+    given: Job ID
+    when: Cancelling job
+    then: Return true if cancelled
+
+  - name: retry_job
+    given: Job ID
+    when: Retrying failed job
+    then: Return new job ID
+
+  - name: update_job_progress
+    given: Job ID and progress
+    when: Updating progress
+    then: Update and notify
+
+  - name: complete_job
+    given: Job ID and JobResult
+    when: Marking complete
+    then: Update status and notify
+
+  - name: fail_job
+    given: Job ID and JobError
+    when: Marking failed
+    then: Update status and maybe retry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB QUERIES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_user_jobs
+    given: Telegram ID and limit
+    when: Getting user's jobs
+    then: Return list of jobs
+
+  - name: get_active_jobs
+    given: Telegram ID
+    when: Getting active jobs
+    then: Return processing jobs
+
+  - name: get_pending_jobs
+    given: Limit
+    when: Getting pending jobs
+    then: Return queued jobs
+
+  - name: find_jobs
+    given: JobFilter
+    when: Searching jobs
+    then: Return filtered list
+
+  - name: count_jobs
+    given: JobFilter
+    when: Counting jobs
+    then: Return count
+
+  - name: get_job_history
+    given: Telegram ID, days
+    when: Getting history
+    then: Return past jobs
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PRIORITY MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_job_priority
+    given: Job ID and Priority
+    when: Changing priority
+    then: Update and reorder queue
+
+  - name: boost_priority
+    given: Job ID
+    when: Boosting priority
+    then: Increase priority level
+
+  - name: get_queue_position
+    given: Job ID
+    when: Checking position
+    then: Return position in queue
+
+  - name: calculate_priority
+    given: Telegram ID and job type
+    when: Determining priority
+    then: Return Priority based on user level
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RATE LIMITING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_rate_limit
+    given: Telegram ID
+    when: Checking limits
+    then: Return RateLimitStatus
+
+  - name: is_rate_limited
+    given: Telegram ID
+    when: Quick check
+    then: Return true if limited
+
+  - name: increment_rate_limit
+    given: Telegram ID
+    when: Recording request
+    then: Update counters
+
+  - name: reset_rate_limit
+    given: Telegram ID
+    when: Resetting limits
+    then: Clear counters
+
+  - name: get_rate_limit_config
+    given: User level
+    when: Getting config
+    then: Return RateLimitConfig
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COST ESTIMATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: estimate_cost
+    given: Job type, provider, model
+    when: Estimating cost
+    then: Return CostEstimate
+
+  - name: estimate_job_cost
+    given: GenerationJob
+    when: Estimating job cost
+    then: Return stars cost
+
+  - name: get_model_pricing
+    given: Provider and model
+    when: Getting pricing
+    then: Return cost per unit
+
+  - name: calculate_actual_cost
+    given: Job result
+    when: Calculating actual cost
+    then: Return actual stars
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WEBHOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_webhook
+    given: WebhookConfig
+    when: Registering webhook
+    then: Store webhook config
+
+  - name: unregister_webhook
+    given: Webhook URL
+    when: Removing webhook
+    then: Remove config
+
+  - name: send_webhook
+    given: WebhookPayload
+    when: Sending notification
+    then: POST to webhook URL
+
+  - name: process_provider_webhook
+    given: Provider and payload
+    when: Receiving provider webhook
+    then: Update job status
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROVIDER INTEGRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: dispatch_to_provider
+    given: GenerationJob
+    when: Sending to provider
+    then: Create provider request
+
+  - name: poll_provider_status
+    given: Job ID
+    when: Checking provider
+    then: Update job status
+
+  - name: select_provider
+    given: Job type and model
+    when: Choosing provider
+    then: Return best provider
+
+  - name: get_provider_status
+    given: AIProvider
+    when: Checking health
+    then: Return provider status
+
+  - name: failover_provider
+    given: Job ID
+    when: Provider failed
+    then: Retry with alternate provider
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_CONCURRENT: 10
+  DEFAULT_MAX_QUEUE_SIZE: 1000
+  DEFAULT_TIMEOUT_MS: 300000
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 5000
+
+  RATE_LIMIT_FREE_PER_MINUTE: 5
+  RATE_LIMIT_FREE_PER_HOUR: 20
+  RATE_LIMIT_PREMIUM_PER_MINUTE: 20
+  RATE_LIMIT_PREMIUM_PER_HOUR: 100
+  RATE_LIMIT_CONCURRENT_FREE: 1
+  RATE_LIMIT_CONCURRENT_PREMIUM: 3
+
+  PRIORITY_BOOST_PREMIUM: 10
+  PRIORITY_BOOST_VIP: 20
+
+  POLL_INTERVAL_MS: 2000
+  WEBHOOK_TIMEOUT_MS: 10000
+  WEBHOOK_RETRY_COUNT: 3
+
+  JOB_TTL_COMPLETED: 86400
+  JOB_TTL_FAILED: 604800
