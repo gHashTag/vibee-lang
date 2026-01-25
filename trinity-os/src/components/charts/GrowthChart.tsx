@@ -50,6 +50,7 @@ export default function GrowthChart() {
           />
 
           <polyline
+            className="draw-path"
             fill="none"
             stroke="var(--accent)"
             strokeWidth="3"
@@ -60,9 +61,9 @@ export default function GrowthChart() {
              const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
              const y = height - padding - (d.valuation / maxVal) * (height - 2 * padding);
              return (
-               <g key={i}>
+               <g key={i} className={`anim-fade-in-up anim-delay-${i * 2 + 5}`}>
                  <circle cx={x} cy={y} r="5" fill="var(--bg)" stroke="var(--accent)" strokeWidth="2" />
-                 <text x={x} y={y - 15} textAnchor="middle" fill="var(--text)" fontSize="12">
+                 <text x={x} y={y - 15} textAnchor="middle" fill="var(--text)" fontSize="12" fontWeight="600">
                    ${d.valuation >= 1000 ? d.valuation / 1000 + 'B' : d.valuation + 'M'}
                  </text>
                  <text x={x} y={height - 10} textAnchor="middle" fill="var(--muted)" fontSize="12">{d.year}</text>
