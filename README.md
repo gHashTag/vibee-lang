@@ -3,6 +3,8 @@
 **Sacred Formula:** `V = n × 3^k × π^m × φ^p × e^q`
 **Golden Identity:** `φ² + 1/φ² = 3`
 
+[![CI](https://github.com/gHashTag/vibee-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/gHashTag/vibee-lang/actions/workflows/ci.yml)
+[![Benchmark Tests](https://github.com/gHashTag/vibee-lang/actions/workflows/benchmark-tests.yml/badge.svg)](https://github.com/gHashTag/vibee-lang/actions/workflows/benchmark-tests.yml)
 [![Tests](https://img.shields.io/badge/tests-2000%2B-brightgreen)](trinity/output/)
 [![Languages](https://img.shields.io/badge/languages-42-blue)](#-gen-multi-42-languages)
 [![FFI](https://img.shields.io/badge/FFI-40%20modules-orange)](#-ffi-modules)
@@ -73,6 +75,7 @@ cd trinity/output && ls *.zig | xargs -P 8 -I {} zig test {}
 | **GEN-MULTI** | Code generation for 42 languages | 42 | 350+ |
 | **FFI System** | Integration with 40 languages | 40 | 350+ |
 | **E2E Pipeline v21** | Chrome CDP + Ollama LLM Agent | 4 | 35+ |
+| **BitNet Benchmark** | FPGA performance benchmarking | 12 | 50+ |
 
 ## 🤖 Real Browser Agent (v22.7)
 
@@ -123,6 +126,32 @@ cd src/vibeec && zig build-exe demo_agent.zig && ./demo_agent
 - Ollama running on port 11434
 
 **Documentation:** [docs/E2E_DEMO.md](docs/E2E_DEMO.md) | [docs/E2E_PIPELINE_GUIDE.md](docs/E2E_PIPELINE_GUIDE.md)
+
+## 📊 BitNet Benchmark Suite
+
+Performance benchmarking for BitNet FPGA inference:
+
+```bash
+# Run benchmarks
+python -m bitnet.benchmark --model model.bin
+
+# With visualization
+python -m bitnet.benchmark --model model.bin --plot --plot-dir plots/
+
+# Specific benchmark type
+python -m bitnet.benchmark --model model.bin --type latency --format json
+```
+
+**Metrics:**
+| Metric | Description |
+|--------|-------------|
+| Latency | Mean, P50, P95, P99 inference time (ms) |
+| Throughput | Tokens per second |
+| Memory | Bandwidth (GB/s), peak usage |
+
+**Output formats:** JSON, CSV, Markdown, PNG/SVG plots
+
+**Documentation:** [BENCHMARK.md](trinity/output/fpga/driver/python/BENCHMARK.md)
 
 ## 📁 Project Structure
 

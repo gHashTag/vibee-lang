@@ -96,6 +96,54 @@ report.to_markdown("results.md")
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
+## Visualization
+
+Generate plots with `--plot` flag:
+
+```bash
+# Generate all plots
+python -m bitnet.benchmark --model model.bin --plot --plot-dir plots/
+
+# Specific format
+python -m bitnet.benchmark --model model.bin --plot --plot-format svg
+```
+
+### Python API
+
+```python
+from bitnet.benchmark import BenchmarkVisualizer, visualize_results
+
+# Quick visualization
+viz = visualize_results(suite, output_dir="plots/", show=True)
+
+# Manual control
+viz = BenchmarkVisualizer(suite)
+viz.plot_latency_histogram()
+viz.plot_latency_percentiles()
+viz.plot_throughput_bar()
+viz.plot_memory_bandwidth()
+viz.plot_summary_dashboard()
+viz.save_all("plots/", formats=["png", "svg"])
+```
+
+### Available Charts
+
+| Chart | Description |
+|-------|-------------|
+| `latency_histogram` | Distribution of latency with mean/median |
+| `latency_percentiles` | Bar chart of P50, P95, P99 |
+| `latency_boxplot` | Comparison across runs |
+| `throughput_bar` | Tokens/sec by configuration |
+| `throughput_scaling` | Scaling efficiency |
+| `memory_bandwidth` | GB/s by transfer size |
+| `summary_dashboard` | 2x2 grid with all metrics |
+
+### Output Formats
+
+- **PNG** - Default, best for reports
+- **SVG** - Vector, best for web
+- **PDF** - Best for publications
+
 ## Architecture
 
 ```
@@ -107,5 +155,26 @@ bitnet/benchmark/
 ├── latency.py       # Latency measurements
 ├── throughput.py    # Throughput measurements
 ├── memory.py        # Memory bandwidth tests
-└── report.py        # Report generation (JSON/CSV/MD)
+├── report.py        # Report generation (JSON/CSV/MD)
+└── visualization.py # Matplotlib charts
 ```
+
+## Testing
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific test
+python -m pytest tests/test_visualization.py -v
+```
+
+## CI/CD
+
+Automated testing via GitHub Actions:
+- Python 3.9, 3.10, 3.11, 3.12
+- Syntax validation
+- Unit tests with coverage
+- Lint checks (flake8)
+
+[![Benchmark Tests](https://github.com/gHashTag/vibee-lang/actions/workflows/benchmark-tests.yml/badge.svg)](https://github.com/gHashTag/vibee-lang/actions/workflows/benchmark-tests.yml)
