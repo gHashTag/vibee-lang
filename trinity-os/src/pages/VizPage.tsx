@@ -5,6 +5,15 @@ import QuantumCanvas from '../components/QuantumCanvas';
 import type { VizMode } from '../components/QuantumCanvas';
 import Footer from '../components/Footer';
 
+const vizList = [
+  { id: 'quantum-field', icon: '⚛️', color: '#00E599' },
+  { id: 'neural-network', icon: '🧠', color: '#0af' },
+  { id: 'wave-interference', icon: '🌊', color: '#6f6' },
+  { id: 'entanglement', icon: '🔗', color: '#f6f' },
+  { id: 'vortex', icon: '🌀', color: '#fa0' },
+  { id: 'photon-beam', icon: '💫', color: '#ff6' },
+];
+
 const vizData: Record<string, { title: string; subtitle: string; description: string; color: string; icon: string }> = {
   'quantum-field': {
     title: 'Quantum Field',
@@ -64,24 +73,44 @@ export default function VizPage() {
         left: 0, 
         right: 0, 
         zIndex: 100,
-        background: 'rgba(0,0,0,0.8)',
+        background: 'rgba(0,0,0,0.9)',
         backdropFilter: 'blur(20px)',
         borderBottom: '1px solid rgba(255,255,255,0.1)',
-        padding: '1rem 2rem',
+        padding: '0.75rem clamp(1rem, 3vw, 2rem)',
         display: 'flex',
         justifyContent: 'space-between',
-        alignItems: 'center'
+        alignItems: 'center',
+        gap: '1rem'
       }}>
-        <Link to="/" style={{ color: 'var(--text)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontSize: '1.2rem' }}>←</span>
-          <span style={{ fontWeight: 600 }}>TRINITY</span>
+        <Link to="/" style={{ color: 'var(--text)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+          <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>TRINITY</span>
         </Link>
-        <div style={{ color: '#ffd700', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+        
+        {/* Quick Nav */}
+        <nav style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+          {vizList.map(v => (
+            <Link 
+              key={v.id}
+              to={`/viz/${v.id}`}
+              style={{ 
+                padding: '0.4rem 0.6rem',
+                background: vizId === v.id ? `${v.color}22` : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${vizId === v.id ? v.color : 'var(--border)'}`,
+                borderRadius: '6px',
+                color: v.color,
+                textDecoration: 'none',
+                fontSize: '0.9rem',
+                transition: 'all 0.2s'
+              }}
+            >
+              {v.icon}
+            </Link>
+          ))}
+        </nav>
+
+        <div style={{ color: '#ffd700', fontFamily: 'monospace', fontSize: '0.75rem', flexShrink: 0 }}>
           φ² + 1/φ² = 3
         </div>
-        <Link to="/visualizations" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.85rem' }}>
-          All Visualizations →
-        </Link>
       </header>
 
       {/* Canvas Section */}

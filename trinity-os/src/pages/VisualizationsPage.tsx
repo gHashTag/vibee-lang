@@ -69,19 +69,44 @@ export default function VisualizationsPage() {
         left: 0, 
         right: 0, 
         zIndex: 100,
-        background: 'rgba(0,0,0,0.8)',
+        background: 'rgba(0,0,0,0.9)',
         backdropFilter: 'blur(20px)',
         borderBottom: '1px solid var(--border)',
-        padding: '1rem 2rem',
+        padding: '0.75rem clamp(1rem, 3vw, 2rem)',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center'
       }}>
         <Link to="/" style={{ color: 'var(--text)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontSize: '1.5rem' }}>←</span>
-          <span style={{ fontWeight: 600 }}>TRINITY</span>
+          <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>TRINITY</span>
         </Link>
-        <div style={{ color: '#ffd700', fontFamily: 'monospace' }}>
+        
+        {/* Quick Nav */}
+        <nav style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+          {visualizations.slice(0, 6).map(v => (
+            <Link 
+              key={v.id}
+              to={v.href}
+              style={{ 
+                padding: '0.4rem 0.6rem',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                color: v.color,
+                textDecoration: 'none',
+                fontSize: '0.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                transition: 'all 0.2s'
+              }}
+            >
+              {v.icon}
+            </Link>
+          ))}
+        </nav>
+
+        <div style={{ color: '#ffd700', fontFamily: 'monospace', fontSize: '0.8rem' }}>
           φ² + 1/φ² = 3
         </div>
       </header>

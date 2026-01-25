@@ -38,6 +38,18 @@ export default memo(function Navigation() {
           {item}
         </a>
       ))}
+      <a 
+        href="/visualizations" 
+        style={{ 
+          color: 'var(--accent)', 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '4px',
+          fontWeight: 500
+        }}
+      >
+        🔮 Viz
+      </a>
       <LanguageSwitcher />
     </nav>
   )
