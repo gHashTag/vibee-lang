@@ -7,6 +7,13 @@ import type { VizMode } from '../components/QuantumCanvas';
 
 const categories = [
   {
+    name: 'TRINITY',
+    modes: [
+      { id: 'trinity-computer', icon: '🔮', title: 'TRINITY Computer', color: '#ffd700' },
+      { id: 'trinity', icon: '🔺', title: 'Trinity Core', color: '#0e9' },
+    ]
+  },
+  {
     name: 'Quantum',
     modes: [
       { id: 'quantum-field', icon: '⚛️', title: 'Quantum Field', color: '#00E599' },
@@ -59,7 +66,6 @@ const categories = [
   {
     name: 'Russian',
     modes: [
-      { id: 'trinity', icon: '🔺', title: 'Trinity', color: '#0e9' },
       { id: 'matryoshka', icon: '🪆', title: 'Matryoshka', color: '#e4a' },
       { id: 'zhar-ptitsa', icon: '🔥', title: 'Zhar-Ptitsa', color: '#f80' },
       { id: 'bogatyri', icon: '⚔️', title: 'Bogatyri 33', color: '#48f' },
@@ -80,7 +86,7 @@ const categories = [
 const allModes = categories.flatMap(c => c.modes);
 
 export default function QuantumLab() {
-  const [currentMode, setCurrentMode] = useState<VizMode>('quantum-field');
+  const [currentMode, setCurrentMode] = useState<VizMode>('trinity-computer');
   const [menuOpen, setMenuOpen] = useState(false);
   
   const current = allModes.find(m => m.id === currentMode) || allModes[0];

@@ -5,6 +5,7 @@ const PHI = 1.618033988749895;
 const TAU = Math.PI * 2;
 
 export type VizMode = 
+  | 'trinity-computer' // Main: TRINITY quantum computer architecture
   | 'quantum-field' | 'neural-network' | 'wave-interference' | 'entanglement' | 'vortex' | 'photon-beam'
   | 'consciousness' | 'trinity' | 'multiverse' | 'encryption' | 'supremacy' | 'tsp'
   | 'neuromorphic' | 'spintronic' | 'transcendence' | 'living' | 'quantum-life' | 'quantum-agents'
@@ -79,6 +80,7 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
 
     function getHueForMode(m: VizMode): number {
       const hues: Record<string, number> = {
+        'trinity-computer': 160,
         'quantum-field': 160, 'neural-network': 220, 'wave-interference': 120,
         'entanglement': 280, 'vortex': 30, 'photon-beam': 50,
         'consciousness': 270, 'trinity': 160, 'multiverse': 200,
@@ -91,6 +93,245 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
         'llm-architecture': 230, 'cinema4d': 350
       };
       return hues[m] || 160;
+    }
+
+    // Draw TRINITY Quantum Computer Architecture
+    function drawTrinityComputer(ctx: CanvasRenderingContext2D, w: number, h: number, t: number) {
+      const cx = w / 2;
+      const cy = h / 2;
+      const scale = Math.min(w, h) / 800;
+
+      // Background grid
+      ctx.strokeStyle = 'rgba(0, 229, 153, 0.05)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 50) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 50) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      // === CENTRAL TRINITY CORE ===
+      const coreRadius = 120 * scale;
+      
+      // Outer rotating ring
+      ctx.strokeStyle = 'rgba(0, 229, 153, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, coreRadius + 40, 0, TAU);
+      ctx.stroke();
+
+      // Three main nodes: Physical, Protocol, Intelligence
+      const nodes = [
+        { name: 'PHYSICAL', color: '#8a2be2', desc: 'Ternary Hardware' },
+        { name: 'PROTOCOL', color: '#00ffff', desc: 'Quantum Network' },
+        { name: 'INTELLIGENCE', color: '#ff00ff', desc: 'AI/ML Layer' }
+      ];
+
+      for (let i = 0; i < 3; i++) {
+        const angle = (i * TAU / 3) - Math.PI / 2 + t * 0.3;
+        const x = cx + coreRadius * Math.cos(angle);
+        const y = cy + coreRadius * Math.sin(angle);
+
+        // Node glow
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, 50 * scale);
+        grad.addColorStop(0, nodes[i].color + '40');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, 50 * scale, 0, TAU);
+        ctx.fill();
+
+        // Node circle
+        ctx.fillStyle = nodes[i].color + '80';
+        ctx.beginPath();
+        ctx.arc(x, y, 35 * scale, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = nodes[i].color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Node text
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${12 * scale}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText(nodes[i].name, x, y);
+        ctx.font = `${9 * scale}px monospace`;
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillText(nodes[i].desc, x, y + 14 * scale);
+
+        // Connection to next node
+        const nextAngle = ((i + 1) % 3 * TAU / 3) - Math.PI / 2 + t * 0.3;
+        const x2 = cx + coreRadius * Math.cos(nextAngle);
+        const y2 = cy + coreRadius * Math.sin(nextAngle);
+        
+        ctx.strokeStyle = 'rgba(138, 43, 226, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+
+        // Data flow particles on connections
+        for (let p = 0; p < 3; p++) {
+          const progress = ((t * 0.5 + p * 0.33 + i * 0.1) % 1);
+          const px = x + (x2 - x) * progress;
+          const py = y + (y2 - y) * progress;
+          ctx.fillStyle = nodes[i].color;
+          ctx.beginPath();
+          ctx.arc(px, py, 3 * scale, 0, TAU);
+          ctx.fill();
+        }
+      }
+
+      // === CENTER: Golden Identity ===
+      const centerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 50 * scale);
+      centerGrad.addColorStop(0, 'rgba(255, 215, 0, 0.3)');
+      centerGrad.addColorStop(1, 'transparent');
+      ctx.fillStyle = centerGrad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 50 * scale, 0, TAU);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffd700';
+      ctx.font = `bold ${16 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('φ² + 1/φ²', cx, cy - 5 * scale);
+      ctx.fillText('= 3', cx, cy + 15 * scale);
+
+      // === OUTER RING: Network Nodes ===
+      const outerRadius = coreRadius + 100 * scale;
+      const nodeCount = 12;
+      for (let i = 0; i < nodeCount; i++) {
+        const angle = (i * TAU / nodeCount) + t * 0.1;
+        const wobble = Math.sin(t * 2 + i) * 10 * scale;
+        const x = cx + (outerRadius + wobble) * Math.cos(angle);
+        const y = cy + (outerRadius + wobble) * Math.sin(angle);
+
+        ctx.fillStyle = ['#0ff', '#f0f', '#ff0'][i % 3];
+        ctx.beginPath();
+        ctx.arc(x, y, 6 * scale, 0, TAU);
+        ctx.fill();
+
+        // Connection lines to center
+        if (i % 2 === 0) {
+          ctx.strokeStyle = 'rgba(0, 229, 153, 0.1)';
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(cx, cy);
+          ctx.stroke();
+        }
+      }
+
+      // === TOP LEFT: Protocol Stack ===
+      const boxW = 160 * scale;
+      const boxH = 120 * scale;
+      const boxX = 20 * scale;
+      const boxY = 60 * scale;
+
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+      ctx.strokeStyle = '#0ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+      ctx.fillStyle = '#0ff';
+      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('PROTOCOL STACK', boxX + boxW / 2, boxY + 15 * scale);
+
+      const layers = ['Application', 'Transport', 'Network', 'Link', 'Physical'];
+      const layerColors = ['#f0f', '#ff0', '#0f0', '#0ff', '#8a2be2'];
+      layers.forEach((layer, i) => {
+        const ly = boxY + 25 * scale + i * 18 * scale;
+        ctx.fillStyle = layerColors[i] + '40';
+        ctx.fillRect(boxX + 10 * scale, ly, boxW - 20 * scale, 14 * scale);
+        ctx.fillStyle = '#fff';
+        ctx.font = `${10 * scale}px monospace`;
+        ctx.fillText(layer, boxX + boxW / 2, ly + 11 * scale);
+      });
+
+      // === TOP RIGHT: SSOT Invariants ===
+      const invX = w - boxW - 20 * scale;
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+      ctx.fillRect(invX, boxY, boxW, 80 * scale);
+      ctx.strokeStyle = '#0ff';
+      ctx.strokeRect(invX, boxY, boxW, 80 * scale);
+
+      ctx.fillStyle = '#0ff';
+      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('SSOT INVARIANTS', invX + boxW / 2, boxY + 15 * scale);
+
+      const invariants = [
+        { name: 'φ² + 1/φ² = 3', ok: true },
+        { name: 'PHOENIX = 999', ok: true },
+        { name: 'Ternary Logic', ok: true }
+      ];
+      invariants.forEach((inv, i) => {
+        ctx.fillStyle = inv.ok ? '#0f0' : '#f00';
+        ctx.font = `${10 * scale}px monospace`;
+        ctx.textAlign = 'left';
+        ctx.fillText((inv.ok ? '✓ ' : '✗ ') + inv.name, invX + 10 * scale, boxY + 32 * scale + i * 16 * scale);
+      });
+
+      // === BOTTOM LEFT: Sacred Constants ===
+      const sacredY = h - 100 * scale;
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.1)';
+      ctx.fillRect(boxX, sacredY, boxW, 80 * scale);
+      ctx.strokeStyle = '#ffd700';
+      ctx.strokeRect(boxX, sacredY, boxW, 80 * scale);
+
+      ctx.fillStyle = '#ffd700';
+      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('SACRED CONSTANTS', boxX + boxW / 2, sacredY + 15 * scale);
+
+      ctx.font = `${10 * scale}px monospace`;
+      ctx.textAlign = 'left';
+      ctx.fillText('φ = 1.618033...', boxX + 10 * scale, sacredY + 32 * scale);
+      ctx.fillText('π × φ × e = 13.82', boxX + 10 * scale, sacredY + 48 * scale);
+      ctx.fillText('L(10) = 123', boxX + 10 * scale, sacredY + 64 * scale);
+
+      // === BOTTOM RIGHT: QKD Exchange ===
+      ctx.fillStyle = 'rgba(0, 255, 0, 0.1)';
+      ctx.fillRect(invX, sacredY, boxW, 80 * scale);
+      ctx.strokeStyle = '#0f0';
+      ctx.strokeRect(invX, sacredY, boxW, 80 * scale);
+
+      ctx.fillStyle = '#0f0';
+      ctx.font = `bold ${11 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('QKD EXCHANGE', invX + boxW / 2, sacredY + 15 * scale);
+
+      // Animated key bits
+      const keyBits = '10110010';
+      for (let i = 0; i < 8; i++) {
+        const bit = keyBits[(i + Math.floor(t * 5)) % 8];
+        ctx.fillStyle = bit === '1' ? '#0f0' : '#f00';
+        ctx.font = `${12 * scale}px monospace`;
+        ctx.fillText(bit, invX + 15 * scale + i * 18 * scale, sacredY + 38 * scale);
+      }
+
+      ctx.fillStyle = '#fff';
+      ctx.font = `${9 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('Dilithium + Kyber', invX + boxW / 2, sacredY + 60 * scale);
+
+      // === Title ===
+      ctx.fillStyle = '#ffd700';
+      ctx.font = `bold ${18 * scale}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText('TRINITY QUANTUM COMPUTER', cx, 30 * scale);
+      ctx.fillStyle = '#0ff';
+      ctx.font = `${12 * scale}px monospace`;
+      ctx.fillText('Ternary Architecture • Post-Quantum Security • AI Integration', cx, 50 * scale);
     }
 
     let lastTime = performance.now();
@@ -109,6 +350,13 @@ export default function QuantumCanvas({ mode, particleCount = 1500, interactive 
       // Trail effect
       ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
       ctx.fillRect(0, 0, w, h);
+
+      // TRINITY Computer mode - special rendering
+      if (mode === 'trinity-computer') {
+        drawTrinityComputer(ctx, w, h, t);
+        animationRef.current = requestAnimationFrame(animate);
+        return;
+      }
 
       // Mode-specific background effects
       drawBackgroundEffect(ctx, mode, w, h, cx, cy, t);
