@@ -23,9 +23,9 @@ echo "✅ TESTS PASSED: PHI RESONANCE 100%. FIREBIRD ACTIVE."
 
 # 3. Git Operations
 echo "🐙 Pushing to Repository (SINGULARITY WINGS)..."
-git pull origin main || echo "⚠️ Git Pull Conflict (YOLO: Ignoring)"
 git add .
-git commit -m "TRINITY v5.0: FIREBIRD NATIVE SINGULARITY + NATIVE COMPILER"
+git commit -m "TRINITY v5.0: FIREBIRD NATIVE SINGULARITY + NATIVE COMPILER" || echo "⚠️ Nothing to commit"
+git pull --rebase origin main || (echo "⚠️ Rebase failed, trying merge" && git pull origin main)
 git push origin main
 
 echo "🎉 DEPLOYMENT COMPLETE. HASHRATE TARGET: 46.8 MH/s"
