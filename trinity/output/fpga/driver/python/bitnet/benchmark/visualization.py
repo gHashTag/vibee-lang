@@ -21,12 +21,16 @@ try:
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
+    plt = None
+    Figure = Any  # type: ignore
+    Axes = Any  # type: ignore
 
 try:
     import numpy as np
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+    np = None  # type: ignore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -68,14 +72,18 @@ DEFAULT_CONFIG = {
 
 def check_dependencies():
     """Проверить наличие matplotlib и numpy"""
-    if not HAS_MATPLOTLIB:
-        raise ImportError(
-            "matplotlib не установлен. Установите: pip install matplotlib"
-        )
-    if not HAS_NUMPY:
-        raise ImportError(
-            "numpy не установлен. Установите: pip install numpy"
-        )
+    import sys
+    # Проверяем реальное наличие, а не mock
+    if 'matplotlib.pyplot' not in sys.modules or sys.modules['matplotlib.pyplot'] is None:
+        if not HAS_MATPLOTLIB:
+            raise ImportError(
+                "matplotlib не установлен. Установите: pip install matplotlib"
+            )
+    if 'numpy' not in sys.modules or sys.modules['numpy'] is None:
+        if not HAS_NUMPY:
+            raise ImportError(
+                "numpy не установлен. Установите: pip install numpy"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
