@@ -17,6 +17,51 @@ const VibeeSpec = vibee_parser.VibeeSpec;
 const Constant = vibee_parser.Constant;
 const TypeDef = vibee_parser.TypeDef;
 const Behavior = vibee_parser.Behavior;
+const Field = vibee_parser.Field;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTRACTED SIGNAL FOR SVA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ExtractedSignal = struct {
+    name: []const u8,
+    verilog_type: []const u8,
+    width: u32,
+    is_bool: bool,
+};
+
+/// Extract signals from spec types for SVA checker
+pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !ArrayList(ExtractedSignal) {
+    var signals = ArrayList(ExtractedSignal).init(allocator);
+    
+    for (types) |t| {
+        for (t.fields.items) |field| {
+            const is_bool = std.mem.eql(u8, field.type_name, "Bool");
+            const width: u32 = if (is_bool) 1 else if (std.mem.eql(u8, field.type_name, "Int")) 32 else 32;
+            const verilog_type = if (is_bool) "wire" else "wire [31:0]";
+            
+            // Check if signal already exists
+            var exists = false;
+            for (signals.items) |s| {
+                if (std.mem.eql(u8, s.name, field.name)) {
+                    exists = true;
+                    break;
+                }
+            }
+            
+            if (!exists) {
+                try signals.append(ExtractedSignal{
+                    .name = field.name,
+                    .verilog_type = verilog_type,
+                    .width = width,
+                    .is_bool = is_bool,
+                });
+            }
+        }
+    }
+    
+    return signals;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VERILOG CODE BUILDER
@@ -2444,15 +2489,22 @@ pub const VerilogCodeGen = struct {
     fn writeSVAAssertions(self: *Self, spec: *const VibeeSpec) !void {
         if (spec.behaviors.items.len == 0) return;
         
+        // Extract signals from types
+        var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).init(self.allocator);
+        defer extracted_signals.deinit();
+        
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// SYSTEMVERILOG ASSERTIONS (SVA)");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// Generated from .vibee behaviors - IEEE 1800 compliant");
+        try self.builder.writeLine("// Signals extracted from spec types");
         try self.builder.writeLine("// φ² + 1/φ² = 3");
         try self.builder.newline();
         
         try self.builder.writeFmt("module {s}_sva_checker (\n", .{spec.name});
         self.builder.incIndent();
+        
+        // Standard signals
         try self.builder.writeLine("input wire        clk,");
         try self.builder.writeLine("input wire        rst_n,");
         try self.builder.writeLine("input wire [31:0] data_in,");
@@ -2460,15 +2512,37 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("input wire [31:0] data_out,");
         try self.builder.writeLine("input wire        valid_out,");
         try self.builder.writeLine("input wire        ready,");
-        try self.builder.writeLine("input wire [31:0] count,");
-        try self.builder.writeLine("input wire        running,");
-        try self.builder.writeLine("input wire        active,");
-        try self.builder.writeLine("input wire        overflow,");
-        try self.builder.writeLine("input wire        fifo_full,");
-        try self.builder.writeLine("input wire        fifo_empty,");
-        try self.builder.writeLine("input wire        done,");
-        try self.builder.writeLine("input wire        flag,");
-        try self.builder.writeLine("input wire [2:0]  state");
+        try self.builder.writeLine("input wire [2:0]  state,");
+        
+        // Signals extracted from types
+        if (extracted_signals.items.len > 0) {
+            try self.builder.writeLine("// Signals from spec types:");
+            for (extracted_signals.items) |sig| {
+                if (sig.is_bool) {
+                    try self.builder.writeFmt("input wire        {s},\n", .{sig.name});
+                } else {
+                    try self.builder.writeFmt("input wire [31:0] {s},\n", .{sig.name});
+                }
+            }
+        }
+        
+        // Common signals - only add if not already in extracted
+        try self.builder.writeLine("// Common SVA signals:");
+        const common_signals = [_][]const u8{ "running", "active", "overflow", "done", "flag" };
+        for (common_signals, 0..) |common, i| {
+            var exists = false;
+            for (extracted_signals.items) |sig| {
+                if (std.mem.eql(u8, sig.name, common)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                const is_last = (i == common_signals.len - 1);
+                try self.builder.writeFmt("input wire        {s}{s}\n", .{ common, if (is_last) "" else "," });
+            }
+        }
+        
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
@@ -2479,8 +2553,21 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("// State machine parameters");
         try self.builder.writeLine("localparam IDLE    = 3'd0;");
         try self.builder.writeLine("localparam PROCESS = 3'd1;");
-        try self.builder.writeLine("localparam DONE    = 3'd2;");
-        try self.builder.writeLine("localparam MAX_VALUE = 32'hFFFFFFFF;");
+        try self.builder.writeLine("localparam DONE_ST = 3'd2;");
+        
+        // MAX_VALUE - use wire alias if depth/max_value exists in types
+        var depth_signal: ?[]const u8 = null;
+        for (extracted_signals.items) |sig| {
+            if (std.mem.eql(u8, sig.name, "depth") or std.mem.eql(u8, sig.name, "max_value")) {
+                depth_signal = sig.name;
+                break;
+            }
+        }
+        if (depth_signal) |ds| {
+            try self.builder.writeFmt("wire [31:0] MAX_VALUE = {s}; // from spec types\n", .{ds});
+        } else {
+            try self.builder.writeLine("localparam MAX_VALUE = 32'hFFFFFFFF;");
+        }
         try self.builder.newline();
         
         // Default clocking block
@@ -2592,11 +2679,18 @@ pub const VerilogCodeGen = struct {
             return "(count > 0)";
         }
         if (containsIgnoreCase(given, "fifo")) {
-            if (containsIgnoreCase(given, "full")) return "fifo_full";
-            if (containsIgnoreCase(given, "empty")) return "fifo_empty";
-            if (containsIgnoreCase(given, "not full")) return "!fifo_full";
-            return "!fifo_empty";
+            if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "full")) return "!full";
+            if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "empty")) return "!empty";
+            if (containsIgnoreCase(given, "full")) return "full";
+            if (containsIgnoreCase(given, "empty")) return "empty";
+            return "!empty";
         }
+        
+        // Direct signal names from types (full, empty, etc.)
+        if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "full")) return "!full";
+        if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "empty")) return "!empty";
+        if (containsIgnoreCase(given, "full")) return "full";
+        if (containsIgnoreCase(given, "empty")) return "empty";
         
         // Default: always true
         return "1'b1";
@@ -2643,8 +2737,14 @@ pub const VerilogCodeGen = struct {
             if (containsIgnoreCase(then, "overflow")) return "overflow";
             if (containsIgnoreCase(then, "valid")) return "valid_out";
             if (containsIgnoreCase(then, "done")) return "done";
+            if (containsIgnoreCase(then, "full")) return "full";
+            if (containsIgnoreCase(then, "empty")) return "empty";
             return "flag";
         }
+        
+        // Direct flag setting (from types)
+        if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "full")) return "full";
+        if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "empty")) return "empty";
         
         // Output valid
         if (containsIgnoreCase(then, "valid") and containsIgnoreCase(then, "output")) {
