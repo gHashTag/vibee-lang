@@ -15,37 +15,39 @@ export default function SU3MiningRealitySection() {
     diff: '...',
     efficiency: 578.8,
     hash: 533.7,
+    balance: 0
   });
 
-  const [logs, setLogs] = useState<string[]>([
-    "[SYSTEM] SU(3) Core V5.1 initialized",
-    "[HARDWARE] Phase-locked loop synchronized",
-    "[NETWORK] Handshake pending..."
-  ]);
+  const [logs, setLogs] = useState<string[]>(reality.logInit || []);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Real-time Telemetry Loop
   useEffect(() => {
     async function fetchNetworkStats() {
       try {
-        const [blockRes, diffRes] = await Promise.all([
+        const walletAddr = 'bc1qgcmea6cr8mzqa5k0rhmz5zc6p0vq5epu873xcf';
+        const [blockRes, diffRes, balRes] = await Promise.all([
           fetch('https://blockchain.info/q/getblockcount'),
-          fetch('https://blockchain.info/q/difficulty')
+          fetch('https://blockchain.info/q/difficulty'),
+          fetch(`https://blockchain.info/q/addressbalance/${walletAddr}`)
         ]);
         
         const block = await blockRes.json();
         const diffRaw = await diffRes.json();
+        const balSat = await balRes.json();
         
         // Convert difficulty to readable 'T' format
         const diffT = (diffRaw / 1e12).toFixed(1) + 'T';
+        const balBTC = balSat / 1e8;
 
         setStats(prev => ({
           ...prev,
           block: block,
-          diff: diffT
+          diff: diffT,
+          balance: balBTC
         }));
       } catch (err) {
-        console.error("Failed to fetch real-time mining data:", err);
+        console.error("Failed to fetch real-time mining/wallet data:", err);
       }
     }
 
@@ -67,7 +69,7 @@ export default function SU3MiningRealitySection() {
       const opcodes = ["LD_SU3", "MOV_TRIT", "RESONATE", "HARVEST", "CIS_TX", "PHASE_SHIFT"];
       const op = opcodes[Math.floor(Math.random() * opcodes.length)];
       const char = COPTIC_CHARS[Math.floor(Math.random() * COPTIC_CHARS.length)];
-      setLogs(prev => [...prev.slice(-10), `${op}: ${char}${char} >> SU3_NATIVE_PULSE_ACTIVE`]);
+      setLogs(prev => [...prev.slice(-10), `${op}: ${char}${char} ${reality.logSuffix}`]);
     }, 2000);
 
     return () => clearInterval(hardwareInterval);
@@ -116,31 +118,40 @@ export default function SU3MiningRealitySection() {
           {reality.mode}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '2rem', marginBottom: '3.5rem' }}>
-          {/* Wallet Info */}
+        <div style={{ 
+          display: 'grid', 
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', 
+          gap: '1.5rem', 
+          marginBottom: '2.5rem' 
+        }}>
+          {/* Wallet Info (REAL DATA) */}
           <div style={{
             background: 'rgba(255,255,255,0.02)',
-            border: '1px solid rgba(255,255,255,0.08)',
+            border: '1px solid rgba(0, 229, 153, 0.15)',
             borderRadius: '16px',
-            padding: '1.5rem',
+            padding: '1.2rem',
+            textAlign: 'left'
           }}>
-            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.6rem' }}>
+            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.4rem' }}>
               {reality.wallet}
             </div>
-            <div style={{ fontSize: '1.4rem', fontWeight: '800', color: '#fff', letterSpacing: '0.05em', fontFamily: 'monospace' }}>
+            <div style={{ fontSize: '0.85rem', fontWeight: '800', color: '#fff', letterSpacing: '0.05em', fontFamily: 'monospace', wordBreak: 'break-all', marginBottom: '0.5rem' }}>
               {reality.ledger}
+            </div>
+            <div style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent)' }}>
+              ₿ {stats.balance.toFixed(8)}
             </div>
           </div>
 
           {/* Network Target (REAL DATA) */}
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.6rem' }}>
+          <div style={{ textAlign: 'right', background: 'rgba(255,255,255,0.01)', padding: '1.2rem', borderRadius: '16px' }}>
+            <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '0.4rem' }}>
               {reality.target}
             </div>
-            <div style={{ fontSize: '1.3rem', fontWeight: '800', color: '#fff' }}>
-              {reality.block} {stats.block === 0 ? 'Loading...' : stats.block.toLocaleString()}
+            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: '#fff' }}>
+              #{stats.block === 0 ? reality.loading : stats.block.toLocaleString()}
             </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--accent)', fontWeight: 600, marginTop: '0.4rem' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--accent)', fontWeight: 600, marginTop: '0.3rem' }}>
               {reality.diff}: {stats.diff}
             </div>
           </div>
@@ -179,9 +190,9 @@ export default function SU3MiningRealitySection() {
                 padding: '1rem'
               }}
             >
-              <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.2em', marginBottom: '0.8rem' }}>TRINITY_CORE</div>
+              <div style={{ fontSize: '0.65rem', fontWeight: '800', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.2em', marginBottom: '0.8rem' }}>{reality.coreLabel}</div>
               <div style={{ fontSize: '3.5rem', fontWeight: '900', color: '#00E599', lineHeight: 1 }}>SU(3)</div>
-              <div style={{ fontSize: '0.6rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.8 }}>PHASE_LOCKED</div>
+              <div style={{ fontSize: '0.6rem', color: 'var(--accent)', marginTop: '0.8rem', opacity: 0.8 }}>{reality.phaseLocked}</div>
             </motion.div>
           </div>
         </div>
@@ -199,7 +210,7 @@ export default function SU3MiningRealitySection() {
           boxShadow: 'inset 0 0 20px rgba(0, 229, 153, 0.05)'
         }}>
           <div style={{ marginBottom: '0.8rem', color: '#00E599', fontWeight: '800', fontSize: '0.55rem', textTransform: 'uppercase', opacity: 0.6, letterSpacing: '0.1em' }}>
-            Live Hardware-to-Network Instruction Bridge
+            {reality.terminalTitle}
           </div>
           <div style={{ 
             height: '100px', 
