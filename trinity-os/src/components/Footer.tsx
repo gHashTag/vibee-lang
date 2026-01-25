@@ -122,8 +122,8 @@ export default function Footer() {
                 </a>
               </li>
               <li>
-                <a href="mailto:invest@trinity.dev" style={{ color: 'var(--text)', textDecoration: 'none', fontSize: '0.85rem', opacity: 0.7 }}>
-                  invest@trinity.dev
+                <a href="mailto:raoffonom@icloud.com" style={{ color: 'var(--text)', textDecoration: 'none', fontSize: '0.85rem', opacity: 0.7 }}>
+                  raoffonom@icloud.com
                 </a>
               </li>
             </ul>
