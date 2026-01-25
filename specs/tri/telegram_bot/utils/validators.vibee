@@ -1,0 +1,420 @@
+name: validators
+version: "1.0.0"
+language: zig
+module: validators
+
+description: |
+  Модуль валидации для VIBEE Telegram бота.
+  Валидация промптов, медиа, платежей, пользовательского ввода.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ValidationResult:
+    description: "Результат валидации"
+    fields:
+      is_valid: Bool
+      errors: List<ValidationError>
+      warnings: List<String>
+
+  ValidationError:
+    description: "Ошибка валидации"
+    fields:
+      field: String
+      code: ValidationErrorCode
+      message: String
+      value: Option<String>
+
+  ValidationErrorCode:
+    description: "Коды ошибок валидации"
+    values:
+      - required
+      - too_short
+      - too_long
+      - invalid_format
+      - invalid_range
+      - invalid_type
+      - forbidden_content
+      - file_too_large
+      - unsupported_format
+      - invalid_dimensions
+
+  PromptValidation:
+    description: "Правила валидации промпта"
+    fields:
+      min_length: Int
+      max_length: Int
+      forbidden_words: List<String>
+      require_ascii: Bool
+
+  MediaValidation:
+    description: "Правила валидации медиа"
+    fields:
+      max_size_bytes: Int
+      allowed_formats: List<String>
+      min_width: Option<Int>
+      max_width: Option<Int>
+      min_height: Option<Int>
+      max_height: Option<Int>
+      max_duration_seconds: Option<Int>
+
+  PaymentValidation:
+    description: "Правила валидации платежа"
+    fields:
+      min_amount: Int
+      max_amount: Int
+      allowed_currencies: List<String>
+
+  UserInputValidation:
+    description: "Правила валидации пользовательского ввода"
+    fields:
+      field_type: FieldType
+      required: Bool
+      min_length: Option<Int>
+      max_length: Option<Int>
+      pattern: Option<String>
+      allowed_values: Option<List<String>>
+
+  FieldType:
+    description: "Тип поля"
+    values:
+      - text
+      - number
+      - email
+      - phone
+      - url
+      - telegram_id
+      - username
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПРАВИЛА ВАЛИДАЦИИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+rules:
+  prompt:
+    min_length: 3
+    max_length: 2000
+    forbidden_words:
+      - "nsfw"
+      - "nude"
+      - "porn"
+      - "xxx"
+      - "violence"
+      - "gore"
+      - "child"
+      - "minor"
+
+  photo:
+    max_size_mb: 20
+    allowed_formats: ["jpg", "jpeg", "png", "webp"]
+    min_dimension: 256
+    max_dimension: 4096
+
+  video:
+    max_size_mb: 50
+    allowed_formats: ["mp4", "mov", "avi", "webm"]
+    max_duration_seconds: 60
+    min_dimension: 256
+    max_dimension: 1920
+
+  audio:
+    max_size_mb: 20
+    allowed_formats: ["mp3", "wav", "ogg", "m4a"]
+    max_duration_seconds: 300
+
+  voice:
+    max_size_mb: 10
+    allowed_formats: ["ogg", "oga"]
+    max_duration_seconds: 120
+
+  payment:
+    min_stars: 10
+    max_stars: 10000
+    allowed_currencies: ["XTR", "RUB"]
+
+  username:
+    min_length: 5
+    max_length: 32
+    pattern: "^[a-zA-Z][a-zA-Z0-9_]{4,31}$"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ВАЛИДАЦИЯ ПРОМПТОВ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_prompt
+    given: Текст промпта
+    when: Валидация промпта для генерации
+    then: |
+      1. Проверить минимальную длину
+      2. Проверить максимальную длину
+      3. Проверить запрещённые слова
+      4. Вернуть ValidationResult
+
+  - name: validate_prompt_length
+    given: Текст и лимиты
+    when: Проверка длины
+    then: |
+      Если < min -> too_short
+      Если > max -> too_long
+      Иначе -> valid
+
+  - name: check_forbidden_words
+    given: Текст и список слов
+    when: Проверка запрещённого контента
+    then: |
+      1. Привести к нижнему регистру
+      2. Проверить каждое слово
+      3. Вернуть найденные
+
+  - name: sanitize_prompt
+    given: Текст промпта
+    when: Очистка промпта
+    then: |
+      1. Удалить лишние пробелы
+      2. Удалить спецсимволы
+      3. Вернуть очищенный текст
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ВАЛИДАЦИЯ МЕДИА
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_photo
+    given: Информация о фото
+    when: Валидация фото
+    then: |
+      1. Проверить размер файла
+      2. Проверить формат
+      3. Проверить размеры
+      4. Вернуть ValidationResult
+
+  - name: validate_video
+    given: Информация о видео
+    when: Валидация видео
+    then: |
+      1. Проверить размер файла
+      2. Проверить формат
+      3. Проверить длительность
+      4. Проверить размеры
+      5. Вернуть ValidationResult
+
+  - name: validate_audio
+    given: Информация об аудио
+    when: Валидация аудио
+    then: |
+      1. Проверить размер файла
+      2. Проверить формат
+      3. Проверить длительность
+      4. Вернуть ValidationResult
+
+  - name: validate_voice
+    given: Информация о голосовом
+    when: Валидация голосового сообщения
+    then: |
+      1. Проверить размер файла
+      2. Проверить формат
+      3. Проверить длительность
+      4. Вернуть ValidationResult
+
+  - name: validate_file_size
+    given: Размер в байтах и лимит
+    when: Проверка размера файла
+    then: |
+      Если > max -> file_too_large
+      Иначе -> valid
+
+  - name: validate_file_format
+    given: Имя файла или mime-type и разрешённые форматы
+    when: Проверка формата
+    then: |
+      1. Извлечь расширение
+      2. Проверить в списке
+      3. Вернуть результат
+
+  - name: validate_dimensions
+    given: Ширина, высота и лимиты
+    when: Проверка размеров изображения
+    then: |
+      Если < min или > max -> invalid_dimensions
+      Иначе -> valid
+
+  - name: validate_duration
+    given: Длительность в секундах и лимит
+    when: Проверка длительности
+    then: |
+      Если > max -> too_long
+      Иначе -> valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ВАЛИДАЦИЯ ПЛАТЕЖЕЙ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_payment_amount
+    given: Сумма в звёздах
+    when: Валидация суммы платежа
+    then: |
+      1. Проверить >= min
+      2. Проверить <= max
+      3. Вернуть ValidationResult
+
+  - name: validate_currency
+    given: Код валюты
+    when: Проверка валюты
+    then: |
+      Если в списке разрешённых -> valid
+      Иначе -> invalid_format
+
+  - name: validate_invoice_payload
+    given: Payload строка
+    when: Валидация payload
+    then: |
+      1. Проверить формат JSON
+      2. Проверить обязательные поля
+      3. Вернуть ValidationResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ВАЛИДАЦИЯ ПОЛЬЗОВАТЕЛЬСКОГО ВВОДА
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: validate_text
+    given: Текст и правила
+    when: Валидация текстового поля
+    then: |
+      1. Проверить required
+      2. Проверить длину
+      3. Проверить pattern если есть
+      4. Вернуть ValidationResult
+
+  - name: validate_number
+    given: Строка и диапазон
+    when: Валидация числа
+    then: |
+      1. Проверить что это число
+      2. Проверить диапазон
+      3. Вернуть ValidationResult
+
+  - name: validate_email
+    given: Email строка
+    when: Валидация email
+    then: |
+      1. Проверить формат
+      2. Вернуть ValidationResult
+
+  - name: validate_phone
+    given: Телефон строка
+    when: Валидация телефона
+    then: |
+      1. Удалить пробелы и дефисы
+      2. Проверить формат
+      3. Вернуть ValidationResult
+
+  - name: validate_url
+    given: URL строка
+    when: Валидация URL
+    then: |
+      1. Проверить формат
+      2. Проверить протокол (http/https)
+      3. Вернуть ValidationResult
+
+  - name: validate_telegram_id
+    given: ID
+    when: Валидация Telegram ID
+    then: |
+      1. Проверить что положительное число
+      2. Вернуть ValidationResult
+
+  - name: validate_username
+    given: Username строка
+    when: Валидация username
+    then: |
+      1. Проверить длину
+      2. Проверить pattern
+      3. Вернуть ValidationResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # УТИЛИТЫ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_error
+    given: Поле, код и сообщение
+    when: Создание ошибки
+    then: Вернуть ValidationError
+
+  - name: merge_results
+    given: Список ValidationResult
+    when: Объединение результатов
+    then: |
+      1. Объединить ошибки
+      2. Объединить предупреждения
+      3. is_valid = все valid
+
+  - name: get_error_message
+    given: ValidationErrorCode и язык
+    when: Получение сообщения об ошибке
+    then: Вернуть локализованное сообщение
+
+  - name: is_empty
+    given: Строка
+    when: Проверка на пустоту
+    then: Вернуть true если null, пусто или только пробелы
+
+  - name: trim
+    given: Строка
+    when: Удаление пробелов
+    then: Удалить пробелы по краям
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНСТАНТЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  PROMPT_MIN_LENGTH: 3
+  PROMPT_MAX_LENGTH: 2000
+  PHOTO_MAX_SIZE_MB: 20
+  VIDEO_MAX_SIZE_MB: 50
+  AUDIO_MAX_SIZE_MB: 20
+  VOICE_MAX_SIZE_MB: 10
+  VIDEO_MAX_DURATION_SEC: 60
+  AUDIO_MAX_DURATION_SEC: 300
+  VOICE_MAX_DURATION_SEC: 120
+  MIN_STARS: 10
+  MAX_STARS: 10000
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# СООБЩЕНИЯ ОБ ОШИБКАХ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+error_messages:
+  required:
+    ru: "Поле обязательно для заполнения"
+    en: "This field is required"
+  too_short:
+    ru: "Слишком короткое значение (минимум {min})"
+    en: "Value is too short (minimum {min})"
+  too_long:
+    ru: "Слишком длинное значение (максимум {max})"
+    en: "Value is too long (maximum {max})"
+  invalid_format:
+    ru: "Неверный формат"
+    en: "Invalid format"
+  invalid_range:
+    ru: "Значение вне допустимого диапазона"
+    en: "Value is out of range"
+  forbidden_content:
+    ru: "Обнаружен запрещённый контент"
+    en: "Forbidden content detected"
+  file_too_large:
+    ru: "Файл слишком большой (максимум {max}MB)"
+    en: "File is too large (maximum {max}MB)"
+  unsupported_format:
+    ru: "Неподдерживаемый формат файла"
+    en: "Unsupported file format"
+  invalid_dimensions:
+    ru: "Неверные размеры изображения"
+    en: "Invalid image dimensions"

@@ -1,0 +1,322 @@
+name: crypto
+version: "1.0.0"
+language: zig
+module: crypto
+
+description: |
+  Криптографический модуль для VIBEE Telegram бота.
+  Хеширование, генерация токенов, верификация подписей.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  HashAlgorithm:
+    description: "Алгоритм хеширования"
+    values:
+      - sha256
+      - sha512
+      - md5
+
+  TokenType:
+    description: "Тип токена"
+    values:
+      - referral
+      - session
+      - payment
+      - webhook
+      - api
+
+  Token:
+    description: "Сгенерированный токен"
+    fields:
+      value: String
+      type: TokenType
+      created_at: Timestamp
+      expires_at: Option<Timestamp>
+
+  SignatureResult:
+    description: "Результат проверки подписи"
+    fields:
+      is_valid: Bool
+      error: Option<String>
+
+  HmacResult:
+    description: "Результат HMAC"
+    fields:
+      hash: String
+      algorithm: HashAlgorithm
+
+  EncryptionResult:
+    description: "Результат шифрования"
+    fields:
+      ciphertext: String
+      iv: String
+      tag: Option<String>
+
+  DecryptionResult:
+    description: "Результат расшифровки"
+    fields:
+      plaintext: String
+      success: Bool
+      error: Option<String>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ХЕШИРОВАНИЕ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: hash_sha256
+    given: Данные
+    when: SHA-256 хеширование
+    then: |
+      1. Вычислить SHA-256
+      2. Вернуть hex строку
+
+  - name: hash_sha512
+    given: Данные
+    when: SHA-512 хеширование
+    then: |
+      1. Вычислить SHA-512
+      2. Вернуть hex строку
+
+  - name: hash_md5
+    given: Данные
+    when: MD5 хеширование (не для безопасности)
+    then: |
+      1. Вычислить MD5
+      2. Вернуть hex строку
+
+  - name: hash
+    given: Данные и алгоритм
+    when: Хеширование с выбором алгоритма
+    then: |
+      1. Выбрать алгоритм
+      2. Вычислить хеш
+      3. Вернуть hex строку
+
+  - name: verify_hash
+    given: Данные, хеш и алгоритм
+    when: Проверка хеша
+    then: |
+      1. Вычислить хеш данных
+      2. Сравнить с переданным
+      3. Вернуть результат
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HMAC
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: hmac_sha256
+    given: Данные и ключ
+    when: HMAC-SHA256
+    then: |
+      1. Вычислить HMAC
+      2. Вернуть hex строку
+
+  - name: hmac_sha512
+    given: Данные и ключ
+    when: HMAC-SHA512
+    then: |
+      1. Вычислить HMAC
+      2. Вернуть hex строку
+
+  - name: verify_hmac
+    given: Данные, ключ, подпись и алгоритм
+    when: Проверка HMAC
+    then: |
+      1. Вычислить HMAC
+      2. Сравнить с подписью (constant-time)
+      3. Вернуть результат
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ГЕНЕРАЦИЯ ТОКЕНОВ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: generate_token
+    given: Длина в байтах
+    when: Генерация случайного токена
+    then: |
+      1. Сгенерировать случайные байты
+      2. Закодировать в hex
+      3. Вернуть строку
+
+  - name: generate_token_base64
+    given: Длина в байтах
+    when: Генерация токена в base64
+    then: |
+      1. Сгенерировать случайные байты
+      2. Закодировать в base64url
+      3. Вернуть строку
+
+  - name: generate_referral_code
+    given: Нет параметров
+    when: Генерация реферального кода
+    then: |
+      1. Сгенерировать 6 байт
+      2. Закодировать в hex (12 символов)
+      3. Вернуть код
+
+  - name: generate_session_id
+    given: Нет параметров
+    when: Генерация ID сессии
+    then: |
+      1. Сгенерировать 16 байт
+      2. Закодировать в hex (32 символа)
+      3. Вернуть ID
+
+  - name: generate_payment_id
+    given: Нет параметров
+    when: Генерация ID платежа
+    then: |
+      1. Сгенерировать 8 байт
+      2. Закодировать в hex (16 символов)
+      3. Вернуть ID
+
+  - name: generate_uuid
+    given: Нет параметров
+    when: Генерация UUID v4
+    then: |
+      1. Сгенерировать 16 байт
+      2. Установить версию и вариант
+      3. Форматировать как UUID
+      4. Вернуть строку
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM ВЕРИФИКАЦИЯ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: verify_telegram_login
+    given: Данные авторизации и bot_token
+    when: Проверка Telegram Login Widget
+    then: |
+      1. Извлечь hash из данных
+      2. Отсортировать остальные поля
+      3. Создать data_check_string
+      4. Вычислить HMAC-SHA256 с SHA256(bot_token)
+      5. Сравнить с hash
+      6. Вернуть результат
+
+  - name: verify_webhook_secret
+    given: Заголовок и secret_token
+    when: Проверка webhook secret
+    then: |
+      1. Извлечь токен из заголовка
+      2. Сравнить с secret_token (constant-time)
+      3. Вернуть результат
+
+  - name: verify_payment_signature
+    given: Данные платежа и bot_token
+    when: Проверка подписи платежа
+    then: |
+      1. Создать строку для проверки
+      2. Вычислить HMAC
+      3. Сравнить с подписью
+      4. Вернуть результат
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # КОДИРОВАНИЕ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: encode_base64
+    given: Данные
+    when: Кодирование в base64
+    then: Вернуть base64 строку
+
+  - name: decode_base64
+    given: Base64 строка
+    when: Декодирование из base64
+    then: Вернуть данные или ошибку
+
+  - name: encode_base64url
+    given: Данные
+    when: Кодирование в base64url
+    then: |
+      1. Закодировать в base64
+      2. Заменить + на -, / на _
+      3. Удалить =
+      4. Вернуть строку
+
+  - name: decode_base64url
+    given: Base64url строка
+    when: Декодирование из base64url
+    then: |
+      1. Заменить - на +, _ на /
+      2. Добавить padding
+      3. Декодировать
+      4. Вернуть данные
+
+  - name: encode_hex
+    given: Данные
+    when: Кодирование в hex
+    then: Вернуть hex строку
+
+  - name: decode_hex
+    given: Hex строка
+    when: Декодирование из hex
+    then: Вернуть данные или ошибку
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # УТИЛИТЫ
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: constant_time_compare
+    given: Две строки
+    when: Сравнение без timing attack
+    then: |
+      1. Сравнить длины
+      2. XOR каждый байт
+      3. Вернуть результат
+
+  - name: random_bytes
+    given: Количество байт
+    when: Генерация случайных байт
+    then: |
+      1. Использовать криптографический PRNG
+      2. Вернуть байты
+
+  - name: random_int
+    given: Минимум и максимум
+    when: Случайное число в диапазоне
+    then: |
+      1. Сгенерировать случайные байты
+      2. Преобразовать в число
+      3. Привести к диапазону
+      4. Вернуть число
+
+  - name: mask_token
+    given: Токен
+    when: Маскирование для логов
+    then: |
+      Показать первые 4 и последние 4 символа
+      "abcd****wxyz"
+
+  - name: is_valid_hex
+    given: Строка
+    when: Проверка hex формата
+    then: Вернуть true если только 0-9a-fA-F
+
+  - name: is_valid_base64
+    given: Строка
+    when: Проверка base64 формата
+    then: Вернуть true если валидный base64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# КОНСТАНТЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  REFERRAL_CODE_LENGTH: 6
+  SESSION_ID_LENGTH: 16
+  PAYMENT_ID_LENGTH: 8
+  DEFAULT_TOKEN_LENGTH: 32
+  UUID_LENGTH: 16
+
+  HEX_CHARS: "0123456789abcdef"
+  BASE64_CHARS: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  BASE64URL_CHARS: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
