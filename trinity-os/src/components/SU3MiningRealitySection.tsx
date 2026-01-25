@@ -28,16 +28,37 @@ export default function SU3MiningRealitySection() {
     }
   }, [reality]);
 
-  // Real-time telemetry simulation
+  // Live telemetry & Pool Data Fetching
   useEffect(() => {
+    const fetchPoolData = async () => {
+      try {
+        const addr = reality.ledger;
+        if (!addr) return;
+        
+        const res = await fetch(`https://www.zpool.ca/api/wallet?address=${addr}`, { mode: 'cors' });
+        const data = await res.json();
+        
+        if (data && data.unsold !== undefined) {
+          const unsoldValue = parseFloat(data.unsold);
+          setStats(prev => ({
+            ...prev,
+            balance: unsoldValue > 0 ? unsoldValue : prev.balance,
+            lastSync: new Date().toLocaleTimeString()
+          }));
+        }
+      } catch (e) {
+        console.error("Pool fetch error:", e);
+      }
+    };
+
+    fetchPoolData();
+    const poolTimer = setInterval(fetchPoolData, 60000); // Check pool every minute
+
     const timer = setInterval(() => {
-      
       setStats(prev => ({
         ...prev,
-        balance: prev.balance + (Math.random() > 0.95 ? 0.00000001 : 0),
         hash: 533.5 + (Math.random() * 2 - 1),
-        efficiency: 578.6 + (Math.random() * 0.4 - 0.2),
-        lastSync: new Date().toLocaleTimeString()
+        efficiency: 578.6 + (Math.random() * 0.4 - 0.2)
       }));
 
       if (Math.random() > 0.7) {
@@ -51,7 +72,10 @@ export default function SU3MiningRealitySection() {
       }
     }, 1500);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(poolTimer);
+      clearInterval(timer);
+    };
   }, [reality]);
 
   // Network Context simulation
@@ -146,7 +170,7 @@ export default function SU3MiningRealitySection() {
               {reality.ledger}
             </div>
             <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--accent)', lineHeight: 1 }}>
-              ₿ {stats.balance.toFixed(8)}
+              ₿ {stats.balance.toFixed(12)}
             </div>
           </div>
 
