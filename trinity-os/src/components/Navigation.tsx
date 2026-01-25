@@ -1,10 +1,11 @@
 import { useState, useEffect, memo } from 'react'
 import { useI18n } from '../i18n/context'
+import LanguageSwitcher from './LanguageSwitcher'
 
 const sectionIds = ['hero', 'problem', 'solution', 'whynow', 'calculator', 'traction', 'market', 'gtm', 'competition', 'roadmap', 'team', 'ecosystem', 'invest']
 
 export default memo(function Navigation() {
-  const { t, switchLang } = useI18n()
+  const { t } = useI18n()
   const [active, setActive] = useState('hero')
 
   useEffect(() => {
@@ -37,9 +38,7 @@ export default memo(function Navigation() {
           {item}
         </a>
       ))}
-      <div className="lang-toggle" onClick={switchLang}>
-        {t.langSwitch}
-      </div>
+      <LanguageSwitcher />
     </nav>
   )
 })
