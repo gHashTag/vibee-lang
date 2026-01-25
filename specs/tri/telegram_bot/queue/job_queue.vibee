@@ -1,0 +1,607 @@
+name: job_queue
+version: "1.0.0"
+language: zig
+module: job_queue
+
+description: |
+  Redis-based job queue for VIBEE Telegram bot.
+  Supports priorities, delays, retries, dead letter queues.
+  BullMQ-compatible job processing with reliable delivery.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  JobQueue:
+    description: "Job queue instance"
+    fields:
+      name: String
+      config: QueueConfig
+      redis_client: Object
+      stats: QueueStats
+      is_running: Bool
+
+  QueueConfig:
+    description: "Queue configuration"
+    fields:
+      name: String
+      redis_prefix: String
+      default_job_options: JobOptions
+      limiter: Option<RateLimiter>
+      metrics_enabled: Bool
+      stalled_interval_ms: Int
+      max_stalled_count: Int
+
+  JobOptions:
+    description: "Job options"
+    fields:
+      priority: Int
+      delay: Option<Int>
+      attempts: Int
+      backoff: BackoffStrategy
+      timeout: Int
+      remove_on_complete: RemoveOption
+      remove_on_fail: RemoveOption
+      stack_trace_limit: Int
+      repeat: Option<RepeatOptions>
+
+  BackoffStrategy:
+    description: "Backoff strategy"
+    fields:
+      type: BackoffType
+      delay: Int
+      max_delay: Option<Int>
+
+  BackoffType:
+    description: "Backoff type"
+    values:
+      - fixed
+      - exponential
+      - custom
+
+  RemoveOption:
+    description: "Remove option"
+    fields:
+      count: Option<Int>
+      age: Option<Int>
+
+  RepeatOptions:
+    description: "Repeat options"
+    fields:
+      pattern: Option<String>
+      every: Option<Int>
+      limit: Option<Int>
+      immediately: Bool
+      count: Option<Int>
+      prev_millis: Option<Int>
+      offset: Option<Int>
+      job_id: Option<String>
+
+  RateLimiter:
+    description: "Rate limiter"
+    fields:
+      max: Int
+      duration: Int
+      bounce_back: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Job:
+    description: "Job"
+    fields:
+      id: String
+      name: String
+      data: Object
+      opts: JobOptions
+      progress: Int
+      return_value: Option<Object>
+      stacktrace: Option<List<String>>
+      timestamp: Int
+      attempts_made: Int
+      failed_reason: Option<String>
+      finished_on: Option<Int>
+      processed_on: Option<Int>
+      delay: Int
+      parent: Option<JobParent>
+      parent_key: Option<String>
+
+  JobParent:
+    description: "Parent job reference"
+    fields:
+      id: String
+      queue: String
+
+  JobState:
+    description: "Job state"
+    values:
+      - waiting
+      - active
+      - completed
+      - failed
+      - delayed
+      - paused
+      - stuck
+      - waiting_children
+
+  JobCounts:
+    description: "Job counts by state"
+    fields:
+      waiting: Int
+      active: Int
+      completed: Int
+      failed: Int
+      delayed: Int
+      paused: Int
+      prioritized: Int
+
+  JobProgress:
+    description: "Job progress update"
+    fields:
+      job_id: String
+      progress: Int
+      data: Option<Object>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  QueueEvent:
+    description: "Queue event"
+    fields:
+      event_type: EventType
+      job_id: Option<String>
+      data: Option<Object>
+      timestamp: Timestamp
+
+  EventType:
+    description: "Event type"
+    values:
+      - waiting
+      - active
+      - progress
+      - completed
+      - failed
+      - stalled
+      - removed
+      - drained
+      - paused
+      - resumed
+      - cleaned
+      - error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  FlowJob:
+    description: "Flow job definition"
+    fields:
+      name: String
+      queue_name: String
+      data: Object
+      opts: Option<JobOptions>
+      children: Option<List<FlowJob>>
+
+  FlowProducer:
+    description: "Flow producer"
+    fields:
+      config: FlowConfig
+      queues: Map<String, JobQueue>
+
+  FlowConfig:
+    description: "Flow configuration"
+    fields:
+      redis_prefix: String
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  QueueStats:
+    description: "Queue statistics"
+    fields:
+      total_jobs: Int
+      completed_jobs: Int
+      failed_jobs: Int
+      delayed_jobs: Int
+      active_jobs: Int
+      waiting_jobs: Int
+      avg_processing_time_ms: Float
+      avg_wait_time_ms: Float
+      throughput_per_minute: Float
+
+  QueueMetrics:
+    description: "Queue metrics"
+    fields:
+      queue_name: String
+      counts: JobCounts
+      latency: LatencyMetrics
+      throughput: ThroughputMetrics
+      collected_at: Timestamp
+
+  LatencyMetrics:
+    description: "Latency metrics"
+    fields:
+      avg_wait_ms: Float
+      avg_process_ms: Float
+      p50_wait_ms: Float
+      p95_wait_ms: Float
+      p99_wait_ms: Float
+      p50_process_ms: Float
+      p95_process_ms: Float
+      p99_process_ms: Float
+
+  ThroughputMetrics:
+    description: "Throughput metrics"
+    fields:
+      jobs_per_second: Float
+      jobs_per_minute: Float
+      jobs_per_hour: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEAD LETTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  DeadLetterQueue:
+    description: "Dead letter queue"
+    fields:
+      name: String
+      source_queue: String
+      max_length: Int
+      retention_days: Int
+
+  FailedJob:
+    description: "Failed job"
+    fields:
+      job: Job
+      failed_at: Timestamp
+      failure_count: Int
+      last_error: String
+      stack_trace: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  QueueError:
+    description: "Queue error"
+    fields:
+      code: ErrorCode
+      message: String
+      job_id: Option<String>
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - job_not_found
+      - queue_paused
+      - queue_closed
+      - max_retries_exceeded
+      - timeout
+      - stalled
+      - redis_error
+      - serialization_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # QUEUE LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_queue
+    given: QueueConfig
+    when: Creating queue
+    then: Return JobQueue
+
+  - name: close
+    given: No parameters
+    when: Closing queue
+    then: Cleanup resources
+
+  - name: pause
+    given: No parameters
+    when: Pausing queue
+    then: Stop processing
+
+  - name: resume
+    given: No parameters
+    when: Resuming queue
+    then: Resume processing
+
+  - name: is_paused
+    given: No parameters
+    when: Checking pause state
+    then: Return true if paused
+
+  - name: obliterate
+    given: Force flag
+    when: Destroying queue
+    then: Remove all data
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add
+    given: Job name, data, options
+    when: Adding job
+    then: Return Job
+
+  - name: add_bulk
+    given: List of job definitions
+    when: Adding multiple jobs
+    then: Return list of Jobs
+
+  - name: get_job
+    given: Job ID
+    when: Getting job
+    then: Return Job or null
+
+  - name: get_jobs
+    given: States and pagination
+    when: Getting jobs
+    then: Return job list
+
+  - name: remove_job
+    given: Job ID
+    when: Removing job
+    then: Return success
+
+  - name: remove_jobs
+    given: Job IDs
+    when: Removing multiple jobs
+    then: Return count removed
+
+  - name: retry_job
+    given: Job ID
+    when: Retrying job
+    then: Return Job
+
+  - name: retry_jobs
+    given: Filter options
+    when: Retrying multiple jobs
+    then: Return count retried
+
+  - name: promote_job
+    given: Job ID
+    when: Promoting delayed job
+    then: Return Job
+
+  - name: move_to_delayed
+    given: Job ID and delay
+    when: Moving to delayed
+    then: Return Job
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB STATE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_job_state
+    given: Job ID
+    when: Getting job state
+    then: Return JobState
+
+  - name: get_job_counts
+    given: No parameters
+    when: Getting job counts
+    then: Return JobCounts
+
+  - name: get_waiting_count
+    given: No parameters
+    when: Getting waiting count
+    then: Return count
+
+  - name: get_active_count
+    given: No parameters
+    when: Getting active count
+    then: Return count
+
+  - name: get_completed_count
+    given: No parameters
+    when: Getting completed count
+    then: Return count
+
+  - name: get_failed_count
+    given: No parameters
+    when: Getting failed count
+    then: Return count
+
+  - name: get_delayed_count
+    given: No parameters
+    when: Getting delayed count
+    then: Return count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROGRESS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: update_progress
+    given: Job ID and progress
+    when: Updating progress
+    then: Return success
+
+  - name: get_progress
+    given: Job ID
+    when: Getting progress
+    then: Return progress value
+
+  - name: log
+    given: Job ID and message
+    when: Adding log entry
+    then: Return success
+
+  - name: get_logs
+    given: Job ID
+    when: Getting logs
+    then: Return log entries
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLEANING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: clean
+    given: Grace period and limit
+    when: Cleaning old jobs
+    then: Return count cleaned
+
+  - name: drain
+    given: Delayed flag
+    when: Draining queue
+    then: Remove all jobs
+
+  - name: trim_events
+    given: Max length
+    when: Trimming events
+    then: Return count trimmed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: on
+    given: Event type and handler
+    when: Registering handler
+    then: Add event listener
+
+  - name: off
+    given: Event type and handler
+    when: Unregistering handler
+    then: Remove event listener
+
+  - name: emit
+    given: Event type and data
+    when: Emitting event
+    then: Notify listeners
+
+  - name: get_events
+    given: Start and count
+    when: Getting events
+    then: Return event list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FLOWS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_flow
+    given: FlowJob
+    when: Adding flow
+    then: Return parent Job
+
+  - name: get_flow
+    given: Flow ID
+    when: Getting flow
+    then: Return flow tree
+
+  - name: get_children
+    given: Job ID
+    when: Getting children
+    then: Return child jobs
+
+  - name: get_dependencies
+    given: Job ID
+    when: Getting dependencies
+    then: Return dependency jobs
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REPEATABLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_repeatable
+    given: Name, data, repeat options
+    when: Adding repeatable job
+    then: Return Job
+
+  - name: remove_repeatable
+    given: Name and repeat options
+    when: Removing repeatable
+    then: Return success
+
+  - name: get_repeatables
+    given: Pagination
+    when: Getting repeatables
+    then: Return repeatable list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return QueueStats
+
+  - name: get_metrics
+    given: No parameters
+    when: Getting metrics
+    then: Return QueueMetrics
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEAD LETTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_failed_jobs
+    given: Pagination
+    when: Getting failed jobs
+    then: Return FailedJob list
+
+  - name: requeue_failed
+    given: Job ID
+    when: Requeuing failed job
+    then: Return Job
+
+  - name: requeue_all_failed
+    given: No parameters
+    when: Requeuing all failed
+    then: Return count requeued
+
+  - name: purge_failed
+    given: Older than timestamp
+    when: Purging failed jobs
+    then: Return count purged
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_PREFIX: "vibee:queue"
+  DEFAULT_ATTEMPTS: 3
+  DEFAULT_BACKOFF_DELAY: 1000
+  DEFAULT_TIMEOUT: 300000
+  DEFAULT_STALLED_INTERVAL: 30000
+  DEFAULT_MAX_STALLED_COUNT: 1
+
+  # Priority levels
+  PRIORITY_LOW: 10
+  PRIORITY_NORMAL: 5
+  PRIORITY_HIGH: 1
+  PRIORITY_CRITICAL: 0
+
+  # Cleanup
+  DEFAULT_REMOVE_ON_COMPLETE_COUNT: 1000
+  DEFAULT_REMOVE_ON_COMPLETE_AGE: 86400
+  DEFAULT_REMOVE_ON_FAIL_COUNT: 5000
+  DEFAULT_REMOVE_ON_FAIL_AGE: 604800
+
+  # Rate limiting
+  DEFAULT_LIMITER_MAX: 100
+  DEFAULT_LIMITER_DURATION: 1000
+
+  # Queue names
+  QUEUE_AI_GENERATION: "ai-generation"
+  QUEUE_NOTIFICATIONS: "notifications"
+  QUEUE_WEBHOOKS: "webhooks"
+  QUEUE_PAYMENTS: "payments"
+  QUEUE_ANALYTICS: "analytics"

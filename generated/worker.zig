@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// scheduler v1.0.0 - Generated from .vibee specification
+// worker v1.0.0 - Generated from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Священная формула: V = n × 3^k × π^m × φ^p × e^q
@@ -17,45 +17,37 @@ const math = std.math;
 // КОНСТАНТЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const DEFAULT_PREFIX: f64 = 0;
+pub const DEFAULT_CONCURRENCY: f64 = 5;
 
-pub const DEFAULT_TIMEZONE: f64 = 0;
+pub const DEFAULT_LOCK_DURATION: f64 = 30000;
 
-pub const DEFAULT_POLL_INTERVAL_MS: f64 = 1000;
+pub const DEFAULT_LOCK_RENEW_TIME: f64 = 15000;
 
-pub const DEFAULT_LOCK_DURATION_MS: f64 = 30000;
+pub const DEFAULT_STALLED_INTERVAL: f64 = 30000;
 
-pub const DEFAULT_MISSED_THRESHOLD_MS: f64 = 60000;
+pub const DEFAULT_MAX_STALLED_COUNT: f64 = 1;
 
-pub const CRON_EVERY_MINUTE: f64 = 0;
+pub const DEFAULT_DRAIN_DELAY: f64 = 5000;
 
-pub const CRON_EVERY_5_MINUTES: f64 = 0;
+pub const DEFAULT_JOB_TIMEOUT: f64 = 300000;
 
-pub const CRON_EVERY_15_MINUTES: f64 = 0;
+pub const DEFAULT_SHUTDOWN_TIMEOUT: f64 = 30000;
 
-pub const CRON_EVERY_30_MINUTES: f64 = 0;
+pub const DEFAULT_HEALTH_CHECK_INTERVAL: f64 = 10000;
 
-pub const CRON_HOURLY: f64 = 0;
+pub const DEFAULT_SANDBOX_TIMEOUT: f64 = 60000;
 
-pub const CRON_DAILY: f64 = 0;
+pub const DEFAULT_SANDBOX_MEMORY_MB: f64 = 512;
 
-pub const CRON_WEEKLY: f64 = 0;
+pub const DEFAULT_SANDBOX_CPU_PERCENT: f64 = 80;
 
-pub const CRON_MONTHLY: f64 = 0;
+pub const WORKER_AI_GENERATION: f64 = 0;
 
-pub const JOB_CLEANUP_EXPIRED: f64 = 0;
+pub const WORKER_NOTIFICATIONS: f64 = 0;
 
-pub const JOB_SYNC_SUBSCRIPTIONS: f64 = 0;
+pub const WORKER_WEBHOOKS: f64 = 0;
 
-pub const JOB_SEND_REMINDERS: f64 = 0;
-
-pub const JOB_GENERATE_REPORTS: f64 = 0;
-
-pub const JOB_BACKUP_DATA: f64 = 0;
-
-pub const EXECUTION_RETENTION_DAYS: f64 = 30;
-
-pub const DISABLED_JOB_RETENTION_DAYS: f64 = 90;
+pub const WORKER_PAYMENTS: f64 = 0;
 
 // Базовые φ-константы (Sacred Formula)
 pub const PHI: f64 = 1.618033988749895;
@@ -72,173 +64,200 @@ pub const PHOENIX: i64 = 999;
 // ТИПЫ
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Job scheduler instance
-pub const Scheduler = struct {
-    config: SchedulerConfig,
-    redis_client: []const u8,
-    jobs: std.StringHashMap([]const u8),
-    stats: SchedulerStats,
-    is_running: bool,
-};
-
-/// Scheduler configuration
-pub const SchedulerConfig = struct {
-    redis_prefix: []const u8,
-    timezone: []const u8,
-    max_concurrent_jobs: i64,
-    lock_duration_ms: i64,
-    poll_interval_ms: i64,
-    missed_job_threshold_ms: i64,
-    distributed: bool,
-};
-
-/// Scheduled job definition
-pub const ScheduledJob = struct {
-    job_id: []const u8,
+/// Job worker instance
+pub const Worker = struct {
+    id: []const u8,
     name: []const u8,
+    config: WorkerConfig,
     queue_name: []const u8,
-    schedule: Schedule,
-    job_data: []const u8,
-    job_options: JobOptions,
-    enabled: bool,
-    last_run: ?[]const u8,
-    next_run: ?[]const u8,
-    run_count: i64,
-    fail_count: i64,
-    created_at: i64,
-    updated_at: i64,
+    redis_client: []const u8,
+    status: WorkerStatus,
+    stats: WorkerStats,
+    current_jobs: []const u8,
 };
 
-/// Job schedule
-pub const Schedule = struct {
-    @"type": ScheduleType,
-    cron: ?[]const u8,
-    interval_ms: ?[]const u8,
-    at: ?[]const u8,
-    repeat_count: ?[]const u8,
-    end_date: ?[]const u8,
+/// Worker configuration
+pub const WorkerConfig = struct {
+    queue_name: []const u8,
+    concurrency: i64,
+    lock_duration: i64,
+    lock_renew_time: i64,
+    stalled_interval: i64,
+    max_stalled_count: i64,
+    skip_delay_check: bool,
+    skip_stalled_check: bool,
+    auto_run: bool,
+    use_worker_threads: bool,
+    limiter: ?[]const u8,
+    settings: WorkerSettings,
 };
 
-/// Schedule type
-pub const ScheduleType = struct {
+/// Worker settings
+pub const WorkerSettings = struct {
+    back_off_strategy: BackoffStrategy,
+    drain_delay: i64,
+    lock_duration: i64,
+    stalled_interval: i64,
+};
+
+/// Backoff strategy
+pub const BackoffStrategy = struct {
+    @"type": BackoffType,
+    delay: i64,
+    max_delay: ?[]const u8,
+};
+
+/// Backoff type
+pub const BackoffType = struct {
+};
+
+/// Worker rate limiter
+pub const WorkerLimiter = struct {
+    max: i64,
+    duration: i64,
+    group_key: ?[]const u8,
+};
+
+/// Worker status
+pub const WorkerStatus = struct {
+};
+
+/// Currently processing job
+pub const ActiveJob = struct {
+    job_id: []const u8,
+    job_name: []const u8,
+    started_at: i64,
+    progress: i64,
+    lock_token: []const u8,
+    lock_expires_at: i64,
+};
+
+/// Job execution context
+pub const JobContext = struct {
+    job: Job,
+    worker_id: []const u8,
+    attempt: i64,
+    token: []const u8,
+    timestamp: i64,
+};
+
+/// Job data
+pub const Job = struct {
+    id: []const u8,
+    name: []const u8,
+    data: []const u8,
+    opts: JobOptions,
+    progress: i64,
+    attempts_made: i64,
+    timestamp: i64,
 };
 
 /// Job options
 pub const JobOptions = struct {
     priority: i64,
+    delay: ?[]const u8,
     attempts: i64,
     timeout: i64,
-    backoff_delay: i64,
-    remove_on_complete: bool,
 };
 
-/// Parsed cron expression
-pub const CronExpression = struct {
-    expression: []const u8,
-    second: CronField,
-    minute: CronField,
-    hour: CronField,
-    day_of_month: CronField,
-    month: CronField,
-    day_of_week: CronField,
+/// Job processor
+pub const Processor = struct {
+    name: []const u8,
+    handler: []const u8,
+    concurrency: i64,
+    timeout: i64,
 };
 
-/// Cron field
-pub const CronField = struct {
-    values: []const u8,
-    is_wildcard: bool,
-    step: ?[]const u8,
-    range_start: ?[]const u8,
-    range_end: ?[]const u8,
-};
-
-/// Cron preset
-pub const CronPreset = struct {
-};
-
-/// Job execution record
-pub const JobExecution = struct {
-    execution_id: []const u8,
-    job_id: []const u8,
-    scheduled_at: i64,
-    started_at: ?[]const u8,
-    completed_at: ?[]const u8,
-    status: ExecutionStatus,
+/// Processor result
+pub const ProcessorResult = struct {
+    success: bool,
     result: ?[]const u8,
     @"error": ?[]const u8,
-    duration_ms: ?[]const u8,
+    duration_ms: i64,
 };
 
-/// Execution status
-pub const ExecutionStatus = struct {
+/// Processor error
+pub const ProcessorError = struct {
+    message: []const u8,
+    stack: ?[]const u8,
+    retryable: bool,
 };
 
-/// Execution history
-pub const ExecutionHistory = struct {
-    job_id: []const u8,
-    executions: []const u8,
-    total_runs: i64,
-    successful_runs: i64,
-    failed_runs: i64,
-    avg_duration_ms: f64,
-};
-
-/// Distributed lock
-pub const SchedulerLock = struct {
-    lock_id: []const u8,
-    job_id: []const u8,
-    owner: []const u8,
-    acquired_at: i64,
-    expires_at: i64,
-};
-
-/// Lock result
-pub const LockResult = struct {
-    acquired: bool,
-    lock: ?[]const u8,
-    owner: ?[]const u8,
-};
-
-/// Scheduler event
-pub const SchedulerEvent = struct {
-    event_type: EventType,
+/// Worker event
+pub const WorkerEvent = struct {
+    event_type: WorkerEventType,
+    worker_id: []const u8,
     job_id: ?[]const u8,
-    execution_id: ?[]const u8,
     data: ?[]const u8,
     timestamp: i64,
 };
 
-/// Event type
-pub const EventType = struct {
+/// Worker event type
+pub const WorkerEventType = struct {
 };
 
-/// Scheduler statistics
-pub const SchedulerStats = struct {
-    total_jobs: i64,
-    enabled_jobs: i64,
-    disabled_jobs: i64,
-    total_executions: i64,
-    successful_executions: i64,
-    failed_executions: i64,
-    skipped_executions: i64,
-    avg_execution_time_ms: f64,
+/// Worker statistics
+pub const WorkerStats = struct {
+    jobs_processed: i64,
+    jobs_completed: i64,
+    jobs_failed: i64,
+    jobs_stalled: i64,
+    total_processing_time_ms: i64,
+    avg_processing_time_ms: f64,
+    current_concurrency: i64,
     uptime_ms: i64,
 };
 
-/// Job statistics
-pub const JobStats = struct {
-    job_id: []const u8,
-    run_count: i64,
-    success_count: i64,
-    fail_count: i64,
-    skip_count: i64,
-    avg_duration_ms: f64,
-    last_run: ?[]const u8,
-    next_run: ?[]const u8,
+/// Worker metrics
+pub const WorkerMetrics = struct {
+    worker_id: []const u8,
+    queue_name: []const u8,
+    status: WorkerStatus,
+    stats: WorkerStats,
+    memory_usage: i64,
+    cpu_usage: f64,
+    collected_at: i64,
 };
 
-/// Scheduler error
-pub const SchedulerError = struct {
+/// Health status
+pub const HealthStatus = struct {
+    healthy: bool,
+    status: WorkerStatus,
+    redis_connected: bool,
+    current_jobs: i64,
+    last_job_at: ?[]const u8,
+    uptime_ms: i64,
+    errors: []const u8,
+};
+
+/// Health error
+pub const HealthError = struct {
+    code: []const u8,
+    message: []const u8,
+    timestamp: i64,
+};
+
+/// Sandbox configuration
+pub const SandboxConfig = struct {
+    enabled: bool,
+    timeout_ms: i64,
+    memory_limit_mb: i64,
+    cpu_limit_percent: i64,
+    allowed_modules: []const u8,
+};
+
+/// Sandbox execution result
+pub const SandboxResult = struct {
+    success: bool,
+    result: ?[]const u8,
+    @"error": ?[]const u8,
+    memory_used_mb: i64,
+    cpu_time_ms: i64,
+    wall_time_ms: i64,
+};
+
+/// Worker error
+pub const WorkerError = struct {
     code: ErrorCode,
     message: []const u8,
     job_id: ?[]const u8,
@@ -325,24 +344,38 @@ fn generate_phi_spiral(n: u32, scale: f64, cx: f64, cy: f64) u32 {
 // TESTS - Generated from behaviors and test_cases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "create_scheduler" {
-// Given: SchedulerConfig
-// When: Creating scheduler
-// Then: Return Scheduler
+test "create_worker" {
+// Given: WorkerConfig
+// When: Creating worker
+// Then: Return Worker
     // TODO: Add test assertions
 }
 
-test "start" {
+test "run" {
 // Given: No parameters
-// When: Starting scheduler
-// Then: Begin scheduling
+// When: Starting worker
+// Then: Begin processing
     // TODO: Add test assertions
 }
 
-test "stop" {
+test "pause" {
+// Given: Force flag
+// When: Pausing worker
+// Then: Stop accepting jobs
+    // TODO: Add test assertions
+}
+
+test "resume" {
 // Given: No parameters
-// When: Stopping scheduler
-// Then: Stop scheduling
+// When: Resuming worker
+// Then: Resume processing
+    // TODO: Add test assertions
+}
+
+test "close" {
+// Given: Force flag
+// When: Closing worker
+// Then: Graceful shutdown
     // TODO: Add test assertions
 }
 
@@ -353,171 +386,73 @@ test "is_running" {
     // TODO: Add test assertions
 }
 
-test "schedule" {
-// Given: ScheduledJob
-// When: Scheduling job
-// Then: Return job ID
-    // TODO: Add test assertions
-}
-
-test "schedule_cron" {
-// Given: Name, cron, queue, data
-// When: Scheduling cron job
-// Then: Return job ID
-    // TODO: Add test assertions
-}
-
-test "schedule_interval" {
-// Given: Name, interval, queue, data
-// When: Scheduling interval job
-// Then: Return job ID
-    // TODO: Add test assertions
-}
-
-test "schedule_once" {
-// Given: Name, timestamp, queue, data
-// When: Scheduling one-time job
-// Then: Return job ID
-    // TODO: Add test assertions
-}
-
-test "schedule_immediate" {
-// Given: Name, queue, data
-// When: Scheduling immediate job
-// Then: Return job ID
-    // TODO: Add test assertions
-}
-
-test "reschedule" {
-// Given: Job ID and new schedule
-// When: Rescheduling job
-// Then: Return updated job
-    // TODO: Add test assertions
-}
-
-test "unschedule" {
-// Given: Job ID
-// When: Unscheduling job
-// Then: Return success
-    // TODO: Add test assertions
-}
-
-test "get_job" {
-// Given: Job ID
-// When: Getting job
-// Then: Return ScheduledJob
-    // TODO: Add test assertions
-}
-
-test "list_jobs" {
-// Given: Optional filter
-// When: Listing jobs
-// Then: Return job list
-    // TODO: Add test assertions
-}
-
-test "enable_job" {
-// Given: Job ID
-// When: Enabling job
-// Then: Return success
-    // TODO: Add test assertions
-}
-
-test "disable_job" {
-// Given: Job ID
-// When: Disabling job
-// Then: Return success
-    // TODO: Add test assertions
-}
-
-test "trigger_job" {
-// Given: Job ID
-// When: Triggering immediate run
-// Then: Return execution ID
-    // TODO: Add test assertions
-}
-
-test "cancel_execution" {
-// Given: Execution ID
-// When: Cancelling execution
-// Then: Return success
-    // TODO: Add test assertions
-}
-
-test "parse_cron" {
-// Given: Cron expression
-// When: Parsing cron
-// Then: Return CronExpression
-    // TODO: Add test assertions
-}
-
-test "validate_cron" {
-// Given: Cron expression
-// When: Validating cron
-// Then: Return true if valid
-    // TODO: Add test assertions
-}
-
-test "get_next_run" {
-// Given: Cron expression and from time
-// When: Getting next run
-// Then: Return next timestamp
-    // TODO: Add test assertions
-}
-
-test "get_next_runs" {
-// Given: Cron expression, from, count
-// When: Getting next runs
-// Then: Return timestamp list
-    // TODO: Add test assertions
-}
-
-test "cron_from_preset" {
-// Given: CronPreset
-// When: Getting preset cron
-// Then: Return cron expression
-    // TODO: Add test assertions
-}
-
-test "get_execution" {
-// Given: Execution ID
-// When: Getting execution
-// Then: Return JobExecution
-    // TODO: Add test assertions
-}
-
-test "get_executions" {
-// Given: Job ID and pagination
-// When: Getting executions
-// Then: Return execution list
-    // TODO: Add test assertions
-}
-
-test "get_execution_history" {
-// Given: Job ID
-// When: Getting history
-// Then: Return ExecutionHistory
-    // TODO: Add test assertions
-}
-
-test "get_pending_executions" {
+test "is_paused" {
 // Given: No parameters
-// When: Getting pending
-// Then: Return execution list
+// When: Checking pause state
+// Then: Return true if paused
     // TODO: Add test assertions
 }
 
-test "get_running_executions" {
+test "process" {
+// Given: Processor function
+// When: Setting processor
+// Then: Register handler
+    // TODO: Add test assertions
+}
+
+test "process_job" {
+// Given: Job
+// When: Processing single job
+// Then: Return ProcessorResult
+    // TODO: Add test assertions
+}
+
+test "get_next_job" {
 // Given: No parameters
-// When: Getting running
-// Then: Return execution list
+// When: Getting next job
+// Then: Return Job or null
     // TODO: Add test assertions
 }
 
-test "acquire_lock" {
-// Given: Job ID
-// When: Acquiring lock
-// Then: Return LockResult
+test "complete_job" {
+// Given: Job ID and result
+// When: Completing job
+// Then: Mark as completed
+    // TODO: Add test assertions
+}
+
+test "fail_job" {
+// Given: Job ID and error
+// When: Failing job
+// Then: Mark as failed
+    // TODO: Add test assertions
+}
+
+test "move_to_failed" {
+// Given: Job and error
+// When: Moving to failed
+// Then: Update job state
+    // TODO: Add test assertions
+}
+
+test "update_progress" {
+// Given: Job ID and progress
+// When: Updating progress
+// Then: Return success
+    // TODO: Add test assertions
+}
+
+test "log" {
+// Given: Job ID and message
+// When: Adding log
+// Then: Return success
+    // TODO: Add test assertions
+}
+
+test "extend_lock" {
+// Given: Job ID and duration
+// When: Extending lock
+// Then: Return new expiry
     // TODO: Add test assertions
 }
 
@@ -528,17 +463,31 @@ test "release_lock" {
     // TODO: Add test assertions
 }
 
-test "extend_lock" {
-// Given: Job ID and duration
-// When: Extending lock
-// Then: Return success
+test "is_lock_valid" {
+// Given: Job ID
+// When: Checking lock
+// Then: Return true if valid
     // TODO: Add test assertions
 }
 
-test "is_locked" {
+test "check_stalled" {
+// Given: No parameters
+// When: Checking stalled jobs
+// Then: Return stalled job IDs
+    // TODO: Add test assertions
+}
+
+test "handle_stalled" {
 // Given: Job ID
-// When: Checking lock
-// Then: Return true if locked
+// When: Handling stalled job
+// Then: Retry or fail
+    // TODO: Add test assertions
+}
+
+test "get_stalled_count" {
+// Given: No parameters
+// When: Getting stalled count
+// Then: Return count
     // TODO: Add test assertions
 }
 
@@ -563,17 +512,31 @@ test "emit" {
     // TODO: Add test assertions
 }
 
-test "get_stats" {
+test "get_health" {
 // Given: No parameters
-// When: Getting statistics
-// Then: Return SchedulerStats
+// When: Getting health
+// Then: Return HealthStatus
     // TODO: Add test assertions
 }
 
-test "get_job_stats" {
-// Given: Job ID
-// When: Getting job stats
-// Then: Return JobStats
+test "is_healthy" {
+// Given: No parameters
+// When: Checking health
+// Then: Return true if healthy
+    // TODO: Add test assertions
+}
+
+test "get_metrics" {
+// Given: No parameters
+// When: Getting metrics
+// Then: Return WorkerMetrics
+    // TODO: Add test assertions
+}
+
+test "get_stats" {
+// Given: No parameters
+// When: Getting statistics
+// Then: Return WorkerStats
     // TODO: Add test assertions
 }
 
@@ -584,17 +547,24 @@ test "reset_stats" {
     // TODO: Add test assertions
 }
 
-test "cleanup_executions" {
-// Given: Older than timestamp
-// When: Cleaning up
-// Then: Return count cleaned
+test "get_current_jobs" {
+// Given: No parameters
+// When: Getting current jobs
+// Then: Return ActiveJob list
     // TODO: Add test assertions
 }
 
-test "cleanup_disabled_jobs" {
-// Given: Older than timestamp
-// When: Cleaning disabled
-// Then: Return count cleaned
+test "run_sandboxed" {
+// Given: Job and SandboxConfig
+// When: Running in sandbox
+// Then: Return SandboxResult
+    // TODO: Add test assertions
+}
+
+test "kill_sandbox" {
+// Given: Job ID
+// When: Killing sandbox
+// Then: Terminate execution
     // TODO: Add test assertions
 }
 

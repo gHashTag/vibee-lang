@@ -1,0 +1,524 @@
+name: scheduler
+version: "1.0.0"
+language: zig
+module: scheduler
+
+description: |
+  Job scheduler for VIBEE Telegram bot.
+  Cron-based scheduling, recurring jobs, delayed execution.
+  Distributed scheduling with Redis-based locking.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Scheduler:
+    description: "Job scheduler instance"
+    fields:
+      config: SchedulerConfig
+      redis_client: Object
+      jobs: Map<String, ScheduledJob>
+      stats: SchedulerStats
+      is_running: Bool
+
+  SchedulerConfig:
+    description: "Scheduler configuration"
+    fields:
+      redis_prefix: String
+      timezone: String
+      max_concurrent_jobs: Int
+      lock_duration_ms: Int
+      poll_interval_ms: Int
+      missed_job_threshold_ms: Int
+      distributed: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCHEDULED JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ScheduledJob:
+    description: "Scheduled job definition"
+    fields:
+      job_id: String
+      name: String
+      queue_name: String
+      schedule: Schedule
+      job_data: Object
+      job_options: JobOptions
+      enabled: Bool
+      last_run: Option<Timestamp>
+      next_run: Option<Timestamp>
+      run_count: Int
+      fail_count: Int
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  Schedule:
+    description: "Job schedule"
+    fields:
+      type: ScheduleType
+      cron: Option<String>
+      interval_ms: Option<Int>
+      at: Option<Timestamp>
+      repeat_count: Option<Int>
+      end_date: Option<Timestamp>
+
+  ScheduleType:
+    description: "Schedule type"
+    values:
+      - cron
+      - interval
+      - once
+      - immediate
+
+  JobOptions:
+    description: "Job options"
+    fields:
+      priority: Int
+      attempts: Int
+      timeout: Int
+      backoff_delay: Int
+      remove_on_complete: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRON
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  CronExpression:
+    description: "Parsed cron expression"
+    fields:
+      expression: String
+      second: CronField
+      minute: CronField
+      hour: CronField
+      day_of_month: CronField
+      month: CronField
+      day_of_week: CronField
+
+  CronField:
+    description: "Cron field"
+    fields:
+      values: List<Int>
+      is_wildcard: Bool
+      step: Option<Int>
+      range_start: Option<Int>
+      range_end: Option<Int>
+
+  CronPreset:
+    description: "Cron preset"
+    values:
+      - every_minute
+      - every_5_minutes
+      - every_15_minutes
+      - every_30_minutes
+      - hourly
+      - daily
+      - weekly
+      - monthly
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  JobExecution:
+    description: "Job execution record"
+    fields:
+      execution_id: String
+      job_id: String
+      scheduled_at: Timestamp
+      started_at: Option<Timestamp>
+      completed_at: Option<Timestamp>
+      status: ExecutionStatus
+      result: Option<Object>
+      error: Option<String>
+      duration_ms: Option<Int>
+
+  ExecutionStatus:
+    description: "Execution status"
+    values:
+      - pending
+      - running
+      - completed
+      - failed
+      - skipped
+      - cancelled
+
+  ExecutionHistory:
+    description: "Execution history"
+    fields:
+      job_id: String
+      executions: List<JobExecution>
+      total_runs: Int
+      successful_runs: Int
+      failed_runs: Int
+      avg_duration_ms: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SchedulerLock:
+    description: "Distributed lock"
+    fields:
+      lock_id: String
+      job_id: String
+      owner: String
+      acquired_at: Timestamp
+      expires_at: Timestamp
+
+  LockResult:
+    description: "Lock result"
+    fields:
+      acquired: Bool
+      lock: Option<SchedulerLock>
+      owner: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SchedulerEvent:
+    description: "Scheduler event"
+    fields:
+      event_type: EventType
+      job_id: Option<String>
+      execution_id: Option<String>
+      data: Option<Object>
+      timestamp: Timestamp
+
+  EventType:
+    description: "Event type"
+    values:
+      - job_scheduled
+      - job_started
+      - job_completed
+      - job_failed
+      - job_skipped
+      - job_cancelled
+      - job_enabled
+      - job_disabled
+      - scheduler_started
+      - scheduler_stopped
+      - lock_acquired
+      - lock_released
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SchedulerStats:
+    description: "Scheduler statistics"
+    fields:
+      total_jobs: Int
+      enabled_jobs: Int
+      disabled_jobs: Int
+      total_executions: Int
+      successful_executions: Int
+      failed_executions: Int
+      skipped_executions: Int
+      avg_execution_time_ms: Float
+      uptime_ms: Int
+
+  JobStats:
+    description: "Job statistics"
+    fields:
+      job_id: String
+      run_count: Int
+      success_count: Int
+      fail_count: Int
+      skip_count: Int
+      avg_duration_ms: Float
+      last_run: Option<Timestamp>
+      next_run: Option<Timestamp>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SchedulerError:
+    description: "Scheduler error"
+    fields:
+      code: ErrorCode
+      message: String
+      job_id: Option<String>
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_cron
+      - job_not_found
+      - job_already_exists
+      - lock_failed
+      - execution_failed
+      - redis_error
+      - timezone_error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_scheduler
+    given: SchedulerConfig
+    when: Creating scheduler
+    then: Return Scheduler
+
+  - name: start
+    given: No parameters
+    when: Starting scheduler
+    then: Begin scheduling
+
+  - name: stop
+    given: No parameters
+    when: Stopping scheduler
+    then: Stop scheduling
+
+  - name: is_running
+    given: No parameters
+    when: Checking status
+    then: Return true if running
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB MANAGEMENT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: schedule
+    given: ScheduledJob
+    when: Scheduling job
+    then: Return job ID
+
+  - name: schedule_cron
+    given: Name, cron, queue, data
+    when: Scheduling cron job
+    then: Return job ID
+
+  - name: schedule_interval
+    given: Name, interval, queue, data
+    when: Scheduling interval job
+    then: Return job ID
+
+  - name: schedule_once
+    given: Name, timestamp, queue, data
+    when: Scheduling one-time job
+    then: Return job ID
+
+  - name: schedule_immediate
+    given: Name, queue, data
+    when: Scheduling immediate job
+    then: Return job ID
+
+  - name: reschedule
+    given: Job ID and new schedule
+    when: Rescheduling job
+    then: Return updated job
+
+  - name: unschedule
+    given: Job ID
+    when: Unscheduling job
+    then: Return success
+
+  - name: get_job
+    given: Job ID
+    when: Getting job
+    then: Return ScheduledJob
+
+  - name: list_jobs
+    given: Optional filter
+    when: Listing jobs
+    then: Return job list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: enable_job
+    given: Job ID
+    when: Enabling job
+    then: Return success
+
+  - name: disable_job
+    given: Job ID
+    when: Disabling job
+    then: Return success
+
+  - name: trigger_job
+    given: Job ID
+    when: Triggering immediate run
+    then: Return execution ID
+
+  - name: cancel_execution
+    given: Execution ID
+    when: Cancelling execution
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CRON
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: parse_cron
+    given: Cron expression
+    when: Parsing cron
+    then: Return CronExpression
+
+  - name: validate_cron
+    given: Cron expression
+    when: Validating cron
+    then: Return true if valid
+
+  - name: get_next_run
+    given: Cron expression and from time
+    when: Getting next run
+    then: Return next timestamp
+
+  - name: get_next_runs
+    given: Cron expression, from, count
+    when: Getting next runs
+    then: Return timestamp list
+
+  - name: cron_from_preset
+    given: CronPreset
+    when: Getting preset cron
+    then: Return cron expression
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EXECUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_execution
+    given: Execution ID
+    when: Getting execution
+    then: Return JobExecution
+
+  - name: get_executions
+    given: Job ID and pagination
+    when: Getting executions
+    then: Return execution list
+
+  - name: get_execution_history
+    given: Job ID
+    when: Getting history
+    then: Return ExecutionHistory
+
+  - name: get_pending_executions
+    given: No parameters
+    when: Getting pending
+    then: Return execution list
+
+  - name: get_running_executions
+    given: No parameters
+    when: Getting running
+    then: Return execution list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: acquire_lock
+    given: Job ID
+    when: Acquiring lock
+    then: Return LockResult
+
+  - name: release_lock
+    given: Job ID
+    when: Releasing lock
+    then: Return success
+
+  - name: extend_lock
+    given: Job ID and duration
+    when: Extending lock
+    then: Return success
+
+  - name: is_locked
+    given: Job ID
+    when: Checking lock
+    then: Return true if locked
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: on
+    given: Event type and handler
+    when: Registering handler
+    then: Add listener
+
+  - name: off
+    given: Event type and handler
+    when: Unregistering handler
+    then: Remove listener
+
+  - name: emit
+    given: Event type and data
+    when: Emitting event
+    then: Notify listeners
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return SchedulerStats
+
+  - name: get_job_stats
+    given: Job ID
+    when: Getting job stats
+    then: Return JobStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CLEANUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: cleanup_executions
+    given: Older than timestamp
+    when: Cleaning up
+    then: Return count cleaned
+
+  - name: cleanup_disabled_jobs
+    given: Older than timestamp
+    when: Cleaning disabled
+    then: Return count cleaned
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_PREFIX: "vibee:scheduler"
+  DEFAULT_TIMEZONE: "UTC"
+  DEFAULT_POLL_INTERVAL_MS: 1000
+  DEFAULT_LOCK_DURATION_MS: 30000
+  DEFAULT_MISSED_THRESHOLD_MS: 60000
+
+  # Cron presets
+  CRON_EVERY_MINUTE: "* * * * *"
+  CRON_EVERY_5_MINUTES: "*/5 * * * *"
+  CRON_EVERY_15_MINUTES: "*/15 * * * *"
+  CRON_EVERY_30_MINUTES: "*/30 * * * *"
+  CRON_HOURLY: "0 * * * *"
+  CRON_DAILY: "0 0 * * *"
+  CRON_WEEKLY: "0 0 * * 0"
+  CRON_MONTHLY: "0 0 1 * *"
+
+  # Scheduled jobs
+  JOB_CLEANUP_EXPIRED: "cleanup-expired"
+  JOB_SYNC_SUBSCRIPTIONS: "sync-subscriptions"
+  JOB_SEND_REMINDERS: "send-reminders"
+  JOB_GENERATE_REPORTS: "generate-reports"
+  JOB_BACKUP_DATA: "backup-data"
+
+  # Cleanup
+  EXECUTION_RETENTION_DAYS: 30
+  DISABLED_JOB_RETENTION_DAYS: 90

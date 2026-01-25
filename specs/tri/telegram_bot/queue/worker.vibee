@@ -1,0 +1,503 @@
+name: worker
+version: "1.0.0"
+language: zig
+module: worker
+
+description: |
+  Job worker for VIBEE Telegram bot.
+  Processes jobs from Redis queues with concurrency control.
+  Supports graceful shutdown, health checks, sandboxing.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  Worker:
+    description: "Job worker instance"
+    fields:
+      id: String
+      name: String
+      config: WorkerConfig
+      queue_name: String
+      redis_client: Object
+      status: WorkerStatus
+      stats: WorkerStats
+      current_jobs: List<ActiveJob>
+
+  WorkerConfig:
+    description: "Worker configuration"
+    fields:
+      queue_name: String
+      concurrency: Int
+      lock_duration: Int
+      lock_renew_time: Int
+      stalled_interval: Int
+      max_stalled_count: Int
+      skip_delay_check: Bool
+      skip_stalled_check: Bool
+      auto_run: Bool
+      use_worker_threads: Bool
+      limiter: Option<WorkerLimiter>
+      settings: WorkerSettings
+
+  WorkerSettings:
+    description: "Worker settings"
+    fields:
+      back_off_strategy: BackoffStrategy
+      drain_delay: Int
+      lock_duration: Int
+      stalled_interval: Int
+
+  BackoffStrategy:
+    description: "Backoff strategy"
+    fields:
+      type: BackoffType
+      delay: Int
+      max_delay: Option<Int>
+
+  BackoffType:
+    description: "Backoff type"
+    values:
+      - fixed
+      - exponential
+      - custom
+
+  WorkerLimiter:
+    description: "Worker rate limiter"
+    fields:
+      max: Int
+      duration: Int
+      group_key: Option<String>
+
+  WorkerStatus:
+    description: "Worker status"
+    values:
+      - idle
+      - running
+      - paused
+      - closing
+      - closed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ACTIVE JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ActiveJob:
+    description: "Currently processing job"
+    fields:
+      job_id: String
+      job_name: String
+      started_at: Timestamp
+      progress: Int
+      lock_token: String
+      lock_expires_at: Timestamp
+
+  JobContext:
+    description: "Job execution context"
+    fields:
+      job: Job
+      worker_id: String
+      attempt: Int
+      token: String
+      timestamp: Timestamp
+
+  Job:
+    description: "Job data"
+    fields:
+      id: String
+      name: String
+      data: Object
+      opts: JobOptions
+      progress: Int
+      attempts_made: Int
+      timestamp: Int
+
+  JobOptions:
+    description: "Job options"
+    fields:
+      priority: Int
+      delay: Option<Int>
+      attempts: Int
+      timeout: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROCESSOR
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Processor:
+    description: "Job processor"
+    fields:
+      name: String
+      handler: String
+      concurrency: Int
+      timeout: Int
+
+  ProcessorResult:
+    description: "Processor result"
+    fields:
+      success: Bool
+      result: Option<Object>
+      error: Option<ProcessorError>
+      duration_ms: Int
+
+  ProcessorError:
+    description: "Processor error"
+    fields:
+      message: String
+      stack: Option<String>
+      retryable: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WorkerEvent:
+    description: "Worker event"
+    fields:
+      event_type: WorkerEventType
+      worker_id: String
+      job_id: Option<String>
+      data: Option<Object>
+      timestamp: Timestamp
+
+  WorkerEventType:
+    description: "Worker event type"
+    values:
+      - active
+      - completed
+      - failed
+      - error
+      - progress
+      - stalled
+      - closing
+      - closed
+      - drained
+      - paused
+      - resumed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WorkerStats:
+    description: "Worker statistics"
+    fields:
+      jobs_processed: Int
+      jobs_completed: Int
+      jobs_failed: Int
+      jobs_stalled: Int
+      total_processing_time_ms: Int
+      avg_processing_time_ms: Float
+      current_concurrency: Int
+      uptime_ms: Int
+
+  WorkerMetrics:
+    description: "Worker metrics"
+    fields:
+      worker_id: String
+      queue_name: String
+      status: WorkerStatus
+      stats: WorkerStats
+      memory_usage: Int
+      cpu_usage: Float
+      collected_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthStatus:
+    description: "Health status"
+    fields:
+      healthy: Bool
+      status: WorkerStatus
+      redis_connected: Bool
+      current_jobs: Int
+      last_job_at: Option<Timestamp>
+      uptime_ms: Int
+      errors: List<HealthError>
+
+  HealthError:
+    description: "Health error"
+    fields:
+      code: String
+      message: String
+      timestamp: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SANDBOX
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  SandboxConfig:
+    description: "Sandbox configuration"
+    fields:
+      enabled: Bool
+      timeout_ms: Int
+      memory_limit_mb: Int
+      cpu_limit_percent: Int
+      allowed_modules: List<String>
+
+  SandboxResult:
+    description: "Sandbox execution result"
+    fields:
+      success: Bool
+      result: Option<Object>
+      error: Option<String>
+      memory_used_mb: Int
+      cpu_time_ms: Int
+      wall_time_ms: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  WorkerError:
+    description: "Worker error"
+    fields:
+      code: ErrorCode
+      message: String
+      job_id: Option<String>
+      details: Option<Object>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - job_timeout
+      - job_stalled
+      - processor_error
+      - lock_lost
+      - redis_error
+      - shutdown_timeout
+      - sandbox_error
+      - memory_exceeded
+      - cpu_exceeded
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_worker
+    given: WorkerConfig
+    when: Creating worker
+    then: Return Worker
+
+  - name: run
+    given: No parameters
+    when: Starting worker
+    then: Begin processing
+
+  - name: pause
+    given: Force flag
+    when: Pausing worker
+    then: Stop accepting jobs
+
+  - name: resume
+    given: No parameters
+    when: Resuming worker
+    then: Resume processing
+
+  - name: close
+    given: Force flag
+    when: Closing worker
+    then: Graceful shutdown
+
+  - name: is_running
+    given: No parameters
+    when: Checking status
+    then: Return true if running
+
+  - name: is_paused
+    given: No parameters
+    when: Checking pause state
+    then: Return true if paused
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROCESSING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: process
+    given: Processor function
+    when: Setting processor
+    then: Register handler
+
+  - name: process_job
+    given: Job
+    when: Processing single job
+    then: Return ProcessorResult
+
+  - name: get_next_job
+    given: No parameters
+    when: Getting next job
+    then: Return Job or null
+
+  - name: complete_job
+    given: Job ID and result
+    when: Completing job
+    then: Mark as completed
+
+  - name: fail_job
+    given: Job ID and error
+    when: Failing job
+    then: Mark as failed
+
+  - name: move_to_failed
+    given: Job and error
+    when: Moving to failed
+    then: Update job state
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROGRESS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: update_progress
+    given: Job ID and progress
+    when: Updating progress
+    then: Return success
+
+  - name: log
+    given: Job ID and message
+    when: Adding log
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LOCKING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: extend_lock
+    given: Job ID and duration
+    when: Extending lock
+    then: Return new expiry
+
+  - name: release_lock
+    given: Job ID
+    when: Releasing lock
+    then: Return success
+
+  - name: is_lock_valid
+    given: Job ID
+    when: Checking lock
+    then: Return true if valid
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STALLED JOBS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_stalled
+    given: No parameters
+    when: Checking stalled jobs
+    then: Return stalled job IDs
+
+  - name: handle_stalled
+    given: Job ID
+    when: Handling stalled job
+    then: Retry or fail
+
+  - name: get_stalled_count
+    given: No parameters
+    when: Getting stalled count
+    then: Return count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: on
+    given: Event type and handler
+    when: Registering handler
+    then: Add listener
+
+  - name: off
+    given: Event type and handler
+    when: Unregistering handler
+    then: Remove listener
+
+  - name: emit
+    given: Event type and data
+    when: Emitting event
+    then: Notify listeners
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_health
+    given: No parameters
+    when: Getting health
+    then: Return HealthStatus
+
+  - name: is_healthy
+    given: No parameters
+    when: Checking health
+    then: Return true if healthy
+
+  - name: get_metrics
+    given: No parameters
+    when: Getting metrics
+    then: Return WorkerMetrics
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATISTICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return WorkerStats
+
+  - name: reset_stats
+    given: No parameters
+    when: Resetting statistics
+    then: Clear counters
+
+  - name: get_current_jobs
+    given: No parameters
+    when: Getting current jobs
+    then: Return ActiveJob list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SANDBOX
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: run_sandboxed
+    given: Job and SandboxConfig
+    when: Running in sandbox
+    then: Return SandboxResult
+
+  - name: kill_sandbox
+    given: Job ID
+    when: Killing sandbox
+    then: Terminate execution
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CONCURRENCY: 5
+  DEFAULT_LOCK_DURATION: 30000
+  DEFAULT_LOCK_RENEW_TIME: 15000
+  DEFAULT_STALLED_INTERVAL: 30000
+  DEFAULT_MAX_STALLED_COUNT: 1
+  DEFAULT_DRAIN_DELAY: 5000
+
+  # Timeouts
+  DEFAULT_JOB_TIMEOUT: 300000
+  DEFAULT_SHUTDOWN_TIMEOUT: 30000
+  DEFAULT_HEALTH_CHECK_INTERVAL: 10000
+
+  # Sandbox limits
+  DEFAULT_SANDBOX_TIMEOUT: 60000
+  DEFAULT_SANDBOX_MEMORY_MB: 512
+  DEFAULT_SANDBOX_CPU_PERCENT: 80
+
+  # Worker IDs
+  WORKER_AI_GENERATION: "ai-generation-worker"
+  WORKER_NOTIFICATIONS: "notifications-worker"
+  WORKER_WEBHOOKS: "webhooks-worker"
+  WORKER_PAYMENTS: "payments-worker"
