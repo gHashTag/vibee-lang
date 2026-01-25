@@ -27,8 +27,8 @@ import {
 } from './components/sections'
 import Navigation from './components/Navigation'
 import QuantumBackground from './components/QuantumBackground'
-import Section from './components/Section'
-import MiningMVP from './components/MiningMVP'
+import SU3MiningRealitySection from './components/SU3MiningRealitySection'
+// MiningMVP removed
 
 export default function App() {
   return (
@@ -50,16 +50,7 @@ export default function App() {
       <TechnologySection />
       <InvestorProofSection />
 
-      {/* TRINITY HARDWARE TRUTH: LIVE MINING PREVIEW */}
-      <Section id="mining-live">
-        <div className="tight fade" style={{ textAlign: 'center', marginBottom: '4rem' }}>
-          <h2 className="grad">SU(3) Mining Reality</h2>
-          <p>Живая демонстрация взаимодействия троичной логики с сетью Bitcoin</p>
-        </div>
-        <div style={{ border: '1px solid rgba(0, 229, 153, 0.1)', borderRadius: '24px', overflow: 'hidden', background: '#000' }}>
-          <MiningMVP />
-        </div>
-      </Section>
+      <SU3MiningRealitySection />
 
       <TechAssetsSection />
       <CalculatorLogicSection />
