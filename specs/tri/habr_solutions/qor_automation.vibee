@@ -1,0 +1,304 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# QOR AUTOMATION - Автоматизация проверки Quality of Results
+# ═══════════════════════════════════════════════════════════════════════════════
+# Решение проблемы Brak0del: Автоматическая проверка QoR после синтеза
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: qor_automation
+version: "1.0.0"
+language: zig
+module: qor_automation
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TARGET SYNTHESIS TOOLS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+target_tools:
+  - name: vivado
+    vendor: xilinx
+    version: "2023.2+"
+    tcl_api: true
+    
+  - name: quartus
+    vendor: intel
+    version: "23.1+"
+    tcl_api: true
+    
+  - name: diamond
+    vendor: lattice
+    version: "3.12+"
+    tcl_api: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# QOR METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+qor_metrics:
+  timing:
+    description: "Timing constraints satisfaction"
+    checks:
+      - name: worst_negative_slack
+        threshold: 0.0
+        unit: "ns"
+        critical: true
+        
+      - name: total_negative_slack
+        threshold: 0.0
+        unit: "ns"
+        critical: true
+        
+      - name: setup_violations
+        threshold: 0
+        unit: "count"
+        critical: true
+        
+      - name: hold_violations
+        threshold: 0
+        unit: "count"
+        critical: false
+        
+  resources:
+    description: "Resource utilization"
+    checks:
+      - name: lut_utilization
+        threshold: 80.0
+        unit: "%"
+        critical: false
+        
+      - name: ff_utilization
+        threshold: 80.0
+        unit: "%"
+        critical: false
+        
+      - name: bram_utilization
+        threshold: 80.0
+        unit: "%"
+        critical: false
+        
+      - name: dsp_utilization
+        threshold: 80.0
+        unit: "%"
+        critical: false
+        
+  power:
+    description: "Power consumption"
+    checks:
+      - name: total_power
+        threshold: 25.0
+        unit: "W"
+        critical: false
+        
+      - name: dynamic_power
+        threshold: 20.0
+        unit: "W"
+        critical: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  QoRReport:
+    description: "QoR report from synthesis tool"
+    fields:
+      tool: String
+      version: String
+      timestamp: Int
+      timing: TimingReport
+      resources: ResourceReport
+      power: PowerReport
+      passed: Bool
+      errors: List<String>
+      warnings: List<String>
+      
+  TimingReport:
+    description: "Timing analysis results"
+    fields:
+      worst_negative_slack: Float
+      total_negative_slack: Float
+      setup_violations: Int
+      hold_violations: Int
+      max_frequency: Float
+      clock_period: Float
+      
+  ResourceReport:
+    description: "Resource utilization results"
+    fields:
+      luts_used: Int
+      luts_available: Int
+      luts_utilization: Float
+      ffs_used: Int
+      ffs_available: Int
+      ffs_utilization: Float
+      bram_used: Int
+      bram_available: Int
+      bram_utilization: Float
+      dsp_used: Int
+      dsp_available: Int
+      dsp_utilization: Float
+      
+  PowerReport:
+    description: "Power consumption results"
+    fields:
+      total_power: Float
+      dynamic_power: Float
+      static_power: Float
+      junction_temp: Float
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ───────────────────────────────────────────────────────────────────────────
+  # VIVADO QOR CHECK
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: check_qor_vivado
+    given: Synthesized design in Vivado
+    when: QoR check requested
+    then: Parse timing/resources/power reports and validate against thresholds
+    params:
+      - name: project_path
+        type: String
+      - name: thresholds
+        type: QoRMetrics
+    returns: QoRReport
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # QUARTUS QOR CHECK
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: check_qor_quartus
+    given: Synthesized design in Quartus
+    when: QoR check requested
+    then: Parse timing/resources/power reports and validate against thresholds
+    params:
+      - name: project_path
+        type: String
+      - name: thresholds
+        type: QoRMetrics
+    returns: QoRReport
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # PARSE TIMING REPORT
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: parse_timing_report
+    given: Timing report file from synthesis tool
+    when: Report parsing requested
+    then: Extract WNS, TNS, violations from report
+    params:
+      - name: report_path
+        type: String
+      - name: tool
+        type: String
+    returns: TimingReport
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # PARSE RESOURCE REPORT
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: parse_resource_report
+    given: Resource utilization report from synthesis tool
+    when: Report parsing requested
+    then: Extract LUT/FF/BRAM/DSP utilization from report
+    params:
+      - name: report_path
+        type: String
+      - name: tool
+        type: String
+    returns: ResourceReport
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # PARSE POWER REPORT
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: parse_power_report
+    given: Power report from synthesis tool
+    when: Report parsing requested
+    then: Extract power consumption metrics from report
+    params:
+      - name: report_path
+        type: String
+      - name: tool
+        type: String
+    returns: PowerReport
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # VALIDATE QOR
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: validate_qor
+    given: QoR report and thresholds
+    when: Validation requested
+    then: Check all metrics against thresholds and return pass/fail
+    params:
+      - name: report
+        type: QoRReport
+      - name: thresholds
+        type: QoRMetrics
+    returns: Bool
+    
+  # ───────────────────────────────────────────────────────────────────────────
+  # GENERATE QOR REPORT (JSON/Markdown)
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: generate_qor_report
+    given: QoR report data
+    when: Report generation requested
+    then: Generate human-readable report in JSON/Markdown format
+    params:
+      - name: report
+        type: QoRReport
+      - name: format
+        type: String
+    returns: String
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TCL SCRIPT GENERATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tcl_scripts:
+  vivado_qor_check:
+    description: "TCL script for Vivado QoR check"
+    commands:
+      - "open_project {project_path}"
+      - "open_run synth_1"
+      - "report_timing_summary -file {timing_report_path}"
+      - "report_utilization -file {utilization_report_path}"
+      - "report_power -file {power_report_path}"
+      - "close_project"
+      
+  quartus_qor_check:
+    description: "TCL script for Quartus QoR check"
+    commands:
+      - "project_open {project_path}"
+      - "load_package report"
+      - "create_timing_netlist"
+      - "report_timing -file {timing_report_path}"
+      - "report_resources -file {utilization_report_path}"
+      - "report_power -file {power_report_path}"
+      - "project_close"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_cases:
+  - name: test_vivado_qor_check
+    given: Vivado project with synthesized design
+    when: QoR check executed
+    then: Report generated with timing/resources/power metrics
+    
+  - name: test_quartus_qor_check
+    given: Quartus project with synthesized design
+    when: QoR check executed
+    then: Report generated with timing/resources/power metrics
+    
+  - name: test_timing_violations_detected
+    given: Design with timing violations
+    when: QoR check executed
+    then: Violations detected and reported
+    
+  - name: test_resource_threshold_exceeded
+    given: Design exceeding resource thresholds
+    when: QoR check executed
+    then: Resource utilization warnings generated

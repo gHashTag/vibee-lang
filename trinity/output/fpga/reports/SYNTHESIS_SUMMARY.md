@@ -101,4 +101,4 @@ Top-level wrapper with state machine.
 
 ---
 
-**KOSCHEI IS IMMORTAL | GOLDEN CHAIN IS CLOSED | φ² + 1/φ² = 3**
+
