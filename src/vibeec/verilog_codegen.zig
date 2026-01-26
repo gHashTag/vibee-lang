@@ -33,13 +33,13 @@ pub const ExtractedSignal = struct {
 /// Extract signals from spec types for SVA checker
 pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !ArrayList(ExtractedSignal) {
     var signals = ArrayList(ExtractedSignal).init(allocator);
-    
+
     for (types) |t| {
         for (t.fields.items) |field| {
             const is_bool = std.mem.eql(u8, field.type_name, "Bool");
             const width: u32 = if (is_bool) 1 else if (std.mem.eql(u8, field.type_name, "Int")) 32 else 32;
             const verilog_type = if (is_bool) "wire" else "wire [31:0]";
-            
+
             // Check if signal already exists
             var exists = false;
             for (signals.items) |s| {
@@ -48,7 +48,7 @@ pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !Ar
                     break;
                 }
             }
-            
+
             if (!exists) {
                 try signals.append(ExtractedSignal{
                     .name = field.name,
@@ -59,7 +59,7 @@ pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !Ar
             }
         }
     }
-    
+
     return signals;
 }
 
@@ -109,7 +109,7 @@ const signal_keywords = [_]struct { keyword: []const u8, signal: []const u8 }{
 /// Extract signal references from behavior text
 pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayList([]const u8) {
     var refs = ArrayList([]const u8).init(allocator);
-    
+
     for (signal_keywords) |kw| {
         if (containsIgnoreCase(text, kw.keyword)) {
             // Check if already added
@@ -125,7 +125,7 @@ pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayLis
             }
         }
     }
-    
+
     return refs;
 }
 
@@ -135,17 +135,17 @@ fn signalExists(signal: []const u8, extracted: []const ExtractedSignal) bool {
     for (standard_signals) |s| {
         if (std.mem.eql(u8, signal, s)) return true;
     }
-    
+
     // Check common signals
     for (common_signals) |s| {
         if (std.mem.eql(u8, signal, s)) return true;
     }
-    
+
     // Check extracted signals from types
     for (extracted) |sig| {
         if (std.mem.eql(u8, signal, sig.name)) return true;
     }
-    
+
     return false;
 }
 
@@ -156,12 +156,12 @@ pub fn validateBehaviorSignals(
     allocator: Allocator,
 ) !ArrayList(ValidationWarning) {
     var warnings = ArrayList(ValidationWarning).init(allocator);
-    
+
     for (behaviors) |behavior| {
         // Check given clause
         var given_refs = try extractSignalReferences(behavior.given, allocator);
         defer given_refs.deinit();
-        
+
         for (given_refs.items) |ref| {
             if (!signalExists(ref, extracted)) {
                 try warnings.append(ValidationWarning{
@@ -172,11 +172,11 @@ pub fn validateBehaviorSignals(
                 });
             }
         }
-        
+
         // Check then clause
         var then_refs = try extractSignalReferences(behavior.then, allocator);
         defer then_refs.deinit();
-        
+
         for (then_refs.items) |ref| {
             if (!signalExists(ref, extracted)) {
                 try warnings.append(ValidationWarning{
@@ -188,7 +188,7 @@ pub fn validateBehaviorSignals(
             }
         }
     }
-    
+
     return warnings;
 }
 
@@ -198,7 +198,7 @@ pub fn printValidationWarnings(warnings: []const ValidationWarning) void {
         std.debug.print("  ✓ All behavior signals validated\n", .{});
         return;
     }
-    
+
     std.debug.print("  ⚠ Validation warnings ({d}):\n", .{warnings.len});
     for (warnings) |w| {
         std.debug.print("    - Behavior '{s}' ({s}): signal '{s}' - {s}\n", .{
@@ -218,9 +218,9 @@ pub const VerilogBuilder = struct {
     allocator: Allocator,
     buffer: ArrayList(u8),
     indent: u32,
-    
+
     const Self = @This();
-    
+
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
@@ -228,45 +228,45 @@ pub const VerilogBuilder = struct {
             .indent = 0,
         };
     }
-    
+
     pub fn deinit(self: *Self) void {
         self.buffer.deinit();
     }
-    
+
     pub fn write(self: *Self, str: []const u8) !void {
         try self.buffer.appendSlice(str);
     }
-    
+
     pub fn writeLine(self: *Self, str: []const u8) !void {
         try self.writeIndent();
         try self.buffer.appendSlice(str);
         try self.buffer.append('\n');
     }
-    
+
     pub fn writeIndent(self: *Self) !void {
         var i: u32 = 0;
         while (i < self.indent) : (i += 1) {
             try self.buffer.appendSlice("    ");
         }
     }
-    
+
     pub fn writeFmt(self: *Self, comptime fmt: []const u8, args: anytype) !void {
         const writer = self.buffer.writer();
         try writer.print(fmt, args);
     }
-    
+
     pub fn newline(self: *Self) !void {
         try self.buffer.append('\n');
     }
-    
+
     pub fn incIndent(self: *Self) void {
         self.indent += 1;
     }
-    
+
     pub fn decIndent(self: *Self) void {
         if (self.indent > 0) self.indent -= 1;
     }
-    
+
     pub fn getOutput(self: *Self) []const u8 {
         return self.buffer.items;
     }
@@ -279,22 +279,24 @@ pub const VerilogBuilder = struct {
 pub const VerilogCodeGen = struct {
     allocator: Allocator,
     builder: VerilogBuilder,
-    
+    spec: *const VibeeSpec = undefined,
+
     const Self = @This();
-    
+
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
             .builder = VerilogBuilder.init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *Self) void {
         self.builder.deinit();
     }
-    
+
     /// Генерация полного Verilog файла из спецификации
     pub fn generate(self: *Self, spec: *const VibeeSpec) ![]const u8 {
+        self.spec = spec;
         try self.writeHeader(spec);
         try self.writeTimescale();
         try self.writeSacredConstants(spec);
@@ -303,10 +305,10 @@ pub const VerilogCodeGen = struct {
         try self.writeBehaviorModules(spec.behaviors.items);
         try self.writeSVAAssertions(spec);
         try self.writeTestbench(spec);
-        
+
         return self.builder.getOutput();
     }
-    
+
     fn writeHeader(self: *Self, spec: *const VibeeSpec) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeFmt("// {s} v{s} - Generated Verilog from .vibee specification\n", .{ spec.name, spec.version });
@@ -322,34 +324,34 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
     }
-    
+
     fn writeTimescale(self: *Self) !void {
         try self.builder.writeLine("`timescale 1ns / 1ps");
         try self.builder.newline();
     }
-    
+
     fn writeSacredConstants(self: *Self, spec: *const VibeeSpec) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// SACRED CONSTANTS MODULE");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         try self.builder.writeFmt("module {s}_sacred_constants (\n", .{spec.name});
         self.builder.incIndent();
-        
+
         // Output ports for constants
         try self.builder.writeLine("output wire [63:0] phi,");
         try self.builder.writeLine("output wire [63:0] phi_sq,");
         try self.builder.writeLine("output wire [63:0] phi_inv_sq,");
         try self.builder.writeLine("output wire [63:0] trinity,");
         try self.builder.writeLine("output wire [31:0] phoenix");
-        
+
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         self.builder.incIndent();
-        
+
         // IEEE 754 double precision constants
         try self.builder.writeLine("// IEEE 754 double precision constants");
         try self.builder.writeLine("assign phi        = 64'h3FF9E3779B97F4A8; // 1.6180339887...");
@@ -357,25 +359,25 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("assign phi_inv_sq = 64'h3FD8722D0E560419; // 0.3819660112...");
         try self.builder.writeLine("assign trinity    = 64'h4008000000000000; // 3.0");
         try self.builder.writeLine("assign phoenix    = 32'd999;");
-        
+
         self.builder.decIndent();
         try self.builder.newline();
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTypes(self: *Self, types: []const TypeDef) !void {
         if (types.len == 0) return;
-        
+
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TYPE DEFINITIONS (as Verilog structs/parameters)");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         for (types) |t| {
             try self.builder.writeFmt("// Type: {s}\n", .{t.name});
             try self.builder.writeFmt("// {s}\n", .{t.description});
-            
+
             // Generate parameter definitions for type fields
             for (t.fields.items) |field| {
                 const verilog_type = mapTypeToVerilog(field.type_name);
@@ -384,48 +386,55 @@ pub const VerilogCodeGen = struct {
             try self.builder.newline();
         }
     }
-    
+
     fn writeTopModule(self: *Self, spec: *const VibeeSpec) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TOP MODULE");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         try self.builder.writeFmt("module {s}_top (\n", .{spec.name});
         self.builder.incIndent();
-        
+
         // Standard FPGA ports
         try self.builder.writeLine("input  wire        clk,");
-        try self.builder.writeLine("input  wire        rst_n,");
+        const has_reset = !std.mem.eql(u8, spec.reset.reset_type, "none");
+        const rst_name = if (std.mem.eql(u8, spec.reset.level, "low")) "rst_n" else "rst";
+        const rst_active = if (std.mem.eql(u8, spec.reset.level, "low")) "!" else "";
+        const rst_edge = if (std.mem.eql(u8, spec.reset.level, "low")) "negedge" else "posedge";
+
+        if (has_reset) {
+            try self.builder.writeFmt("input  wire        {s},\n", .{rst_name});
+        }
         try self.builder.writeLine("input  wire [31:0] data_in,");
         try self.builder.writeLine("input  wire        valid_in,");
         try self.builder.writeLine("output reg  [31:0] data_out,");
         try self.builder.writeLine("output reg         valid_out,");
         try self.builder.writeLine("output wire        ready");
-        
+
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         self.builder.incIndent();
-        
+
         // State machine
         try self.builder.writeLine("// State machine");
         try self.builder.writeLine("localparam IDLE    = 3'd0;");
         try self.builder.writeLine("localparam PROCESS = 3'd1;");
         try self.builder.writeLine("localparam DONE    = 3'd2;");
         try self.builder.newline();
-        
+
         try self.builder.writeLine("reg [2:0] state;");
         try self.builder.writeLine("reg [2:0] next_state;");
         try self.builder.newline();
-        
+
         // Sacred constants instance
         try self.builder.writeLine("// Sacred constants");
         try self.builder.writeLine("wire [63:0] phi, phi_sq, phi_inv_sq, trinity;");
         try self.builder.writeLine("wire [31:0] phoenix;");
         try self.builder.newline();
-        
+
         try self.builder.writeFmt("{s}_sacred_constants sacred_inst (\n", .{spec.name});
         self.builder.incIndent();
         try self.builder.writeLine(".phi(phi),");
@@ -436,27 +445,37 @@ pub const VerilogCodeGen = struct {
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         // Ready signal
         try self.builder.writeLine("assign ready = (state == IDLE);");
         try self.builder.newline();
-        
+
         // State register
         try self.builder.writeLine("// State register");
-        try self.builder.writeLine("always @(posedge clk or negedge rst_n) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("if (!rst_n)");
-        self.builder.incIndent();
-        try self.builder.writeLine("state <= IDLE;");
-        self.builder.decIndent();
-        try self.builder.writeLine("else");
-        self.builder.incIndent();
-        try self.builder.writeLine("state <= next_state;");
-        self.builder.decIndent();
+        if (has_reset) {
+            if (std.mem.eql(u8, spec.reset.reset_type, "async")) {
+                try self.builder.writeFmt("always @(posedge clk or {s} {s}) begin\n", .{ rst_edge, rst_name });
+            } else {
+                try self.builder.writeLine("always @(posedge clk) begin");
+            }
+            self.builder.incIndent();
+            try self.builder.writeFmt("if ({s}{s})\n", .{ rst_active, rst_name });
+            self.builder.incIndent();
+            try self.builder.writeLine("state <= IDLE;");
+            self.builder.decIndent();
+            try self.builder.writeLine("else");
+            self.builder.incIndent();
+            try self.builder.writeLine("state <= next_state;");
+            self.builder.decIndent();
+        } else {
+            try self.builder.writeLine("always @(posedge clk) begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("state <= next_state;");
+        }
         self.builder.decIndent();
         try self.builder.writeLine("end");
         try self.builder.newline();
-        
+
         // Next state logic
         try self.builder.writeLine("// Next state logic");
         try self.builder.writeLine("always @(*) begin");
@@ -473,42 +492,56 @@ pub const VerilogCodeGen = struct {
         self.builder.decIndent();
         try self.builder.writeLine("end");
         try self.builder.newline();
-        
+
         // Output logic
         try self.builder.writeLine("// Output logic");
-        try self.builder.writeLine("always @(posedge clk or negedge rst_n) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("if (!rst_n) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("data_out  <= 32'd0;");
-        try self.builder.writeLine("valid_out <= 1'b0;");
-        self.builder.decIndent();
-        try self.builder.writeLine("end else begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("valid_out <= (state == DONE);");
-        try self.builder.writeLine("if (state == PROCESS)");
-        self.builder.incIndent();
-        try self.builder.writeLine("data_out <= data_in ^ phoenix; // XOR with sacred constant");
-        self.builder.decIndent();
+        if (has_reset) {
+            if (std.mem.eql(u8, spec.reset.reset_type, "async")) {
+                try self.builder.writeFmt("always @(posedge clk or {s} {s}) begin\n", .{ rst_edge, rst_name });
+            } else {
+                try self.builder.writeLine("always @(posedge clk) begin");
+            }
+            self.builder.incIndent();
+            try self.builder.writeFmt("if ({s}{s}) begin\n", .{ rst_active, rst_name });
+            self.builder.incIndent();
+            try self.builder.writeLine("data_out  <= 32'd0;");
+            try self.builder.writeLine("valid_out <= 1'b0;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end else begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("valid_out <= (state == DONE);");
+            try self.builder.writeLine("if (state == PROCESS)");
+            self.builder.incIndent();
+            try self.builder.writeLine("data_out <= data_in ^ phoenix; // XOR with sacred constant");
+            self.builder.decIndent();
+            self.builder.decIndent();
+            try self.builder.writeLine("end");
+        } else {
+            try self.builder.writeLine("always @(posedge clk) begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("valid_out <= (state == DONE);");
+            try self.builder.writeLine("if (state == PROCESS)");
+            self.builder.incIndent();
+            try self.builder.writeLine("data_out <= data_in ^ phoenix;");
+            self.builder.decIndent();
+        }
         self.builder.decIndent();
         try self.builder.writeLine("end");
-        self.builder.decIndent();
-        try self.builder.writeLine("end");
-        
+
         self.builder.decIndent();
         try self.builder.newline();
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeBehaviorModules(self: *Self, behaviors: []const Behavior) !void {
         if (behaviors.len == 0) return;
-        
+
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// BEHAVIOR MODULES");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         for (behaviors) |b| {
             // Check for special ternary logic modules
             if (std.mem.eql(u8, b.name, "trit_not")) {
@@ -527,7 +560,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeTrit3Adder();
             } else if (std.mem.eql(u8, b.name, "trit_compare")) {
                 try self.writeTritCompare();
-            // SIMD modules
+                // SIMD modules
             } else if (std.mem.eql(u8, b.name, "trit27_parallel_multiply")) {
                 try self.writeTrit27ParallelMultiply();
             } else if (std.mem.eql(u8, b.name, "adder_tree_27")) {
@@ -536,7 +569,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeTrit27DotProduct();
             } else if (std.mem.eql(u8, b.name, "bitnet_activation")) {
                 try self.writeBitNetActivation();
-            // Pipeline modules
+                // Pipeline modules
             } else if (std.mem.eql(u8, b.name, "weight_bram")) {
                 try self.writeWeightBram();
             } else if (std.mem.eql(u8, b.name, "pipeline_stage2_compute")) {
@@ -545,7 +578,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeLayerSequencer();
             } else if (std.mem.eql(u8, b.name, "bitnet_layer_top")) {
                 try self.writeBitNetLayerTop();
-            // Multi-layer modules
+                // Multi-layer modules
             } else if (std.mem.eql(u8, b.name, "double_buffer_ctrl")) {
                 try self.writeDoubleBufferCtrl();
             } else if (std.mem.eql(u8, b.name, "weight_prefetch_ctrl")) {
@@ -554,7 +587,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeMultilayerSequencer();
             } else if (std.mem.eql(u8, b.name, "bitnet_engine_top")) {
                 try self.writeBitNetEngineTop();
-            // AXI Host Interface modules
+                // AXI Host Interface modules
             } else if (std.mem.eql(u8, b.name, "axi_lite_slave")) {
                 try self.writeAxiLiteSlave();
             } else if (std.mem.eql(u8, b.name, "dma_controller")) {
@@ -563,7 +596,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeInterruptController();
             } else if (std.mem.eql(u8, b.name, "host_interface_top")) {
                 try self.writeHostInterfaceTop();
-            // AXI-Lite behavior handlers
+                // AXI-Lite behavior handlers
             } else if (std.mem.eql(u8, b.name, "axi_write_handler")) {
                 try self.writeAxiWriteHandler();
             } else if (std.mem.eql(u8, b.name, "axi_read_handler")) {
@@ -576,7 +609,7 @@ pub const VerilogCodeGen = struct {
                 try self.writeStatusAggregator();
             } else if (std.mem.eql(u8, b.name, "cycle_counter") or std.mem.eql(u8, b.name, "count_cycles")) {
                 try self.writeCycleCounter();
-            // AXI-Stream behavior handlers
+                // AXI-Stream behavior handlers
             } else if (std.mem.eql(u8, b.name, "input_stream_rx")) {
                 try self.writeAxisSlaveRx();
             } else if (std.mem.eql(u8, b.name, "output_stream_tx")) {
@@ -589,19 +622,19 @@ pub const VerilogCodeGen = struct {
                 try self.writePacketParser();
             } else if (std.mem.eql(u8, b.name, "packet_assembler")) {
                 try self.writePacketAssembler();
-            // Weight loader handlers
+                // Weight loader handlers
             } else if (std.mem.eql(u8, b.name, "weight_load_handler") or std.mem.eql(u8, b.name, "receive_weights")) {
                 try self.writeWeightLoadHandler();
             } else if (std.mem.eql(u8, b.name, "unpack_weights")) {
                 try self.writeUnpackWeights();
             } else if (std.mem.eql(u8, b.name, "write_to_bram")) {
                 try self.writeWriteToBram();
-            // FIFO handlers
+                // FIFO handlers
             } else if (std.mem.eql(u8, b.name, "input_fifo_write")) {
                 try self.writeFifoWrite();
             } else if (std.mem.eql(u8, b.name, "output_fifo_read")) {
                 try self.writeFifoRead();
-            // Performance counter handlers
+                // Performance counter handlers
             } else if (std.mem.eql(u8, b.name, "count_inferences")) {
                 try self.writeInferenceCounter();
             } else if (std.mem.eql(u8, b.name, "count_mac_ops")) {
@@ -616,7 +649,7 @@ pub const VerilogCodeGen = struct {
             }
         }
     }
-    
+
     fn writeTritNot(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT NOT - Ternary Negation");
@@ -646,7 +679,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritAnd(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT AND - Kleene Logic Minimum");
@@ -677,7 +710,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritOr(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT OR - Kleene Logic Maximum");
@@ -708,7 +741,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritHalfAdder(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT HALF ADDER - Balanced Ternary Addition");
@@ -752,7 +785,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritFullAdder(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT FULL ADDER - With Carry Input");
@@ -786,7 +819,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritMultiply(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT MULTIPLY - Single Trit Multiplication");
@@ -821,7 +854,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTrit3Adder(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT3 ADDER - 3-Trit Ripple Carry Adder");
@@ -850,7 +883,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTritCompare(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT COMPARE - Ternary Comparison");
@@ -877,7 +910,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTrit27ParallelMultiply(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT27 PARALLEL MULTIPLY - 27-way SIMD Ternary Multiplication");
@@ -920,7 +953,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeAdderTree27(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// ADDER TREE 27 - Reduce 27 trits to single sum");
@@ -979,7 +1012,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeTrit27DotProduct(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TRIT27 DOT PRODUCT - Complete BitNet MAC operation");
@@ -1016,7 +1049,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeWeightBram(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// WEIGHT BRAM - Dual-port BRAM for ternary weights");
@@ -1051,7 +1084,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writePipelineStage2(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// PIPELINE STAGE 2 - SIMD Compute with Accumulator");
@@ -1096,7 +1129,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeLayerSequencer(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// LAYER SEQUENCER - FSM for layer execution");
@@ -1141,7 +1174,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeDoubleBufferCtrl(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// DOUBLE BUFFER CONTROLLER - Ping-pong activation buffers");
@@ -1173,7 +1206,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeWeightPrefetchCtrl(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// WEIGHT PREFETCH CONTROLLER - Stream weights from DDR while computing");
@@ -1237,7 +1270,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeMultilayerSequencer(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// MULTI-LAYER SEQUENCER - FSM for full model inference");
@@ -1298,7 +1331,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeAxiLiteSlave(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// AXI-LITE SLAVE - Control/Status Register Interface");
@@ -1406,7 +1439,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeDmaController(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// DMA CONTROLLER - High-bandwidth data transfer");
@@ -1504,7 +1537,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeInterruptController(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// INTERRUPT CONTROLLER - Async completion signaling");
@@ -1546,7 +1579,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeHostInterfaceTop(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// HOST INTERFACE TOP - Complete AXI host interface");
@@ -1621,7 +1654,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeBitNetEngineTop(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// BITNET INFERENCE ENGINE TOP - Complete multi-layer inference");
@@ -1680,7 +1713,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeBitNetLayerTop(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// BITNET LAYER TOP - Complete pipelined layer");
@@ -1729,7 +1762,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeBitNetActivation(self: *Self) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// BITNET ACTIVATION - Ternary ReLU");
@@ -1757,11 +1790,11 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // NEW AXI BEHAVIOR HANDLERS
     // ═══════════════════════════════════════════════════════════════════════════════
-    
+
     fn writeAxiWriteHandler(self: *Self) !void {
         try self.builder.writeLine("// AXI-Lite Write Handler - Complete FSM");
         try self.builder.writeLine("module axi_write_handler (");
@@ -1784,7 +1817,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeAxiReadHandler(self: *Self) !void {
         try self.builder.writeLine("// AXI-Lite Read Handler - Complete FSM");
         try self.builder.writeLine("module axi_read_handler (");
@@ -1807,7 +1840,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeCtrlRegHandler(self: *Self) !void {
         try self.builder.writeLine("// Control Register Handler - Start pulse generation");
         try self.builder.writeLine("module ctrl_reg_handler (");
@@ -1821,7 +1854,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeIrqGenerator(self: *Self) !void {
         try self.builder.writeLine("// IRQ Generator - Interrupt output logic");
         try self.builder.writeLine("module irq_generator (");
@@ -1831,7 +1864,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeStatusAggregator(self: *Self) !void {
         try self.builder.writeLine("// Status Aggregator - Combine status signals");
         try self.builder.writeLine("module status_aggregator (");
@@ -1842,7 +1875,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeCycleCounter(self: *Self) !void {
         try self.builder.writeLine("// 64-bit Cycle Counter");
         try self.builder.writeLine("module cycle_counter (");
@@ -1855,7 +1888,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeAxisSlaveRx(self: *Self) !void {
         try self.builder.writeLine("// AXI-Stream Slave Receiver");
         try self.builder.writeLine("module axis_slave_rx (");
@@ -1869,7 +1902,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeAxisMasterTx(self: *Self) !void {
         try self.builder.writeLine("// AXI-Stream Master Transmitter");
         try self.builder.writeLine("module axis_master_tx (");
@@ -1885,7 +1918,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeWeightStreamRx(self: *Self) !void {
         try self.builder.writeLine("// Weight Stream Receiver");
         try self.builder.writeLine("module weight_stream_rx (");
@@ -1900,7 +1933,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeBackpressureHandler(self: *Self) !void {
         try self.builder.writeLine("// Backpressure Handler");
         try self.builder.writeLine("module backpressure_handler (");
@@ -1910,7 +1943,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writePacketParser(self: *Self) !void {
         try self.builder.writeLine("// Packet Parser - Extract header and route");
         try self.builder.writeLine("module packet_parser (");
@@ -1924,7 +1957,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writePacketAssembler(self: *Self) !void {
         try self.builder.writeLine("// Packet Assembler - Build output packet");
         try self.builder.writeLine("module packet_assembler (");
@@ -1935,7 +1968,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeWeightLoadHandler(self: *Self) !void {
         try self.builder.writeLine("// Weight Load Handler");
         try self.builder.writeLine("module weight_load_handler (");
@@ -1949,7 +1982,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeUnpackWeights(self: *Self) !void {
         try self.builder.writeLine("// Unpack 32 ternary weights from 64-bit word to 27-weight SIMD chunk");
         try self.builder.writeLine("module unpack_weights (");
@@ -1959,7 +1992,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeWriteToBram(self: *Self) !void {
         try self.builder.writeLine("// Write to BRAM");
         try self.builder.writeLine("module write_to_bram (");
@@ -1970,7 +2003,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeFifoWrite(self: *Self) !void {
         try self.builder.writeLine("// FIFO Write Interface");
         try self.builder.writeLine("module fifo_write (");
@@ -1982,7 +2015,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeFifoRead(self: *Self) !void {
         try self.builder.writeLine("// FIFO Read Interface");
         try self.builder.writeLine("module fifo_read (");
@@ -1993,7 +2026,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeInferenceCounter(self: *Self) !void {
         try self.builder.writeLine("// Inference Counter");
         try self.builder.writeLine("module inference_counter (");
@@ -2005,7 +2038,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeMacCounter(self: *Self) !void {
         try self.builder.writeLine("// MAC Operations Counter");
         try self.builder.writeLine("module mac_counter (");
@@ -2017,7 +2050,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeStallTracker(self: *Self) !void {
         try self.builder.writeLine("// Stall Cycle Tracker");
         try self.builder.writeLine("module stall_tracker (");
@@ -2030,7 +2063,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeLayerTimer(self: *Self) !void {
         try self.builder.writeLine("// Layer Timer");
         try self.builder.writeLine("module layer_timer (");
@@ -2046,17 +2079,25 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     fn writeGenericBehavior(self: *Self, b: Behavior) !void {
         try self.builder.writeFmt("// Behavior: {s}\n", .{b.name});
         try self.builder.writeFmt("// Given: {s}\n", .{b.given});
         try self.builder.writeFmt("// When: {s}\n", .{b.when});
         try self.builder.writeFmt("// Then: {s}\n", .{b.then});
-        
+
+        const spec = self.spec;
+        const has_reset = !std.mem.eql(u8, spec.reset.reset_type, "none");
+        const rst_name = if (std.mem.eql(u8, spec.reset.level, "low")) "rst_n" else "rst";
+        const rst_active = if (std.mem.eql(u8, spec.reset.level, "low")) "!" else "";
+        const rst_edge = if (std.mem.eql(u8, spec.reset.level, "low")) "negedge" else "posedge";
+
         try self.builder.writeFmt("module behavior_{s} (\n", .{b.name});
         self.builder.incIndent();
         try self.builder.writeLine("input  wire        clk,");
-        try self.builder.writeLine("input  wire        rst_n,");
+        if (has_reset) {
+            try self.builder.writeFmt("input  wire        {s},\n", .{rst_name});
+        }
         try self.builder.writeLine("input  wire        trigger,");
         try self.builder.writeLine("input  wire [31:0] input_data,");
         try self.builder.writeLine("output reg  [31:0] output_data,");
@@ -2064,52 +2105,74 @@ pub const VerilogCodeGen = struct {
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         self.builder.incIndent();
-        try self.builder.writeLine("always @(posedge clk or negedge rst_n) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("if (!rst_n) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("output_data <= 32'd0;");
-        try self.builder.writeLine("done <= 1'b0;");
-        self.builder.decIndent();
-        try self.builder.writeLine("end else if (trigger) begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("// TODO: Implement behavior logic");
-        try self.builder.writeLine("output_data <= input_data;");
-        try self.builder.writeLine("done <= 1'b1;");
-        self.builder.decIndent();
-        try self.builder.writeLine("end else begin");
-        self.builder.incIndent();
-        try self.builder.writeLine("done <= 1'b0;");
-        self.builder.decIndent();
-        try self.builder.writeLine("end");
-        self.builder.decIndent();
-        try self.builder.writeLine("end");
+        if (has_reset) {
+            if (std.mem.eql(u8, spec.reset.reset_type, "async")) {
+                try self.builder.writeFmt("always @(posedge clk or {s} {s}) begin\n", .{ rst_edge, rst_name });
+            } else {
+                try self.builder.writeLine("always @(posedge clk) begin");
+            }
+            self.builder.incIndent();
+            try self.builder.writeFmt("if ({s}{s}) begin\n", .{ rst_active, rst_name });
+            self.builder.incIndent();
+            try self.builder.writeLine("output_data <= 32'd0;");
+            try self.builder.writeLine("done <= 1'b0;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end else if (trigger) begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("// TODO: Implement behavior logic");
+            try self.builder.writeLine("output_data <= input_data;");
+            try self.builder.writeLine("done <= 1'b1;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end else begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("done <= 1'b0;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end");
+            self.builder.decIndent();
+            try self.builder.writeLine("end");
+        } else {
+            try self.builder.writeLine("always @(posedge clk) begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("if (trigger) begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("// TODO: Implement behavior logic");
+            try self.builder.writeLine("output_data <= input_data;");
+            try self.builder.writeLine("done <= 1'b1;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end else begin");
+            self.builder.incIndent();
+            try self.builder.writeLine("done <= 1'b0;");
+            self.builder.decIndent();
+            try self.builder.writeLine("end");
+            self.builder.decIndent();
+            try self.builder.writeLine("end");
+        }
         self.builder.decIndent();
         try self.builder.newline();
         try self.builder.writeLine("endmodule");
         try self.builder.newline();
     }
-    
+
     /// Generate SystemVerilog Assertions from behaviors
     fn writeSVAAssertions(self: *Self, spec: *const VibeeSpec) !void {
         if (spec.behaviors.items.len == 0) return;
-        
+
         // Extract signals from types
         var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).init(self.allocator);
         defer extracted_signals.deinit();
-        
+
         // Validate behavior signals
         var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning).init(self.allocator);
         defer warnings.deinit();
-        
+
         // Print warnings to stderr (visible during generation)
         if (warnings.items.len > 0) {
             std.debug.print("\n", .{});
             printValidationWarnings(warnings.items);
         }
-        
+
         // Add validation comments to generated code
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// SYSTEMVERILOG ASSERTIONS (SVA)");
@@ -2118,12 +2181,12 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("// Signals extracted from spec types");
         try self.builder.writeLine("// φ² + 1/φ² = 3");
         try self.builder.newline();
-        
+
         // Wrap SVA module in `ifdef FORMAL for iverilog compatibility
         try self.builder.writeLine("`ifdef FORMAL");
         try self.builder.writeFmt("module {s}_sva_checker (\n", .{spec.name});
         self.builder.incIndent();
-        
+
         // Standard signals
         try self.builder.writeLine("input wire        clk,");
         try self.builder.writeLine("input wire        rst_n,");
@@ -2133,7 +2196,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("input wire        valid_out,");
         try self.builder.writeLine("input wire        ready,");
         try self.builder.writeLine("input wire [2:0]  state,");
-        
+
         // Signals extracted from types (skip duplicates with standard signals)
         const standard_sigs = [_][]const u8{ "clk", "rst_n", "data_in", "valid_in", "data_out", "valid_out", "ready", "state" };
         if (extracted_signals.items.len > 0) {
@@ -2148,7 +2211,7 @@ pub const VerilogCodeGen = struct {
                     }
                 }
                 if (is_standard) continue;
-                
+
                 if (sig.is_bool) {
                     try self.builder.writeFmt("input wire        {s},\n", .{sig.name});
                 } else {
@@ -2156,7 +2219,7 @@ pub const VerilogCodeGen = struct {
                 }
             }
         }
-        
+
         // Common signals - only add if not already in extracted
         try self.builder.writeLine("// Common SVA signals:");
         const fallback_signals = [_][]const u8{ "running", "active", "overflow", "done", "flag" };
@@ -2173,19 +2236,19 @@ pub const VerilogCodeGen = struct {
                 try self.builder.writeFmt("input wire        {s}{s}\n", .{ common, if (is_last) "" else "," });
             }
         }
-        
+
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         self.builder.incIndent();
-        
+
         // Local parameters for state machine
         try self.builder.writeLine("// State machine parameters");
         try self.builder.writeLine("localparam IDLE    = 3'd0;");
         try self.builder.writeLine("localparam PROCESS = 3'd1;");
         try self.builder.writeLine("localparam DONE_ST = 3'd2;");
-        
+
         // MAX_VALUE - use wire alias if depth/max_value exists in types
         var depth_signal: ?[]const u8 = null;
         for (extracted_signals.items) |sig| {
@@ -2200,53 +2263,53 @@ pub const VerilogCodeGen = struct {
             try self.builder.writeLine("localparam MAX_VALUE = 32'hFFFFFFFF;");
         }
         try self.builder.newline();
-        
+
         // Default clocking block
         try self.builder.writeLine("// Default clocking for assertions");
         try self.builder.writeLine("default clocking cb @(posedge clk);");
         try self.builder.writeLine("endclocking");
         try self.builder.newline();
-        
+
         // Disable assertions during reset
         try self.builder.writeLine("// Note: 'disable iff' is used in each property for reset handling");
         try self.builder.newline();
-        
+
         // Generate assertions from behaviors
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// ASSERTIONS FROM BEHAVIORS");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         for (spec.behaviors.items, 0..) |behavior, i| {
             // Generate assertion from behavior
             try self.builder.writeFmt("// Behavior: {s}\n", .{behavior.name});
             try self.builder.writeFmt("// Given: {s}\n", .{behavior.given});
             try self.builder.writeFmt("// When: {s}\n", .{behavior.when});
             try self.builder.writeFmt("// Then: {s}\n", .{behavior.then});
-            
+
             // Generate property
             try self.builder.writeFmt("property p_{s};\n", .{behavior.name});
             self.builder.incIndent();
-            
+
             // Parse given/when/then into SVA
             try self.generateSVAProperty(behavior);
-            
+
             self.builder.decIndent();
             try self.builder.writeLine("endproperty");
             try self.builder.newline();
-            
+
             // Generate assertion
             try self.builder.writeFmt("assert_{d}_{s}: assert property (p_{s})\n", .{ i, behavior.name, behavior.name });
             self.builder.incIndent();
             try self.builder.writeFmt("else $error(\"Assertion failed: {s}\");\n", .{behavior.name});
             self.builder.decIndent();
             try self.builder.newline();
-            
+
             // Generate cover
             try self.builder.writeFmt("cover_{d}_{s}: cover property (p_{s});\n", .{ i, behavior.name, behavior.name });
             try self.builder.newline();
         }
-        
+
         // Sacred identity assertion
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// SACRED IDENTITY ASSERTION");
@@ -2266,30 +2329,30 @@ pub const VerilogCodeGen = struct {
         self.builder.decIndent();
         try self.builder.writeLine("end");
         try self.builder.newline();
-        
+
         self.builder.decIndent();
         try self.builder.writeLine("endmodule");
         try self.builder.writeLine("`endif // FORMAL");
         try self.builder.newline();
     }
-    
+
     /// Generate SVA property expression from behavior
     /// Generate SVA property expression from behavior using semantic parsing
     fn generateSVAProperty(self: *Self, behavior: Behavior) !void {
         // Parse given clause → antecedent
         const antecedent = parseGivenClause(behavior.given);
-        
+
         // Parse when clause → timing
         const timing = parseWhenClause(behavior.when);
-        
+
         // Parse then clause → consequent
         const consequent = parseThenClause(behavior.then);
-        
+
         // Generate SVA property
         try self.builder.writeFmt("@({s}) disable iff (!rst_n)\n", .{timing});
         try self.builder.writeFmt("{s} |-> {s};\n", .{ antecedent, consequent });
     }
-    
+
     /// Parse "given" clause to SVA antecedent
     fn parseGivenClause(given: []const u8) []const u8 {
         // Signal patterns
@@ -2317,17 +2380,17 @@ pub const VerilogCodeGen = struct {
             if (containsIgnoreCase(given, "empty")) return "empty";
             return "!empty";
         }
-        
+
         // Direct signal names from types (full, empty, etc.)
         if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "full")) return "!full";
         if (containsIgnoreCase(given, "not") and containsIgnoreCase(given, "empty")) return "!empty";
         if (containsIgnoreCase(given, "full")) return "full";
         if (containsIgnoreCase(given, "empty")) return "empty";
-        
+
         // Default: always true
         return "1'b1";
     }
-    
+
     /// Parse "when" clause to SVA timing
     fn parseWhenClause(when: []const u8) []const u8 {
         // Clock edge detection
@@ -2337,7 +2400,7 @@ pub const VerilogCodeGen = struct {
         // Default to rising edge
         return "posedge clk";
     }
-    
+
     /// Parse "then" clause to SVA consequent
     fn parseThenClause(then: []const u8) []const u8 {
         // Increment operation
@@ -2347,7 +2410,7 @@ pub const VerilogCodeGen = struct {
             }
             return "($past(data_out) + 1)";
         }
-        
+
         // Decrement operation
         if (containsIgnoreCase(then, "decrement") or containsIgnoreCase(then, "subtract")) {
             if (containsIgnoreCase(then, "count")) {
@@ -2355,15 +2418,16 @@ pub const VerilogCodeGen = struct {
             }
             return "($past(data_out) - 1)";
         }
-        
+
         // Set to zero/clear
-        if (containsIgnoreCase(then, "zero") or containsIgnoreCase(then, "clear") or 
-            (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "0"))) {
+        if (containsIgnoreCase(then, "zero") or containsIgnoreCase(then, "clear") or
+            (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "0")))
+        {
             if (containsIgnoreCase(then, "count")) return "(count == 0)";
             if (containsIgnoreCase(then, "overflow")) return "(!overflow)";
             return "(data_out == 0)";
         }
-        
+
         // Set flag
         if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "flag")) {
             if (containsIgnoreCase(then, "overflow")) return "overflow";
@@ -2373,36 +2437,36 @@ pub const VerilogCodeGen = struct {
             if (containsIgnoreCase(then, "empty")) return "empty";
             return "flag";
         }
-        
+
         // Direct flag setting (from types)
         if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "full")) return "full";
         if (containsIgnoreCase(then, "set") and containsIgnoreCase(then, "empty")) return "empty";
-        
+
         // Output valid
         if (containsIgnoreCase(then, "valid") and containsIgnoreCase(then, "output")) {
             return "valid_out";
         }
-        
+
         // Wrap around
         if (containsIgnoreCase(then, "wrap")) {
             return "(count == 0)";
         }
-        
+
         // Default: signal stays stable or becomes true
         return "1'b1";
     }
-    
+
     fn writeTestbench(self: *Self, spec: *const VibeeSpec) !void {
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.writeLine("// TESTBENCH");
         try self.builder.writeLine("// ═══════════════════════════════════════════════════════════════════════════════");
         try self.builder.newline();
-        
+
         try self.builder.writeFmt("module {s}_tb;\n", .{spec.name});
         try self.builder.newline();
-        
+
         self.builder.incIndent();
-        
+
         // Testbench signals
         try self.builder.writeLine("// Testbench signals");
         try self.builder.writeLine("reg         clk;");
@@ -2413,7 +2477,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("wire        valid_out;");
         try self.builder.writeLine("wire        ready;");
         try self.builder.newline();
-        
+
         // DUT instantiation
         try self.builder.writeLine("// DUT instantiation");
         try self.builder.writeFmt("{s}_top dut (\n", .{spec.name});
@@ -2428,13 +2492,13 @@ pub const VerilogCodeGen = struct {
         self.builder.decIndent();
         try self.builder.writeLine(");");
         try self.builder.newline();
-        
+
         // Clock generation
         try self.builder.writeLine("// Clock generation (100 MHz)");
         try self.builder.writeLine("initial clk = 0;");
         try self.builder.writeLine("always #5 clk = ~clk;");
         try self.builder.newline();
-        
+
         // Test sequence
         try self.builder.writeLine("// Test sequence");
         try self.builder.writeLine("initial begin");
@@ -2443,19 +2507,29 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeFmt("$display(\"{s} Testbench - φ² + 1/φ² = 3\");\n", .{spec.name});
         try self.builder.writeLine("$display(\"═══════════════════════════════════════════════════════════════\");");
         try self.builder.newline();
-        
+
+        const vspec = self.spec;
+        const has_reset = !std.mem.eql(u8, vspec.reset.reset_type, "none");
+        const rst_name = if (std.mem.eql(u8, vspec.reset.level, "low")) "rst_n" else "rst";
+        const rst_active = if (std.mem.eql(u8, vspec.reset.level, "low")) "0" else "1";
+        const rst_release = if (std.mem.eql(u8, vspec.reset.level, "low")) "1" else "0";
+
         try self.builder.writeLine("// Initialize");
-        try self.builder.writeLine("rst_n = 0;");
+        if (has_reset) {
+            try self.builder.writeFmt("{s} = {s};\n", .{ rst_name, rst_active });
+        }
         try self.builder.writeLine("data_in = 32'd0;");
         try self.builder.writeLine("valid_in = 0;");
         try self.builder.writeLine("#20;");
         try self.builder.newline();
-        
-        try self.builder.writeLine("// Release reset");
-        try self.builder.writeLine("rst_n = 1;");
-        try self.builder.writeLine("#10;");
-        try self.builder.newline();
-        
+
+        if (has_reset) {
+            try self.builder.writeLine("// Release reset");
+            try self.builder.writeFmt("{s} = {s};\n", .{ rst_name, rst_release });
+            try self.builder.writeLine("#10;");
+            try self.builder.newline();
+        }
+
         try self.builder.writeLine("// Test 1: Basic operation");
         try self.builder.writeLine("$display(\"Test 1: Basic operation\");");
         try self.builder.writeLine("data_in = 32'h12345678;");
@@ -2464,7 +2538,7 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("valid_in = 0;");
         try self.builder.writeLine("repeat(5) @(posedge clk);  // Wait for state machine to complete");
         try self.builder.newline();
-        
+
         try self.builder.writeLine("// Check output (valid_out or data changed)");
         try self.builder.writeLine("if (valid_out || data_out != 32'd0)");
         self.builder.incIndent();
@@ -2475,18 +2549,18 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("$display(\"  FAIL: Output not valid\");");
         self.builder.decIndent();
         try self.builder.newline();
-        
+
         try self.builder.writeLine("// Golden identity verification");
         try self.builder.writeLine("$display(\"Golden Identity: φ² + 1/φ² = 3 ✓\");");
         try self.builder.writeLine("$display(\"PHOENIX = 999 ✓\");");
         try self.builder.newline();
-        
+
         try self.builder.writeLine("$display(\"═══════════════════════════════════════════════════════════════\");");
         try self.builder.writeLine("$display(\"Testbench complete\");");
         try self.builder.writeLine("$finish;");
         self.builder.decIndent();
         try self.builder.writeLine("end");
-        
+
         self.builder.decIndent();
         try self.builder.newline();
         try self.builder.writeLine("endmodule");
@@ -2499,7 +2573,7 @@ pub const VerilogCodeGen = struct {
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len > haystack.len) return false;
-    
+
     var i: usize = 0;
     while (i + needle.len <= haystack.len) : (i += 1) {
         var match = true;
@@ -2540,7 +2614,7 @@ fn mapTypeToVerilog(vibee_type: []const u8) []const u8 {
 pub fn generateVerilog(allocator: Allocator, spec: *const VibeeSpec) ![]const u8 {
     var codegen = VerilogCodeGen.init(allocator);
     defer codegen.deinit();
-    
+
     const output = try codegen.generate(spec);
     return try allocator.dupe(u8, output);
 }
@@ -2551,7 +2625,7 @@ pub fn generateVerilog(allocator: Allocator, spec: *const VibeeSpec) ![]const u8
 
 test "verilog type mapping" {
     const testing = std.testing;
-    
+
     try testing.expectEqualStrings("[63:0] // 64-bit signed", mapTypeToVerilog("Int"));
     try testing.expectEqualStrings("[63:0] // IEEE 754 double", mapTypeToVerilog("Float"));
     try testing.expectEqualStrings("[0:0] // 1-bit boolean", mapTypeToVerilog("Bool"));
