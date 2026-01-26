@@ -24,6 +24,8 @@ pub const VibeeSpec = struct {
     license: []const u8,
     targets: ArrayList([]const u8),
     fpga_target: []const u8, // generic, xilinx, intel, lattice
+    pipeline: []const u8, // none, auto, stage1, stage2
+    target_frequency: u32, // MHz
     constants: ArrayList(Constant),
     types: ArrayList(TypeDef),
     creation_patterns: ArrayList(CreationPattern),
@@ -45,6 +47,8 @@ pub const VibeeSpec = struct {
             .license = "",
             .targets = ArrayList([]const u8).init(allocator),
             .fpga_target = "generic",
+            .pipeline = "none",
+            .target_frequency = 100,
             .constants = ArrayList(Constant).init(allocator),
             .types = ArrayList(TypeDef).init(allocator),
             .creation_patterns = ArrayList(CreationPattern).init(allocator),
@@ -341,6 +345,15 @@ pub const VibeeParser = struct {
             } else if (std.mem.eql(u8, key, "fpga_target")) {
                 self.skipInlineWhitespace();
                 spec.fpga_target = self.readValue();
+                self.skipToNextLine();
+            } else if (std.mem.eql(u8, key, "pipeline")) {
+                self.skipInlineWhitespace();
+                spec.pipeline = self.readValue();
+                self.skipToNextLine();
+            } else if (std.mem.eql(u8, key, "target_frequency")) {
+                self.skipInlineWhitespace();
+                const val = self.readValue();
+                spec.target_frequency = std.fmt.parseInt(u32, val, 10) catch 100;
                 self.skipToNextLine();
             } else if (std.mem.eql(u8, key, "targets")) {
                 self.skipToNextLine();
