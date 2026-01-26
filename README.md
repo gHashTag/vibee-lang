@@ -20,7 +20,19 @@ VIBEE is a specification-first programming language that generates code from beh
 ```
 .vibee (specification) → vibee gen → .zig (auto-generated)
                        → vibee gen-multi → 42 languages!
+                       → vibee gen-hdl → Synthesizable Verilog
 ```
+
+## ⚡ FPGA / HDL / HLS (High-Level Synthesis)
+
+VIBEE is a powerful **HLS compiler** that turns high-level specifications into ready-to-synthesize **Verilog HDL**.
+
+- **Multi-Language Hardware:** Write logic in Python, Rust, or Go and get Verilog.
+- **Vendor Portability:** Built-in abstraction for **Xilinx (AMD)**, **Intel (Altera)**, and **Lattice**.
+- **Performance Reporting:** Cycle-accurate latency estimation and automated pipelining (`pipeline: auto`).
+- **BitNet Acceleration:** Optimized for ternary neural network inference on FPGA.
+
+[Read the Hardware Guide](docs/habr/HABR_ARTICLE_FPGA_COMPILER_EN.md) | [Technical Reference](docs/HARDWARE_HLS.md)
 
 ## 📦 Installation
 
@@ -161,6 +173,8 @@ vibee gen specs/tri/adder.vibee
 | **RAG Pipeline** | Retrieval-Augmented Generation | 16 | 99 |
 | **Agent Browser** | Chromium + Monaco + AI Agent | 32 | 200+ |
 | **GEN-MULTI** | Code generation for 42 languages | 42 | 350+ |
+| **FPGA / HLS** | Synthesizable Verilog generation | ✅ | READY |
+| **Cycle-Accurate**| Automated latency estimation | ✅ | READY |
 | **FFI System** | Integration with 40 languages | 40 | 350+ |
 | **E2E Pipeline v21** | Chrome CDP + Ollama LLM Agent | 4 | 35+ |
 | **BitNet Benchmark** | FPGA performance benchmarking | 12 | 50+ |
@@ -248,11 +262,10 @@ vibee-lang/
 ├── trinity-os/             # **Native Ternary OS (Web App)**
 ├── specs/tri/              # .vibee specifications (667+)
 ├── trinity/output/         # Generated Zig code (2000+)
+│   └── fpga/               # **Generated Verilog HDL + Testbenches**
 ├── src/vibeec/             # Compiler source
-│   ├── gen_cmd.zig         # Main generator
-│   ├── multi_lang_codegen.zig  # 42-language support
-│   ├── lang_generators.zig # Production generators
-│   └── vibee_parser.zig    # YAML parser
+│   ├── verilog_codegen.zig # **HLS / Verilog engine**
+│   └── vibee_parser.zig    # Specification parser
 ├── bin/vibee               # CLI binary
 ├── docs/                   # Documentation
 │   ├── TRINITY_PITCH_DECK.md # **Investor Deck**

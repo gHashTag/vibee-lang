@@ -13,14 +13,15 @@
 | [guides/VIBEE_LANGUAGE_GUIDE.md](guides/VIBEE_LANGUAGE_GUIDE.md) | **📖 VIBEE Language Reference** |
 | [core/](core/) | Core concepts, API |
 
-### 🔬 Technical Documentation
+| [scientific/](scientific/) | Scientific papers & references |
+| [habr/](habr/) | Habr articles (English: [FPGA Compiler](habr/HABR_ARTICLE_FPGA_COMPILER_EN.md)) |
+
+### ⚡ Hardware & HLS
 | Directory | Description |
 |-----------|-------------|
-| [igla/](igla/) | iGLA inference & training |
-| [koschei/](koschei/) | KOSCHEI autonomous system |
-| [browser/](browser/) | Agent Browser documentation |
-| [pas/](pas/) | PAS methodology |
-| [scientific/](scientific/) | Scientific papers & references |
+| [HARDWARE_HLS.md](HARDWARE_HLS.md) | **Technical Reference for FPGA/HLS** |
+| [habr/HABR_ARTICLE_FPGA_COMPILER_EN.md](habr/HABR_ARTICLE_FPGA_COMPILER_EN.md) | Universal FPGA Compiler Guide |
+| [trinity/fpga/](../trinity/output/fpga/) | Generated Verilog HDL core |
 
 ### 📊 Reports & Analysis
 | Directory | Description |
@@ -68,6 +69,8 @@
 - [KOSCHEI MODE](koschei/) - Autonomous self-evolution
 - [Agent Browser](browser/) - Chromium + Monaco + AI
 - [Habr Article: Golden Key](habr/HABR_ARTICLE_GOLDEN_KEY_V4.md)
+- [Habr Article: FPGA Compiler (EN)](habr/HABR_ARTICLE_FPGA_COMPILER_EN.md)
+- [Hardware & HLS Guide](HARDWARE_HLS.md)
 
 ### Technical
 - [API Reference](core/API.md)
