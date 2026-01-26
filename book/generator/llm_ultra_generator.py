@@ -10,7 +10,7 @@ import time
 import urllib.request
 from typing import Tuple
 
-DEEPSEEK_API_KEY = "sk-045135746e63422daac74a1a9f74e31f"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "your_deepseek_api_key_here")
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 OUTPUT_DIR = "/workspaces/vibee-lang/book/output"
 
