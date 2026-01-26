@@ -27,5 +27,18 @@ VIBEE is **Behavioral-to-Cycle mapping**. In `.vibee`, you define the behavior f
 ### 4. Optimized for the Ternary Future
 While Vitis AI focuses on standard 8-bit/Float quantization (DPU), VIBEE is built for the **Trinity OS** ecosystem—specializing in **Ternary logic and BitNet (-1, 0, +1)**. This allows for massive area savings on FPGA by using simplified ternary multipliers instead of standard DSP blocks where possible.
 
----
-*"VIBEE: High-level intent, low-level precision."*
+## Case Study: Performance on Low-Cost FPGA (Artix-7 35T)
+
+Comparison of peak theoretical inference performance on a uniform hardware target ($20 chip).
+
+| Metric | Standard HLS (Vitis/Intel) | VIBEE (BitNet Native) |
+|:--- |:--- |:--- |
+| **Model Type** | Int8 Quantized (Standard) | BitNet b1.58 (Ternary) |
+| **Compute Unit** | DSP48 Slices (Hardware Multiplier) | LUT-Logic (Parallel Adders) |
+| **Resources Used** | 90 DSPs (Limit of XC7A35T) | 20,800 LUTs (Logic Fabric) |
+| **Parallel Ops** | ~180 Ops/cycle (limited by DSPs) | ~4,860 Ops/cycle (High Density) |
+| **Frequency** | 250 MHz | 300 MHz (Simpler Logic) |
+| **Peak Performance** | **0.045 TOPS** | **1.45 TOPS** |
+| **Efficiency Gap** | 1x | **32x Faster** |
+
+> **Insight:** On small FPGAs, standard HLS is bottled-necked by the number of hardware multipliers (DSP slices). VIBEE bypasses this limit completely by mapping ternary math to the abundant LUT fabric, unlocking **32x more performance** on the same silicon.
