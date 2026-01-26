@@ -7,21 +7,34 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const is_legacy = (builtin.zig_version.minor <= 13);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // MAIN COMPILER EXECUTABLE
     // ═══════════════════════════════════════════════════════════════════════════
 
-    const exe = b.addExecutable(.{
-        .name = "vibeec",
-        .root_source_file = b.path("compiler.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const exe = if (is_legacy)
+        b.addExecutable(.{
+            .name = "vibeec",
+            .root_source_file = b.path("compiler.zig"),
+            .target = target,
+            .optimize = optimize,
+        })
+    else
+        b.addExecutable(.{
+            .name = "vibeec",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("compiler.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
 
     b.installArtifact(exe);
 
@@ -56,11 +69,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all VIBEEC tests");
 
     for (test_modules) |module| {
-        const unit_tests = b.addTest(.{
-            .root_source_file = b.path(module),
-            .target = target,
-            .optimize = optimize,
-        });
+        const unit_tests = if (is_legacy)
+            b.addTest(.{
+                .root_source_file = b.path(module),
+                .target = target,
+                .optimize = optimize,
+            })
+        else
+            b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(module),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
 
         const run_unit_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_unit_tests.step);
@@ -72,12 +94,22 @@ pub fn build(b: *std.Build) void {
 
     const docs_step = b.step("docs", "Generate documentation");
 
-    const docs = b.addStaticLibrary(.{
-        .name = "vibeec-docs",
-        .root_source_file = b.path("compiler.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const docs = if (is_legacy)
+        b.addStaticLibrary(.{
+            .name = "vibeec-docs",
+            .root_source_file = b.path("compiler.zig"),
+            .target = target,
+            .optimize = optimize,
+        })
+    else
+        b.addStaticLibrary(.{
+            .name = "vibeec-docs",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("compiler.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
 
     const install_docs = b.addInstallDirectory(.{
         .source_dir = docs.getEmittedDocs(),

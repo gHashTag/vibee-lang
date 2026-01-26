@@ -22,6 +22,71 @@ VIBEE is a specification-first programming language that generates code from beh
                        → vibee gen-multi → 42 languages!
 ```
 
+## 📦 Installation
+
+**Note:** Pre-built binaries in `bin/` are for Linux x86_64 with modern CPU extensions (AVX/SSE). If you get `Illegal instruction`, rebuild for your architecture:
+
+### Option 1: Automatic installer (recommended)
+```bash
+# Run bootstrap installer
+curl -sSL https://raw.githubusercontent.com/gHashTag/vibee-lang/main/install.sh | bash
+```
+
+### Option 2: Package Managers (Global)
+**macOS (Homebrew):**
+```bash
+brew install ghashtag/tap/vibee
+```
+
+**Windows (Chocolatey):**
+```bash
+choco install vibee
+```
+
+### Option 3: Docker (no Zig installation needed)
+```bash
+# Generate Verilog directly (multi-arch image)
+docker run --rm -v $(pwd):/app ghcr.io/ghashtag/vibee gen specs/tri/bitnet_top.vibee
+
+# Build image locally (supports amd64/arm64)
+docker buildx build --platform linux/amd64,linux/arm64 -t vibee .
+docker run --rm -v $(pwd):/app vibee gen specs/tri/bitnet_top.vibee
+
+# For single architecture (faster):
+# docker build -t vibee .
+```
+
+### Option 4: Manual build
+```bash
+# 1. Install Zig (v0.13.0 - v0.15.2 supported)
+# Ubuntu/Debian:
+sudo apt update && sudo apt install zig
+
+# macOS:
+brew install zig@0.13
+
+# Or download from ziglang.org
+
+# 2. Build compiler
+cd src/vibeec
+zig build -Doptimize=ReleaseSafe  # Safe for all CPUs
+cp zig-out/bin/vibeec ../../bin/vibee
+
+# 3. Verify
+cd ../..
+./bin/vibee --help
+```
+
+### Platform-specific binaries
+| Platform | Command | Notes |
+|----------|---------|-------|
+| **Linux x86_64** | `./bin/vibee` | Works on modern CPUs |
+| **macOS ARM64** | Rebuild with Zig | `zig build -Dtarget=aarch64-macos` |
+| **Windows WSL2** | Same as Linux | Use Ubuntu WSL2 |
+| **Docker** | `ghcr.io/ghashtag/vibee` | Multi-arch support |
+
+**Need help?** Open an issue or check [docs/INSTALLATION.md](docs/INSTALLATION.md).
+
 ## 🌍 GEN-MULTI: 42 Languages
 
 **One specification → 42 programming languages!**
@@ -64,12 +129,36 @@ zig test trinity/output/feature.zig
 cd trinity/output && ls *.zig | xargs -P 8 -I {} zig test {}
 ```
 
-## 🔥 Key Features (January 2026)
+## 🛠️ Tools
 
-| Feature | Description | Modules | Tests |
-|---------|-------------|---------|-------|
-| **iGLA v6 IMMORTAL** | 15000× inference speedup | 50+ | 300+ |
-| **KOSCHEI MODE** | Autonomous self-evolution | 114 | 766 |
+### py2vibee - Python to VIBEE Converter
+
+Convert Python code to `.vibee` specifications for FPGA/software targets:
+
+```bash
+# Convert Python to VIBEE spec
+py2vibee adder.py --target varlog --output adder.vibee
+
+# Generate Verilog from spec
+vibee gen specs/tri/adder.vibee
+```
+
+**Features:**
+- AST parsing & type inference
+- Multi-target: varlog, verilog, zig, python, rust, go
+- Hardware signal generation
+- BDD-style behavior specifications
+
+**Source:** `specs/tri/py2vibee.vibee` (auto-generated tool)
+
+## 🔥 Key Features (January 2026 - RELEASE)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Multi-Zig Support** | Compatible with Zig 0.13.0 up to 0.15.2 | ✅ READY |
+| **Global Distribution**| Brew & Chocolatey support | ✅ READY |
+| **iGLA v6 IMMORTAL** | 15000× inference speedup | ✅ READY |
+| **KOSCHEI MODE** | Autonomous self-evolution | ✅ READY |
 | **RAG Pipeline** | Retrieval-Augmented Generation | 16 | 99 |
 | **Agent Browser** | Chromium + Monaco + AI Agent | 32 | 200+ |
 | **GEN-MULTI** | Code generation for 42 languages | 42 | 350+ |
