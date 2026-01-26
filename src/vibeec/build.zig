@@ -102,13 +102,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         })
     else
-        b.addStaticLibrary(.{
+        b.addLibrary(.{
             .name = "vibeec-docs",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("compiler.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
+            .linkage = .static,
         });
 
     const install_docs = b.addInstallDirectory(.{
