@@ -531,8 +531,8 @@ git clone https://github.com/gHashTag/vibee-lang
 
 **Links:**
 - [VIBEE Repository](https://github.com/gHashTag/vibee-lang)
-- [Verilog Generation Documentation](/docs/VERILOG_CODEGEN.md)
-- [Example Specifications](/specs/tri/)
+- [Verilog Generation Documentation](https://github.com/gHashTag/vibee-lang/docs/VERILOG_CODEGEN.md)
+- [Example Specifications](https://github.com/gHashTag/vibee-lang/specs/tri/)
 
 ---
 
