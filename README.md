@@ -36,7 +36,7 @@ curl -sSL https://raw.githubusercontent.com/gHashTag/vibee-lang/main/install.sh 
 **macOS (Homebrew):**
 ```bash
 brew tap ghashtag/tap
-brew install --HEAD vibee
+brew install vibee
 ```
 
 **Windows (Chocolatey):**
