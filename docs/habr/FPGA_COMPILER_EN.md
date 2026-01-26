@@ -51,7 +51,7 @@ cd vibee-lang
 | Cadence Stratus HLS | $30,000–$50,000 | C, C++, SystemC | Yes |
 | **VIBEE** | **$0** | **Python, Rust, Go, TypeScript, Java, Zig, Swift, C#, Ruby, PHP, Lua, Perl, R, Haskell, OCaml, Elixir, Erlang, F#, Scala, Clojure, D, Nim, Crystal, Julia, Odin, Jai, V, Ada, Fortran, COBOL, Pascal, Objective-C, Groovy, Dart, Racket, Scheme, Common Lisp, Prolog, Gleam** | **No** |
 
-**Conclusion:** To start developing for FPGA, you need to pay $3,000–$50,000 and learn C/C++. And your code will be tied to a specific vendor.
+**Conclusion:** To use HLS tools (high-level synthesis from C/C++), you need to pay $3,000–$50,000, and your code will be vendor-locked. While free HDL tools like Vivado/Quartus exist for Verilog/SystemVerilog, the entry barrier remains high due to the steep learning curve of hardware description languages.
 
 ### Limitations of Traditional HLS
 
@@ -182,6 +182,7 @@ name: adder
 version: "1.0.0"
 language: varlog
 module: adder
+reset: none  # Optimization: No reset needed for data path
 
 types:
   AdderInput:
@@ -208,20 +209,17 @@ Get the ready module `trinity/output/fpga/adder.v`:
 ```verilog
 module adder(
     input wire a, b, carry_in,
-    input wire clk, rst_n,
+    input wire clk,
     output reg sum, carry_out
 );
     always @(posedge clk) begin
-        if (!rst_n) {sum, carry_out} <= 2'b0;
-        else begin
-            sum <= a ^ b ^ carry_in;
-            carry_out <= (a & b) | (a & carry_in) | (b & carry_in);
-        end
+        sum <= a ^ b ^ carry_in;
+        carry_out <= (a & b) | (a & carry_in) | (b & carry_in);
     end
 endmodule
 ```
 
-**Time:** 5 minutes instead of 5 hours of manual Verilog writing.
+**Time:** For a simple adder, the time savings are modest. Real efficiency gains appear with complex modules like `bitnet_top.vibee` (305 lines of spec → 666 lines of Verilog with FSM, AXI interfaces, testbench, and SVA assertions).
 
 ---
 
