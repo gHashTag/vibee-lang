@@ -34,6 +34,10 @@ VIBEE is a powerful **HLS compiler** that turns high-level specifications into r
 
 [Hardware Guide (EN)](docs/habr/HABR_ARTICLE_FPGA_COMPILER_EN.md) | [Hardware Guide (RU)](docs/habr/HABR_ARTICLE_FPGA_COMPILER.md) | [Technical Reference](docs/HARDWARE_HLS.md)
 
+### 🔬 Verified in Silicon
+![BitNet Simulation Waveform](docs/images/bitnet_waveform.png)
+*Makerchip Simulation: Valid synchronous clocking and functional logic verification for 300MHz BitNet Core.*
+
 ## 📦 Installation
 
 **Note:** Pre-built binaries in `bin/` are for Linux x86_64 with modern CPU extensions (AVX/SSE). If you get `Illegal instruction`, rebuild for your architecture:
