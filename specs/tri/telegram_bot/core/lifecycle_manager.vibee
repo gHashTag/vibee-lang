@@ -1,0 +1,473 @@
+name: lifecycle_manager
+version: "1.0.0"
+language: zig
+module: lifecycle_manager
+
+description: |
+  Lifecycle manager for VIBEE Telegram bot.
+  Application startup, shutdown, graceful termination.
+  Manages service initialization order and cleanup.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  LifecycleManager:
+    description: "Lifecycle manager"
+    fields:
+      config: ManagerConfig
+      services: Object
+      hooks: Object
+      state: AppState
+      stats: ManagerStats
+
+  ManagerConfig:
+    description: "Manager configuration"
+    fields:
+      startup_timeout_seconds: Int
+      shutdown_timeout_seconds: Int
+      graceful_shutdown: Bool
+      parallel_init: Bool
+      max_init_retries: Int
+
+  ManagerStats:
+    description: "Manager statistics"
+    fields:
+      startup_time_ms: Int
+      shutdown_time_ms: Int
+      services_initialized: Int
+      services_failed: Int
+      restarts: Int
+      uptime_seconds: Int
+
+  AppState:
+    description: "Application state"
+    values:
+      - created
+      - initializing
+      - running
+      - stopping
+      - stopped
+      - failed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ManagedService:
+    description: "Managed service"
+    fields:
+      service_id: String
+      name: String
+      priority: Int
+      dependencies: List<String>
+      state: ServiceState
+      init_time_ms: Int
+      shutdown_time_ms: Int
+      error: Option<String>
+
+  ServiceState:
+    description: "Service state"
+    values:
+      - pending
+      - initializing
+      - running
+      - stopping
+      - stopped
+      - failed
+
+  ServiceGroup:
+    description: "Service group"
+    fields:
+      group_id: String
+      name: String
+      services: List<String>
+      init_order: InitOrder
+      state: ServiceState
+
+  InitOrder:
+    description: "Initialization order"
+    values:
+      - sequential
+      - parallel
+      - dependency_based
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LifecycleHook:
+    description: "Lifecycle hook"
+    fields:
+      hook_id: String
+      name: String
+      hook_type: HookType
+      priority: Int
+      timeout_ms: Int
+      is_async: Bool
+
+  HookType:
+    description: "Hook type"
+    values:
+      - pre_init
+      - post_init
+      - pre_start
+      - post_start
+      - pre_stop
+      - post_stop
+      - pre_shutdown
+      - post_shutdown
+
+  HookResult:
+    description: "Hook result"
+    fields:
+      hook_id: String
+      success: Bool
+      duration_ms: Int
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STARTUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StartupPlan:
+    description: "Startup plan"
+    fields:
+      plan_id: String
+      phases: List<StartupPhase>
+      total_services: Int
+      estimated_time_ms: Int
+
+  StartupPhase:
+    description: "Startup phase"
+    fields:
+      phase_id: String
+      name: String
+      services: List<String>
+      is_parallel: Bool
+      timeout_ms: Int
+
+  StartupProgress:
+    description: "Startup progress"
+    fields:
+      current_phase: Int
+      total_phases: Int
+      services_initialized: Int
+      total_services: Int
+      current_service: Option<String>
+      elapsed_ms: Int
+      errors: List<StartupError>
+
+  StartupError:
+    description: "Startup error"
+    fields:
+      service_id: String
+      error: String
+      is_fatal: Bool
+      retry_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SHUTDOWN
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ShutdownPlan:
+    description: "Shutdown plan"
+    fields:
+      plan_id: String
+      phases: List<ShutdownPhase>
+      total_services: Int
+      estimated_time_ms: Int
+
+  ShutdownPhase:
+    description: "Shutdown phase"
+    fields:
+      phase_id: String
+      name: String
+      services: List<String>
+      drain_timeout_ms: Int
+      force_after_ms: Int
+
+  ShutdownProgress:
+    description: "Shutdown progress"
+    fields:
+      current_phase: Int
+      total_phases: Int
+      services_stopped: Int
+      total_services: Int
+      current_service: Option<String>
+      elapsed_ms: Int
+      forced: Bool
+
+  ShutdownReason:
+    description: "Shutdown reason"
+    values:
+      - user_request
+      - signal
+      - error
+      - maintenance
+      - restart
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SIGNALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Signal:
+    description: "System signal"
+    values:
+      - sigint
+      - sigterm
+      - sighup
+      - sigusr1
+      - sigusr2
+
+  SignalHandler:
+    description: "Signal handler"
+    fields:
+      signal: Signal
+      action: SignalAction
+      is_registered: Bool
+
+  SignalAction:
+    description: "Signal action"
+    values:
+      - shutdown
+      - reload
+      - ignore
+      - custom
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESTART
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RestartPolicy:
+    description: "Restart policy"
+    fields:
+      policy_type: RestartPolicyType
+      max_restarts: Int
+      restart_window_seconds: Int
+      backoff_multiplier: Float
+      max_backoff_seconds: Int
+
+  RestartPolicyType:
+    description: "Restart policy type"
+    values:
+      - never
+      - on_failure
+      - always
+      - unless_stopped
+
+  RestartEvent:
+    description: "Restart event"
+    fields:
+      event_id: String
+      service_id: Option<String>
+      reason: String
+      attempt: Int
+      timestamp: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LifecycleError:
+    description: "Lifecycle error"
+    fields:
+      code: ErrorCode
+      message: String
+      service_id: Option<String>
+      phase: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - init_failed
+      - shutdown_failed
+      - timeout
+      - dependency_failed
+      - hook_failed
+      - invalid_state
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_manager
+    given: ManagerConfig
+    when: Creating manager
+    then: Return LifecycleManager
+
+  - name: get_state
+    given: No parameters
+    when: Getting state
+    then: Return AppState
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return ManagerStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_service
+    given: ManagedService
+    when: Registering service
+    then: Return success
+
+  - name: unregister_service
+    given: Service ID
+    when: Unregistering service
+    then: Return success
+
+  - name: get_service_state
+    given: Service ID
+    when: Getting service state
+    then: Return ServiceState
+
+  - name: get_all_services
+    given: No parameters
+    when: Getting all services
+    then: Return service list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HOOKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_hook
+    given: LifecycleHook
+    when: Registering hook
+    then: Return success
+
+  - name: unregister_hook
+    given: Hook ID
+    when: Unregistering hook
+    then: Return success
+
+  - name: get_hooks
+    given: HookType
+    when: Getting hooks
+    then: Return hook list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STARTUP
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start
+    given: No parameters
+    when: Starting application
+    then: Return StartupProgress
+
+  - name: get_startup_plan
+    given: No parameters
+    when: Getting startup plan
+    then: Return StartupPlan
+
+  - name: get_startup_progress
+    given: No parameters
+    when: Getting progress
+    then: Return StartupProgress
+
+  - name: wait_for_ready
+    given: Timeout
+    when: Waiting for ready
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SHUTDOWN
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: shutdown
+    given: ShutdownReason
+    when: Shutting down
+    then: Return ShutdownProgress
+
+  - name: force_shutdown
+    given: No parameters
+    when: Force shutting down
+    then: Return success
+
+  - name: get_shutdown_plan
+    given: No parameters
+    when: Getting shutdown plan
+    then: Return ShutdownPlan
+
+  - name: get_shutdown_progress
+    given: No parameters
+    when: Getting progress
+    then: Return ShutdownProgress
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SIGNALS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_signal_handler
+    given: Signal and action
+    when: Registering handler
+    then: Return SignalHandler
+
+  - name: handle_signal
+    given: Signal
+    when: Handling signal
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESTART
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: restart
+    given: Reason
+    when: Restarting
+    then: Return RestartEvent
+
+  - name: restart_service
+    given: Service ID
+    when: Restarting service
+    then: Return success
+
+  - name: set_restart_policy
+    given: RestartPolicy
+    when: Setting policy
+    then: Return success
+
+  - name: get_restart_history
+    given: Limit
+    when: Getting history
+    then: Return event list
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_STARTUP_TIMEOUT: 60
+  DEFAULT_SHUTDOWN_TIMEOUT: 30
+  DEFAULT_MAX_INIT_RETRIES: 3
+
+  # Priorities (lower = earlier)
+  PRIORITY_DATABASE: 10
+  PRIORITY_CACHE: 20
+  PRIORITY_EVENT_BUS: 30
+  PRIORITY_SERVICES: 50
+  PRIORITY_HANDLERS: 70
+  PRIORITY_SCHEDULER: 80
+  PRIORITY_HTTP_SERVER: 90
+
+  # Phases
+  PHASE_CORE: "core"
+  PHASE_STORAGE: "storage"
+  PHASE_SERVICES: "services"
+  PHASE_HANDLERS: "handlers"
+  PHASE_NETWORK: "network"
+
+  # Restart
+  DEFAULT_MAX_RESTARTS: 5
+  DEFAULT_RESTART_WINDOW: 300
+  DEFAULT_BACKOFF_MULTIPLIER: 2.0
+  DEFAULT_MAX_BACKOFF: 300

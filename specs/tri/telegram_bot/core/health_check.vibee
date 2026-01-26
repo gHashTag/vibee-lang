@@ -1,0 +1,398 @@
+name: health_check
+version: "1.0.0"
+language: zig
+module: health_check
+
+description: |
+  Health check system for VIBEE Telegram bot.
+  Service health, readiness/liveness probes, metrics.
+  Kubernetes-compatible health endpoints.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  HealthChecker:
+    description: "Health checker"
+    fields:
+      config: CheckerConfig
+      checks: Object
+      stats: CheckerStats
+      is_running: Bool
+
+  CheckerConfig:
+    description: "Checker configuration"
+    fields:
+      check_interval_seconds: Int
+      timeout_seconds: Int
+      failure_threshold: Int
+      success_threshold: Int
+      enable_metrics: Bool
+
+  CheckerStats:
+    description: "Checker statistics"
+    fields:
+      total_checks: Int
+      healthy_services: Int
+      unhealthy_services: Int
+      degraded_services: Int
+      last_check_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH STATUS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthStatus:
+    description: "Overall health status"
+    fields:
+      status: Status
+      version: String
+      uptime_seconds: Int
+      checks: List<CheckResult>
+      timestamp: Timestamp
+
+  Status:
+    description: "Status"
+    values:
+      - healthy
+      - degraded
+      - unhealthy
+
+  CheckResult:
+    description: "Check result"
+    fields:
+      name: String
+      status: Status
+      message: Option<String>
+      duration_ms: Int
+      last_success: Option<Timestamp>
+      last_failure: Option<Timestamp>
+      consecutive_failures: Int
+      metadata: Object
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthCheck:
+    description: "Health check definition"
+    fields:
+      check_id: String
+      name: String
+      check_type: CheckType
+      target: String
+      interval_seconds: Int
+      timeout_seconds: Int
+      is_critical: Bool
+      is_enabled: Bool
+      config: Object
+
+  CheckType:
+    description: "Check type"
+    values:
+      - tcp
+      - http
+      - database
+      - redis
+      - custom
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROBES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  LivenessProbe:
+    description: "Liveness probe result"
+    fields:
+      alive: Bool
+      message: Option<String>
+      timestamp: Timestamp
+
+  ReadinessProbe:
+    description: "Readiness probe result"
+    fields:
+      ready: Bool
+      message: Option<String>
+      dependencies: List<DependencyStatus>
+      timestamp: Timestamp
+
+  DependencyStatus:
+    description: "Dependency status"
+    fields:
+      name: String
+      status: Status
+      latency_ms: Option<Int>
+
+  StartupProbe:
+    description: "Startup probe result"
+    fields:
+      started: Bool
+      progress: Int
+      message: Option<String>
+      timestamp: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthMetrics:
+    description: "Health metrics"
+    fields:
+      uptime_seconds: Int
+      memory_used_bytes: Int
+      memory_total_bytes: Int
+      cpu_usage_percent: Float
+      goroutines: Int
+      open_connections: Int
+      request_count: Int
+      error_count: Int
+      avg_response_time_ms: Float
+
+  ServiceMetrics:
+    description: "Service metrics"
+    fields:
+      service_name: String
+      requests_total: Int
+      requests_success: Int
+      requests_failed: Int
+      latency_p50_ms: Float
+      latency_p95_ms: Float
+      latency_p99_ms: Float
+      error_rate: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ALERTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthAlert:
+    description: "Health alert"
+    fields:
+      alert_id: String
+      check_name: String
+      severity: AlertSeverity
+      message: String
+      triggered_at: Timestamp
+      resolved_at: Option<Timestamp>
+      acknowledged: Bool
+
+  AlertSeverity:
+    description: "Alert severity"
+    values:
+      - info
+      - warning
+      - critical
+
+  AlertRule:
+    description: "Alert rule"
+    fields:
+      rule_id: String
+      check_name: String
+      condition: AlertCondition
+      severity: AlertSeverity
+      notification_channels: List<String>
+      cooldown_seconds: Int
+      is_enabled: Bool
+
+  AlertCondition:
+    description: "Alert condition"
+    fields:
+      metric: String
+      operator: ComparisonOperator
+      threshold: Float
+      duration_seconds: Int
+
+  ComparisonOperator:
+    description: "Comparison operator"
+    values:
+      - greater_than
+      - less_than
+      - equals
+      - not_equals
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  HealthError:
+    description: "Health error"
+    fields:
+      code: ErrorCode
+      message: String
+      check_name: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - check_not_found
+      - check_timeout
+      - check_failed
+      - invalid_config
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_checker
+    given: CheckerConfig
+    when: Creating checker
+    then: Return HealthChecker
+
+  - name: start
+    given: No parameters
+    when: Starting checker
+    then: Start background checks
+
+  - name: stop
+    given: No parameters
+    when: Stopping checker
+    then: Stop background checks
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return CheckerStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH CHECKS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_check
+    given: HealthCheck
+    when: Registering check
+    then: Return success
+
+  - name: unregister_check
+    given: Check ID
+    when: Unregistering check
+    then: Return success
+
+  - name: run_check
+    given: Check ID
+    when: Running check
+    then: Return CheckResult
+
+  - name: run_all_checks
+    given: No parameters
+    when: Running all checks
+    then: Return result list
+
+  - name: get_check_history
+    given: Check ID and limit
+    when: Getting history
+    then: Return result list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PROBES
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: liveness
+    given: No parameters
+    when: Checking liveness
+    then: Return LivenessProbe
+
+  - name: readiness
+    given: No parameters
+    when: Checking readiness
+    then: Return ReadinessProbe
+
+  - name: startup
+    given: No parameters
+    when: Checking startup
+    then: Return StartupProbe
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # STATUS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_health
+    given: No parameters
+    when: Getting health
+    then: Return HealthStatus
+
+  - name: get_check_status
+    given: Check ID
+    when: Getting check status
+    then: Return CheckResult
+
+  - name: is_healthy
+    given: No parameters
+    when: Checking if healthy
+    then: Return boolean
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_metrics
+    given: No parameters
+    when: Getting metrics
+    then: Return HealthMetrics
+
+  - name: get_service_metrics
+    given: Service name
+    when: Getting service metrics
+    then: Return ServiceMetrics
+
+  - name: record_request
+    given: Service name and duration
+    when: Recording request
+    then: Return success
+
+  - name: record_error
+    given: Service name and error
+    when: Recording error
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ALERTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_alert_rule
+    given: AlertRule
+    when: Creating rule
+    then: Return success
+
+  - name: get_active_alerts
+    given: No parameters
+    when: Getting alerts
+    then: Return alert list
+
+  - name: acknowledge_alert
+    given: Alert ID
+    when: Acknowledging
+    then: Return success
+
+  - name: resolve_alert
+    given: Alert ID
+    when: Resolving
+    then: Return success
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CHECK_INTERVAL: 30
+  DEFAULT_TIMEOUT: 10
+  DEFAULT_FAILURE_THRESHOLD: 3
+  DEFAULT_SUCCESS_THRESHOLD: 1
+
+  # Check names
+  CHECK_DATABASE: "database"
+  CHECK_REDIS: "redis"
+  CHECK_TELEGRAM_API: "telegram_api"
+  CHECK_REPLICATE_API: "replicate_api"
+  CHECK_OPENAI_API: "openai_api"
+  CHECK_STORAGE: "storage"
+  CHECK_SCHEDULER: "scheduler"
+
+  # Endpoints
+  ENDPOINT_HEALTH: "/health"
+  ENDPOINT_LIVENESS: "/health/live"
+  ENDPOINT_READINESS: "/health/ready"
+  ENDPOINT_METRICS: "/metrics"

@@ -1,0 +1,471 @@
+name: event_bus
+version: "1.0.0"
+language: zig
+module: event_bus
+
+description: |
+  Event bus for VIBEE Telegram bot.
+  Pub/sub messaging, event sourcing, async handlers.
+  Decouples services through event-driven architecture.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  EventBus:
+    description: "Event bus"
+    fields:
+      config: BusConfig
+      subscriptions: Object
+      event_store: Option<Object>
+      dead_letter_queue: Object
+      stats: BusStats
+      is_running: Bool
+
+  BusConfig:
+    description: "Bus configuration"
+    fields:
+      max_subscribers_per_event: Int
+      max_queue_size: Int
+      enable_persistence: Bool
+      enable_dead_letter: Bool
+      retry_attempts: Int
+      retry_delay_ms: Int
+      async_dispatch: Bool
+
+  BusStats:
+    description: "Bus statistics"
+    fields:
+      events_published: Int
+      events_delivered: Int
+      events_failed: Int
+      active_subscriptions: Int
+      dead_letter_count: Int
+      avg_delivery_time_ms: Float
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENTS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Event:
+    description: "Event"
+    fields:
+      event_id: String
+      event_type: String
+      source: String
+      timestamp: Timestamp
+      correlation_id: Option<String>
+      causation_id: Option<String>
+      payload: Object
+      metadata: EventMetadata
+
+  EventMetadata:
+    description: "Event metadata"
+    fields:
+      version: Int
+      user_id: Option<Int>
+      session_id: Option<String>
+      trace_id: Option<String>
+      tags: List<String>
+
+  EventEnvelope:
+    description: "Event envelope"
+    fields:
+      event: Event
+      delivery_count: Int
+      first_delivery_at: Timestamp
+      last_delivery_at: Option<Timestamp>
+      status: DeliveryStatus
+
+  DeliveryStatus:
+    description: "Delivery status"
+    values:
+      - pending
+      - delivered
+      - failed
+      - dead_lettered
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Subscription:
+    description: "Event subscription"
+    fields:
+      subscription_id: String
+      event_type: String
+      handler_id: String
+      filter: Option<EventFilter>
+      priority: Int
+      is_async: Bool
+      is_active: Bool
+      created_at: Timestamp
+
+  EventFilter:
+    description: "Event filter"
+    fields:
+      source_pattern: Option<String>
+      payload_conditions: Option<Object>
+      metadata_conditions: Option<Object>
+
+  SubscriptionOptions:
+    description: "Subscription options"
+    fields:
+      priority: Option<Int>
+      is_async: Option<Bool>
+      filter: Option<EventFilter>
+      error_handler: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HANDLERS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  EventHandler:
+    description: "Event handler"
+    fields:
+      handler_id: String
+      name: String
+      handler_type: HandlerType
+      subscribed_events: List<String>
+      is_active: Bool
+
+  HandlerType:
+    description: "Handler type"
+    values:
+      - sync
+      - async
+      - saga
+      - projection
+
+  HandlerResult:
+    description: "Handler result"
+    fields:
+      success: Bool
+      handler_id: String
+      execution_time_ms: Int
+      error: Option<String>
+      events_produced: List<Event>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PUBLISHING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  PublishOptions:
+    description: "Publish options"
+    fields:
+      correlation_id: Option<String>
+      delay_ms: Option<Int>
+      priority: Option<Int>
+      persist: Option<Bool>
+
+  PublishResult:
+    description: "Publish result"
+    fields:
+      event_id: String
+      subscribers_notified: Int
+      persisted: Bool
+      timestamp: Timestamp
+
+  BatchPublishResult:
+    description: "Batch publish result"
+    fields:
+      total: Int
+      successful: Int
+      failed: Int
+      results: List<PublishResult>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENT STORE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  StoredEvent:
+    description: "Stored event"
+    fields:
+      sequence_number: Int
+      event: Event
+      stored_at: Timestamp
+
+  EventStream:
+    description: "Event stream"
+    fields:
+      stream_id: String
+      stream_type: String
+      events: List<StoredEvent>
+      version: Int
+      created_at: Timestamp
+      updated_at: Timestamp
+
+  StreamQuery:
+    description: "Stream query"
+    fields:
+      stream_id: Option<String>
+      event_types: Option<List<String>>
+      from_sequence: Option<Int>
+      to_sequence: Option<Int>
+      from_timestamp: Option<Timestamp>
+      to_timestamp: Option<Timestamp>
+      limit: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEAD LETTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  DeadLetterEntry:
+    description: "Dead letter entry"
+    fields:
+      entry_id: String
+      event: Event
+      subscription_id: String
+      error: String
+      attempts: Int
+      dead_lettered_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SAGAS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Saga:
+    description: "Saga definition"
+    fields:
+      saga_id: String
+      name: String
+      steps: List<SagaStep>
+      compensation_steps: List<SagaStep>
+      timeout_ms: Int
+      is_active: Bool
+
+  SagaStep:
+    description: "Saga step"
+    fields:
+      step_id: String
+      step_order: Int
+      event_type: String
+      handler_id: String
+      compensation_handler_id: Option<String>
+
+  SagaInstance:
+    description: "Saga instance"
+    fields:
+      instance_id: String
+      saga_id: String
+      correlation_id: String
+      current_step: Int
+      status: SagaStatus
+      data: Object
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  SagaStatus:
+    description: "Saga status"
+    values:
+      - running
+      - completed
+      - compensating
+      - failed
+      - cancelled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  EventError:
+    description: "Event error"
+    fields:
+      code: ErrorCode
+      message: String
+      event_id: Option<String>
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - invalid_event
+      - handler_not_found
+      - handler_error
+      - queue_full
+      - persistence_error
+      - timeout
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_bus
+    given: BusConfig
+    when: Creating bus
+    then: Return EventBus
+
+  - name: start
+    given: No parameters
+    when: Starting bus
+    then: Start processing
+
+  - name: stop
+    given: No parameters
+    when: Stopping bus
+    then: Stop processing
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return BusStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PUBLISHING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: publish
+    given: Event
+    when: Publishing event
+    then: Return PublishResult
+
+  - name: publish_with_options
+    given: Event and PublishOptions
+    when: Publishing with options
+    then: Return PublishResult
+
+  - name: publish_batch
+    given: Event list
+    when: Publishing batch
+    then: Return BatchPublishResult
+
+  - name: publish_delayed
+    given: Event and delay
+    when: Publishing delayed
+    then: Return PublishResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SUBSCRIPTIONS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: subscribe
+    given: Event type and handler
+    when: Subscribing
+    then: Return Subscription
+
+  - name: subscribe_with_options
+    given: Event type, handler, options
+    when: Subscribing with options
+    then: Return Subscription
+
+  - name: unsubscribe
+    given: Subscription ID
+    when: Unsubscribing
+    then: Return success
+
+  - name: get_subscriptions
+    given: Event type
+    when: Getting subscriptions
+    then: Return subscription list
+
+  - name: pause_subscription
+    given: Subscription ID
+    when: Pausing
+    then: Return success
+
+  - name: resume_subscription
+    given: Subscription ID
+    when: Resuming
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # EVENT STORE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_events
+    given: StreamQuery
+    when: Getting events
+    then: Return event list
+
+  - name: get_stream
+    given: Stream ID
+    when: Getting stream
+    then: Return EventStream
+
+  - name: append_to_stream
+    given: Stream ID and events
+    when: Appending
+    then: Return success
+
+  - name: replay_events
+    given: StreamQuery and handler
+    when: Replaying
+    then: Return replayed count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DEAD LETTER
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_dead_letters
+    given: Limit
+    when: Getting dead letters
+    then: Return entry list
+
+  - name: retry_dead_letter
+    given: Entry ID
+    when: Retrying
+    then: Return success
+
+  - name: purge_dead_letters
+    given: Before timestamp
+    when: Purging
+    then: Return purged count
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SAGAS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register_saga
+    given: Saga definition
+    when: Registering saga
+    then: Return Saga
+
+  - name: start_saga
+    given: Saga ID and initial event
+    when: Starting saga
+    then: Return SagaInstance
+
+  - name: get_saga_instance
+    given: Instance ID
+    when: Getting instance
+    then: Return SagaInstance
+
+  - name: compensate_saga
+    given: Instance ID
+    when: Compensating
+    then: Return success
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_SUBSCRIBERS: 100
+  DEFAULT_QUEUE_SIZE: 10000
+  DEFAULT_RETRY_ATTEMPTS: 3
+  DEFAULT_RETRY_DELAY_MS: 1000
+
+  # Event types
+  EVENT_USER_CREATED: "user.created"
+  EVENT_USER_UPDATED: "user.updated"
+  EVENT_GENERATION_STARTED: "generation.started"
+  EVENT_GENERATION_COMPLETED: "generation.completed"
+  EVENT_GENERATION_FAILED: "generation.failed"
+  EVENT_PAYMENT_RECEIVED: "payment.received"
+  EVENT_SUBSCRIPTION_CREATED: "subscription.created"
+  EVENT_SUBSCRIPTION_CANCELLED: "subscription.cancelled"
+  EVENT_AVATAR_CREATED: "avatar.created"
+  EVENT_MESSAGE_RECEIVED: "message.received"
+  EVENT_COMMAND_EXECUTED: "command.executed"
+
+  # Sources
+  SOURCE_TELEGRAM: "telegram"
+  SOURCE_WEBHOOK: "webhook"
+  SOURCE_SCHEDULER: "scheduler"
+  SOURCE_ADMIN: "admin"

@@ -1,0 +1,419 @@
+name: service_registry
+version: "1.0.0"
+language: zig
+module: service_registry
+
+description: |
+  Service registry for VIBEE Telegram bot.
+  Dependency injection container, service locator pattern.
+  Manages service lifecycle, dependencies, lazy initialization.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  ServiceRegistry:
+    description: "Service registry container"
+    fields:
+      config: RegistryConfig
+      services: Object
+      factories: Object
+      singletons: Object
+      dependencies: Object
+      stats: RegistryStats
+      is_initialized: Bool
+
+  RegistryConfig:
+    description: "Registry configuration"
+    fields:
+      enable_lazy_loading: Bool
+      enable_circular_detection: Bool
+      default_scope: ServiceScope
+      max_resolution_depth: Int
+      enable_auto_dispose: Bool
+
+  RegistryStats:
+    description: "Registry statistics"
+    fields:
+      registered_services: Int
+      resolved_services: Int
+      singleton_instances: Int
+      resolution_errors: Int
+      avg_resolution_time_ns: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE DEFINITION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ServiceDefinition:
+    description: "Service definition"
+    fields:
+      service_id: String
+      service_type: String
+      implementation_type: String
+      scope: ServiceScope
+      factory: Option<String>
+      dependencies: List<String>
+      tags: List<String>
+      priority: Int
+      is_lazy: Bool
+      is_optional: Bool
+      metadata: Object
+
+  ServiceScope:
+    description: "Service scope"
+    values:
+      - singleton
+      - scoped
+      - transient
+
+  ServiceInstance:
+    description: "Service instance"
+    fields:
+      service_id: String
+      instance: Object
+      scope: ServiceScope
+      created_at: Timestamp
+      last_accessed_at: Timestamp
+      access_count: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REGISTRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  RegisterInput:
+    description: "Register input"
+    fields:
+      service_id: String
+      service_type: String
+      implementation: Option<Object>
+      factory: Option<String>
+      scope: Option<ServiceScope>
+      dependencies: Option<List<String>>
+      tags: Option<List<String>>
+      priority: Option<Int>
+
+  RegisterResult:
+    description: "Register result"
+    fields:
+      success: Bool
+      service_id: String
+      replaced: Bool
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESOLUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ResolveOptions:
+    description: "Resolve options"
+    fields:
+      throw_on_missing: Bool
+      use_cache: Bool
+      scope_context: Option<String>
+
+  ResolveResult:
+    description: "Resolve result"
+    fields:
+      success: Bool
+      instance: Option<Object>
+      from_cache: Bool
+      resolution_time_ns: Int
+      error: Option<ResolutionError>
+
+  ResolutionError:
+    description: "Resolution error"
+    fields:
+      code: ErrorCode
+      message: String
+      service_id: String
+      dependency_chain: List<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - service_not_found
+      - circular_dependency
+      - factory_error
+      - dependency_error
+      - scope_mismatch
+      - max_depth_exceeded
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCOPE CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ScopeContext:
+    description: "Scope context"
+    fields:
+      context_id: String
+      parent_context_id: Option<String>
+      instances: Object
+      created_at: Timestamp
+      is_disposed: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SERVICE GROUPS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ServiceGroup:
+    description: "Service group"
+    fields:
+      group_id: String
+      name: String
+      services: List<String>
+      initialization_order: List<String>
+      is_initialized: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DECORATORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ServiceDecorator:
+    description: "Service decorator"
+    fields:
+      decorator_id: String
+      target_service: String
+      decorator_type: DecoratorType
+      wrapper: Object
+      priority: Int
+
+  DecoratorType:
+    description: "Decorator type"
+    values:
+      - logging
+      - caching
+      - retry
+      - circuit_breaker
+      - metrics
+      - custom
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ServiceHealth:
+    description: "Service health"
+    fields:
+      service_id: String
+      status: HealthStatus
+      last_check: Timestamp
+      error: Option<String>
+      metrics: Object
+
+  HealthStatus:
+    description: "Health status"
+    values:
+      - healthy
+      - degraded
+      - unhealthy
+      - unknown
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_registry
+    given: RegistryConfig
+    when: Creating registry
+    then: Return ServiceRegistry
+
+  - name: initialize
+    given: No parameters
+    when: Initializing registry
+    then: Initialize all eager services
+
+  - name: dispose
+    given: No parameters
+    when: Disposing registry
+    then: Dispose all services
+
+  - name: get_stats
+    given: No parameters
+    when: Getting statistics
+    then: Return RegistryStats
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REGISTRATION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: register
+    given: RegisterInput
+    when: Registering service
+    then: Return RegisterResult
+
+  - name: register_singleton
+    given: Service ID and instance
+    when: Registering singleton
+    then: Return RegisterResult
+
+  - name: register_factory
+    given: Service ID and factory
+    when: Registering factory
+    then: Return RegisterResult
+
+  - name: register_transient
+    given: Service ID and type
+    when: Registering transient
+    then: Return RegisterResult
+
+  - name: unregister
+    given: Service ID
+    when: Unregistering service
+    then: Return success
+
+  - name: is_registered
+    given: Service ID
+    when: Checking registration
+    then: Return boolean
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # RESOLUTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: resolve
+    given: Service ID
+    when: Resolving service
+    then: Return instance
+
+  - name: resolve_optional
+    given: Service ID
+    when: Resolving optional
+    then: Return optional instance
+
+  - name: resolve_all
+    given: Service type
+    when: Resolving all
+    then: Return instance list
+
+  - name: resolve_by_tag
+    given: Tag
+    when: Resolving by tag
+    then: Return instance list
+
+  - name: try_resolve
+    given: Service ID and options
+    when: Trying to resolve
+    then: Return ResolveResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SCOPE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_scope
+    given: Optional parent context
+    when: Creating scope
+    then: Return ScopeContext
+
+  - name: dispose_scope
+    given: Context ID
+    when: Disposing scope
+    then: Return success
+
+  - name: resolve_scoped
+    given: Service ID and context
+    when: Resolving scoped
+    then: Return instance
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GROUPS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_group
+    given: Group name and services
+    when: Creating group
+    then: Return ServiceGroup
+
+  - name: initialize_group
+    given: Group ID
+    when: Initializing group
+    then: Return success
+
+  - name: dispose_group
+    given: Group ID
+    when: Disposing group
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DECORATORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: add_decorator
+    given: ServiceDecorator
+    when: Adding decorator
+    then: Return success
+
+  - name: remove_decorator
+    given: Decorator ID
+    when: Removing decorator
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # HEALTH
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: check_health
+    given: Service ID
+    when: Checking health
+    then: Return ServiceHealth
+
+  - name: check_all_health
+    given: No parameters
+    when: Checking all health
+    then: Return health list
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INTROSPECTION
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_definition
+    given: Service ID
+    when: Getting definition
+    then: Return ServiceDefinition
+
+  - name: get_all_definitions
+    given: No parameters
+    when: Getting all definitions
+    then: Return definition list
+
+  - name: get_dependency_graph
+    given: Service ID
+    when: Getting dependencies
+    then: Return dependency tree
+
+  - name: validate_dependencies
+    given: No parameters
+    when: Validating dependencies
+    then: Return validation result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_MAX_RESOLUTION_DEPTH: 20
+  DEFAULT_SCOPE: "singleton"
+
+  # Service IDs
+  SERVICE_DATABASE: "database"
+  SERVICE_CACHE: "cache"
+  SERVICE_STORAGE: "storage"
+  SERVICE_TELEGRAM: "telegram_client"
+  SERVICE_REPLICATE: "replicate_client"
+  SERVICE_OPENAI: "openai_client"
+  SERVICE_ELEVENLABS: "elevenlabs_client"
+  SERVICE_EVENT_BUS: "event_bus"
+  SERVICE_SCHEDULER: "scheduler"
+  SERVICE_NOTIFICATION: "notification_service"
+
+  # Groups
+  GROUP_CORE: "core"
+  GROUP_AI: "ai_providers"
+  GROUP_STORAGE: "storage"
+  GROUP_HANDLERS: "handlers"

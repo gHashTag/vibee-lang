@@ -1,0 +1,469 @@
+name: app_context
+version: "1.0.0"
+language: zig
+module: app_context
+
+description: |
+  Application context for VIBEE Telegram bot.
+  Request context, middleware chain, scoped services.
+  Carries request-specific data through the pipeline.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  AppContext:
+    description: "Application context"
+    fields:
+      context_id: String
+      request_id: String
+      trace_id: String
+      user: Option<UserContext>
+      telegram: Option<TelegramContext>
+      services: Object
+      state: Object
+      metadata: ContextMetadata
+      created_at: Timestamp
+
+  ContextMetadata:
+    description: "Context metadata"
+    fields:
+      source: ContextSource
+      platform: String
+      client_version: Option<String>
+      locale: String
+      timezone: String
+      feature_flags: Object
+
+  ContextSource:
+    description: "Context source"
+    values:
+      - telegram_update
+      - webhook
+      - api_request
+      - scheduled_job
+      - internal
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  UserContext:
+    description: "User context"
+    fields:
+      user_id: String
+      telegram_id: Int
+      username: Option<String>
+      role: String
+      subscription_tier: Option<String>
+      permissions: List<String>
+      preferences: UserPreferences
+      session: Option<SessionContext>
+
+  UserPreferences:
+    description: "User preferences"
+    fields:
+      language: String
+      timezone: String
+      notification_enabled: Bool
+      response_mode: String
+
+  SessionContext:
+    description: "Session context"
+    fields:
+      session_id: String
+      avatar_id: Option<String>
+      conversation_id: Option<String>
+      state: Object
+      started_at: Timestamp
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TELEGRAM CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  TelegramContext:
+    description: "Telegram context"
+    fields:
+      update_id: Int
+      update_type: UpdateType
+      chat_id: Int
+      chat_type: ChatType
+      message_id: Option<Int>
+      callback_query_id: Option<String>
+      inline_query_id: Option<String>
+      raw_update: Object
+
+  UpdateType:
+    description: "Update type"
+    values:
+      - message
+      - edited_message
+      - callback_query
+      - inline_query
+      - chosen_inline_result
+      - pre_checkout_query
+      - successful_payment
+
+  ChatType:
+    description: "Chat type"
+    values:
+      - private
+      - group
+      - supergroup
+      - channel
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Middleware:
+    description: "Middleware"
+    fields:
+      middleware_id: String
+      name: String
+      priority: Int
+      is_enabled: Bool
+      config: Object
+
+  MiddlewareChain:
+    description: "Middleware chain"
+    fields:
+      chain_id: String
+      middlewares: List<Middleware>
+      is_built: Bool
+
+  MiddlewareResult:
+    description: "Middleware result"
+    fields:
+      continue_chain: Bool
+      modified_context: Option<AppContext>
+      response: Option<Object>
+      error: Option<MiddlewareError>
+
+  MiddlewareError:
+    description: "Middleware error"
+    fields:
+      middleware_id: String
+      code: String
+      message: String
+      recoverable: Bool
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REQUEST PIPELINE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Pipeline:
+    description: "Request pipeline"
+    fields:
+      pipeline_id: String
+      name: String
+      stages: List<PipelineStage>
+      error_handlers: List<String>
+      timeout_ms: Int
+
+  PipelineStage:
+    description: "Pipeline stage"
+    fields:
+      stage_id: String
+      name: String
+      handler_id: String
+      is_async: Bool
+      timeout_ms: Option<Int>
+      retry_config: Option<RetryConfig>
+
+  RetryConfig:
+    description: "Retry configuration"
+    fields:
+      max_attempts: Int
+      delay_ms: Int
+      backoff_multiplier: Float
+      retryable_errors: List<String>
+
+  PipelineExecution:
+    description: "Pipeline execution"
+    fields:
+      execution_id: String
+      pipeline_id: String
+      context: AppContext
+      current_stage: Int
+      status: ExecutionStatus
+      stage_results: List<StageResult>
+      started_at: Timestamp
+      completed_at: Option<Timestamp>
+
+  ExecutionStatus:
+    description: "Execution status"
+    values:
+      - running
+      - completed
+      - failed
+      - cancelled
+      - timeout
+
+  StageResult:
+    description: "Stage result"
+    fields:
+      stage_id: String
+      success: Bool
+      duration_ms: Int
+      output: Option<Object>
+      error: Option<String>
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT STORE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ContextStore:
+    description: "Context store"
+    fields:
+      store_id: String
+      contexts: Object
+      max_size: Int
+      ttl_seconds: Int
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRACING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  Span:
+    description: "Trace span"
+    fields:
+      span_id: String
+      trace_id: String
+      parent_span_id: Option<String>
+      operation_name: String
+      start_time: Timestamp
+      end_time: Option<Timestamp>
+      tags: Object
+      logs: List<SpanLog>
+      status: SpanStatus
+
+  SpanLog:
+    description: "Span log"
+    fields:
+      timestamp: Timestamp
+      level: LogLevel
+      message: String
+      fields: Object
+
+  LogLevel:
+    description: "Log level"
+    values:
+      - debug
+      - info
+      - warn
+      - error
+
+  SpanStatus:
+    description: "Span status"
+    values:
+      - ok
+      - error
+      - cancelled
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ERRORS
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  ContextError:
+    description: "Context error"
+    fields:
+      code: ErrorCode
+      message: String
+      context_id: Option<String>
+      details: Option<String>
+
+  ErrorCode:
+    description: "Error code"
+    values:
+      - context_not_found
+      - context_expired
+      - invalid_user
+      - permission_denied
+      - middleware_error
+      - pipeline_error
+      - timeout
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT LIFECYCLE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_context
+    given: Source and initial data
+    when: Creating context
+    then: Return AppContext
+
+  - name: create_from_update
+    given: Telegram update
+    when: Creating from update
+    then: Return AppContext
+
+  - name: create_from_webhook
+    given: Webhook request
+    when: Creating from webhook
+    then: Return AppContext
+
+  - name: clone_context
+    given: Context ID
+    when: Cloning context
+    then: Return AppContext
+
+  - name: dispose_context
+    given: Context ID
+    when: Disposing context
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CONTEXT DATA
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: get_value
+    given: Context ID and key
+    when: Getting value
+    then: Return value
+
+  - name: set_value
+    given: Context ID, key, value
+    when: Setting value
+    then: Return success
+
+  - name: has_value
+    given: Context ID and key
+    when: Checking value
+    then: Return boolean
+
+  - name: remove_value
+    given: Context ID and key
+    when: Removing value
+    then: Return success
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # USER CONTEXT
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: set_user
+    given: Context ID and UserContext
+    when: Setting user
+    then: Return success
+
+  - name: get_user
+    given: Context ID
+    when: Getting user
+    then: Return UserContext
+
+  - name: has_permission
+    given: Context ID and permission
+    when: Checking permission
+    then: Return boolean
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_chain
+    given: Middleware list
+    when: Creating chain
+    then: Return MiddlewareChain
+
+  - name: add_middleware
+    given: Chain ID and Middleware
+    when: Adding middleware
+    then: Return success
+
+  - name: remove_middleware
+    given: Chain ID and middleware ID
+    when: Removing middleware
+    then: Return success
+
+  - name: execute_chain
+    given: Chain ID and context
+    when: Executing chain
+    then: Return MiddlewareResult
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PIPELINE
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: create_pipeline
+    given: Pipeline definition
+    when: Creating pipeline
+    then: Return Pipeline
+
+  - name: execute_pipeline
+    given: Pipeline ID and context
+    when: Executing pipeline
+    then: Return PipelineExecution
+
+  - name: cancel_execution
+    given: Execution ID
+    when: Cancelling execution
+    then: Return success
+
+  - name: get_execution
+    given: Execution ID
+    when: Getting execution
+    then: Return PipelineExecution
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TRACING
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  - name: start_span
+    given: Context ID and operation name
+    when: Starting span
+    then: Return Span
+
+  - name: end_span
+    given: Span ID
+    when: Ending span
+    then: Return success
+
+  - name: add_span_tag
+    given: Span ID, key, value
+    when: Adding tag
+    then: Return success
+
+  - name: log_span
+    given: Span ID and message
+    when: Logging
+    then: Return success
+
+  - name: get_trace
+    given: Trace ID
+    when: Getting trace
+    then: Return span list
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  DEFAULT_CONTEXT_TTL: 300
+  DEFAULT_PIPELINE_TIMEOUT: 30000
+  DEFAULT_MAX_CONTEXTS: 10000
+
+  # Middleware priorities
+  PRIORITY_AUTH: 100
+  PRIORITY_RATE_LIMIT: 200
+  PRIORITY_LOGGING: 300
+  PRIORITY_VALIDATION: 400
+  PRIORITY_HANDLER: 500
+
+  # Context keys
+  KEY_USER: "user"
+  KEY_TELEGRAM: "telegram"
+  KEY_SESSION: "session"
+  KEY_LOCALE: "locale"
+  KEY_FEATURE_FLAGS: "feature_flags"
+
+  # Pipelines
+  PIPELINE_MESSAGE: "message_pipeline"
+  PIPELINE_CALLBACK: "callback_pipeline"
+  PIPELINE_COMMAND: "command_pipeline"
+  PIPELINE_PAYMENT: "payment_pipeline"
