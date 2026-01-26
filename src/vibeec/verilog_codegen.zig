@@ -618,6 +618,8 @@ pub const VerilogCodeGen = struct {
                 try self.writeWeightStreamRx();
             } else if (std.mem.eql(u8, b.name, "backpressure_handler")) {
                 try self.writeBackpressureHandler();
+            } else if (std.mem.eql(u8, b.name, "clock_gen")) {
+                try self.writeClockGen();
             } else if (std.mem.eql(u8, b.name, "packet_parser")) {
                 try self.writePacketParser();
             } else if (std.mem.eql(u8, b.name, "packet_assembler")) {
@@ -2077,6 +2079,43 @@ pub const VerilogCodeGen = struct {
         try self.builder.writeLine("    else if(layer_done) begin running<=0; layer_cycles<=counter; end");
         try self.builder.writeLine("    else if(running) counter<=counter+1;");
         try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+
+    fn writeClockGen(self: *Self) !void {
+        const target = self.spec.fpga_target;
+        try self.builder.writeLine("// Clock Generation Module - Vendor Specific Abstraction");
+        if (std.mem.eql(u8, target, "xilinx")) {
+            try self.builder.writeLine("module clock_gen (");
+            try self.builder.writeLine("  input wire clk_in, input wire rst,");
+            try self.builder.writeLine("  output wire clk_out, output wire locked");
+            try self.builder.writeLine(");");
+            try self.builder.writeLine("  // Xilinx MMCME2_ADV instance");
+            try self.builder.writeLine("  MMCME2_ADV #(");
+            try self.builder.writeLine("    .CLKFBOUT_MULT_F(10.0), .CLKIN1_PERIOD(10.0)");
+            try self.builder.writeLine("  ) mmcm_inst (");
+            try self.builder.writeLine("    .CLKIN1(clk_in), .RST(rst), .CLKOUT0(clk_out), .LOCKED(locked)");
+            try self.builder.writeLine("  );");
+            try self.builder.writeLine("endmodule");
+        } else if (std.mem.eql(u8, target, "intel")) {
+            try self.builder.writeLine("module clock_gen (");
+            try self.builder.writeLine("  input wire clk_in, input wire rst,");
+            try self.builder.writeLine("  output wire clk_out, output wire locked");
+            try self.builder.writeLine(");");
+            try self.builder.writeLine("  // Intel ALTPLL instance");
+            try self.builder.writeLine("  altpll #( .inclk0_input_frequency(20000) ) pll_inst (");
+            try self.builder.writeLine("    .inclk({1'b0, clk_in}), .areset(rst), .clk(clk_out), .locked(locked)");
+            try self.builder.writeLine("  );");
+            try self.builder.writeLine("endmodule");
+        } else {
+            try self.builder.writeLine("module clock_gen (");
+            try self.builder.writeLine("  input wire clk_in, input wire rst,");
+            try self.builder.writeLine("  output wire clk_out, output wire locked");
+            try self.builder.writeLine(");");
+            try self.builder.writeLine("  assign clk_out = clk_in;");
+            try self.builder.writeLine("  assign locked = 1'b1;");
+            try self.builder.writeLine("endmodule");
+        }
         try self.builder.newline();
     }
 

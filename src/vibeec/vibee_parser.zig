@@ -23,6 +23,7 @@ pub const VibeeSpec = struct {
     author: []const u8,
     license: []const u8,
     targets: ArrayList([]const u8),
+    fpga_target: []const u8, // generic, xilinx, intel, lattice
     constants: ArrayList(Constant),
     types: ArrayList(TypeDef),
     creation_patterns: ArrayList(CreationPattern),
@@ -43,6 +44,7 @@ pub const VibeeSpec = struct {
             .author = "",
             .license = "",
             .targets = ArrayList([]const u8).init(allocator),
+            .fpga_target = "generic",
             .constants = ArrayList(Constant).init(allocator),
             .types = ArrayList(TypeDef).init(allocator),
             .creation_patterns = ArrayList(CreationPattern).init(allocator),
@@ -335,6 +337,10 @@ pub const VibeeParser = struct {
             } else if (std.mem.eql(u8, key, "license")) {
                 self.skipInlineWhitespace();
                 spec.license = self.readQuotedValue();
+                self.skipToNextLine();
+            } else if (std.mem.eql(u8, key, "fpga_target")) {
+                self.skipInlineWhitespace();
+                spec.fpga_target = self.readValue();
                 self.skipToNextLine();
             } else if (std.mem.eql(u8, key, "targets")) {
                 self.skipToNextLine();
