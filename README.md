@@ -32,16 +32,16 @@ VIBEE is a specification-first programming language that generates code from beh
 curl -sSL https://raw.githubusercontent.com/gHashTag/vibee-lang/main/install.sh | bash
 ```
 
-### Option 2: Package Managers (Global)
-**macOS (Homebrew):**
+### Option 2: Package Managers (Experimental)
+*Formulas are ready but require repository setup.*
+
+**Manual Formula Install (macOS):**
 ```bash
-brew install ghashtag/tap/vibee
+brew install --HEAD https://raw.githubusercontent.com/gHashTag/vibee-lang/main/docs/dist/brew/vibee.rb
 ```
 
 **Windows (Chocolatey):**
-```bash
-choco install vibee
-```
+*Pending feed approval.*
 
 ### Option 3: Docker (no Zig installation needed)
 ```bash
