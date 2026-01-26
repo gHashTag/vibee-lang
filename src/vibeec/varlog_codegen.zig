@@ -53,7 +53,7 @@ pub const VarlogCodeGen = struct {
     }
 
     fn writeFmt(self: *Self, comptime fmt: []const u8, args: anytype) !void {
-        const writer = self.buffer.writer();
+        const writer = self.buffer.writer(self.allocator);
         try writer.print(fmt, args);
     }
 

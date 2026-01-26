@@ -32,7 +32,7 @@ pub const ExtractedSignal = struct {
 
 /// Extract signals from spec types for SVA checker
 pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !ArrayList(ExtractedSignal) {
-    var signals = ArrayList(ExtractedSignal).init(allocator);
+    var signals: ArrayList(ExtractedSignal) = .empty;
 
     for (types) |t| {
         for (t.fields.items) |field| {
@@ -50,7 +50,7 @@ pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !Ar
             }
 
             if (!exists) {
-                try signals.append(ExtractedSignal{
+                try signals.append(allocator, ExtractedSignal{
                     .name = field.name,
                     .verilog_type = verilog_type,
                     .width = width,
@@ -108,7 +108,7 @@ const signal_keywords = [_]struct { keyword: []const u8, signal: []const u8 }{
 
 /// Extract signal references from behavior text
 pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayList([]const u8) {
-    var refs = ArrayList([]const u8).init(allocator);
+    var refs: ArrayList([]const u8) = .empty;
 
     for (signal_keywords) |kw| {
         if (containsIgnoreCase(text, kw.keyword)) {
@@ -121,7 +121,7 @@ pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayLis
                 }
             }
             if (!exists) {
-                try refs.append(kw.signal);
+                try refs.append(allocator, kw.signal);
             }
         }
     }
@@ -155,16 +155,16 @@ pub fn validateBehaviorSignals(
     extracted: []const ExtractedSignal,
     allocator: Allocator,
 ) !ArrayList(ValidationWarning) {
-    var warnings = ArrayList(ValidationWarning).init(allocator);
+    var warnings: ArrayList(ValidationWarning) = .empty;
 
     for (behaviors) |behavior| {
         // Check given clause
         var given_refs = try extractSignalReferences(behavior.given, allocator);
-        defer given_refs.deinit();
+        defer given_refs.deinit(allocator);
 
         for (given_refs.items) |ref| {
             if (!signalExists(ref, extracted)) {
-                try warnings.append(ValidationWarning{
+                try warnings.append(allocator, ValidationWarning{
                     .behavior_name = behavior.name,
                     .clause = "given",
                     .referenced_signal = ref,
@@ -175,11 +175,11 @@ pub fn validateBehaviorSignals(
 
         // Check then clause
         var then_refs = try extractSignalReferences(behavior.then, allocator);
-        defer then_refs.deinit();
+        defer then_refs.deinit(allocator);
 
         for (then_refs.items) |ref| {
             if (!signalExists(ref, extracted)) {
-                try warnings.append(ValidationWarning{
+                try warnings.append(allocator, ValidationWarning{
                     .behavior_name = behavior.name,
                     .clause = "then",
                     .referenced_signal = ref,
@@ -224,39 +224,39 @@ pub const VerilogBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = ArrayList(u8).init(allocator),
+            .buffer = .empty,
             .indent = 0,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn write(self: *Self, str: []const u8) !void {
-        try self.buffer.appendSlice(str);
+        try self.buffer.appendSlice(self.allocator, str);
     }
 
     pub fn writeLine(self: *Self, str: []const u8) !void {
         try self.writeIndent();
-        try self.buffer.appendSlice(str);
-        try self.buffer.append('\n');
+        try self.buffer.appendSlice(self.allocator, str);
+        try self.buffer.append(self.allocator, '\n');
     }
 
     pub fn writeIndent(self: *Self) !void {
         var i: u32 = 0;
         while (i < self.indent) : (i += 1) {
-            try self.buffer.appendSlice("    ");
+            try self.buffer.appendSlice(self.allocator, "    ");
         }
     }
 
     pub fn writeFmt(self: *Self, comptime fmt: []const u8, args: anytype) !void {
-        const writer = self.buffer.writer();
+        const writer = self.buffer.writer(self.allocator);
         try writer.print(fmt, args);
     }
 
     pub fn newline(self: *Self) !void {
-        try self.buffer.append('\n');
+        try self.buffer.append(self.allocator, '\n');
     }
 
     pub fn incIndent(self: *Self) void {
@@ -2144,7 +2144,8 @@ pub const VerilogCodeGen = struct {
             try self.builder.writeLine("  assign clk_out = clk_in;");
             try self.builder.writeLine("  assign locked = 1'b1;");
             try self.builder.writeLine("endmodule");
-        try self.builder.newline();
+            try self.builder.newline();
+        }
     }
 
     fn writeGenericBehavior(self: *Self, b: Behavior) !void {
@@ -2233,12 +2234,12 @@ pub const VerilogCodeGen = struct {
         if (spec.behaviors.items.len == 0) return;
 
         // Extract signals from types
-        var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).init(self.allocator);
-        defer extracted_signals.deinit();
+        var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).empty;
+        defer extracted_signals.deinit(self.allocator);
 
         // Validate behavior signals
-        var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning).init(self.allocator);
-        defer warnings.deinit();
+        var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning).empty;
+        defer warnings.deinit(self.allocator);
 
         // Print warnings to stderr (visible during generation)
         if (warnings.items.len > 0) {

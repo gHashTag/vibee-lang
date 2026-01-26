@@ -34,39 +34,39 @@ pub const CodeBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = ArrayList(u8).init(allocator),
+            .buffer = .empty,
             .indent = 0,
         };
     }
     
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
     
     pub fn write(self: *Self, str: []const u8) !void {
-        try self.buffer.appendSlice(str);
+        try self.buffer.appendSlice(self.allocator, str);
     }
     
     pub fn writeLine(self: *Self, str: []const u8) !void {
         try self.writeIndent();
-        try self.buffer.appendSlice(str);
-        try self.buffer.append('\n');
+        try self.buffer.appendSlice(self.allocator, str);
+        try self.buffer.append(self.allocator, '\n');
     }
     
     pub fn writeIndent(self: *Self) !void {
         var i: u32 = 0;
         while (i < self.indent) : (i += 1) {
-            try self.buffer.appendSlice("    ");
+            try self.buffer.appendSlice(self.allocator, "    ");
         }
     }
     
     pub fn writeFmt(self: *Self, comptime fmt: []const u8, args: anytype) !void {
-        const writer = self.buffer.writer();
+        const writer = self.buffer.writer(self.allocator);
         try writer.print(fmt, args);
     }
     
     pub fn newline(self: *Self) !void {
-        try self.buffer.append('\n');
+        try self.buffer.append(self.allocator, '\n');
     }
     
     pub fn incIndent(self: *Self) void {

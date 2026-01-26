@@ -174,7 +174,7 @@ pub const Environment = struct {
     }
     
     pub fn deinit(self: *Environment) void {
-        self.values.deinit();
+        self.values.deinit(allocator);
     }
     
     pub fn define(self: *Environment, name: []const u8, value: Value) !void {
@@ -223,7 +223,7 @@ pub const Interpreter = struct {
             .global = Environment.init(allocator, null), // Use main allocator for HashMap
             .current = undefined, // Will be set by caller using fixupSelfRef
             .source = source,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .empty,
             .call_depth = 0,
         };
     }
@@ -235,20 +235,20 @@ pub const Interpreter = struct {
     }
     
     pub fn deinit(self: *Interpreter) void {
-        self.output.deinit();
+        self.output.deinit(allocator);
         // Deinit HashMap BEFORE arena to avoid use-after-free
-        // HashMap.deinit() only frees internal buckets, not values
-        self.global.values.deinit();
-        self.arena.deinit();
+        // HashMap.deinit(allocator) only frees internal buckets, not values
+        self.global.values.deinit(allocator);
+        self.arena.deinit(allocator);
     }
     
     /// Reset interpreter state (for REPL)
     pub fn reset(self: *Interpreter) void {
         // Free HashMap first, then arena
-        self.global.deinit();
-        self.arena.deinit();
-        self.arena = std.heap.ArenaAllocator.init(self.allocator);
-        self.global = Environment.init(self.allocator, null);
+        self.global.deinit(allocator);
+        self.arena.deinit(allocator);
+        self.arena = std.heap.ArenaAllocator.init(allocator);
+        self.global = Environment.init(allocator, null);
         self.current = &self.global;
         self.call_depth = 0;
         self.output.clearRetainingCapacity();
@@ -874,8 +874,8 @@ pub const Interpreter = struct {
                                 }
                             }
                             if (!found) {
-                                key_list.append(k) catch return error.OutOfMemory;
-                                value_list.append(spread_val.object.values[i]) catch return error.OutOfMemory;
+                                key_list.append(allocator, k) catch return error.OutOfMemory;
+                                value_list.append(allocator, spread_val.object.values[i]) catch return error.OutOfMemory;
                             }
                         }
                     }
@@ -898,8 +898,8 @@ pub const Interpreter = struct {
                     }
                 }
                 if (!found) {
-                    key_list.append(key) catch return error.OutOfMemory;
-                    value_list.append(value) catch return error.OutOfMemory;
+                    key_list.append(allocator, key) catch return error.OutOfMemory;
+                    value_list.append(allocator, value) catch return error.OutOfMemory;
                 }
             }
         }
@@ -1252,9 +1252,9 @@ pub const Interpreter = struct {
             for (args) |arg| {
                 var buf: [512]u8 = undefined;
                 const str = std.fmt.bufPrint(&buf, "{}", .{arg}) catch "?";
-                self.output.appendSlice(str) catch {};
+                self.output.appendSlice(allocator, str) catch {};
             }
-            self.output.append('\n') catch {};
+            self.output.append(allocator, '\n') catch {};
             return .nil;
         }
         
@@ -2014,10 +2014,10 @@ test "interpreter basic" {
     const source = "const x = 42";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 42), result.int_);
@@ -2027,10 +2027,10 @@ test "interpreter arithmetic" {
     const source = "const x = 10 + 5";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 15), result.int_);
@@ -2038,7 +2038,7 @@ test "interpreter arithmetic" {
 
 test "interpreter trit" {
     var interp = Interpreter.init(std.testing.allocator, "");
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     // Test built-in trit values
     if (interp.global.get("T")) |t| {
@@ -2051,7 +2051,7 @@ test "interpreter trit" {
 
 test "interpreter builtins" {
     var interp = Interpreter.init(std.testing.allocator, "");
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     if (interp.global.get("phi")) |phi| {
         try std.testing.expect(phi.float_ > 1.618 and phi.float_ < 1.619);
@@ -2070,10 +2070,10 @@ test "interpreter if" {
     const source = "if true { 42 } else { 0 }";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 42), result.int_);
@@ -2083,10 +2083,10 @@ test "interpreter if false" {
     const source = "if false { 42 } else { 99 }";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 99), result.int_);
@@ -2096,10 +2096,10 @@ test "interpreter comparison" {
     const source = "10 > 5";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expect(result.bool_);
@@ -2109,10 +2109,10 @@ test "interpreter string" {
     const source = "\"hello\"";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqualStrings("hello", result.string_);
@@ -2122,10 +2122,10 @@ test "interpreter user function" {
     const source = "func double(x) { x * 2 }\ndouble(5)";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 10), result.int_);
@@ -2135,10 +2135,10 @@ test "interpreter function with multiple params" {
     const source = "func add(a, b) { a + b }\nadd(3, 7)";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 10), result.int_);
@@ -2148,10 +2148,10 @@ test "interpreter array literal" {
     const source = "[1, 2, 3]";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expect(result == .array);
@@ -2162,10 +2162,10 @@ test "interpreter array index" {
     const source = "[10, 20, 30][1]";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expectEqual(@as(i64, 20), result.int_);
@@ -2175,10 +2175,10 @@ test "interpreter for loop array" {
     const source = "for x in [1, 2, 3] { x }";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     // Returns last iteration value
@@ -2189,10 +2189,10 @@ test "interpreter range builtin" {
     const source = "range(3)";
     var parser = coptic_parser.Parser.init(source, std.testing.allocator);
     var ast = try parser.parseProgram();
-    defer ast.deinit();
+    defer ast.deinit(allocator);
     
     var interp = Interpreter.init(std.testing.allocator, source);
-    defer interp.deinit();
+    defer interp.deinit(allocator);
     
     const result = try interp.interpret(&ast);
     try std.testing.expect(result == .array);

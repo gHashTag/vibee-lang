@@ -205,9 +205,9 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.allocator.free(self.call_stack);
-        self.globals.deinit();
-        self.natives.deinit();
+        allocator.free(self.call_stack);
+        self.globals.deinit(allocator);
+        self.natives.deinit(allocator);
     }
 
     fn registerBuiltins(self: *Self) !void {
@@ -1249,12 +1249,12 @@ pub const VM = struct {
                 const upvalue_count = try self.readByte();
                 
                 // Allocate closure
-                const closure = self.allocator.create(bytecode.ClosureValue) catch return VMError.OutOfMemory;
+                const closure = allocator.create(bytecode.ClosureValue) catch return VMError.OutOfMemory;
                 closure.func_addr = func_addr;
                 closure.upvalue_count = upvalue_count;
                 
                 if (upvalue_count > 0) {
-                    closure.upvalues = self.allocator.alloc(?*bytecode.UpvalueObj, upvalue_count) catch return VMError.OutOfMemory;
+                    closure.upvalues = allocator.alloc(?*bytecode.UpvalueObj, upvalue_count) catch return VMError.OutOfMemory;
                     
                     // Read upvalue descriptors and capture
                     var i: u8 = 0;
@@ -1262,7 +1262,7 @@ pub const VM = struct {
                         const is_local = try self.readByte();
                         const index = try self.readByte();
                         
-                        const upvalue = self.allocator.create(bytecode.UpvalueObj) catch return VMError.OutOfMemory;
+                        const upvalue = allocator.create(bytecode.UpvalueObj) catch return VMError.OutOfMemory;
                         if (is_local == 1) {
                             // Capture local variable
                             upvalue.location = &self.locals[index];
@@ -1546,8 +1546,8 @@ pub const VM = struct {
                 // Create new TryteArray with given size
                 const size_val = try self.pop();
                 const size: usize = @intCast(size_val.toInt() orelse 0);
-                const arr = self.allocator.create(bytecode.TryteArrayValue) catch return VMError.OutOfMemory;
-                arr.data = self.allocator.alloc(i8, size) catch return VMError.OutOfMemory;
+                const arr = allocator.create(bytecode.TryteArrayValue) catch return VMError.OutOfMemory;
+                arr.data = allocator.alloc(i8, size) catch return VMError.OutOfMemory;
                 arr.len = size;
                 arr.capacity = size;
                 // Initialize to zero
@@ -1631,8 +1631,8 @@ pub const VM = struct {
                 const src_val = try self.pop();
                 if (src_val != .tryte_array_val) return VMError.TypeMismatch;
                 const src = src_val.tryte_array_val;
-                const dst = self.allocator.create(bytecode.TryteArrayValue) catch return VMError.OutOfMemory;
-                dst.data = self.allocator.alloc(i8, src.len) catch return VMError.OutOfMemory;
+                const dst = allocator.create(bytecode.TryteArrayValue) catch return VMError.OutOfMemory;
+                dst.data = allocator.alloc(i8, src.len) catch return VMError.OutOfMemory;
                 dst.len = src.len;
                 dst.capacity = src.len;
                 @memcpy(dst.data, src.data[0..src.len]);
@@ -1669,8 +1669,8 @@ pub const VM = struct {
             .NEW_ARRAY => {
                 const count = try self.readByte();
                 // Allocate array
-                const arr = self.allocator.create(bytecode.ArrayValue) catch return VMError.OutOfMemory;
-                const items = self.allocator.alloc(Value, count) catch return VMError.OutOfMemory;
+                const arr = allocator.create(bytecode.ArrayValue) catch return VMError.OutOfMemory;
+                const items = allocator.alloc(Value, count) catch return VMError.OutOfMemory;
                 
                 // Pop elements from stack (in reverse order)
                 var i: usize = count;
@@ -1726,10 +1726,10 @@ pub const VM = struct {
                 
                 // Simple implementation - reallocate
                 const arr = arr_val.array_val;
-                const new_items = self.allocator.alloc(Value, arr.items.len + 1) catch return VMError.OutOfMemory;
+                const new_items = allocator.alloc(Value, arr.items.len + 1) catch return VMError.OutOfMemory;
                 @memcpy(new_items[0..arr.items.len], arr.items);
                 new_items[arr.items.len] = val;
-                self.allocator.free(arr.items);
+                allocator.free(arr.items);
                 arr.items = new_items;
                 
                 try self.push(arr_val);
@@ -1751,7 +1751,7 @@ pub const VM = struct {
 
             // Objects
             .NEW_OBJECT => {
-                const obj = self.allocator.create(bytecode.ObjectValue) catch return VMError.OutOfMemory;
+                const obj = allocator.create(bytecode.ObjectValue) catch return VMError.OutOfMemory;
                 obj.* = .{ .keys = &.{}, .values = &.{}, .count = 0 };
                 try self.push(.{ .object_val = obj });
             },
@@ -1799,8 +1799,8 @@ pub const VM = struct {
                 
                 // Add new key-value pair
                 const new_count = obj.count + 1;
-                const new_keys = self.allocator.alloc([]const u8, new_count) catch return VMError.OutOfMemory;
-                const new_values = self.allocator.alloc(Value, new_count) catch return VMError.OutOfMemory;
+                const new_keys = allocator.alloc([]const u8, new_count) catch return VMError.OutOfMemory;
+                const new_values = allocator.alloc(Value, new_count) catch return VMError.OutOfMemory;
                 
                 // Copy existing
                 for (0..obj.count) |i| {
@@ -2802,7 +2802,7 @@ fn nativeElapsed(_: *VM, args: []const Value) VMError!Value {
 test "VM basic push and halt" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit();
+    defer vm.deinit(allocator);
 
     // Simple: push 42, halt
     const code = [_]u8{
@@ -2820,7 +2820,7 @@ test "VM basic push and halt" {
 test "VM sacred constants" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit();
+    defer vm.deinit(allocator);
 
     const code = [_]u8{
         @intFromEnum(Opcode.PUSH_PHI),
@@ -2836,7 +2836,7 @@ test "VM sacred constants" {
 test "VM golden identity" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit();
+    defer vm.deinit(allocator);
 
     const code = [_]u8{
         @intFromEnum(Opcode.GOLDEN_IDENTITY_OP),
@@ -2852,7 +2852,7 @@ test "VM golden identity" {
 test "VM comparison" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit();
+    defer vm.deinit(allocator);
 
     // 10 > 5 = true
     const code = [_]u8{
@@ -2872,7 +2872,7 @@ test "VM comparison" {
 test "VM metrics" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit();
+    defer vm.deinit(allocator);
 
     const code = [_]u8{
         @intFromEnum(Opcode.PUSH_CONST), 0, 0,

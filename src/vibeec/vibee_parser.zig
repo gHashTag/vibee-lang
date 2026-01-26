@@ -37,64 +37,66 @@ pub const VibeeSpec = struct {
     signals: ArrayList(Signal),
     fsms: ArrayList(FSMDef),
     reset: ResetDef,
+    allocator: Allocator,
 
     pub fn init(allocator: Allocator) VibeeSpec {
-        return VibeeSpec{
+        return .{
             .name = "",
             .version = "",
             .language = "zig", // Default to Zig
             .author = "",
             .license = "",
-            .targets = ArrayList([]const u8).init(allocator),
+            .targets = .empty,
             .fpga_target = "generic",
             .pipeline = "none",
             .target_frequency = 100,
-            .constants = ArrayList(Constant).init(allocator),
-            .types = ArrayList(TypeDef).init(allocator),
-            .creation_patterns = ArrayList(CreationPattern).init(allocator),
-            .behaviors = ArrayList(Behavior).init(allocator),
-            .algorithms = ArrayList(Algorithm).init(allocator),
+            .constants = .empty,
+            .types = .empty,
+            .creation_patterns = .empty,
+            .behaviors = .empty,
+            .algorithms = .empty,
             .wasm_exports = WasmExports.init(allocator),
-            .pas_predictions = ArrayList(PasPrediction).init(allocator),
-            .signals = ArrayList(Signal).init(allocator),
-            .fsms = ArrayList(FSMDef).init(allocator),
+            .pas_predictions = .empty,
+            .signals = .empty,
+            .fsms = .empty,
             .reset = ResetDef{ .reset_type = "async", .level = "low" }, // Default
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *VibeeSpec) void {
         // Освобождаем вложенные структуры
         for (self.types.items) |*t| {
-            t.fields.deinit();
-            t.constraints.deinit();
+            t.fields.deinit(self.allocator);
+            t.constraints.deinit(self.allocator);
         }
         for (self.behaviors.items) |*b| {
-            b.test_cases.deinit();
+            b.test_cases.deinit(self.allocator);
         }
         for (self.algorithms.items) |*a| {
-            a.steps.deinit();
+            a.steps.deinit(self.allocator);
         }
         for (self.fsms.items) |*f| {
-            f.states.deinit();
-            f.transitions.deinit();
+            f.states.deinit(self.allocator);
+            f.transitions.deinit(self.allocator);
             for (f.outputs.items) |*out| {
                 out.signals.deinit();
             }
-            f.outputs.deinit();
-            f.timers.deinit();
+            f.outputs.deinit(self.allocator);
+            f.timers.deinit(self.allocator);
         }
 
         // Освобождаем основные списки
-        self.targets.deinit();
-        self.constants.deinit();
-        self.types.deinit();
-        self.creation_patterns.deinit();
-        self.behaviors.deinit();
-        self.algorithms.deinit();
-        self.wasm_exports.deinit();
-        self.pas_predictions.deinit();
-        self.signals.deinit();
-        self.fsms.deinit();
+        self.targets.deinit(self.allocator);
+        self.constants.deinit(self.allocator);
+        self.types.deinit(self.allocator);
+        self.creation_patterns.deinit(self.allocator);
+        self.behaviors.deinit(self.allocator);
+        self.algorithms.deinit(self.allocator);
+        self.wasm_exports.deinit(self.allocator);
+        self.pas_predictions.deinit(self.allocator);
+        self.signals.deinit(self.allocator);
+        self.fsms.deinit(self.allocator);
     }
 };
 
@@ -118,11 +120,12 @@ pub const TypeDef = struct {
     description: []const u8,
 
     pub fn init(allocator: Allocator) TypeDef {
+        _ = allocator;
         return TypeDef{
             .name = "",
             .base = null,
-            .fields = ArrayList(Field).init(allocator),
-            .constraints = ArrayList([]const u8).init(allocator),
+            .fields = .empty,
+            .constraints = .empty,
             .generic = null,
             .description = "",
         };
@@ -156,14 +159,14 @@ pub const FSMOutput = struct {
     signals: std.StringHashMap([]const u8), // signal_name -> value (e.g., "busy" -> "1'b1")
 
     pub fn init(allocator: Allocator) FSMOutput {
-        return FSMOutput{
+        return .{
             .state = "",
             .signals = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *FSMOutput) void {
-        self.signals.deinit();
+        self.signals.deinit(self.allocator);
     }
 };
 
@@ -185,14 +188,15 @@ pub const FSMDef = struct {
     timers: ArrayList(FSMTimer),
 
     pub fn init(allocator: Allocator) FSMDef {
+        _ = allocator;
         return FSMDef{
             .name = "",
             .initial_state = "",
             .encoding = "onehot",
-            .states = ArrayList([]const u8).init(allocator),
-            .transitions = ArrayList(FSMTransition).init(allocator),
-            .outputs = ArrayList(FSMOutput).init(allocator),
-            .timers = ArrayList(FSMTimer).init(allocator),
+            .states = .empty,
+            .transitions = .empty,
+            .outputs = .empty,
+            .timers = .empty,
         };
     }
 };
@@ -213,13 +217,14 @@ pub const Behavior = struct {
     test_cases: ArrayList(TestCase),
 
     pub fn init(allocator: Allocator) Behavior {
+        _ = allocator;
         return Behavior{
             .name = "",
             .given = "",
             .when = "",
             .then = "",
             .implementation = "",
-            .test_cases = ArrayList(TestCase).init(allocator),
+            .test_cases = .empty,
         };
     }
 };
@@ -239,12 +244,13 @@ pub const Algorithm = struct {
     steps: ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) Algorithm {
+        _ = allocator;
         return Algorithm{
             .name = "",
             .description = "",
             .complexity = "",
             .pattern = "",
-            .steps = ArrayList([]const u8).init(allocator),
+            .steps = .empty,
         };
     }
 };
@@ -254,15 +260,16 @@ pub const WasmExports = struct {
     memory: ArrayList(MemoryExport),
 
     pub fn init(allocator: Allocator) WasmExports {
+        _ = allocator;
         return WasmExports{
-            .functions = ArrayList([]const u8).init(allocator),
-            .memory = ArrayList(MemoryExport).init(allocator),
+            .functions = .empty,
+            .memory = .empty,
         };
     }
 
-    pub fn deinit(self: *WasmExports) void {
-        self.functions.deinit();
-        self.memory.deinit();
+    pub fn deinit(self: *WasmExports, allocator: Allocator) void {
+        self.functions.deinit(allocator);
+        self.memory.deinit(allocator);
     }
 };
 
@@ -295,8 +302,8 @@ pub const VibeeParser = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, source: []const u8) Self {
-        return Self{
+    pub fn init(allocator: Allocator, source: []const u8) VibeeParser {
+        return .{
             .allocator = allocator,
             .source = source,
             .pos = 0,
@@ -478,7 +485,7 @@ pub const VibeeParser = struct {
 
             const target = self.readValue();
             if (target.len > 0) {
-                try targets.append(target);
+                try targets.append(self.allocator, target);
             }
         }
     }
@@ -554,7 +561,7 @@ pub const VibeeParser = struct {
                 }
             }
 
-            try constants.append(constant);
+            try constants.append(self.allocator, constant);
         }
     }
 
@@ -672,7 +679,7 @@ pub const VibeeParser = struct {
                 }
             }
 
-            try types.append(typedef);
+            try types.append(self.allocator, typedef);
         }
     }
 
@@ -751,7 +758,7 @@ pub const VibeeParser = struct {
             }
 
             if (signal.name.len > 0) {
-                try signals.append(signal);
+                try signals.append(self.allocator, signal);
             }
         }
     }
@@ -853,7 +860,7 @@ pub const VibeeParser = struct {
 
                             const state_name = self.readValue();
                             if (state_name.len > 0) {
-                                try fsm.states.append(state_name);
+                                try fsm.states.append(self.allocator, state_name);
                             }
                             self.skipToNextLine();
                         }
@@ -876,7 +883,7 @@ pub const VibeeParser = struct {
             }
 
             if (fsm.name.len > 0) {
-                try fsms.append(fsm);
+                try fsms.append(self.allocator, fsm);
             }
         }
     }
@@ -936,7 +943,7 @@ pub const VibeeParser = struct {
             }
 
             if (trans.from_state.len > 0 and trans.to_state.len > 0) {
-                try transitions.append(trans);
+                try transitions.append(self.allocator, trans);
             }
         }
     }
@@ -990,7 +997,7 @@ pub const VibeeParser = struct {
             }
 
             if (out.state.len > 0) {
-                try outputs.append(out);
+                try outputs.append(self.allocator, out);
             }
         }
     }
@@ -1051,7 +1058,7 @@ pub const VibeeParser = struct {
             }
 
             if (timer.state.len > 0) {
-                try timers.append(timer);
+                try timers.append(self.allocator, timer);
             }
         }
     }
@@ -1074,7 +1081,7 @@ pub const VibeeParser = struct {
 
             const constraint = self.readQuotedOrValue();
             if (constraint.len > 0) {
-                try constraints.append(constraint);
+                try constraints.append(self.allocator, constraint);
             }
             self.skipToNextLine();
         }
@@ -1094,7 +1101,7 @@ pub const VibeeParser = struct {
             self.skipColon();
 
             const field_type = self.readValue();
-            try fields.append(Field{
+            try fields.append(self.allocator, Field{
                 .name = field_name,
                 .type_name = field_type,
             });
@@ -1157,7 +1164,7 @@ pub const VibeeParser = struct {
                 self.skipToNextLine();
             }
 
-            try patterns.append(pattern);
+            try patterns.append(self.allocator, pattern);
         }
     }
 
@@ -1226,7 +1233,7 @@ pub const VibeeParser = struct {
             }
 
             if (behavior.name.len > 0) {
-                try behaviors.append(behavior);
+                try behaviors.append(self.allocator, behavior);
             }
         }
     }
@@ -1292,7 +1299,7 @@ pub const VibeeParser = struct {
                 self.skipToNextLine();
             }
 
-            try test_cases.append(test_case);
+            try test_cases.append(self.allocator, test_case);
         }
     }
 
@@ -1356,7 +1363,7 @@ pub const VibeeParser = struct {
             }
 
             if (algorithm.name.len > 0) {
-                try algorithms.append(algorithm);
+                try algorithms.append(self.allocator, algorithm);
             }
         }
     }
@@ -1375,7 +1382,7 @@ pub const VibeeParser = struct {
 
             const step = self.readQuotedOrValue();
             if (step.len > 0) {
-                try steps.append(step);
+                try steps.append(self.allocator, step);
             }
         }
     }
@@ -1398,7 +1405,7 @@ pub const VibeeParser = struct {
 
             const step = self.readQuotedOrValue();
             if (step.len > 0) {
-                try steps.append(step);
+                try steps.append(self.allocator, step);
             }
             self.skipToNextLine();
         }
@@ -1454,7 +1461,7 @@ pub const VibeeParser = struct {
 
             const func = self.readValue();
             if (func.len > 0) {
-                try functions.append(func);
+                try functions.append(self.allocator, func);
             }
             self.skipToNextLine();
         }
@@ -1474,7 +1481,7 @@ pub const VibeeParser = struct {
 
             const func = self.readValue();
             if (func.len > 0) {
-                try functions.append(func);
+                try functions.append(self.allocator, func);
             }
         }
     }
@@ -1524,7 +1531,7 @@ pub const VibeeParser = struct {
                 self.skipToNextLine();
             }
 
-            try memory.append(mem_export);
+            try memory.append(self.allocator, mem_export);
         }
     }
 
@@ -1569,7 +1576,7 @@ pub const VibeeParser = struct {
                 }
             }
 
-            try memory.append(mem_export);
+            try memory.append(self.allocator, mem_export);
         }
     }
 
@@ -1643,7 +1650,7 @@ pub const VibeeParser = struct {
             }
 
             if (prediction.target.len > 0) {
-                try predictions.append(prediction);
+                try predictions.append(self.allocator, prediction);
             }
         }
     }
