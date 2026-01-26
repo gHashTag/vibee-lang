@@ -32,7 +32,7 @@ VIBEE is a powerful **HLS compiler** that turns high-level specifications into r
 - **Performance Reporting:** Cycle-accurate latency estimation and automated pipelining (`pipeline: auto`).
 - **BitNet Acceleration:** Optimized for ternary neural network inference on FPGA.
 
-[Read the Hardware Guide](docs/habr/HABR_ARTICLE_FPGA_COMPILER_EN.md) | [Technical Reference](docs/HARDWARE_HLS.md)
+[Hardware Guide (EN)](docs/habr/HABR_ARTICLE_FPGA_COMPILER_EN.md) | [Hardware Guide (RU)](docs/habr/HABR_ARTICLE_FPGA_COMPILER.md) | [Technical Reference](docs/HARDWARE_HLS.md)
 
 ## 📦 Installation
 
@@ -173,8 +173,8 @@ vibee gen specs/tri/adder.vibee
 | **RAG Pipeline** | Retrieval-Augmented Generation | 16 | 99 |
 | **Agent Browser** | Chromium + Monaco + AI Agent | 32 | 200+ |
 | **GEN-MULTI** | Code generation for 42 languages | 42 | 350+ |
-| **FPGA / HLS** | Synthesizable Verilog generation | ✅ | READY |
-| **Cycle-Accurate**| Automated latency estimation | ✅ | READY |
+| **FPGA / HLS** | Synthesizable Verilog & vendor abstraction | ✅ | READY |
+| **Cycle-Accurate**| Automated latency & pipeline analysis | ✅ | READY |
 | **FFI System** | Integration with 40 languages | 40 | 350+ |
 | **E2E Pipeline v21** | Chrome CDP + Ollama LLM Agent | 4 | 35+ |
 | **BitNet Benchmark** | FPGA performance benchmarking | 12 | 50+ |
