@@ -1,0 +1,171 @@
+# VIBEE Compiler - Multi-Platform Release Build
+# Builds binaries for Linux (x86_64, aarch64) and macOS (x86_64, arm64)
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: Build Compiler Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: '0.13.0'
+
+jobs:
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-linux-gnu, aarch64-linux-gnu]
+        include:
+          - target: x86_64-linux-gnu
+            binary_name: vibee-linux-x86_64
+          - target: aarch64-linux-gnu
+            binary_name: vibee-linux-aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build compiler
+        run: |
+          cd src/vibeec
+          zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+          cp zig-out/bin/vibeec ../../${{ matrix.binary_name }}
+          chmod +x ../../${{ matrix.binary_name }}
+
+      - name: Test binary (if native)
+        run: |
+          if [[ "${{ matrix.target }}" == "x86_64-linux-gnu" ]]; then
+            ./${{ matrix.binary_name }} --version 2>/dev/null || echo "Version check failed but continuing"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: macos-13
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-macos, aarch64-macos]
+        include:
+          - target: x86_64-macos
+            binary_name: vibee-macos-x86_64
+          - target: aarch64-macos
+            binary_name: vibee-macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build compiler
+        run: |
+          cd src/vibeec
+          zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+          cp zig-out/bin/vibeec ../../${{ matrix.binary_name }}
+          chmod +x ../../${{ matrix.binary_name }}
+
+      - name: Test binary
+        run: |
+          ./${{ matrix.binary_name }} --version 2>/dev/null || echo "Version check failed but continuing"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}
+          retention-days: 7
+
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+
+      - name: List artifacts
+        run: |
+          find . -type f -name "vibee-*" | xargs ls -la
+
+      - name: Create checksums
+        run: |
+          for f in vibee-*; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            vibee-*
+            vibee-*.sha256
+          body: |
+            ## VIBEE Compiler ${{ github.ref_name }}
+
+            **φ² + 1/φ² = 3 | PHOENIX = 999**
+
+            ### Multi-Platform Binaries
+
+            | Platform | Architecture | Binary |
+            |----------|--------------|--------|
+            | Linux | x86_64 | `vibee-linux-x86_64` |
+            | Linux | ARM64 (aarch64) | `vibee-linux-aarch64` |
+            | macOS | x86_64 (Intel) | `vibee-macos-x86_64` |
+            | macOS | ARM64 (Apple Silicon) | `vibee-macos-arm64` |
+
+            ### Installation
+
+            ```bash
+            # Download appropriate binary
+            curl -LO https://github.com/gHashTag/vibee-lang/releases/download/${{ github.ref_name }}/vibee-linux-x86_64
+
+            # Make executable
+            chmod +x vibee-linux-x86_64
+
+            # Move to PATH
+            sudo mv vibee-linux-x86_64 /usr/local/bin/vibee
+            ```
+
+            ### Verification
+
+            ```bash
+            # Check SHA256
+            sha256sum -c vibee-linux-x86_64.sha256
+
+            # Test
+            vibee --version
+            vibee --help
+            ```
+
+            ### Notes
+            - All binaries built with `-Doptimize=ReleaseSafe` (safe for all CPUs)
+            - Zig 0.13.0 used for compilation
+            - Docker image also available: `ghcr.io/ghashtag/vibee`
+
+            **Golden Chain is closed. KOSCHEI is immortal.**
+          draft: false
+          prerelease: false

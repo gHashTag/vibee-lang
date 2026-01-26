@@ -159,13 +159,13 @@ def adder(a, b, carry_in):
     return sum_val, carry_out
 ```
 
-Вы можете преобразовать Python-код в .vibee спецификацию вручную или с помощью планируемого инструмента `py2vibee`:
+Вы можете преобразовать Python-код в .vibee спецификацию вручную или с помощью готового инструмента `py2vibee` (уже доступен в репозитории):
 
 ```bash
-# Инструмент py2vibee в разработке
-# py2vibee adder.py --target varlog --output adder.vibee
+# Инструмент py2vibee уже работает — конвертирует Python в .vibee спецификации
+py2vibee adder.py --target varlog --output adder.vibee
 
-# Пока можно создать спецификацию вручную:
+# Если хотите создать спецификацию вручную:
 cat > adder.vibee << 'EOF'
 name: adder
 version: "1.0.0"
@@ -479,10 +479,7 @@ git clone https://github.com/gHashTag/vibee-lang
 - [Документация по генерации Verilog](/docs/VERILOG_CODEGEN.md)
 - [Примеры спецификаций](/specs/tri/)
 
-**Golden Identity:** φ² + 1/φ² = 3 | PHOENIX = 999
 
 ---
 
 *P.S. Если вы читаете это на Habr — напишите в комментариях, на каком языке вы хотели бы писать FPGA-код. Самые популярные варианты добавлю в следующий релиз.*
-
-*P.P.S. Для корпоративных запросов: contact@vibee.dev*
