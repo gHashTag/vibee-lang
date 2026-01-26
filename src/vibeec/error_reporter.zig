@@ -78,8 +78,8 @@ pub const ColorWriter = struct {
 
     fn detectTty() bool {
         // Check if stdout is a TTY
-        const stdout = std.io.getStdOut();
-        return stdout.isTty();
+        const stdout = std.fs.File.stdout();
+        return std.io.tty.Config.detect(stdout) != .no_color;
     }
 
     pub fn setColor(self: *Self, color: Color) !void {
@@ -278,8 +278,8 @@ pub const Diagnostic = struct {
     code: DiagnosticCode,
     message: []const u8,
     span: SourceSpan,
-    notes: ArrayList(Diagnostic),
-    suggestions: ArrayList(Suggestion),
+    notes: ArrayList(Diagnostic) = .empty,
+    suggestions: ArrayList(Suggestion) = .empty,
     allocator: Allocator,
 
     const Self = @This();
@@ -290,8 +290,6 @@ pub const Diagnostic = struct {
             .code = code,
             .message = message,
             .span = span,
-            .notes = ArrayList(Diagnostic).init(allocator),
-            .suggestions = ArrayList(Suggestion).init(allocator),
             .allocator = allocator,
         };
     }
@@ -300,8 +298,8 @@ pub const Diagnostic = struct {
         for (self.notes.items) |*note| {
             note.deinit();
         }
-        self.notes.deinit();
-        self.suggestions.deinit();
+        self.notes.deinit(self.allocator);
+        self.suggestions.deinit(self.allocator);
     }
 
     pub fn isError(self: Self) bool {
@@ -311,11 +309,11 @@ pub const Diagnostic = struct {
     pub fn addNote(self: *Self, message: []const u8, span: ?SourceSpan) !void {
         const note_span = span orelse self.span;
         const note = Diagnostic.init(self.allocator, .note, self.code, message, note_span);
-        try self.notes.append(note);
+        try self.notes.append(self.allocator, note);
     }
 
     pub fn addSuggestion(self: *Self, message: []const u8, replacement: ?[]const u8) !void {
-        try self.suggestions.append(.{
+        try self.suggestions.append(self.allocator, .{
             .message = message,
             .replacement = replacement,
         });
@@ -400,9 +398,9 @@ pub const ErrorReporter = struct {
     pub fn init(allocator: Allocator, source: []const u8, file_name: []const u8) !Self {
         var self = Self{
             .allocator = allocator,
-            .diagnostics = ArrayList(Diagnostic).init(allocator),
+            .diagnostics = .empty,
             .source = source,
-            .source_lines = ArrayList([]const u8).init(allocator),
+            .source_lines = .empty,
             .file_name = file_name,
             .error_count = 0,
             .warning_count = 0,
@@ -412,7 +410,7 @@ pub const ErrorReporter = struct {
         // Split source into lines
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |line| {
-            try self.source_lines.append(line);
+            try self.source_lines.append(allocator, line);
         }
 
         return self;
@@ -422,8 +420,8 @@ pub const ErrorReporter = struct {
         for (self.diagnostics.items) |*diag| {
             diag.deinit();
         }
-        self.diagnostics.deinit();
-        self.source_lines.deinit();
+        self.diagnostics.deinit(self.allocator);
+        self.source_lines.deinit(self.allocator);
     }
 
     pub fn report(self: *Self, severity: DiagnosticSeverity, code: DiagnosticCode, span: SourceSpan, message: []const u8) !*Diagnostic {
@@ -435,7 +433,7 @@ pub const ErrorReporter = struct {
         diag_span.source_line = self.getSourceLine(span.start.line);
 
         const diag = Diagnostic.init(self.allocator, severity, code, message, diag_span);
-        try self.diagnostics.append(diag);
+        try self.diagnostics.append(self.allocator, diag);
 
         if (severity == .error_level) {
             self.error_count += 1;

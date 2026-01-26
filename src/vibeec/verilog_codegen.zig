@@ -2089,6 +2089,28 @@ pub const VerilogCodeGen = struct {
         try self.builder.newline();
     }
 
+    fn writeIntelDSP(self: *Self, name: []const u8) !void {
+        try self.builder.writeFmt("module {s}_dsp (\n", .{name});
+        self.builder.incIndent();
+        try self.builder.writeLine("input wire [17:0] dataa, input wire [17:0] datab,");
+        try self.builder.writeLine("input wire clk, input wire rst_n,");
+        try self.builder.writeLine("output wire [35:0] result");
+        self.builder.decIndent();
+        try self.builder.writeLine(");");
+        self.builder.incIndent();
+        try self.builder.writeLine("// Intel ALTMULT_ADD primitive for Agilex/Cyclone");
+        try self.builder.writeLine("altmult_add #(");
+        try self.builder.writeLine("  .width_a(18), .width_b(18), .width_result(36),");
+        try self.builder.writeLine("  .number_of_multipliers(1), .port_addnsub1(\"UNUSED\")");
+        try self.builder.writeLine(") mult_inst (");
+        try self.builder.writeLine("  .dataa(dataa), .datab(datab), .clock0(clk), .aclr0(!rst_n),");
+        try self.builder.writeLine("  .result(result)");
+        try self.builder.writeLine(");");
+        self.builder.decIndent();
+        try self.builder.writeLine("endmodule");
+        try self.builder.newline();
+    }
+
     fn writeClockGen(self: *Self) !void {
         const target = self.spec.fpga_target;
         try self.builder.writeLine("// Clock Generation Module - Vendor Specific Abstraction");
@@ -2122,13 +2144,18 @@ pub const VerilogCodeGen = struct {
             try self.builder.writeLine("  assign clk_out = clk_in;");
             try self.builder.writeLine("  assign locked = 1'b1;");
             try self.builder.writeLine("endmodule");
-        }
         try self.builder.newline();
     }
 
     fn writeGenericBehavior(self: *Self, b: Behavior) !void {
         try self.builder.writeFmt("// Behavior: {s}\n", .{b.name});
-        try self.builder.writeFmt("// Given: {s}\n", .{b.given});
+        if (containsIgnoreCase(b.name, "mac") or containsIgnoreCase(b.name, "multiply")) {
+            if (std.mem.eql(u8, self.spec.fpga_target, "intel")) {
+                try self.writeIntelDSP(b.name);
+                return;
+            }
+        }
+        try self.builder.writeFmt("module {s}_logic (\n", .{b.name});
         try self.builder.writeFmt("// When: {s}\n", .{b.when});
         try self.builder.writeFmt("// Then: {s}\n", .{b.then});
 

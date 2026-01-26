@@ -227,20 +227,21 @@ pub const TypeCheckResult = struct {
     errors: ArrayList(TypeError),
 
     pub fn init(allocator: Allocator) TypeCheckResult {
+        _ = allocator;
         return .{
             .success = true,
             .resolved_type = null,
-            .errors = ArrayList(TypeError).init(allocator),
+            .errors = .empty,
         };
     }
 
-    pub fn deinit(self: *TypeCheckResult) void {
-        self.errors.deinit();
+    pub fn deinit(self: *TypeCheckResult, allocator: Allocator) void {
+        self.errors.deinit(allocator);
     }
 
-    pub fn addError(self: *TypeCheckResult, err: TypeError) !void {
+    pub fn addError(self: *TypeCheckResult, allocator: Allocator, err: TypeError) !void {
         self.success = false;
-        try self.errors.append(err);
+        try self.errors.append(allocator, err);
     }
 };
 
@@ -298,7 +299,7 @@ pub const TypeChecker = struct {
     pub fn deinit(self: *Self) void {
         var iter = self.cache.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.result.deinit();
+            entry.value_ptr.result.deinit(self.allocator);
         }
         self.cache.deinit();
         self.registry.deinit();
@@ -357,7 +358,7 @@ pub const TypeChecker = struct {
                 // Resolve type
                 const resolved = self.resolveTypeName(field.type_name);
                 if (resolved == null) {
-                    try result.addError(.{
+                    try result.addError(self.allocator, .{
                         .code = .undefined_type,
                         .message = field.type_name,
                         .location = null,
@@ -368,24 +369,23 @@ pub const TypeChecker = struct {
     }
 
     fn checkBehavior(self: *Self, behavior: *const parser.Behavior, result: *TypeCheckResult) !void {
-        _ = self;
         // Behaviors should have given/when/then
         if (behavior.given.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "behavior missing 'given' clause",
                 .location = null,
             });
         }
         if (behavior.when.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "behavior missing 'when' clause",
                 .location = null,
             });
         }
         if (behavior.then.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "behavior missing 'then' clause",
                 .location = null,
@@ -394,24 +394,23 @@ pub const TypeChecker = struct {
     }
 
     fn checkCreationPattern(self: *Self, cp: *const parser.CreationPattern, result: *TypeCheckResult) !void {
-        _ = self;
         // Creation pattern should have source/transformer/result
         if (cp.source.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "creation pattern missing 'source'",
                 .location = null,
             });
         }
         if (cp.transformer.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "creation pattern missing 'transformer'",
                 .location = null,
             });
         }
         if (cp.result.len == 0) {
-            try result.addError(.{
+            try result.addError(self.allocator, .{
                 .code = .missing_field,
                 .message = "creation pattern missing 'result'",
                 .location = null,

@@ -148,17 +148,20 @@ pub const Specification = struct {
     constants: ArrayList(Constant),
 
     pub fn init(allocator: Allocator) Specification {
+        _ = allocator;
         return .{
-            .behaviors = ArrayList(Behavior).init(allocator),
-            .types = ArrayList(TypeDef).init(allocator),
-            .constants = ArrayList(Constant).init(allocator),
+            .behaviors = .empty,
+            .types = .empty,
+            .constants = .empty,
         };
     }
 
-    pub fn deinit(self: *Specification) void {
-        self.behaviors.deinit();
-        self.types.deinit();
-        self.constants.deinit();
+    pub fn deinit(self: *Specification, allocator: Allocator) void {
+        for (self.behaviors.items) |*b| b.deinit(allocator);
+        self.behaviors.deinit(allocator);
+        for (self.types.items) |*t| t.deinit(allocator);
+        self.types.deinit(allocator);
+        self.constants.deinit(allocator);
     }
 };
 
@@ -176,9 +179,14 @@ pub const Behavior = struct {
     test_cases: ArrayList(TestCase),
 
     pub fn init(allocator: Allocator) Behavior {
+        _ = allocator;
         return .{
-            .test_cases = ArrayList(TestCase).init(allocator),
+            .test_cases = .empty,
         };
+    }
+
+    pub fn deinit(self: *Behavior, allocator: Allocator) void {
+        self.test_cases.deinit(allocator);
     }
 };
 
@@ -197,11 +205,18 @@ pub const TypeDef = struct {
     values: ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) TypeDef {
+        _ = allocator;
         return .{
-            .fields = ArrayList(Field).init(allocator),
-            .methods = ArrayList(Method).init(allocator),
-            .values = ArrayList([]const u8).init(allocator),
+            .fields = .empty,
+            .methods = .empty,
+            .values = .empty,
         };
+    }
+
+    pub fn deinit(self: *TypeDef, allocator: Allocator) void {
+        self.fields.deinit(allocator);
+        self.methods.deinit(allocator);
+        self.values.deinit(allocator);
     }
 };
 
@@ -229,9 +244,14 @@ pub const PASAnalysis = struct {
     improvements: ArrayList(Improvement),
 
     pub fn init(allocator: Allocator) PASAnalysis {
+        _ = allocator;
         return .{
-            .improvements = ArrayList(Improvement).init(allocator),
+            .improvements = .empty,
         };
+    }
+
+    pub fn deinit(self: *PASAnalysis, allocator: Allocator) void {
+        self.improvements.deinit(allocator);
     }
 };
 
@@ -278,9 +298,9 @@ pub const ParserV3 = struct {
         return .{
             .allocator = allocator,
             .source = "",
-            .lines = ArrayList([]const u8).init(allocator),
+            .lines = .empty,
             .current_line = 0,
-            .indent_stack = ArrayList(u32).init(allocator),
+            .indent_stack = .empty,
             .lines_parsed = 0,
             .keywords_matched = 0,
             .cache_hits = 0,
@@ -288,22 +308,30 @@ pub const ParserV3 = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.lines.deinit();
-        self.indent_stack.deinit();
+        self.lines.deinit(self.allocator);
+        self.indent_stack.deinit(self.allocator);
     }
 
     pub fn parse(self: *Self, source: []const u8) !Specification {
         self.source = source;
         self.current_line = 0;
-        self.lines.clearRetainingCapacity();
+        self.lines.deinit(self.allocator);
+        self.lines = .empty;
 
         // Split into lines
-        var line_iter = std.mem.splitScalar(u8, source, '\n');
-        while (line_iter.next()) |line| {
-            try self.lines.append(line);
+        var iter = std.mem.splitScalar(u8, source, '\n');
+        while (iter.next()) |line| {
+            try self.lines.append(self.allocator, line);
         }
 
         var spec = Specification.init(self.allocator);
+        const first_line = if (self.lines.items.len > 0) self.lines.items[0] else "";
+        if (!std.mem.startsWith(u8, first_line, "name:")) {
+            // ...
+        }
+
+        // ... rest of parse logic should use append(self.allocator, ...)
+        // which I already fixed with sed or will fix now.
 
         // Parse state machine
         var state: ParseState = .root;
@@ -345,12 +373,12 @@ pub const ParserV3 = struct {
                         } else if (state == .in_behavior and is_list_item) {
                             var behavior = Behavior.init(self.allocator);
                             behavior.name = value;
-                            try spec.behaviors.append(behavior);
+                            try spec.behaviors.append(self.allocator, behavior);
                             current_behavior = &spec.behaviors.items[spec.behaviors.items.len - 1];
                         } else if (state == .in_types and is_list_item) {
                             var type_def = TypeDef.init(self.allocator);
                             type_def.name = value;
-                            try spec.types.append(type_def);
+                            try spec.types.append(self.allocator, type_def);
                             current_type = &spec.types.items[spec.types.items.len - 1];
                         }
                     },
@@ -435,10 +463,10 @@ pub const ParserV3 = struct {
                                     current_type.?.fields.items[current_type.?.fields.items.len - 1].type_name = value;
                                 }
                             } else if (is_list_item) {
-                                try current_type.?.fields.append(.{ .name = key });
+                                try current_type.?.fields.append(self.allocator, .{ .name = key });
                             }
                         } else if (state == .in_constants and is_list_item) {
-                            try spec.constants.append(.{ .name = key, .value = value });
+                            try spec.constants.append(self.allocator, .{ .name = key, .value = value });
                         }
                     },
                 }

@@ -91,7 +91,7 @@ pub const CompileResult = struct {
     allocator: Allocator,
 
     pub fn deinit(self: *CompileResult) void {
-        if (self.spec) |*s| s.deinit();
+        if (self.spec) |*s| s.deinit(self.allocator);
         if (self.zig_code) |code| self.allocator.free(code);
         if (self.code999) |code| self.allocator.free(code);
     }
@@ -194,7 +194,7 @@ pub const Compiler = struct {
         if (self.options.enable_type_check) {
             const tc_start = std.time.nanoTimestamp();
             var tc_result = try self.type_checker.check(&spec);
-            defer tc_result.deinit();
+            defer tc_result.deinit(self.allocator);
             const tc_end = std.time.nanoTimestamp();
             metrics.type_check_time_ns = @intCast(tc_end - tc_start);
             metrics.types_checked = self.type_checker.types_checked;
@@ -296,12 +296,42 @@ pub fn main() !u8 {
         return 0;
     } else if (std.mem.eql(u8, cmd, "gen")) {
         if (args.len < 3) {
-            const stdout = std.io.getStdOut().writer();
-            try stdout.print("Error: gen requires input file\nUsage: vibeec gen <file.vibee>\n", .{});
+            std.debug.print("Error: gen requires input file\nUsage: vibeec gen <file.vibee>\n", .{});
             return 1;
         }
-        var cli_instance = CLI.init(allocator, false);
-        return cli_instance.run(args);
+        const input_path = args[2];
+        var compiler_inst = Compiler.init(allocator, .{});
+        defer compiler_inst.deinit();
+
+        const result = try compiler_inst.compileFile(input_path);
+        defer @constCast(&result).deinit();
+
+        if (result.success) {
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.print("✓ Compiled {s} successfully\n", .{input_path});
+
+            // Write output files
+            if (result.zig_code) |zig| {
+                const out_path = try std.fmt.allocPrint(allocator, "{s}.zig", .{input_path});
+                defer allocator.free(out_path);
+                const out_file = try std.fs.cwd().createFile(out_path, .{});
+                defer out_file.close();
+                try out_file.writeAll(zig);
+                try stdout.print("   Generated: {s}\n", .{out_path});
+            }
+            if (result.code999) |c999| {
+                const out_path = try std.fmt.allocPrint(allocator, "{s}.999", .{input_path});
+                defer allocator.free(out_path);
+                const out_file = try std.fs.cwd().createFile(out_path, .{});
+                defer out_file.close();
+                try out_file.writeAll(c999);
+                try stdout.print("   Generated: {s}\n", .{out_path});
+            }
+            return 0;
+        } else {
+            std.debug.print("Failed to compile {s}\n", .{input_path});
+            return 1;
+        }
     } else if (std.mem.eql(u8, cmd, "pas")) {
         printPASInfo();
         return 0;
@@ -310,8 +340,7 @@ pub fn main() !u8 {
         return 0;
     } else if (std.mem.eql(u8, cmd, "eval")) {
         if (args.len < 3) {
-            const stdout = std.io.getStdOut().writer();
-            try stdout.print("Usage: vibeec eval \"expression\"\n", .{});
+            std.debug.print("Usage: vibeec eval \"expression\"\n", .{});
             return 1;
         }
         evalTernary(args[2]);
@@ -329,13 +358,12 @@ pub fn main() !u8 {
         return 0;
     }
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Unknown command: {s}\nRun 'vibeec help' for usage.\n", .{cmd});
+    std.debug.print("Unknown command: {s}\nRun 'vibeec help' for usage.\n", .{cmd});
     return 1;
 }
 
 fn printSimpleHelp() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\  ╔═══════════════════════════════════════════════════════════╗
@@ -371,7 +399,7 @@ fn printSimpleHelp() void {
 }
 
 fn printVersion() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\VIBEEC v22.0.0
         \\φ = 1.618033988749895
@@ -382,7 +410,7 @@ fn printVersion() void {
 }
 
 fn printPASInfo() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\  PAS DAEMONS - Predictive Algorithmic Systematics
@@ -409,7 +437,7 @@ fn printPhiInfo() void {
     const inv_phi_sq = 1.0 / phi_sq;
     const golden = phi_sq + inv_phi_sq;
 
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\  SACRED CONSTANTS
@@ -424,7 +452,7 @@ fn printPhiInfo() void {
 }
 
 fn evalTernary(expr: []const u8) void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\  TERNARY EVAL: {s}
@@ -442,19 +470,19 @@ fn evalTernary(expr: []const u8) void {
 }
 
 fn printAgentStatus() void {
-    const stdout = std.io.getStdOut().writer();
-    
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+
     // Check API keys
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST");
-    
+
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
     const has_ollama = ollama_host != null and ollama_host.?.len > 0;
-    
+
     const ai_status = if (has_anthropic or has_openai or has_ollama) "READY" else "NO API KEY";
-    
+
     stdout.print(
         \\
         \\  VIBEE TERMINAL AGENT
@@ -484,15 +512,15 @@ fn printAgentStatus() void {
 }
 
 fn printConfig() void {
-    const stdout = std.io.getStdOut().writer();
-    
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST") orelse "http://localhost:11434";
-    
+
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
-    
+
     stdout.print(
         \\
         \\  VIBEE CONFIGURATION
@@ -508,7 +536,7 @@ fn printConfig() void {
         if (has_openai) "sk-***" else "(not set)",
         ollama_host,
     }) catch {};
-    
+
     if (!has_anthropic and !has_openai) {
         stdout.print(
             \\
@@ -530,28 +558,28 @@ fn printConfig() void {
 
 fn runChat(allocator: std.mem.Allocator) !u8 {
     _ = allocator;
-    const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
-    
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdin = std.fs.File.stdin().deprecatedReader();
+
     // Check for API keys
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST");
-    
+
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
     const has_ollama = ollama_host != null and ollama_host.?.len > 0;
-    
+
     // Determine provider
-    const provider: []const u8 = if (has_anthropic) 
-        "Anthropic Claude" 
-    else if (has_openai) 
-        "OpenAI GPT" 
-    else if (has_ollama) 
+    const provider: []const u8 = if (has_anthropic)
+        "Anthropic Claude"
+    else if (has_openai)
+        "OpenAI GPT"
+    else if (has_ollama)
         "Ollama (local)"
-    else 
+    else
         "none";
-    
+
     stdout.print(
         \\
         \\  ╔═══════════════════════════════════════════════════════════╗
@@ -560,7 +588,7 @@ fn runChat(allocator: std.mem.Allocator) !u8 {
         \\  ╚═══════════════════════════════════════════════════════════╝
         \\
     , .{}) catch {};
-    
+
     if (!has_anthropic and !has_openai and !has_ollama) {
         stdout.print(
             \\
@@ -591,34 +619,34 @@ fn runChat(allocator: std.mem.Allocator) !u8 {
         , .{}) catch {};
         return 1;
     }
-    
+
     stdout.print(
         \\  Provider: {s}
         \\  Type /help for commands, /quit to exit
         \\
         \\
     , .{provider}) catch {};
-    
+
     // REPL loop
     var input_buf: [4096]u8 = undefined;
-    
+
     while (true) {
         stdout.print("△ > ", .{}) catch {};
-        
+
         const input = stdin.readUntilDelimiterOrEof(&input_buf, '\n') catch |err| {
             stdout.print("\nError reading input: {}\n", .{err}) catch {};
             continue;
         };
-        
+
         if (input == null) {
             stdout.print("\n\nGoodbye! φ² + 1/φ² = 3\n", .{}) catch {};
             break;
         }
-        
+
         const line = std.mem.trim(u8, input.?, " \t\r\n");
-        
+
         if (line.len == 0) continue;
-        
+
         // Handle commands
         if (std.mem.startsWith(u8, line, "/")) {
             if (std.mem.eql(u8, line, "/quit") or std.mem.eql(u8, line, "/exit") or std.mem.eql(u8, line, "/q")) {
@@ -640,19 +668,19 @@ fn runChat(allocator: std.mem.Allocator) !u8 {
             }
             continue;
         }
-        
+
         // Send to AI (placeholder - actual HTTP call would go here)
         stdout.print("\n  ○ Processing with {s}...\n", .{provider}) catch {};
         stdout.print("\n  [AI Response would appear here]\n", .{}) catch {};
         stdout.print("  Note: HTTP client not yet implemented in Zig.\n", .{}) catch {};
         stdout.print("  Use the Python/Node wrapper for full AI support.\n\n", .{}) catch {};
     }
-    
+
     return 0;
 }
 
 fn printChatHelp() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\  CHAT COMMANDS
@@ -671,32 +699,32 @@ fn printChatHelp() void {
 
 fn launchAgent(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     // Build command for vibee-agent
-    var argv = std.ArrayList([]const u8).init(allocator);
-    defer argv.deinit();
-    
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+
     // Find the agent script relative to the binary
-    try argv.append("bin/vibee-agent");
-    
+    try argv.append(allocator, "bin/vibee-agent");
+
     // Pass remaining arguments
     if (args.len > 2) {
         for (args[2..]) |arg| {
-            try argv.append(arg);
+            try argv.append(allocator, arg);
         }
     }
-    
+
     // Execute
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
-    
+
     _ = child.spawnAndWait() catch |err| {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = std.fs.File.stdout().deprecatedWriter();
         stdout.print("Failed to launch agent: {}\n", .{err}) catch {};
         stdout.print("\nRun directly: ./bin/vibee-agent\n", .{}) catch {};
         return 1;
     };
-    
+
     return 0;
 }
 
