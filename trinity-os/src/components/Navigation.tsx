@@ -39,7 +39,7 @@ export default memo(function Navigation() {
         </a>
       ))}
       <a 
-        href="/visualizations" 
+        href="/quantum" 
         style={{ 
           color: 'var(--accent)', 
           display: 'flex', 

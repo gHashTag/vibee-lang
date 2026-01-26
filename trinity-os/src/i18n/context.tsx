@@ -22,41 +22,48 @@ interface I18nContextType {
 const I18nContext = createContext<I18nContextType | null>(null);
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLangState] = useState<Lang>('en');
+  const [lang, setLangState] = useState<Lang>(() => {
+    // Client-side only initialization
+    if (typeof window !== 'undefined') {
+      console.log('Detecting language on init...');
+      // 1. Check URL param (highest priority)
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlLang = urlParams.get('lang');
+      if (urlLang && LANGS.includes(urlLang as Lang)) {
+        console.log('Language from URL:', urlLang);
+        localStorage.setItem('trinity-lang', urlLang);
+        return urlLang as Lang;
+      }
+      
+      // 2. Check localStorage
+      const saved = localStorage.getItem('trinity-lang');
+      if (saved && LANGS.includes(saved as Lang)) {
+        console.log('Language from localStorage:', saved);
+        return saved as Lang;
+      }
+      
+      // 3. Detect from browser
+      const browserLang = navigator.language.slice(0, 2);
+      console.log('Browser language:', browserLang);
+      if (LANGS.includes(browserLang as Lang)) {
+        console.log('Setting language from browser:', browserLang);
+        return browserLang as Lang;
+      }
+    }
+    // Default fallback
+    return 'en';
+  });
   const [mounted, setMounted] = useState(false);
 
-  // Detect language on client side only
+  // Set mounted flag on client
   useEffect(() => {
-    // 1. Check URL param (highest priority)
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlLang = urlParams.get('lang');
-    if (urlLang && LANGS.includes(urlLang as Lang)) {
-      setLangState(urlLang as Lang);
-      localStorage.setItem('trinity-lang', urlLang);
-      setMounted(true);
-      return;
-    }
-    
-    // 2. Check localStorage
-    const saved = localStorage.getItem('trinity-lang');
-    if (saved && LANGS.includes(saved as Lang)) {
-      setLangState(saved as Lang);
-      setMounted(true);
-      return;
-    }
-    
-    // 3. Detect from browser
-    const browserLang = navigator.language.slice(0, 2);
-    if (LANGS.includes(browserLang as Lang)) {
-      setLangState(browserLang as Lang);
-    }
-    
     setMounted(true);
   }, []);
 
   // Save to localStorage when lang changes
   useEffect(() => {
     if (mounted) {
+      console.log('Saving language to localStorage:', lang);
       localStorage.setItem('trinity-lang', lang);
       document.documentElement.lang = lang;
     }
@@ -65,8 +72,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const t = translations[lang] || translations['en'];
 
   const setLang = (newLang: string) => {
+    console.log('Setting language:', newLang, 'current:', lang);
     if (LANGS.includes(newLang as Lang)) {
       setLangState(newLang as Lang);
+    } else {
+      console.warn('Invalid language:', newLang);
     }
   };
 
