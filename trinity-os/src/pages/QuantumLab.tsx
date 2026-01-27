@@ -88,7 +88,17 @@ const categories = [
 const allModes = categories.flatMap(c => c.modes);
 
 export default function QuantumLab() {
-  const [currentMode, setCurrentMode] = useState<VizMode>('trinity-computer');
+  // Initialize mode from URL param or default
+  const [currentMode, setCurrentMode] = useState<VizMode>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const modeParam = params.get('mode');
+      if (modeParam && allModes.some(m => m.id === modeParam)) {
+        return modeParam as VizMode;
+      }
+    }
+    return 'trinity-computer';
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   
   const current = allModes.find(m => m.id === currentMode) || allModes[0];

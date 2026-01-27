@@ -1,6 +1,5 @@
 import { useState, useEffect, memo } from 'react'
 import { useI18n } from '../i18n/context'
-import { Link } from 'react-router-dom'
 import LanguageSwitcher from './LanguageSwitcher'
 
 const sectionIds = ['hero', 'problem', 'solution', 'whynow', 'calculator', 'traction', 'market', 'gtm', 'competition', 'roadmap', 'team', 'ecosystem', 'invest']
@@ -39,18 +38,21 @@ export default memo(function Navigation() {
           {item}
         </a>
       ))}
-      <Link 
-        to="/quantum" 
+      <a 
+        href="/quantum?mode=universal-translator" 
         style={{ 
           color: 'var(--accent)', 
           display: 'flex', 
           alignItems: 'center', 
           gap: '4px',
-          fontWeight: 500
+          fontWeight: 500,
+          textDecoration: 'none',
+          padding: '0 10px',
+          cursor: 'pointer'
         }}
       >
         🔮 Viz
-      </Link>
+      </a>
       <LanguageSwitcher />
     </nav>
   )
