@@ -138,7 +138,6 @@ endmodule
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Behavior: trit27_not
-module trit27_not_logic (
 // When: Parallel negation needed
 // Then: Return Trit27 with all trits negated
 module behavior_trit27_not (
@@ -166,7 +165,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: trit27_and
-module trit27_and_logic (
 // When: Parallel Kleene AND needed
 // Then: Return element-wise minimum
 module behavior_trit27_and (
@@ -194,7 +192,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: trit27_or
-module trit27_or_logic (
 // When: Parallel Kleene OR needed
 // Then: Return element-wise maximum
 module behavior_trit27_or (
@@ -222,7 +219,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: trit27_parallel_add
-module trit27_parallel_add_logic (
 // When: Element-wise addition needed
 // Then: Return Trit27 sum (with per-element carry flags)
 module behavior_trit27_parallel_add (
@@ -352,7 +348,6 @@ module trit27_dot_product (
 endmodule
 
 // Behavior: trit27_accumulate
-module trit27_accumulate_logic (
 // When: Multiply-accumulate for large vectors
 // Then: Return updated accumulator
 module behavior_trit27_accumulate (
@@ -380,7 +375,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: bitnet_matmul_row
-module bitnet_matmul_row_logic (
 // When: Single output neuron computation
 // Then: Return pre-activation value
 module behavior_bitnet_matmul_row (
@@ -429,7 +423,6 @@ module bitnet_activation (
 endmodule
 
 // Behavior: bitnet_layer
-module bitnet_layer_logic (
 // When: Full layer forward pass
 // Then: Return output tensor
 module behavior_bitnet_layer (
@@ -457,7 +450,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: weight_bram_read
-module weight_bram_read_logic (
 // When: Weight fetch needed
 // Then: Return Trit27 weight chunk from BRAM
 module behavior_weight_bram_read (
@@ -485,7 +477,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: weight_bram_write
-module weight_bram_write_logic (
 // When: Weight update (training or loading)
 // Then: Write to BRAM
 module behavior_weight_bram_write (
@@ -513,7 +504,6 @@ if (!rst_n) begin
 endmodule
 
 // Behavior: simd_pipeline_ctrl
-module simd_pipeline_ctrl_logic (
 // When: Pipeline management needed
 // Then: Control data flow through SIMD units
 module behavior_simd_pipeline_ctrl (

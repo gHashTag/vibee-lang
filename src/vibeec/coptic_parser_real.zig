@@ -1131,7 +1131,7 @@ pub const Parser = struct {
 
 // Tests
 test "parser const" {
-    var parser = Parser.init("const x = 42", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "const x = 42");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.kind == .program);
@@ -1140,35 +1140,35 @@ test "parser const" {
 }
 
 test "parser binary expr" {
-    var parser = Parser.init("1 + 2 * 3", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "1 + 2 * 3");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .binary_expr);
 }
 
 test "parser func with params" {
-    var parser = Parser.init("func add(a, b) { return a + b }", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "func add(a, b) { return a + b }");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .func_decl);
 }
 
 test "parser unary" {
-    var parser = Parser.init("-42", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "-42");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .unary_expr);
 }
 
 test "parser call" {
-    var parser = Parser.init("foo(1, 2)", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "foo(1, 2)");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .call_expr);
 }
 
 test "parser trit" {
-    var parser = Parser.init("△", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "△");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .literal_trit);
@@ -1179,7 +1179,7 @@ test "phi" {
 }
 
 test "parser if" {
-    var parser = Parser.init("if x > 0 { 1 } else { 2 }", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "if x > 0 { 1 } else { 2 }");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .if_expr);
@@ -1187,21 +1187,21 @@ test "parser if" {
 }
 
 test "parser while" {
-    var parser = Parser.init("while x < 10 { x }", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "while x < 10 { x }");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .while_stmt);
 }
 
 test "parser for" {
-    var parser = Parser.init("for i in arr { i }", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "for i in arr { i }");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .for_stmt);
 }
 
 test "parser array" {
-    var parser = Parser.init("[1, 2, 3]", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "[1, 2, 3]");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .array_literal);
@@ -1209,21 +1209,21 @@ test "parser array" {
 }
 
 test "parser index" {
-    var parser = Parser.init("arr[0]", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "arr[0]");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .index_expr);
 }
 
 test "parser string" {
-    var parser = Parser.init("\"hello\"", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "\"hello\"");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .literal_string);
 }
 
 test "parser comparison" {
-    var parser = Parser.init("x < 10 && y > 5", std.testing.allocator);
+    var parser = Parser.init(std.testing.allocator, "x < 10 && y > 5");
     var ast = try parser.parseProgram();
     defer ast.deinit();
     try std.testing.expect(ast.children.items[0].kind == .binary_expr);

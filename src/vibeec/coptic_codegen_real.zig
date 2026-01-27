@@ -484,7 +484,7 @@ pub const CodeGen = struct {
 
 /// Compile source to Zig code
 pub fn compile(source: []const u8, allocator: std.mem.Allocator) ![]const u8 {
-    var parser = coptic_parser.Parser.init(source, allocator);
+    var parser = coptic_parser.Parser.init(allocator, source);
     var ast = try parser.parseProgram();
     defer ast.deinit();
 

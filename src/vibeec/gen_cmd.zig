@@ -124,7 +124,7 @@ fn generateCode(allocator: std.mem.Allocator, input_path: []const u8, output_pat
         try out_file.writeAll(output);
     } else {
         var codegen = zig_codegen.ZigCodeGen.init(allocator);
-        defer codegen.deinit();
+        // defer codegen.deinit();
         const output = try codegen.generate(&spec);
         defer allocator.free(output);
         try out_file.writeAll(output);
