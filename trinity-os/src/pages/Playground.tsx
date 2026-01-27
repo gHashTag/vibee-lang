@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import Editor from '@monaco-editor/react';
 
 // === CONFIGURATION ===
 const LANGUAGES = [
@@ -732,7 +733,14 @@ export default function Playground() {
   const [activeTab, setActiveTab] = useState<'output' | 'logs'>('output');
   const [isCompiling, setIsCompiling] = useState(false);
   const [compileTime, setCompileTime] = useState<number | null>(null);
-  const outputRef = useRef<HTMLTextAreaElement>(null);
+
+  const getMonacoLang = (lang: string) => {
+    const map: Record<string, string> = {
+      vibee: 'javascript', python: 'python', rust: 'rust', zig: 'c', cpp: 'cpp',
+      verilog: 'systemverilog', systemverilog: 'systemverilog', vhdl: 'vhdl'
+    };
+    return map[lang] || 'plaintext';
+  };
 
   const compile = useCallback(() => {
     setIsCompiling(true);
@@ -757,13 +765,6 @@ export default function Playground() {
   useEffect(() => {
     compile();
   }, [targetLang]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      compile();
-    }
-  };
 
   const sourceInfo = LANGUAGES.find(l => l.id === sourceLang);
   const targetInfo = TARGETS.find(t => t.id === targetLang);
@@ -826,13 +827,19 @@ export default function Playground() {
             </select>
           </div>
           <div style={styles.editorContainer}>
-            <textarea
-              style={styles.textarea}
+            <Editor
+              height="100%"
+              language={getMonacoLang(sourceLang)}
+              theme="vs-dark"
               value={code}
-              onChange={(e) => setCode(e.target.value)}
-              onKeyDown={handleKeyDown}
-              spellCheck={false}
-              placeholder="Enter your code here..."
+              onChange={(v) => setCode(v || '')}
+              options={{
+                fontSize: 13,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                padding: { top: 16 },
+              }}
             />
           </div>
         </div>
@@ -880,12 +887,19 @@ export default function Playground() {
                 <span style={{color: '#58a6ff', fontSize: '13px'}}>Compiling...</span>
               </div>
             ) : activeTab === 'output' ? (
-              <textarea
-                ref={outputRef}
-                style={styles.outputTextarea}
+              <Editor
+                height="100%"
+                language={getMonacoLang(targetLang)}
+                theme="vs-dark"
                 value={output}
-                readOnly
-                spellCheck={false}
+                options={{
+                  fontSize: 13,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  padding: { top: 16 },
+                  readOnly: true,
+                }}
               />
             ) : (
               <div style={styles.logsContainer}>
