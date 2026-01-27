@@ -204,7 +204,7 @@ export default function HLSCompetitionSection() {
             'Python', 'JavaScript', 'TypeScript', 'Java', 'C', 'C++', 'C#', 'Zig',
             'Rust', 'Go', 'Swift', 'Kotlin', 'Ruby', 'PHP', 'Perl', 'Lua',
             'Julia', 'R', 'MATLAB', 'Scala', 'Elixir', 'Haskell', 'OCaml', 'F#',
-            'Clojure', 'Erlang', 'Nim', 'Crystal', 'Verilog', 'VHDL', 'SystemC',
+            'Clojure', 'Erlang', 'Nim', 'Crystal', 'Verilog', 'VHDL', 'SystemVerilog', 'SystemC',
             'Chisel', '.999'
           ].map((lang, i) => (
             <span key={i} style={{

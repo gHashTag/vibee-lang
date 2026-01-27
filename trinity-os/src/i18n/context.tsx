@@ -42,13 +42,13 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
         return saved as Lang;
       }
       
-      // 3. Detect from browser
-      const browserLang = navigator.language.slice(0, 2);
-      console.log('Browser language:', browserLang);
-      if (LANGS.includes(browserLang as Lang)) {
-        console.log('Setting language from browser:', browserLang);
-        return browserLang as Lang;
-      }
+      // 3. Detect from browser - DISABLED (Force English Default)
+      // const browserLang = navigator.language.slice(0, 2);
+      // console.log('Browser language:', browserLang);
+      // if (LANGS.includes(browserLang as Lang)) {
+      //   console.log('Setting language from browser:', browserLang);
+      //   return browserLang as Lang;
+      // }
     }
     // Default fallback
     return 'en';
@@ -69,7 +69,24 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     }
   }, [lang, mounted]);
 
-  const t = translations[lang] || translations['en'];
+  // Deep merge with English fallback to prevent crashes on missing keys
+  const deepMerge = (base: any, override: any): any => {
+    if (!override) return base;
+    if (typeof base !== 'object' || typeof override !== 'object') return override;
+    
+    const merged = { ...base };
+    for (const key in override) {
+      if (typeof override[key] === 'object' && override[key] !== null && !Array.isArray(override[key])) {
+        merged[key] = deepMerge(base[key] || {}, override[key]);
+      } else {
+        merged[key] = override[key];
+      }
+    }
+    return merged;
+  };
+
+  const currentLangT = translations[lang] || translations['en'];
+  const t = lang === 'en' ? currentLangT : deepMerge(translations['en'], currentLangT);
 
   const setLang = (newLang: string) => {
     console.log('Setting language:', newLang, 'current:', lang);

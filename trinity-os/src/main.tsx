@@ -23,6 +23,8 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/lab" element={<QuantumLab />} />
           {/* Redirect old /viz/* routes to /quantum */}
           <Route path="/viz/*" element={<Navigate to="/quantum" replace />} />
+          {/* Catch-all for 404s - Redirect to Home */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </I18nProvider>
