@@ -10,7 +10,7 @@ export type VizMode =
   | 'consciousness' | 'trinity' | 'multiverse' | 'encryption' | 'supremacy' | 'tsp'
   | 'neuromorphic' | 'spintronic' | 'transcendence' | 'living' | 'quantum-life' | 'quantum-agents'
   | 'matryoshka' | 'zhar-ptitsa' | 'bogatyri' | 'qec' | 'obfuscation' | 'secure'
-  | 'beings' | 'pas' | 'quantum-biology' | 'llm-architecture' | 'cinema4d';
+  | 'beings' | 'pas' | 'quantum-biology' | 'llm-architecture' | 'cinema4d' | 'universal-translator';
 
 interface Particle {
   x: number; y: number;

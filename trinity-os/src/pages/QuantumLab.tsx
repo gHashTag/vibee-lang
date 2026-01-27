@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import QuantumCanvas from '../components/QuantumCanvas';
 import type { VizMode } from '../components/QuantumCanvas';
+import TranslatorDemo from '../components/TranslatorDemo';
 
 const categories = [
   {
@@ -11,6 +12,7 @@ const categories = [
     modes: [
       { id: 'trinity-computer', icon: '🔮', title: 'TRINITY Computer', color: '#ffd700' },
       { id: 'trinity', icon: '🔺', title: 'Trinity Core', color: '#0e9' },
+      { id: 'universal-translator', icon: '⚡', title: 'Universal Translator', color: '#00E599' },
     ]
   },
   {
@@ -95,6 +97,13 @@ export default function QuantumLab() {
     <div style={{ position: 'fixed', inset: 0, background: '#000', overflow: 'hidden' }}>
       {/* Fullscreen Canvas */}
       <QuantumCanvas mode={currentMode} particleCount={2000} interactive={true} />
+
+      {/* Translator Demo Overlay */}
+      {currentMode === 'universal-translator' && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 60, overflowY: 'auto', paddingTop: '80px', pointerEvents: 'auto' }}>
+           <TranslatorDemo />
+        </div>
+      )}
       
       {/* Top Left - Logo */}
       <motion.div
