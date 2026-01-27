@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import QuantumLab from './pages/QuantumLab.tsx'
+import Playground from './pages/Playground.tsx'
 import { I18nProvider } from './i18n/context.tsx'
 
 // Register Service Worker for PWA
@@ -20,6 +21,7 @@ createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<App />} />
           <Route path="/quantum" element={<QuantumLab />} />
+          <Route path="/play" element={<Playground />} />
           <Route path="/lab" element={<QuantumLab />} />
           {/* Redirect old /viz/* routes to /quantum */}
           <Route path="/viz/*" element={<Navigate to="/quantum" replace />} />
