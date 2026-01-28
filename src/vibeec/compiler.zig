@@ -313,7 +313,8 @@ pub fn main() !u8 {
 
             // Write output files
             if (result.zig_code) |zig| {
-                const out_path = try std.fmt.allocPrint(allocator, "{s}.zig", .{input_path});
+                const spec_name = std.fs.path.stem(input_path);
+                const out_path = try std.fmt.allocPrint(allocator, "trinity/output/{s}.zig", .{spec_name});
                 defer allocator.free(out_path);
                 const out_file = try std.fs.cwd().createFile(out_path, .{});
                 defer out_file.close();
@@ -321,7 +322,8 @@ pub fn main() !u8 {
                 try stdout.print("   Generated: {s}\n", .{out_path});
             }
             if (result.code999) |c999| {
-                const out_path = try std.fmt.allocPrint(allocator, "{s}.999", .{input_path});
+                const spec_name = std.fs.path.stem(input_path);
+                const out_path = try std.fmt.allocPrint(allocator, "trinity/output/{s}.999", .{spec_name});
                 defer allocator.free(out_path);
                 const out_file = try std.fs.cwd().createFile(out_path, .{});
                 defer out_file.close();

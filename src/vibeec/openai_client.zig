@@ -1,5 +1,5 @@
 // VIBEE OpenAI Client - Pure Zig Implementation
-// Supports: OpenAI, Groq (FREE), Together AI, Ollama
+// Supports: OpenAI, Groq (FREE), Together AI, Ollama, Eden AI
 // Uses http_client.zig and json_parser.zig
 // φ² + 1/φ² = 3
 
@@ -14,6 +14,7 @@ pub const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 pub const TOGETHER_URL = "https://api.together.xyz/v1/chat/completions";
 pub const OLLAMA_URL = "http://localhost:11434/v1/chat/completions";
 pub const HUGGINGFACE_URL = "https://router.huggingface.co/v1/chat/completions";
+pub const EDEN_AI_URL = "https://api.edenai.run/v3/llm";
 
 // Default models per provider
 pub const OPENAI_MODEL = "gpt-4o-mini";
@@ -27,6 +28,9 @@ pub const HF_DEEPSEEK_R1 = "deepseek-ai/DeepSeek-R1";
 pub const HF_LLAMA_33 = "meta-llama/Llama-3.3-70B-Instruct";
 pub const HF_QWEN_25 = "Qwen/Qwen2.5-72B-Instruct";
 pub const HUGGINGFACE_MODEL = "Qwen/Qwen2.5-72B-Instruct"; // Default HF model
+// Eden AI models (via Qwen/Dashscope)
+pub const EDEN_AI_MODEL = "openai/dashscope/qwen-turbo-2025-04-28";
+pub const EDEN_AI_CLAUDE_MODEL = "claude-opus-4-5-20251101";
 
 pub const Provider = enum {
     openai,
@@ -34,6 +38,7 @@ pub const Provider = enum {
     together,
     ollama,
     huggingface,
+    eden,
 };
 
 pub const OpenAIError = error{
@@ -128,6 +133,17 @@ pub const OpenAIClient = struct {
         };
     }
 
+    /// Create client for Eden AI (via Dashscope/Qwen)
+    pub fn initEden(allocator: Allocator, api_key: []const u8) Self {
+        return Self{
+            .allocator = allocator,
+            .http_client = http.HttpClient.init(allocator),
+            .api_key = api_key,
+            .model = EDEN_AI_MODEL,
+            .base_url = EDEN_AI_URL,
+        };
+    }
+
     /// Switch to a different provider
     pub fn setProvider(self: *Self, provider: Provider) void {
         switch (provider) {
@@ -150,6 +166,10 @@ pub const OpenAIClient = struct {
             .huggingface => {
                 self.base_url = HUGGINGFACE_URL;
                 self.model = HUGGINGFACE_MODEL;
+            },
+            .eden => {
+                self.base_url = EDEN_AI_URL;
+                self.model = EDEN_AI_MODEL;
             },
         }
     }
@@ -196,10 +216,10 @@ pub const OpenAIClient = struct {
     }
 
     fn buildRequestJson(self: *Self, system_prompt: ?[]const u8, user_message: []const u8) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 256);
+        errdefer buffer.deinit(self.allocator);
 
-        const writer = buffer.writer();
+        const writer = buffer.writer(self.allocator);
 
         try writer.writeAll("{\"model\":\"");
         try writer.writeAll(self.model);
@@ -217,7 +237,7 @@ pub const OpenAIClient = struct {
 
         try writer.writeAll("],\"max_tokens\":1024}");
 
-        return buffer.toOwnedSlice();
+        return try buffer.toOwnedSlice(self.allocator);
     }
 
     fn writeEscaped(self: *Self, writer: anytype, str: []const u8) !void {
@@ -345,10 +365,10 @@ pub const GPT4V_MODEL = "gpt-4o"; // Vision-capable model
 
 /// Build vision request with image
 pub fn buildVisionRequest(allocator: Allocator, model: []const u8, prompt: []const u8, image_base64: []const u8) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, 256);
+    errdefer buffer.deinit(allocator);
 
-    const writer = buffer.writer();
+    const writer = buffer.writer(allocator);
 
     try writer.writeAll("{\"model\":\"");
     try writer.writeAll(model);
@@ -375,7 +395,7 @@ pub fn buildVisionRequest(allocator: Allocator, model: []const u8, prompt: []con
 
     try writer.writeAll("]}],\"max_tokens\":1024}");
 
-    return buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(allocator);
 }
 
 test "buildVisionRequest" {
@@ -394,10 +414,10 @@ test "buildVisionRequest" {
 
 /// Build streaming request (adds "stream": true)
 pub fn buildStreamingRequest(allocator: Allocator, model: []const u8, prompt: []const u8) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, 256);
+    errdefer buffer.deinit(allocator);
 
-    const writer = buffer.writer();
+    const writer = buffer.writer(allocator);
 
     try writer.writeAll("{\"model\":\"");
     try writer.writeAll(model);
@@ -417,7 +437,7 @@ pub fn buildStreamingRequest(allocator: Allocator, model: []const u8, prompt: []
 
     try writer.writeAll("\"}],\"stream\":true,\"max_tokens\":1024}");
 
-    return buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(allocator);
 }
 
 /// Parse SSE chunk from streaming response
@@ -524,6 +544,11 @@ test "setProvider switches correctly" {
     // Switch to Ollama
     client.setProvider(.ollama);
     try std.testing.expectEqualStrings(OLLAMA_URL, client.base_url);
+
+    // Switch to Eden
+    client.setProvider(.eden);
+    try std.testing.expectEqualStrings(EDEN_AI_URL, client.base_url);
+    try std.testing.expectEqualStrings(EDEN_AI_MODEL, client.model);
 }
 
 test "setModel changes model" {
@@ -559,4 +584,18 @@ test "HuggingFace models constants" {
     try std.testing.expectEqualStrings("deepseek-ai/DeepSeek-R1", HF_DEEPSEEK_R1);
     try std.testing.expectEqualStrings("meta-llama/Llama-3.3-70B-Instruct", HF_LLAMA_33);
     try std.testing.expectEqualStrings("Qwen/Qwen2.5-72B-Instruct", HF_QWEN_25);
+}
+
+test "Eden AI client initialization" {
+    const allocator = std.testing.allocator;
+    var client = OpenAIClient.initEden(allocator, "test-eden-key");
+    defer client.deinit();
+
+    try std.testing.expectEqualStrings(EDEN_AI_URL, client.base_url);
+    try std.testing.expectEqualStrings(EDEN_AI_MODEL, client.model);
+}
+
+test "Eden AI models constants" {
+    try std.testing.expectEqualStrings("openai/dashscope/qwen-turbo-2025-04-28", EDEN_AI_MODEL);
+    try std.testing.expectEqualStrings("claude-opus-4-5-20251101", EDEN_AI_CLAUDE_MODEL);
 }

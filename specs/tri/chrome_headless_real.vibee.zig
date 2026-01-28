@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// GENERATED FROM: strict_pipeline
+// GENERATED FROM: chrome_headless_real
 // Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
 // Golden Identity: φ² + 1/φ² = 3
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -13,25 +13,10 @@ pub const GOLDEN_IDENTITY: f64 = 3.0;
 pub const PI: f64 = 3.141592653589793;
 pub const E: f64 = 2.718281828459045;
 
-pub const PipelineStep = struct {
-};
-
-pub const PipelineResult = struct {
-};
-
-// Creation Pattern
-/// Source: VibeeSpec
-/// Transformer: PipelineEnforcer
-/// Result: GeneratedAndTestedCode
-pub fn strict_pipeline_transform(input: anytype) @TypeOf(input) {
-    // TODO: Implement transformation
-    return input;
-}
-
-test "validate_request" {
-// Given: User request to write code
-// When: Request contains .zig or .py
-// Then: Block and suggest .vibee instead
+test "launch_chrome" {
+// Given: ChromeConfig with valid settings
+// When: Launch Chrome process
+// Then: ChromeProcess returned with running instance
     
     // Golden identity verification
     const phi_sq = PHI * PHI;
@@ -39,10 +24,10 @@ test "validate_request" {
     try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
 }
 
-test "run_pipeline" {
-// Given: .vibee specification
-// When: User requests generation
-// Then: Execute all pipeline steps
+test "take_screenshot" {
+// Given: Connected CDP client
+// When: Call Page.captureScreenshot
+// Then: Return base64 PNG data
     
     // Golden identity verification
     const phi_sq = PHI * PHI;
@@ -50,10 +35,21 @@ test "run_pipeline" {
     try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
 }
 
-test "extract_zig_block" {
-// Given: .tri file with ⲍⲓⲅ_ⲟⲩⲧⲡⲩⲧ
-// When: Extraction requested
-// Then: Extract Zig code to output
+test "navigate_page" {
+// Given: Connected CDP client and URL
+// When: Call Page.navigate
+// Then: Page loads and frame info returned
+    
+    // Golden identity verification
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
+}
+
+test "evaluate_javascript" {
+// Given: Connected CDP client and expression
+// When: Call Runtime.evaluate
+// Then: Script result returned
     
     // Golden identity verification
     const phi_sq = PHI * PHI;

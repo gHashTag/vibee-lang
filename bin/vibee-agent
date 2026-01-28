@@ -76,7 +76,11 @@ safe_jq() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 detect_provider() {
-    if [ -n "$ANTHROPIC_API_KEY" ]; then
+    if [ -n "$EDEN_AI_API_KEY" ]; then
+        PROVIDER="eden"
+        MODEL="${VIBEE_MODEL:-openai/dashscope/qwen-turbo-2025-04-28}"
+        API_URL="https://api.edenai.run/v3/llm"
+    elif [ -n "$ANTHROPIC_API_KEY" ]; then
         PROVIDER="anthropic"
         MODEL="${VIBEE_MODEL:-claude-sonnet-4-20250514}"
         API_URL="https://api.anthropic.com/v1/messages"
@@ -103,6 +107,15 @@ detect_provider() {
 switch_provider() {
     local new_provider="$1"
     case "$new_provider" in
+        eden)
+            if [ -z "$EDEN_AI_API_KEY" ]; then
+                echo -e "${RED}EDEN_AI_API_KEY not set${NC}"
+                return 1
+            fi
+            PROVIDER="eden"
+            MODEL="${2:-openai/dashscope/qwen-turbo-2025-04-28}"
+            API_URL="https://api.edenai.run/v3/llm"
+            ;;
         anthropic|claude)
             if [ -z "$ANTHROPIC_API_KEY" ]; then
                 echo -e "${RED}ANTHROPIC_API_KEY not set${NC}"
@@ -138,7 +151,7 @@ switch_provider() {
             ;;
         *)
             echo -e "${RED}Unknown provider: $new_provider${NC}"
-            echo "Available: anthropic, deepseek, openai, ollama"
+            echo "Available: eden, anthropic, deepseek, openai, ollama"
             return 1
             ;;
     esac
@@ -175,6 +188,7 @@ check_api_key() {
         echo ""
         echo -e "${YELLOW}Set one of these environment variables:${NC}"
         echo ""
+        echo -e "  ${CYAN}export EDEN_AI_API_KEY=your-key${NC}        # Eden AI (Qwen)"
         echo -e "  ${CYAN}export ANTHROPIC_API_KEY=sk-ant-...${NC}    # Claude"
         echo -e "  ${CYAN}export DEEPSEEK_API_KEY=sk-...${NC}         # DeepSeek"
         echo -e "  ${CYAN}export OPENAI_API_KEY=sk-...${NC}           # GPT-4"
@@ -438,6 +452,9 @@ call_llm() {
     local messages="$1"
     
     case "$PROVIDER" in
+        eden)
+            call_eden "$messages"
+            ;;
         anthropic)
             call_anthropic "$messages"
             ;;
@@ -596,6 +613,162 @@ convert_deepseek_response() {
             content="[{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}]"
             
             # Add any text before the tool call (macOS compatible)
+            local pre_text=$(echo "$text" | sed -n '1,/TOOL_CALL:/p' | sed '$d')
+            if [ -n "$pre_text" ]; then
+                content=$(echo "$content" | jq --arg t "$pre_text" '. + [{type: "text", text: $t}]')
+            fi
+            
+            echo "{\"content\": $content, \"stop_reason\": \"tool_use\"}"
+        else
+            # Invalid JSON, treat as text
+            content="[{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]"
+            echo "{\"content\": $content, \"stop_reason\": \"end_turn\"}"
+        fi
+    else
+        content="[{\"type\": \"text\", \"text\": $(echo "$text" | jq -Rs .)}]"
+        echo "{\"content\": $content, \"stop_reason\": \"end_turn\"}"
+    fi
+}
+
+call_eden() {
+    local messages="$1"
+    
+    # Build system prompt with tool instructions
+    local tool_prompt="$SYSTEM_PROMPT
+    
+You have these tools available. To use a tool, respond EXACTLY in this format:
+TOOL_CALL: tool_name
+TOOL_INPUT: {\"param\": \"value\"}
+
+Available tools:
+- read_file: Read file contents. Input: {\"path\": \"filepath\"}
+- write_file: Write to file. Input: {\"path\": \"filepath\", \"content\": \"text\"}
+- run_command: Execute shell command. Input: {\"command\": \"cmd\"}
+- list_files: List directory. Input: {\"path\": \"dirpath\"}
+- open_browser: Open URL in browser. Input: {\"url\": \"https://example.com\"}
+- fetch_url: Fetch URL content. Input: {\"url\": \"https://example.com\"}
+ 
+After I show you tool results, continue your response.
+If no tool is needed, just respond normally."
+    
+    # Build messages array
+    local eden_messages=$(echo "$messages" | jq --arg sys "$tool_prompt" '[{role: "system", content: $sys}] + .')
+    
+    # Check if streaming is enabled
+    if [ "${VIBEE_STREAM:-true}" = "true" ]; then
+        call_eden_streaming "$eden_messages"
+    else
+        local response=$(curl -s https://api.edenai.run/v3/llm \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $EDEN_AI_API_KEY" \
+            -d "{
+                \"model\": \"$MODEL\",
+                \"max_tokens\": $MAX_TOKENS,
+                \"messages\": $eden_messages
+            }")
+        
+        # Convert to Anthropic format
+        convert_eden_response "$response"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAMING SUPPORT - Eden AI SSE
+# φ² + 1/φ² = 3 | PHOENIX = 999
+# ═══════════════════════════════════════════════════════════════════════════════
+
+call_eden_streaming() {
+    local messages="$1"
+    local tmpfile=$(mktemp)
+    
+    # Show streaming indicator
+    echo -ne "${CYAN}" >&2
+    
+    # Make streaming request with -N for unbuffered output
+    while IFS= read -r line; do
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+        
+        # Check for done signal
+        if [[ "$line" == "data: [DONE]" ]]; then
+            break
+        fi
+        
+        # Parse SSE data line
+        if [[ "$line" == data:* ]]; then
+            local json="${line#data: }"
+            
+            # Extract content delta
+            local content=$(echo "$json" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
+            
+            if [[ -n "$content" ]]; then
+                # Output token immediately (real-time streaming)
+                printf "%s" "$content" >&2
+                
+                # Save to temp file for later processing
+                printf "%s" "$content" >> "$tmpfile"
+            fi
+        fi
+    done < <(curl -sN https://api.edenai.run/v3/llm \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $EDEN_AI_API_KEY" \
+        -d "{
+            \"model\": \"$MODEL\",
+            \"max_tokens\": $MAX_TOKENS,
+            \"stream\": true,
+            \"messages\": $messages
+        }" 2>/dev/null)
+    
+    echo -ne "${NC}" >&2
+    echo "" >&2  # Final newline
+    
+    # Read full response from temp file
+    local full_response=$(cat "$tmpfile" 2>/dev/null)
+    rm -f "$tmpfile"
+    
+    # Build response in Anthropic format
+    if echo "$full_response" | grep -q "TOOL_CALL:"; then
+        # Extract tool info from full response
+        local tool_name=$(echo "$full_response" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
+        local tool_input=$(echo "$full_response" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n' | sed 's/^TOOL_INPUT: *//')
+        
+        if echo "$tool_input" | jq . > /dev/null 2>&1; then
+            local tool_id="eden_stream_$(date +%s)"
+            echo "{\"content\": [{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}], \"stop_reason\": \"tool_use\"}"
+        else
+            echo "{\"content\": [{\"type\": \"text\", \"text\": $(echo "$full_response" | jq -Rs .)}], \"stop_reason\": \"end_turn\"}"
+        fi
+    else
+        echo "{\"content\": [{\"type\": \"text\", \"text\": $(echo "$full_response" | jq -Rs .)}], \"stop_reason\": \"end_turn\"}"
+    fi
+}
+
+convert_eden_response() {
+    local response="$1"
+    
+    # Check for error
+    if echo "$response" | jq -e '.error' > /dev/null 2>&1; then
+        echo "$response"
+        return
+    fi
+    
+    local text=$(echo "$response" | jq -r '.choices[0].message.content // ""')
+    local content="[]"
+    
+    # Check if response contains tool call pattern
+    if echo "$text" | grep -q "TOOL_CALL:"; then
+        local tool_name=$(echo "$text" | grep "TOOL_CALL:" | head -1 | sed 's/TOOL_CALL: *//' | tr -d '\r\n')
+        local tool_input=$(echo "$text" | grep -A1 "TOOL_INPUT:" | tail -1 | tr -d '\r\n')
+        
+        # Clean up tool input
+        tool_input=$(echo "$tool_input" | sed 's/^TOOL_INPUT: *//')
+        
+        # Validate JSON
+        if echo "$tool_input" | jq . > /dev/null 2>&1; then
+            local tool_id="eden_$(date +%s)"
+            content="[{\"type\": \"tool_use\", \"id\": \"$tool_id\", \"name\": \"$tool_name\", \"input\": $tool_input}]"
+            
+            # Add any text before tool call
             local pre_text=$(echo "$text" | sed -n '1,/TOOL_CALL:/p' | sed '$d')
             if [ -n "$pre_text" ]; then
                 content=$(echo "$content" | jq --arg t "$pre_text" '. + [{type: "text", text: $t}]')
@@ -845,8 +1018,8 @@ run_agent() {
         done <<< "$content"
         
         # Add assistant message
-        # For DeepSeek/OpenAI, convert content to text format
-        if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ]; then
+        # For DeepSeek/OpenAI/Eden, convert content to text format
+        if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ] || [ "$PROVIDER" = "eden" ]; then
             local text_content=$(echo "$assistant_content" | jq -r '[.[] | if .type == "text" then .text else "Using tool: " + .name end] | join("\n")')
             messages=$(echo "$messages" | jq --arg c "$text_content" '. + [{role: "assistant", content: $c}]')
         else
@@ -855,8 +1028,8 @@ run_agent() {
         
         # If there were tool calls, add results and continue
         if [ "$(echo "$tool_results" | jq 'length')" -gt 0 ]; then
-            # For DeepSeek/OpenAI, convert tool results to text format
-            if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ]; then
+            # For DeepSeek/OpenAI/Eden, convert tool results to text format
+            if [ "$PROVIDER" = "deepseek" ] || [ "$PROVIDER" = "openai" ] || [ "$PROVIDER" = "eden" ]; then
                 local result_text=$(echo "$tool_results" | jq -r '.[].content')
                 messages=$(echo "$messages" | jq ". + [{\"role\": \"user\", \"content\": \"Tool result: $result_text\"}]")
             else
@@ -1156,6 +1329,7 @@ interactive_mode() {
                 echo -e "${CYAN}│${NC}  ${YELLOW}/sessions${NC}          List sessions"
                 echo -e "${CYAN}│${NC}  ${YELLOW}/status${NC}            Show current status"
                 echo -e "${CYAN}├─ Providers ────────────────────────────────────────────────┤${NC}"
+                echo -e "${CYAN}│${NC}  ${GREEN}eden${NC}       Eden AI (EDEN_AI_API_KEY)"
                 echo -e "${CYAN}│${NC}  ${GREEN}anthropic${NC}  Claude (ANTHROPIC_API_KEY)"
                 echo -e "${CYAN}│${NC}  ${GREEN}deepseek${NC}   DeepSeek (DEEPSEEK_API_KEY)"
                 echo -e "${CYAN}│${NC}  ${GREEN}openai${NC}     GPT-4 (OPENAI_API_KEY)"

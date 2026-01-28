@@ -22,7 +22,7 @@ pub const AgentConfig = struct {
     model: []const u8 = "gpt-4o-mini",
     max_steps: u32 = 10,
     verbose: bool = false,
-    provider: Provider = .openai,
+    provider: Provider = .eden,
 };
 
 pub const AgentStep = struct {
@@ -104,6 +104,7 @@ pub const Agent = struct {
             .together => openai.OpenAIClient.initTogether(allocator, config.api_key),
             .ollama => openai.OpenAIClient.initOllama(allocator),
             .huggingface => openai.OpenAIClient.initHuggingFace(allocator, config.api_key),
+            .eden => openai.OpenAIClient.initEden(allocator, config.api_key),
         };
         llm.setModel(config.model);
 

@@ -1,0 +1,156 @@
+# CHROME HEADLESS BROWSER - Real Chrome with CDP Control
+name: chrome_headless_cdp
+version: "1.0.0"
+language: zig
+module: chrome_headless_cdp
+
+types:
+  ChromeConfig:
+    fields:
+      headless: Bool
+      viewport_width: Int
+      viewport_height: Int
+      user_agent: String
+      remote_debugging_port: Int
+      user_data_dir: Option<String>
+      disable_gpu: Bool
+      disable_sandbox: Bool
+      timeout_ms: Int
+
+  ChromeProcess:
+    fields:
+      process_id: Int
+      port: Int
+      websocket_url: String
+      is_running: Bool
+
+  PageSnapshot:
+    fields:
+      url: String
+      title: String
+      screenshot_base64: String
+      visible_text: String
+      timestamp: Timestamp
+
+  CDPCommand:
+    fields:
+      method: String
+      params: Map<String, Object>
+      session_id: Option<String>
+
+  CDPResponse:
+    fields:
+      id: Int
+      result: Object
+      error: Option<Object>
+
+behaviors:
+  - name: launch_chrome
+    given: ChromeConfig
+    when: Launch Chrome with CDP
+    then: ChromeProcess running
+    test_cases:
+      - name: launch_headless
+        input:
+          headless: true
+          viewport_width: 1280
+          viewport_height: 720
+          remote_debugging_port: 9222
+          disable_gpu: true
+          timeout_ms: 30000
+        expected:
+          is_running: true
+          port: 9222
+
+      - name: launch_with_user_agent
+        input:
+          headless: true
+          viewport_width: 1920
+          viewport_height: 1080
+          user_agent: "CustomAgent/1.0"
+          remote_debugging_port: 9223
+          timeout_ms: 30000
+        expected:
+          is_running: true
+          port: 9223
+
+  - name: connect_to_cdp
+    given: ChromeProcess
+    when: Connect to CDP
+    then: WebSocket connection established
+    test_cases:
+      - name: connect_running
+        input:
+          port: 9222
+        expected:
+          connected: true
+
+  - name: navigate_page
+    given: CDP connection and URL
+    when: Navigate to page
+    then: Page loaded
+    test_cases:
+      - name: navigate_example
+        input: "https://example.com"
+        expected:
+          url: "https://example.com"
+          loaded: true
+
+      - name: navigate_wikipedia
+        input: "https://en.wikipedia.org"
+        expected:
+          url: "https://en.wikipedia.org"
+          loaded: true
+
+  - name: take_screenshot
+    given: CDP connection
+    when: Take screenshot
+    then: Base64 PNG screenshot
+    test_cases:
+      - name: test_screenshot_format
+        input:
+          format: "png"
+        expected:
+          format: "png"
+          data_length: "> 0"
+
+  - name: capture_page_snapshot
+    given: CDP connection
+    when: Capture full snapshot
+    then: PageSnapshot with URL, title, screenshot, text
+    test_cases:
+      - name: test_snapshot
+        input:
+          url: "https://example.com"
+        expected:
+          url: String
+          screenshot_base64: String
+          visible_text: String
+
+  - name: execute_javascript
+    given: CDP connection and code
+    when: Execute JavaScript
+    then: Result returned
+    test_cases:
+      - name: simple_eval
+        input:
+          code: "1 + 1"
+        expected:
+          result: 2
+
+      - name: dom_query
+        input:
+          code: "document.title"
+        expected:
+          result: String
+
+  - name: close_chrome
+    given: ChromeProcess
+    when: Close Chrome
+    then: Process terminated
+    test_cases:
+      - name: test_close
+        input:
+          process_id: 12345
+        expected:
+          is_running: false
