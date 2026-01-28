@@ -53,7 +53,9 @@ export default function InvestSection() {
           <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{inv.investorTitle}</h4>
           <div style={{ marginTop: 'auto' }}>
             <motion.a 
-              href={`mailto:${inv?.contact?.email}?subject=Pitch Deck Request`} 
+              href="https://www.xdao.app/42161/dao/0xf27a274cf9fa7079d9a194c149e35969d6362dec/modules/crowdfunding"
+              target="_blank"
+              rel="noopener noreferrer"
               className="btn" 
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
@@ -75,7 +77,7 @@ export default function InvestSection() {
           <h4 style={{ marginBottom: '1.5rem', fontWeight: 500, fontSize: 'clamp(1rem, 3vw, 1.2rem)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{inv.partnerTitle}</h4>
           <div style={{ marginTop: 'auto' }}>
             <motion.a 
-              href={`mailto:${inv?.contact?.email}?subject=Integration Inquiry`} 
+              href="/play"
               className="btn secondary" 
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}

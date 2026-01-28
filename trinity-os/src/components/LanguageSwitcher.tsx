@@ -22,6 +22,16 @@ const LANGS = ['en', 'ru', 'de', 'zh', 'es']
 export default memo(function LanguageSwitcher() {
   const { lang, setLang } = useI18n()
   const [open, setOpen] = useState(false)
+  
+  const handleLangChange = (newLang: string) => {
+    setLang(newLang)
+    setOpen(false)
+    
+    // Update URL query param with new language
+    const url = new URL(window.location.href)
+    url.searchParams.set('lang', newLang)
+    window.history.replaceState({}, '', url.toString())
+  }
 
   return (
     <div className="lang-switcher-wrap">
@@ -41,7 +51,7 @@ export default memo(function LanguageSwitcher() {
             <button 
               key={l} 
               className="lang-option"
-              onClick={() => { setLang(l); setOpen(false); }}
+              onClick={() => handleLangChange(l)}
             >
               <span className="lang-flag">{flags[l]}</span>
               <span className="lang-code">{labels[l]}</span>
