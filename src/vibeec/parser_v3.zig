@@ -384,6 +384,12 @@ pub const ParserV3 = struct {
                             type_def.name = value;
                             try spec.types.append(self.allocator, type_def);
                             current_type = &spec.types.items[spec.types.items.len - 1];
+                        } else if (state == .in_types and !is_list_item and current_type == null) {
+                            // Handle short form: TypeName: instead of - name: TypeName
+                            var type_def = TypeDef.init(self.allocator);
+                            type_def.name = key; // Use the key (TypeName) as the type name
+                            try spec.types.append(self.allocator, type_def);
+                            current_type = &spec.types.items[spec.types.items.len - 1];
                         }
                     },
                     .version => spec.version = value,
@@ -468,7 +474,16 @@ pub const ParserV3 = struct {
                                     current_type.?.fields.items[current_type.?.fields.items.len - 1].type_name = value;
                                 }
                             } else if (is_list_item) {
+                                // Long form: - name: a
+                                //              type: Float
                                 try current_type.?.fields.append(self.allocator, .{ .name = key });
+                            } else if (!is_list_item) {
+                                // Short form: a: Float
+                                // key is field name, value is field type
+                                try current_type.?.fields.append(self.allocator, .{
+                                    .name = key,
+                                    .type_name = value,
+                                });
                             }
                         } else if (state == .in_constants and is_list_item) {
                             try spec.constants.append(self.allocator, .{ .name = key, .value = value });

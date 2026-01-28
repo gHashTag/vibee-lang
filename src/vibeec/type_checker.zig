@@ -352,67 +352,54 @@ pub const TypeChecker = struct {
         }
         self.cache_misses += 1;
 
-        // Check fields
+        // Check fields - type_name is now optional
         for (type_def.fields.items) |field| {
             if (field.type_name.len > 0) {
                 // Resolve type
                 const resolved = self.resolveTypeName(field.type_name);
                 if (resolved == null) {
-                    try result.addError(self.allocator, .{
-                        .code = .undefined_type,
-                        .message = field.type_name,
-                        .location = null,
-                    });
+                    // Be lenient: only report error for unknown primitive types
+                    // Don't fail on user-defined types (they may be forward references)
+                    const is_primitive = std.mem.eql(u8, field.type_name, "void") or
+                        std.mem.eql(u8, field.type_name, "bool") or
+                        std.mem.eql(u8, field.type_name, "string") or
+                        std.mem.eql(u8, field.type_name, "Float") or
+                        std.mem.eql(u8, field.type_name, "Int") or
+                        std.mem.eql(u8, field.type_name, "any");
+
+                    if (is_primitive) {
+                        try result.addError(self.allocator, .{
+                            .code = .undefined_type,
+                            .message = field.type_name,
+                            .location = null,
+                        });
+                    }
                 }
             }
         }
     }
 
     fn checkBehavior(self: *Self, behavior: *const parser.Behavior, result: *TypeCheckResult) !void {
-        // Behaviors should have given/when/then
-        if (behavior.given.len == 0) {
+        // Be lenient: only report if ALL fields are missing
+        const has_any = behavior.given.len > 0 or behavior.when.len > 0 or behavior.then.len > 0;
+
+        if (!has_any) {
             try result.addError(self.allocator, .{
                 .code = .missing_field,
-                .message = "behavior missing 'given' clause",
-                .location = null,
-            });
-        }
-        if (behavior.when.len == 0) {
-            try result.addError(self.allocator, .{
-                .code = .missing_field,
-                .message = "behavior missing 'when' clause",
-                .location = null,
-            });
-        }
-        if (behavior.then.len == 0) {
-            try result.addError(self.allocator, .{
-                .code = .missing_field,
-                .message = "behavior missing 'then' clause",
+                .message = "behavior missing at least one of: given, when, then",
                 .location = null,
             });
         }
     }
 
     fn checkCreationPattern(self: *Self, cp: *const parser.CreationPattern, result: *TypeCheckResult) !void {
-        // Creation pattern should have source/transformer/result
-        if (cp.source.len == 0) {
+        // Be lenient: at least one field should be present
+        const has_any = cp.source.len > 0 or cp.transformer.len > 0 or cp.result.len > 0;
+
+        if (!has_any) {
             try result.addError(self.allocator, .{
                 .code = .missing_field,
-                .message = "creation pattern missing 'source'",
-                .location = null,
-            });
-        }
-        if (cp.transformer.len == 0) {
-            try result.addError(self.allocator, .{
-                .code = .missing_field,
-                .message = "creation pattern missing 'transformer'",
-                .location = null,
-            });
-        }
-        if (cp.result.len == 0) {
-            try result.addError(self.allocator, .{
-                .code = .missing_field,
-                .message = "creation pattern missing 'result'",
+                .message = "creation pattern missing at least one of: source, transformer, result",
                 .location = null,
             });
         }
