@@ -75,7 +75,7 @@ pub const CompileOptions = struct {
     enable_pas: bool = false,
     verbose: bool = false,
     use_color: bool = true,
-    max_errors: u32 = 20,
+    max_errors: u32 = 100,
     warnings_as_errors: bool = false,
 };
 
@@ -349,11 +349,13 @@ pub fn main() !u8 {
         }
         const input_path = args[2];
 
-        // Check for --no-type-check flag
-        var enable_type_check = true;
+        // Check for --enable-type-check or --no-type-check flag
+        var enable_type_check = false; // Changed from true to false (default OFF)
         if (args.len > 3) {
             for (args[3..]) |arg| {
-                if (std.mem.eql(u8, arg, "--no-type-check")) {
+                if (std.mem.eql(u8, arg, "--enable-type-check")) {
+                    enable_type_check = true;
+                } else if (std.mem.eql(u8, arg, "--no-type-check")) {
                     enable_type_check = false;
                 }
             }

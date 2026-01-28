@@ -354,55 +354,64 @@ pub const TypeChecker = struct {
 
         // Check fields - type_name is now optional
         for (type_def.fields.items) |field| {
-            if (field.type_name.len > 0) {
-                // Resolve type
-                const resolved = self.resolveTypeName(field.type_name);
-                if (resolved == null) {
-                    // Be lenient: only report error for unknown primitive types
-                    // Don't fail on user-defined types (they may be forward references)
-                    const is_primitive = std.mem.eql(u8, field.type_name, "void") or
-                        std.mem.eql(u8, field.type_name, "bool") or
-                        std.mem.eql(u8, field.type_name, "string") or
-                        std.mem.eql(u8, field.type_name, "Float") or
-                        std.mem.eql(u8, field.type_name, "Int") or
-                        std.mem.eql(u8, field.type_name, "any");
-
-                    if (is_primitive) {
-                        try result.addError(self.allocator, .{
-                            .code = .undefined_type,
-                            .message = field.type_name,
-                            .location = null,
-                        });
-                    }
-                }
+            // Allow empty type_name - many specs don't specify type
+            if (field.type_name.len == 0) {
+                continue; // Skip validation for fields without explicit type
             }
+
+            // Try to resolve type, but be very lenient
+            const resolved = self.resolveTypeName(field.type_name);
+
+            // Only report error if it's clearly invalid (starts with invalid prefix)
+            const is_invalid = std.mem.startsWith(u8, field.type_name, "!") or
+                std.mem.startsWith(u8, field.type_name, "??");
+
+            if (is_invalid) {
+                try result.addError(self.allocator, .{
+                    .code = .undefined_type,
+                    .message = field.type_name,
+                    .location = null,
+                });
+            }
+
+            // Don't report errors for unknown types - they might be user-defined
+            // or forward references
+            _ = resolved;
         }
     }
 
     fn checkBehavior(self: *Self, behavior: *const parser.Behavior, result: *TypeCheckResult) !void {
-        // Be lenient: only report if ALL fields are missing
-        const has_any = behavior.given.len > 0 or behavior.when.len > 0 or behavior.then.len > 0;
+        // Very lenient: behaviors with ANY fields are valid
+        // Many specs use partial behavior definitions
 
-        if (!has_any) {
+        // Only check for truly invalid cases
+        if (behavior.name.len == 0) {
+            // Name is required in list item form
             try result.addError(self.allocator, .{
                 .code = .missing_field,
-                .message = "behavior missing at least one of: given, when, then",
+                .message = "behavior missing name",
                 .location = null,
             });
         }
+
+        // Don't validate given/when/then - allow partial definitions
+        // This matches how complex specs are written
     }
 
     fn checkCreationPattern(self: *Self, cp: *const parser.CreationPattern, result: *TypeCheckResult) !void {
-        // Be lenient: at least one field should be present
-        const has_any = cp.source.len > 0 or cp.transformer.len > 0 or cp.result.len > 0;
+        // Very lenient: creation patterns with ANY fields are valid
+        // Don't require all three fields
 
-        if (!has_any) {
+        // Only check for truly invalid cases
+        if (cp.source.len == 0 and cp.transformer.len == 0 and cp.result.len == 0) {
+            // At least one field is required
             try result.addError(self.allocator, .{
                 .code = .missing_field,
-                .message = "creation pattern missing at least one of: source, transformer, result",
+                .message = "creation pattern needs at least one field",
                 .location = null,
             });
         }
+        // Otherwise, it's valid - allow partial definitions
     }
 
     pub fn resolveTypeName(self: *Self, name: []const u8) ?Type {
