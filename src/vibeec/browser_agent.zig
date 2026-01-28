@@ -103,6 +103,7 @@ pub const BrowserAgent = struct {
             .together => openai.OpenAIClient.initTogether(allocator, config.llm_api_key),
             .ollama => openai.OpenAIClient.initOllama(allocator),
             .huggingface => openai.OpenAIClient.initHuggingFace(allocator, config.llm_api_key),
+            .eden => openai.OpenAIClient.initEden(allocator, config.llm_api_key),
         };
         llm.setModel(config.llm_model);
 
@@ -117,7 +118,7 @@ pub const BrowserAgent = struct {
             .config = config,
             .llm = llm,
             .browser = browser_mod.Browser.init(allocator, browser_config),
-            .history = std.ArrayList([]const u8).init(allocator),
+            .history = std.ArrayList([]const u8).empty,
             .total_tokens = 0,
         };
     }
@@ -126,7 +127,7 @@ pub const BrowserAgent = struct {
         for (self.history.items) |item| {
             self.allocator.free(item);
         }
-        self.history.deinit();
+        self.history.deinit(self.allocator);
         self.browser.deinit();
         self.llm.deinit();
     }
@@ -152,7 +153,7 @@ pub const BrowserAgent = struct {
 
         // Add task intent to history
         const task_msg = std.fmt.allocPrint(self.allocator, "Task: {s}\nStart URL: {s}", .{ task.getIntent(), task.getStartUrl() }) catch return BrowserAgentError.OutOfMemory;
-        self.history.append(task_msg) catch return BrowserAgentError.OutOfMemory;
+        try self.history.append(self.allocator, task_msg);
 
         var step: u32 = 0;
         while (step < self.config.max_steps) : (step += 1) {
@@ -182,7 +183,7 @@ pub const BrowserAgent = struct {
 
             // Add to history
             const step_msg = std.fmt.allocPrint(self.allocator, "Step {d}:\nObservation: {s}\n{s}", .{ step + 1, observation, response.content }) catch return BrowserAgentError.OutOfMemory;
-            self.history.append(step_msg) catch return BrowserAgentError.OutOfMemory;
+            try self.history.append(self.allocator, step_msg);
 
             // 5. Check for final answer
             if (std.mem.eql(u8, parsed.action, "stop") or std.mem.eql(u8, parsed.action, "final_answer")) {
@@ -230,22 +231,22 @@ pub const BrowserAgent = struct {
 
     /// Build prompt with current observation
     fn buildPrompt(self: *Self, observation: []const u8) ![]const u8 {
-        var prompt = std.ArrayList(u8).init(self.allocator);
-        errdefer prompt.deinit();
+        var prompt = std.ArrayList(u8).empty;
+        errdefer prompt.deinit(self.allocator);
 
         // Add history (last few steps)
         const history_start = if (self.history.items.len > 3) self.history.items.len - 3 else 0;
         for (self.history.items[history_start..]) |item| {
-            try prompt.appendSlice(item);
-            try prompt.appendSlice("\n\n");
+            try prompt.appendSlice(self.allocator, item);
+            try prompt.appendSlice(self.allocator, "\n\n");
         }
 
         // Add current observation
-        try prompt.appendSlice("Current page observation:\n");
-        try prompt.appendSlice(observation);
-        try prompt.appendSlice("\n\nWhat is your next action?");
+        try prompt.appendSlice(self.allocator, "Current page observation:\n");
+        try prompt.appendSlice(self.allocator, observation);
+        try prompt.appendSlice(self.allocator, "\n\nWhat is your next action?");
 
-        return prompt.toOwnedSlice();
+        return prompt.toOwnedSlice(self.allocator);
     }
 
     /// Parse LLM response to extract action

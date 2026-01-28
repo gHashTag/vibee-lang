@@ -71,6 +71,25 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
         });
     }
 
+    // Check 4: Mandatory name: field (NEW)
+    if (!has_name) {
+        try errors.append(std.heap.page_allocator, .{
+            .code = "missing_name",
+            .message = "❌ Missing mandatory 'name:' field",
+            .line = 1,
+        });
+    }
+
+    // Check 5: Mandatory version: field (NEW)
+    if (!has_version) {
+        std.debug.print("DEBUG: Missing version field detected, adding error\n", .{});
+        try errors.append(std.heap.page_allocator, .{
+            .code = "missing_version",
+            .message = "❌ Missing mandatory 'version:' field",
+            .line = 1,
+        });
+    }
+
     if (errors.items.len > 0) {
         // Return slice of errors (valid since page allocator won't free immediately)
         return try std.heap.page_allocator.dupe(ValidationError, errors.items);

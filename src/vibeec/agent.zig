@@ -112,7 +112,7 @@ pub const Agent = struct {
             .allocator = allocator,
             .config = config,
             .llm = llm,
-            .history = std.ArrayList([]const u8).init(allocator),
+            .history = std.ArrayList([]const u8).empty,
             .total_tokens = 0,
         };
     }
@@ -121,7 +121,7 @@ pub const Agent = struct {
         for (self.history.items) |item| {
             self.allocator.free(item);
         }
-        self.history.deinit();
+        self.history.deinit(self.allocator);
         self.llm.deinit();
     }
 
@@ -138,7 +138,7 @@ pub const Agent = struct {
 
         // Add task to history
         const task_msg = std.fmt.allocPrint(self.allocator, "Task: {s}", .{task}) catch return AgentError.OutOfMemory;
-        self.history.append(task_msg) catch return AgentError.OutOfMemory;
+        try self.history.append(self.allocator, task_msg);
 
         var step: u32 = 0;
         while (step < self.config.max_steps) : (step += 1) {
@@ -161,7 +161,7 @@ pub const Agent = struct {
 
             // Add to history
             const step_msg = std.fmt.allocPrint(self.allocator, "{s}", .{response.content}) catch return AgentError.OutOfMemory;
-            self.history.append(step_msg) catch return AgentError.OutOfMemory;
+            try self.history.append(self.allocator, step_msg);
 
             // Check for final answer
             if (std.mem.eql(u8, parsed.action, "final_answer")) {
@@ -186,7 +186,7 @@ pub const Agent = struct {
 
             // Add observation to history
             const obs_msg = std.fmt.allocPrint(self.allocator, "Observation: {s}", .{observation}) catch return AgentError.OutOfMemory;
-            self.history.append(obs_msg) catch return AgentError.OutOfMemory;
+            try self.history.append(self.allocator, obs_msg);
         }
 
         const end_time = std.time.nanoTimestamp();
@@ -201,15 +201,15 @@ pub const Agent = struct {
     }
 
     fn buildPrompt(self: *Self) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(self.allocator);
 
         for (self.history.items) |item| {
-            try buffer.appendSlice(item);
-            try buffer.append('\n');
+            try buffer.append(self.allocator, '\n');
+            try buffer.appendSlice(self.allocator, item);
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(self.allocator);
     }
 
     const ParsedAction = struct {

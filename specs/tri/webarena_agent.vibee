@@ -1,0 +1,186 @@
+# WEBARENA AGENT - Web Browser Automation for GoTo Tasks
+# Chrome DevTools Protocol Integration
+# φ² + 1/φ² = 3 | PHOENIX = 999
+
+name: webarena_agent
+version: "1.0.0"
+language: zig
+module: webarena_agent
+
+types:
+  WebArenaState:
+    fields:
+      current_url: String
+      task_description: String
+      current_step: Int
+      total_steps: Int
+      observations: List<String>
+      screenshots_taken: List<String>
+      success_criteria: String
+
+  PageObservation:
+    fields:
+      visible_text: String
+      element_descriptions: List<String>
+      interactive_elements: List<String>
+      forms_found: List<String>
+      error_messages: List<String>
+
+  WebElement:
+    fields:
+      selector: String
+      element_type: String
+      text_content: Option<String>
+      x_coord: Option<Float>
+      y_coord: Option<Float>
+      attributes: Map<String, String>
+
+  WebArenaAction:
+    fields:
+      action_type: String
+      params: Map<String, Object>
+      description: String
+
+  ActionResult:
+    fields:
+      success: Bool
+      error_message: Option<String>
+      new_state: Option<WebArenaState>
+      observation: Option<PageObservation>
+      screenshot_data: Option<String>
+
+sacred_constants:
+  phi: 1.618033988749895
+  trinity: 3.0
+  phoenix: 999
+  max_steps: 50
+  default_timeout_ms: 10000
+  viewport_width: 1280
+  viewport_height: 720
+
+behaviors:
+  - name: analyze_task
+    given: WebArena task description and initial URL
+    when: Task analysis requested
+    then: Parsed task with execution plan
+    implementation: |
+      const std = @import("std");
+      
+      pub fn parseTask(task: []const u8) !TaskPlan {
+          // Simple task parsing
+          var lines = std.mem.splitScalar(u8, task, "\n");
+          var steps = std.ArrayList(TaskStep).init(allocator);
+          defer steps.deinit();
+          
+          while (lines.next()) |line| {
+              const trimmed = std.mem.trim(u8, line, " ");
+              if (trimmed.len == 0) continue;
+              
+              try steps.append(TaskStep{
+                  .description = trimmed,
+                  .action = "analyze",
+                  .element_selector = null,
+                  .text_to_type = null,
+              });
+          }
+          
+          return TaskPlan{
+              .steps = try steps.toOwnedSlice(),
+              .estimated_steps = steps.items.len,
+          };
+      }
+
+  - name: navigate_to_start_page
+    given: WebArenaState and target URL
+    when: Navigation requested
+    then: Updated state with new URL and page observation
+    test_cases:
+      - name: test_navigate_example
+        input:
+          url: "https://example.com"
+        expected:
+          success: true
+          current_url: "https://example.com"
+
+  - name: observe_page
+    given: WebArenaState loaded
+    when: Page observation requested
+    then: PageObservation with visible text and elements
+    test_cases:
+      - name: test_observe_simple_page
+        input:
+          url: "https://example.com"
+        expected:
+          visible_text_length: "> 0"
+
+  - name: find_interactive_elements
+    given: WebArenaState and page loaded
+    when: Element search requested
+    then: List of WebElement found
+    test_cases:
+      - name: test_find_buttons
+        input:
+          selectors: ["button", "input[type='submit']"]
+        expected:
+          found_count: "> 0"
+
+  - name: execute_action
+    given: WebArenaState and WebArenaAction
+    when: Action execution requested
+    then: ActionResult with updated state
+    test_cases:
+      - name: test_click_button
+        input:
+          action:
+            action_type: "click"
+            params: {selector: "#submit-btn"}
+        expected:
+          success: true
+
+      - name: test_type_text
+        input:
+          action:
+            action_type: "type_text"
+            params: {selector: "#input-field", text: "test"}
+        expected:
+          success: true
+
+  - name: take_screenshot
+    given: WebArenaState
+    when: Screenshot requested
+    then: Base64 PNG data
+    test_cases:
+      - name: test_screenshot_size
+        input:
+          url: "https://example.com"
+        expected:
+          data_size: "> 1000"
+
+  - name: evaluate_completion
+    given: WebArenaState and task
+    when: Completion evaluation requested
+    then: Completion status
+    test_cases:
+      - name: test_success_case
+        input:
+          task: "Click button"
+        expected:
+          success: true
+          completion_percentage: 100
+
+test_cases:
+  - name: test_full_workflow
+    input:
+      task: "Navigate to example.com and click the button"
+      start_url: "https://example.com"
+    expected:
+      total_steps: "> 0"
+      success: true
+
+  - name: test_form_filling
+    input:
+      task: "Fill form with name and email"
+      start_url: "https://example.com/form"
+    expected:
+      success: true
+      fields_filled: 2

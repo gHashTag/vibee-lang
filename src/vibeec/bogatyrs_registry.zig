@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const interface = @import("bogatyr/bogatyr_interface.zig");
+const interface = @import("bogatyrs_common.zig");
 
 /// Реестр всех богатырей
 pub const BogatyrRegistry = struct {

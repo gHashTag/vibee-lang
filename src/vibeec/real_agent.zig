@@ -425,45 +425,45 @@ pub const RetryMetrics = struct {
 
     /// Export metrics to JSON string (v23.39)
     pub fn toJson(self: RetryMetrics, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("{\n");
-        try buffer.appendSlice("  \"counters\": {\n");
-        try std.fmt.format(buffer.writer(), "    \"total_operations\": {d},\n", .{self.total_operations});
-        try std.fmt.format(buffer.writer(), "    \"total_retries\": {d},\n", .{self.total_retries});
-        try std.fmt.format(buffer.writer(), "    \"successful_operations\": {d},\n", .{self.successful_operations});
-        try std.fmt.format(buffer.writer(), "    \"failed_operations\": {d}\n", .{self.failed_operations});
-        try buffer.appendSlice("  },\n");
+        try buffer.appendSlice(allocator, "{\n");
+        try buffer.appendSlice(allocator, "  \"counters\": {\n");
+        try std.fmt.format(buffer.writer(allocator), "    \"total_operations\": {d},\n", .{self.total_operations});
+        try std.fmt.format(buffer.writer(allocator), "    \"total_retries\": {d},\n", .{self.total_retries});
+        try std.fmt.format(buffer.writer(allocator), "    \"successful_operations\": {d},\n", .{self.successful_operations});
+        try std.fmt.format(buffer.writer(allocator), "    \"failed_operations\": {d}\n", .{self.failed_operations});
+        try buffer.appendSlice(allocator, "  },\n");
 
-        try buffer.appendSlice("  \"timing\": {\n");
-        try std.fmt.format(buffer.writer(), "    \"total_delay_ms\": {d},\n", .{self.total_delay_ms});
-        try std.fmt.format(buffer.writer(), "    \"max_delay_ms\": {d},\n", .{self.max_delay_ms});
-        try std.fmt.format(buffer.writer(), "    \"avg_delay_ms\": {d:.2}\n", .{self.getAvgDelayMs()});
-        try buffer.appendSlice("  },\n");
+        try buffer.appendSlice(allocator, "  \"timing\": {\n");
+        try std.fmt.format(buffer.writer(allocator), "    \"total_delay_ms\": {d},\n", .{self.total_delay_ms});
+        try std.fmt.format(buffer.writer(allocator), "    \"max_delay_ms\": {d},\n", .{self.max_delay_ms});
+        try std.fmt.format(buffer.writer(allocator), "    \"avg_delay_ms\": {d:.2}\n", .{self.getAvgDelayMs()});
+        try buffer.appendSlice(allocator, "  },\n");
 
-        try buffer.appendSlice("  \"per_operation\": {\n");
-        try std.fmt.format(buffer.writer(), "    \"navigate_retries\": {d},\n", .{self.navigate_retries});
-        try std.fmt.format(buffer.writer(), "    \"selector_retries\": {d},\n", .{self.selector_retries});
-        try std.fmt.format(buffer.writer(), "    \"page_load_retries\": {d},\n", .{self.page_load_retries});
-        try std.fmt.format(buffer.writer(), "    \"click_retries\": {d}\n", .{self.click_retries});
-        try buffer.appendSlice("  },\n");
+        try buffer.appendSlice(allocator, "  \"per_operation\": {\n");
+        try std.fmt.format(buffer.writer(allocator), "    \"navigate_retries\": {d},\n", .{self.navigate_retries});
+        try std.fmt.format(buffer.writer(allocator), "    \"selector_retries\": {d},\n", .{self.selector_retries});
+        try std.fmt.format(buffer.writer(allocator), "    \"page_load_retries\": {d},\n", .{self.page_load_retries});
+        try std.fmt.format(buffer.writer(allocator), "    \"click_retries\": {d}\n", .{self.click_retries});
+        try buffer.appendSlice(allocator, "  },\n");
 
-        try buffer.appendSlice("  \"rates\": {\n");
-        try std.fmt.format(buffer.writer(), "    \"success_rate\": {d:.4},\n", .{self.getSuccessRate()});
-        try std.fmt.format(buffer.writer(), "    \"avg_retries_per_op\": {d:.2}\n", .{self.getAvgRetries()});
-        try buffer.appendSlice("  },\n");
+        try buffer.appendSlice(allocator, "  \"rates\": {\n");
+        try std.fmt.format(buffer.writer(allocator), "    \"success_rate\": {d:.4},\n", .{self.getSuccessRate()});
+        try std.fmt.format(buffer.writer(allocator), "    \"avg_retries_per_op\": {d:.2}\n", .{self.getAvgRetries()});
+        try buffer.appendSlice(allocator, "  },\n");
 
-        try buffer.appendSlice("  \"percentiles\": {\n");
-        try std.fmt.format(buffer.writer(), "    \"p50_delay_ms\": {d},\n", .{self.getDelayP50()});
-        try std.fmt.format(buffer.writer(), "    \"p90_delay_ms\": {d},\n", .{self.getDelayP90()});
-        try std.fmt.format(buffer.writer(), "    \"p95_delay_ms\": {d},\n", .{self.getDelayP95()});
-        try std.fmt.format(buffer.writer(), "    \"p99_delay_ms\": {d}\n", .{self.getDelayP99()});
-        try buffer.appendSlice("  }\n");
+        try buffer.appendSlice(allocator, "  \"percentiles\": {\n");
+        try std.fmt.format(buffer.writer(allocator), "    \"p50_delay_ms\": {d},\n", .{self.getDelayP50()});
+        try std.fmt.format(buffer.writer(allocator), "    \"p90_delay_ms\": {d},\n", .{self.getDelayP90()});
+        try std.fmt.format(buffer.writer(allocator), "    \"p95_delay_ms\": {d},\n", .{self.getDelayP95()});
+        try std.fmt.format(buffer.writer(allocator), "    \"p99_delay_ms\": {d}\n", .{self.getDelayP99()});
+        try buffer.appendSlice(allocator, "  }\n");
 
-        try buffer.appendSlice("}");
+        try buffer.appendSlice(allocator, "}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -563,35 +563,35 @@ pub const Histogram = struct {
 
     /// Export histogram to JSON (v23.39)
     pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("{\n");
-        try buffer.appendSlice("  \"buckets\": [\n");
+        try buffer.appendSlice(allocator, "{\n");
+        try buffer.appendSlice(allocator, "  \"buckets\": [\n");
 
         for (BUCKET_BOUNDARIES, 0..) |boundary, i| {
             const comma: []const u8 = if (i < BUCKET_COUNT - 1) "," else "";
-            try std.fmt.format(buffer.writer(), "    {{\"le\": {d}, \"count\": {d}}}{s}\n", .{ boundary, self.buckets[i], comma });
+            try std.fmt.format(buffer.writer(allocator), "    {{\"le\": {d}, \"count\": {d}}}{s}\n", .{ boundary, self.buckets[i], comma });
         }
 
-        try buffer.appendSlice("  ],\n");
-        try std.fmt.format(buffer.writer(), "  \"overflow\": {d},\n", .{self.overflow});
-        try std.fmt.format(buffer.writer(), "  \"count\": {d},\n", .{self.count});
-        try std.fmt.format(buffer.writer(), "  \"sum\": {d},\n", .{self.sum});
-        try std.fmt.format(buffer.writer(), "  \"min\": {d},\n", .{if (self.count > 0) self.min else 0});
-        try std.fmt.format(buffer.writer(), "  \"max\": {d},\n", .{self.max});
-        try std.fmt.format(buffer.writer(), "  \"avg\": {d:.2}\n", .{self.getAverage()});
-        try buffer.appendSlice("}");
+        try buffer.appendSlice(allocator, "  ],\n");
+        try std.fmt.format(buffer.writer(allocator), "  \"overflow\": {d},\n", .{self.overflow});
+        try std.fmt.format(buffer.writer(allocator), "  \"count\": {d},\n", .{self.count});
+        try std.fmt.format(buffer.writer(allocator), "  \"sum\": {d},\n", .{self.sum});
+        try std.fmt.format(buffer.writer(allocator), "  \"min\": {d},\n", .{if (self.count > 0) self.min else 0});
+        try std.fmt.format(buffer.writer(allocator), "  \"max\": {d},\n", .{self.max});
+        try std.fmt.format(buffer.writer(allocator), "  \"avg\": {d:.2}\n", .{self.getAverage()});
+        try buffer.appendSlice(allocator, "}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Generate ASCII histogram chart (v23.39)
     pub fn toAsciiChart(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("Delay Distribution (ms):\n");
+        try buffer.appendSlice(allocator, "Delay Distribution (ms):\n");
 
         // Find max bucket count for scaling
         var max_count: u64 = 1;
@@ -606,24 +606,24 @@ pub const Histogram = struct {
             const count = self.buckets[i];
             const bar_len = @as(u32, @intFromFloat(@as(f32, @floatFromInt(count)) / @as(f32, @floatFromInt(max_count)) * @as(f32, @floatFromInt(bar_width))));
 
-            try std.fmt.format(buffer.writer(), "  <={d:>5}ms |", .{boundary});
+            try std.fmt.format(buffer.writer(allocator), "  <={d:>5}ms |", .{boundary});
             var j: u32 = 0;
             while (j < bar_len) : (j += 1) {
                 try buffer.append('#');
             }
-            try std.fmt.format(buffer.writer(), " {d}\n", .{count});
+            try std.fmt.format(buffer.writer(allocator), " {d}\n", .{count});
         }
 
         // Overflow bucket
         const overflow_bar = @as(u32, @intFromFloat(@as(f32, @floatFromInt(self.overflow)) / @as(f32, @floatFromInt(max_count)) * @as(f32, @floatFromInt(bar_width))));
-        try buffer.appendSlice("  > 12800ms |");
+        try buffer.appendSlice(allocator, "  > 12800ms |");
         var k: u32 = 0;
         while (k < overflow_bar) : (k += 1) {
             try buffer.append('#');
         }
-        try std.fmt.format(buffer.writer(), " {d}\n", .{self.overflow});
+        try std.fmt.format(buffer.writer(allocator), " {d}\n", .{self.overflow});
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -694,24 +694,24 @@ pub const MetricsTrend = struct {
 
     /// Export to JSON (v23.39)
     pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("{\n");
-        try std.fmt.format(buffer.writer(), "  \"sample_count\": {d},\n", .{self.sample_count});
-        try std.fmt.format(buffer.writer(), "  \"average\": {d:.4},\n", .{self.getAverage()});
-        try std.fmt.format(buffer.writer(), "  \"trend\": {d:.6},\n", .{self.getTrend()});
-        try std.fmt.format(buffer.writer(), "  \"status\": \"{s}\",\n", .{self.getTrendStatus()});
-        try buffer.appendSlice("  \"samples\": [");
+        try buffer.appendSlice(allocator, "{\n");
+        try std.fmt.format(buffer.writer(allocator), "  \"sample_count\": {d},\n", .{self.sample_count});
+        try std.fmt.format(buffer.writer(allocator), "  \"average\": {d:.4},\n", .{self.getAverage()});
+        try std.fmt.format(buffer.writer(allocator), "  \"trend\": {d:.6},\n", .{self.getTrend()});
+        try std.fmt.format(buffer.writer(allocator), "  \"status\": \"{s}\",\n", .{self.getTrendStatus()});
+        try buffer.appendSlice(allocator, "  \"samples\": [");
 
         for (0..self.sample_count) |i| {
-            if (i > 0) try buffer.appendSlice(", ");
-            try std.fmt.format(buffer.writer(), "{d:.4}", .{self.success_rates[i]});
+            if (i > 0) try buffer.appendSlice(allocator, ", ");
+            try std.fmt.format(buffer.writer(allocator), "{d:.4}", .{self.success_rates[i]});
         }
 
-        try buffer.appendSlice("]\n}");
+        try buffer.appendSlice(allocator, "]\n}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Reset trend data (v23.39)
@@ -871,64 +871,64 @@ pub const Element = struct {
 
     /// Generate unique selector for element (v23.40)
     pub fn generateSelector(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
         // Prefer ID selector
         if (self.id) |id| {
-            try std.fmt.format(buffer.writer(), "#{s}", .{id});
-            return buffer.toOwnedSlice();
+            try std.fmt.format(buffer.writer(allocator), "#{s}", .{id});
+            return buffer.toOwnedSlice(allocator);
         }
 
         // Use tag + class
-        try buffer.appendSlice(self.tag_name);
+        try buffer.appendSlice(allocator, self.tag_name);
         if (self.class_name) |class| {
             if (class.len > 0) {
                 // Take first class only
                 var iter = std.mem.splitScalar(u8, class, ' ');
                 if (iter.next()) |first_class| {
-                    try std.fmt.format(buffer.writer(), ".{s}", .{first_class});
+                    try std.fmt.format(buffer.writer(allocator), ".{s}", .{first_class});
                 }
             }
         }
 
         // Add name attribute for form fields
         if (self.name) |name| {
-            try std.fmt.format(buffer.writer(), "[name=\"{s}\"]", .{name});
+            try std.fmt.format(buffer.writer(allocator), "[name=\"{s}\"]", .{name});
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Export element to JSON (v23.40)
     pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("{\n");
-        try std.fmt.format(buffer.writer(), "  \"tag\": \"{s}\",\n", .{self.tag_name});
-        try std.fmt.format(buffer.writer(), "  \"type\": \"{s}\",\n", .{self.element_type.toString()});
-        try std.fmt.format(buffer.writer(), "  \"selector\": \"{s}\",\n", .{self.selector});
+        try buffer.appendSlice(allocator, "{\n");
+        try std.fmt.format(buffer.writer(allocator), "  \"tag\": \"{s}\",\n", .{self.tag_name});
+        try std.fmt.format(buffer.writer(allocator), "  \"type\": \"{s}\",\n", .{self.element_type.toString()});
+        try std.fmt.format(buffer.writer(allocator), "  \"selector\": \"{s}\",\n", .{self.selector});
         
         if (self.text_content) |text| {
             // Escape and truncate text
             const max_len = @min(text.len, 100);
-            try std.fmt.format(buffer.writer(), "  \"text\": \"{s}\",\n", .{text[0..max_len]});
+            try std.fmt.format(buffer.writer(allocator), "  \"text\": \"{s}\",\n", .{text[0..max_len]});
         }
         
         if (self.id) |id| {
-            try std.fmt.format(buffer.writer(), "  \"id\": \"{s}\",\n", .{id});
+            try std.fmt.format(buffer.writer(allocator), "  \"id\": \"{s}\",\n", .{id});
         }
         
         if (self.href) |href| {
-            try std.fmt.format(buffer.writer(), "  \"href\": \"{s}\",\n", .{href});
+            try std.fmt.format(buffer.writer(allocator), "  \"href\": \"{s}\",\n", .{href});
         }
         
-        try std.fmt.format(buffer.writer(), "  \"visible\": {s},\n", .{if (self.is_visible) "true" else "false"});
-        try std.fmt.format(buffer.writer(), "  \"interactive\": {s}\n", .{if (self.isInteractive()) "true" else "false"});
-        try buffer.appendSlice("}");
+        try std.fmt.format(buffer.writer(allocator), "  \"visible\": {s},\n", .{if (self.is_visible) "true" else "false"});
+        try std.fmt.format(buffer.writer(allocator), "  \"interactive\": {s}\n", .{if (self.isInteractive()) "true" else "false"});
+        try buffer.appendSlice(allocator, "}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -945,33 +945,33 @@ pub const PageContext = struct {
 
     /// Summarize page for LLM context (v23.40)
     pub fn summarize(self: PageContext, allocator: Allocator, max_length: usize) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try std.fmt.format(buffer.writer(), "URL: {s}\n", .{self.url});
-        try std.fmt.format(buffer.writer(), "Title: {s}\n\n", .{self.title});
+        try std.fmt.format(buffer.writer(allocator), "URL: {s}\n", .{self.url});
+        try std.fmt.format(buffer.writer(allocator), "Title: {s}\n\n", .{self.title});
 
         // Add headings
         if (self.headings.len > 0) {
-            try buffer.appendSlice("Headings:\n");
+            try buffer.appendSlice(allocator, "Headings:\n");
             for (self.headings) |h| {
                 if (buffer.items.len > max_length) break;
-                try std.fmt.format(buffer.writer(), "- {s}\n", .{h.getDisplayText()});
+                try std.fmt.format(buffer.writer(allocator), "- {s}\n", .{h.getDisplayText()});
             }
             try buffer.append('\n');
         }
 
         // Add links
         if (self.links.len > 0) {
-            try buffer.appendSlice("Links:\n");
+            try buffer.appendSlice(allocator, "Links:\n");
             var count: usize = 0;
             for (self.links) |link| {
                 if (buffer.items.len > max_length or count >= 20) break;
                 const text = link.getDisplayText();
                 if (text.len > 0) {
-                    try std.fmt.format(buffer.writer(), "- [{s}]", .{text});
+                    try std.fmt.format(buffer.writer(allocator), "- [{s}]", .{text});
                     if (link.href) |href| {
-                        try std.fmt.format(buffer.writer(), "({s})", .{href});
+                        try std.fmt.format(buffer.writer(allocator), "({s})", .{href});
                     }
                     try buffer.append('\n');
                     count += 1;
@@ -982,26 +982,26 @@ pub const PageContext = struct {
 
         // Add buttons
         if (self.buttons.len > 0) {
-            try buffer.appendSlice("Buttons:\n");
+            try buffer.appendSlice(allocator, "Buttons:\n");
             for (self.buttons) |btn| {
                 if (buffer.items.len > max_length) break;
-                try std.fmt.format(buffer.writer(), "- {s}\n", .{btn.getDisplayText()});
+                try std.fmt.format(buffer.writer(allocator), "- {s}\n", .{btn.getDisplayText()});
             }
             try buffer.append('\n');
         }
 
         // Add form inputs
         if (self.inputs.len > 0) {
-            try buffer.appendSlice("Form inputs:\n");
+            try buffer.appendSlice(allocator, "Form inputs:\n");
             for (self.inputs) |input| {
                 if (buffer.items.len > max_length) break;
                 const label = input.getDisplayText();
                 const input_type = input.input_type orelse "text";
-                try std.fmt.format(buffer.writer(), "- [{s}] {s}\n", .{ input_type, label });
+                try std.fmt.format(buffer.writer(allocator), "- [{s}] {s}\n", .{ input_type, label });
             }
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -1429,13 +1429,13 @@ pub const DOMExtractor = struct {
         if (parsed.value != .array) return &[_]Element{};
         const arr = parsed.value.array;
 
-        var elements = std.ArrayList(Element).init(self.allocator);
+        var elements = std.ArrayList(Element).empty;
 
         for (arr.items, 0..) |item, i| {
             if (item != .object) continue;
 
             // Serialize single object back to JSON for parseElementJson
-            var item_json = std.ArrayList(u8).init(self.allocator);
+            var item_json = std.ArrayList(u8).empty;
             defer item_json.deinit();
 
             std.json.stringify(item, .{}, item_json.writer()) catch continue;
@@ -1449,7 +1449,7 @@ pub const DOMExtractor = struct {
             }
         }
 
-        return elements.toOwnedSlice() catch &[_]Element{};
+        return elements.toOwnedSlice(self.allocator) catch &[_]Element{};
     }
 };
 
@@ -1944,25 +1944,25 @@ pub const Action = struct {
 
     /// Export to JSON (v23.43)
     pub fn toJson(self: Self, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        try buffer.appendSlice("{\n");
-        try std.fmt.format(buffer.writer(), "  \"action\": \"{s}\",\n", .{self.action_type.toString()});
+        try buffer.appendSlice(allocator, "{\n");
+        try std.fmt.format(buffer.writer(allocator), "  \"action\": \"{s}\",\n", .{self.action_type.toString()});
         
         if (self.selector) |sel| {
-            try std.fmt.format(buffer.writer(), "  \"selector\": \"{s}\",\n", .{sel});
+            try std.fmt.format(buffer.writer(allocator), "  \"selector\": \"{s}\",\n", .{sel});
         }
         if (self.value) |val| {
-            try std.fmt.format(buffer.writer(), "  \"value\": \"{s}\",\n", .{val});
+            try std.fmt.format(buffer.writer(allocator), "  \"value\": \"{s}\",\n", .{val});
         }
         if (self.reasoning) |reason| {
-            try std.fmt.format(buffer.writer(), "  \"reasoning\": \"{s}\",\n", .{reason});
+            try std.fmt.format(buffer.writer(allocator), "  \"reasoning\": \"{s}\",\n", .{reason});
         }
-        try std.fmt.format(buffer.writer(), "  \"confidence\": {d:.2}\n", .{self.confidence});
-        try buffer.appendSlice("}");
+        try std.fmt.format(buffer.writer(allocator), "  \"confidence\": {d:.2}\n", .{self.confidence});
+        try buffer.appendSlice(allocator, "}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -2434,8 +2434,8 @@ pub const MetricsExporter = struct {
 
     /// Export retry metrics to JSON format (v23.24)
     pub fn exportRetryMetricsToJson(self: Self, metrics: RetryMetrics) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        var writer = buffer.writer();
+        var buffer = std.ArrayList(u8).empty;
+        var writer = buffer.writer(self.allocator);
 
         try writer.writeAll("{\n");
         try writer.print("  \"total_operations\": {d},\n", .{metrics.total_operations});
@@ -2465,13 +2465,13 @@ pub const MetricsExporter = struct {
         try writer.writeAll("  }\n");
         try writer.writeAll("}\n");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Export retry metrics to Prometheus format (v23.24)
     pub fn exportRetryMetricsToPrometheus(self: Self, metrics: RetryMetrics) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        var writer = buffer.writer();
+        var buffer = std.ArrayList(u8).empty;
+        var writer = buffer.writer(self.allocator);
 
         // Counters
         try writer.writeAll("# HELP vibee_retry_operations_total Total number of retry operations\n");
@@ -2536,13 +2536,13 @@ pub const MetricsExporter = struct {
         try writer.print("vibee_retry_delay_percentile{{quantile=\"0.95\"}} {d}\n", .{metrics.getDelayP95()});
         try writer.print("vibee_retry_delay_percentile{{quantile=\"0.99\"}} {d}\n", .{metrics.getDelayP99()});
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Export circuit breaker state to JSON (v23.24)
     pub fn exportCircuitBreakerToJson(self: Self, cb: CircuitBreaker) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        var writer = buffer.writer();
+        var buffer = std.ArrayList(u8).empty;
+        var writer = buffer.writer(self.allocator);
 
         try writer.writeAll("{\n");
         try writer.print("  \"state\": \"{s}\",\n", .{cb.getStateString()});
@@ -2553,7 +2553,7 @@ pub const MetricsExporter = struct {
         try writer.print("  \"reset_timeout_ms\": {d}\n", .{cb.reset_timeout_ms});
         try writer.writeAll("}\n");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -2673,8 +2673,8 @@ pub const HealthCheck = struct {
 
     /// Export health status to JSON (v23.28)
     pub fn toJson(self: Self, status: HealthStatus) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        var writer = buffer.writer();
+        var buffer = std.ArrayList(u8).empty;
+        var writer = buffer.writer(self.allocator);
 
         try writer.writeAll("{\n");
         try writer.print("  \"status\": \"{s}\",\n", .{status.status.toString()});
@@ -2693,13 +2693,13 @@ pub const HealthCheck = struct {
         try writer.writeAll("  }\n");
         try writer.writeAll("}\n");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Export health status to Prometheus format (v23.28)
     pub fn toPrometheus(self: Self, status: HealthStatus) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        var writer = buffer.writer();
+        var buffer = std.ArrayList(u8).empty;
+        var writer = buffer.writer(self.allocator);
 
         // Health status gauge (1 = healthy, 0 = unhealthy)
         try writer.writeAll("# HELP vibee_health_status Health status (1=healthy, 0=unhealthy)\n");
@@ -2723,7 +2723,7 @@ pub const HealthCheck = struct {
         try writer.writeAll("# TYPE vibee_open_circuits gauge\n");
         try writer.print("vibee_open_circuits {d}\n", .{status.open_circuits});
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -3890,13 +3890,13 @@ pub const WebArenaBenchmark = struct {
         return Self{
             .allocator = allocator,
             .agent = agent,
-            .results = std.ArrayList(TaskResult).init(allocator),
+            .results = std.ArrayList(TaskResult).empty,
             .summary = BenchmarkSummary{},
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.results.deinit();
+        self.results.deinit(self.allocator);
     }
 
     /// Run a single task (v23.48)
@@ -4034,10 +4034,10 @@ pub const ToolDefinition = struct {
 
     /// Generate JSON schema for tool (v23.49)
     pub fn toJsonSchema(self: ToolDefinition, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        const writer = buffer.writer();
+        const writer = buffer.writer(allocator);
 
         try writer.writeAll("{\"name\":\"");
         try writer.writeAll(self.name);
@@ -4070,7 +4070,7 @@ pub const ToolDefinition = struct {
 
         try writer.writeAll("]}}");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 
@@ -4211,24 +4211,24 @@ pub fn parseToolUseResponse(allocator: Allocator, response: []const u8) ?ToolCal
 
 /// Build tools JSON array for API request (v23.49)
 pub fn buildToolsJson(allocator: Allocator) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
 
-    try buffer.appendSlice("[");
+    try buffer.appendSlice(allocator, "[");
 
     var first = true;
     for (AGENT_TOOLS) |tool| {
-        if (!first) try buffer.appendSlice(",");
+        if (!first) try buffer.appendSlice(allocator, ",");
         first = false;
 
         const schema = try tool.toJsonSchema(allocator);
         defer allocator.free(schema);
-        try buffer.appendSlice(schema);
+        try buffer.appendSlice(allocator, schema);
     }
 
-    try buffer.appendSlice("]");
+    try buffer.appendSlice(allocator, "]");
 
-    return buffer.toOwnedSlice();
+    return buffer.toOwnedSlice(allocator);
 }
 
 pub const RealAgent = struct {
@@ -4476,10 +4476,10 @@ pub const RealAgent = struct {
     /// Build prompt for LLM with page context (v23.46)
     /// Includes few-shot examples and structured element references
     pub fn buildPrompt(self: *Self, instruction: []const u8, page_text: []const u8) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        const writer = buffer.writer();
+        const writer = buffer.writer(allocator);
 
         // Few-shot examples
         try writer.writeAll(FEW_SHOT_EXAMPLES);
@@ -4496,7 +4496,7 @@ pub const RealAgent = struct {
         try self.writePageContext(writer, page_text);
         try writer.writeAll("\n\nResponse: ");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Write page context with smart truncation (v23.46)
@@ -4523,10 +4523,10 @@ pub const RealAgent = struct {
         if (self.dom_extractor) |dom| {
             const elements = dom.getInteractiveElements() catch return self.allocator.dupe(u8, "[No elements]");
 
-            var buffer = std.ArrayList(u8).init(self.allocator);
-            errdefer buffer.deinit();
+            var buffer = std.ArrayList(u8).empty;
+            errdefer buffer.deinit(allocator);
 
-            const writer = buffer.writer();
+            const writer = buffer.writer(allocator);
             try writer.writeAll("INTERACTIVE ELEMENTS:\n");
 
             var count: usize = 0;
@@ -4558,7 +4558,7 @@ pub const RealAgent = struct {
                 count += 1;
             }
 
-            return buffer.toOwnedSlice();
+            return buffer.toOwnedSlice(allocator);
         }
         return self.allocator.dupe(u8, "[DOM extractor not initialized]");
     }
@@ -4701,10 +4701,10 @@ pub const RealAgent = struct {
 
     /// Build prompt with tool definitions (v23.49)
     pub fn buildPromptWithTools(self: *Self, instruction: []const u8, page_text: []const u8) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).empty;
+        errdefer buffer.deinit(allocator);
 
-        const writer = buffer.writer();
+        const writer = buffer.writer(allocator);
 
         // Tool descriptions
         try writer.writeAll("You have access to these tools:\n\n");
@@ -4730,13 +4730,13 @@ pub const RealAgent = struct {
         try writer.writeAll("Use the appropriate tool to complete the task. ");
         try writer.writeAll("Use 'done' tool when the task is complete.\n");
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 
     /// Run full task cycle: observe -> think -> act (v23.45, v23.49)
     /// Returns list of action results from the task execution
     pub fn runTask(self: *Self, instruction: []const u8, max_steps: u32) ![]ActionResult {
-        var results = std.ArrayList(ActionResult).init(self.allocator);
+        var results = std.ArrayList(ActionResult).empty;
         errdefer results.deinit();
 
         std.debug.print("[TASK] Starting: {s}\n", .{instruction});
@@ -4795,7 +4795,7 @@ pub const RealAgent = struct {
         }
 
         std.debug.print("[TASK] Completed with {d} actions\n", .{results.items.len});
-        return results.toOwnedSlice();
+        return results.toOwnedSlice(self.allocator);
     }
 
     /// Enable CDP Network domain (v23.15)
@@ -6223,7 +6223,7 @@ pub const RealAgent = struct {
         defer self.allocator.free(tree_json);
 
         // Extract interactive elements (buttons, links, inputs, etc.)
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = std.ArrayList(u8).empty;
         errdefer result.deinit();
 
         const writer = result.writer();
@@ -6255,7 +6255,7 @@ pub const RealAgent = struct {
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Close connection

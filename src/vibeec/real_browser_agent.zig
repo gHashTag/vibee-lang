@@ -81,7 +81,7 @@ pub const BrowserAgent = struct {
             .config = config,
             .cdp_client = cdp.CDPClient.init(allocator, config.cdp_host, config.cdp_port),
             .http_client = http.HttpClient.init(allocator),
-            .steps = std.ArrayList(AgentStep).init(allocator),
+            .steps = std.ArrayList(AgentStep).empty,
             .connected = false,
         };
     }
@@ -89,7 +89,7 @@ pub const BrowserAgent = struct {
     pub fn deinit(self: *Self) void {
         self.cdp_client.deinit();
         self.http_client.deinit();
-        self.steps.deinit();
+        self.steps.deinit(self.allocator);
     }
 
     /// Connect to Chrome via CDP
