@@ -178,7 +178,10 @@ pub const Compiler = struct {
         // Phase 1: Parse
         const parse_start = std.time.nanoTimestamp();
         var spec = self.parser.parse(source) catch |err| {
-            std.debug.print("Parse error: {}\n", .{err});
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            var writer = error_reporter.ColorWriter.init(stderr.any(), true);
+            try writer.printColored(.red, "Parse error: {}\n", .{err});
+            try writer.printColored(.yellow, "   Run './bin/vibeec validate <file>' for detailed validation\n", .{});
             return CompileResult{
                 .success = false,
                 .spec = null,
@@ -196,7 +199,10 @@ pub const Compiler = struct {
         if (self.options.enable_type_check) {
             const tc_start = std.time.nanoTimestamp();
             var tc_result = self.type_checker.check(&spec) catch |err| {
-                std.debug.print("Type check error: {}\n", .{err});
+                const stderr = std.fs.File.stderr().deprecatedWriter();
+                var writer = error_reporter.ColorWriter.init(stderr.any(), true);
+                try writer.printColored(.red, "Type check error: {}\n", .{err});
+                try writer.printColored(.yellow, "   Run './bin/vibeec gen <file> --no-type-check' to skip\n", .{});
                 metrics.error_count += 1;
                 return CompileResult{
                     .success = false,
@@ -214,14 +220,19 @@ pub const Compiler = struct {
 
             if (!tc_result.success) {
                 metrics.error_count = @intCast(tc_result.errors.items.len);
-                std.debug.print("Type check failed: {} errors\n", .{tc_result.errors.items.len});
+                const stderr = std.fs.File.stderr().deprecatedWriter();
+                var writer = error_reporter.ColorWriter.init(stderr.any(), true);
+                try writer.printColored(.red, "Type check failed: {} errors\n", .{tc_result.errors.items.len});
+                try writer.printColored(.yellow, "   Suggestion: Use '--no-type-check' for complex nested structures\n", .{});
             }
         }
 
         // Phase 3: Code Generation
         const cg_start = std.time.nanoTimestamp();
         var cg = CodegenV4.init(self.allocator, self.options.target) catch |err| {
-            std.debug.print("Codegen init error: {}\n", .{err});
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            var writer = error_reporter.ColorWriter.init(stderr.any(), true);
+            try writer.printColored(.red, "Codegen init error: {}\n", .{err});
             return CompileResult{
                 .success = false,
                 .spec = spec,
@@ -234,7 +245,10 @@ pub const Compiler = struct {
         defer cg.deinit();
 
         const gen_result = cg.generate(&spec) catch |err| {
-            std.debug.print("Codegen generate error: {}\n", .{err});
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            var writer = error_reporter.ColorWriter.init(stderr.any(), true);
+            try writer.printColored(.red, "Codegen generate error: {}\n", .{err});
+            try writer.printColored(.yellow, "   Suggestion: Check specification syntax and required fields\n", .{});
             return CompileResult{
                 .success = false,
                 .spec = spec,
@@ -376,8 +390,15 @@ pub fn main() !u8 {
             }
             return 0;
         } else {
-            std.debug.print("Failed to compile {s}\n", .{input_path});
-            std.debug.print("Errors: {}\n", .{result.metrics.error_count});
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            var writer = error_reporter.ColorWriter.init(stdout.any(), true);
+
+            try writer.printColored(.red, "✗ Failed to compile {s}\n", .{input_path});
+            try writer.printColored(.yellow, "  Errors: {}\n", .{result.metrics.error_count});
+            try writer.printColored(.cyan, "  Suggestions:\n", .{});
+            try writer.printColored(.green, "    • Run './bin/vibeec validate {s}' for detailed diagnostics\n", .{input_path});
+            try writer.printColored(.green, "    • Use '--no-type-check' for complex nested structures\n", .{});
+            try writer.printColored(.green, "    • Check specification has required fields: name, version, language, module\n", .{});
             return 1;
         }
     } else if (std.mem.eql(u8, cmd, "pas")) {
