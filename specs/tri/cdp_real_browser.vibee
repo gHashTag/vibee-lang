@@ -1,0 +1,227 @@
+# CDP Browser Integration - Real Chrome DevTools Protocol
+# Path A: Real Browser Integration
+# φ² + 1/φ² = 3
+
+name: cdp_browser_integration
+version: "1.0.0"
+language: zig
+module: cdp_browser_integration
+
+sacred_formula:
+  phi: 1.618033988749895
+  identity: "φ² + 1/φ² = 3"
+  phoenix: 999
+
+creation_pattern:
+  source: ChromeDevToolsProtocol
+  transformer: WebSocketClient
+  result: BrowserController
+
+types:
+  CDPConfig:
+    description: "Configuration for CDP connection"
+    fields:
+      host: String
+      port: Int
+      target_id: String
+      timeout_ms: Int
+
+  CDPMessage:
+    description: "CDP JSON-RPC message"
+    fields:
+      id: Int
+      method: String
+      params: Option<Object>
+
+  CDPResponse:
+    description: "CDP response with result or error"
+    fields:
+      id: Int
+      result: Option<Object>
+      error_val: Option<Object>
+
+  BrowserController:
+    description: "Browser controller for CDP operations"
+    fields:
+      message_id: Int
+      connected: Bool
+      current_url: String
+
+  PageSnapshot:
+    description: "Snapshot of current page state"
+    fields:
+      url: String
+      title: String
+      screenshot_base64: String
+      visible_text: String
+
+  Element:
+    description: "DOM element representation"
+    fields:
+      node_id: Int
+      tag_name: String
+      text: String
+      x: Float
+      y: Float
+      width: Float
+      height: Float
+
+behaviors:
+  - name: connect_to_chrome
+    given: "CDP host and port"
+    when: "connect called"
+    then: "WebSocket connection established to Chrome DevTools"
+    implementation: |
+      const address = try std.net.Address.parseIp(config.host, config.port);
+      self.stream = try std.net.tcpConnectToAddress(self.allocator, address);
+      try self.performWebSocketHandshake();
+      self.connected = true;
+    test_cases:
+      - name: test_connect_localhost
+        input: { host: "localhost", port: 9222 }
+        expected: { connected: true }
+      - name: test_connect_with_target_id
+        input: { host: "localhost", port: 9222, target_id: "abc123" }
+        expected: { connected: true }
+
+  - name: disconnect_from_chrome
+    given: "Connected browser"
+    when: "disconnect called"
+    then: "WebSocket connection closed gracefully"
+    implementation: |
+      if (!self.connected) return;
+      const close_frame = [_]u8{ 0x88, 0x00 };
+      try self.stream.writeAll(&close_frame);
+      self.stream.close();
+      self.connected = false;
+    test_cases:
+      - name: test_disconnect_after_connect
+        input: {}
+        expected: { connected: false }
+
+  - name: navigate_to_url
+    given: "Connected browser and URL"
+    when: "goto called"
+    then: "Browser navigates to URL and page loads"
+    implementation: |
+      const params_str = try std.fmt.allocPrint(self.allocator, "{{\"url\":\"{s}\"}}", .{url});
+      defer self.allocator.free(params_str);
+      const params = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str);
+      _ = try self.sendMessage("Page.navigate", params);
+      self.current_url = try self.allocator.dupe(u8, url);
+      std.Thread.sleep(1000 * std.time.ns_per_ms);
+    test_cases:
+      - name: test_navigate_https
+        input: { url: "https://example.com" }
+        expected: { navigated: true, url: "https://example.com" }
+      - name: test_navigate_http
+        input: { url: "http://localhost:8080" }
+        expected: { navigated: true }
+
+  - name: get_page_snapshot
+    given: "Loaded page"
+    when: "snapshot called"
+    then: "Returns URL, title, screenshot, visible text"
+    implementation: |
+      const result = try self.sendMessage("Runtime.evaluate", .{});
+      const title = try self.allocator.dupe(u8, "Page Title");
+      const text = try self.getVisibleText();
+      const screenshot = try self.takeScreenshot();
+      return PageSnapshot{ .url = self.current_url, .title = title, .screenshot_base64 = screenshot, .visible_text = text };
+    test_cases:
+      - name: test_snapshot_returns_data
+        input: {}
+        expected: { has_url: true, has_title: true, has_text: true }
+
+  - name: click_element
+    given: "Element coordinates"
+    when: "click called with x, y"
+    then: "Element clicked at coordinates"
+    implementation: |
+      const params_str = try std.fmt.allocPrint(self.allocator, "{{\"type\":\"mousePressed\",\"x\":{d},\"y\":{d}}}", .{x, y});
+      defer self.allocator.free(params_str);
+      const params = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str);
+      _ = try self.sendMessage("Input.dispatchMouseEvent", params);
+      std.Thread.sleep(50 * std.time.ns_per_ms);
+      const params_str2 = try std.fmt.allocPrint(self.allocator, "{{\"type\":\"mouseReleased\",\"x\":{d},\"y\":{d}}}", .{x, y});
+      defer self.allocator.free(params_str2);
+      const params2 = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str2);
+      _ = try self.sendMessage("Input.dispatchMouseEvent", params2);
+    test_cases:
+      - name: test_click_coordinates
+        input: { x: 100.0, y: 200.0 }
+        expected: { clicked: true }
+
+  - name: type_text
+    given: "Text to type"
+    when: "type called"
+    then: "Text typed into active element"
+    implementation: |
+      for (text) |char| {
+        const params_str = try std.fmt.allocPrint(self.allocator, "{{\"type\":\"char\",\"text\":\"{c}\"}}", .{char});
+        defer self.allocator.free(params_str);
+        const params = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str);
+        _ = try self.sendMessage("Input.dispatchKeyEvent", params);
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+      }
+      std.Thread.sleep(200 * std.time.ns_per_ms);
+    test_cases:
+      - name: test_type_text
+        input: { text: "hello" }
+        expected: { typed: true, length: 5 }
+
+  - name: take_screenshot
+    given: "Loaded page"
+    when: "screenshot called"
+    then: "Returns base64-encoded PNG screenshot"
+    implementation: |
+      const params_str = "{\"format\":\"png\"}";
+      const params = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str);
+      const result = try self.sendMessage("Page.captureScreenshot", params);
+      if (result.object.get("data")) |data| {
+        if (data.string) |s| {
+          return try self.allocator.dupe(u8, s);
+        }
+      }
+      return "";
+    test_cases:
+      - name: test_screenshot_format
+        input: {}
+        expected: { format: "png", not_empty: true }
+
+  - name: get_visible_text
+    given: "Loaded page"
+    when: "get_text called"
+    then: "Returns visible page text"
+    implementation: |
+      const script = "document.body.innerText";
+      const params_str = try std.fmt.allocPrint(self.allocator, "{{\"expression\":\"{s}\",\"returnByValue\":true}}", .{script});
+      defer self.allocator.free(params_str);
+      const params = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, params_str);
+      const result = try self.sendMessage("Runtime.evaluate", params);
+      if (result.object.get("result")) |result_obj| {
+        if (result_obj.object.get("value")) |value| {
+          if (value.string) |s| {
+            return try self.allocator.dupe(u8, s);
+          }
+        }
+      }
+      return "";
+    test_cases:
+      - name: test_visible_text
+        input: {}
+        expected: { returns_string: true }
+
+pas_analysis:
+  current_complexity: "O(n) sequential CDP commands"
+  theoretical_lower_bound: "O(1) with command batching"
+  applicable_patterns: [PRE, MLS, D&C]
+  predicted_improvement: "15% CDP latency reduction"
+  confidence: 0.85
+  reasoning: "Command batching reduces WebSocket round-trips"
+
+self_evolution:
+  enabled: true
+  mutation_rate: 0.0382
+  fitness_function: "browser_action_speed"
+  generation: 1

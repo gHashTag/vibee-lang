@@ -1,0 +1,199 @@
+# WebArena Task Parser
+# Parse WebArena benchmark tasks
+# φ² + 1/φ² = 3
+
+name: webarena_task_parser
+version: "1.0.0"
+language: zig
+module: webarena_task_parser
+
+sacred_formula:
+  phi: 1.618033988749895
+  identity: "φ² + 1/φ² = 3"
+  phoenix: 999
+
+creation_pattern:
+  source: WebArenaTaskFiles
+  transformer: YAMLParser
+  result: TaskDefinition
+
+types:
+  WebArenaTask:
+    description: "Single WebArena benchmark task"
+    fields:
+      task_id: Int
+      task_name: String
+      task_type: String
+      start_url: String
+      intent: String
+      sites: List<String>
+      expected_answer: Option<String>
+
+  WebArenaConfig:
+    description: "Configuration for WebArena parser"
+    fields:
+      webarena_path: String
+      task_filter: Option<String>
+      task_subset: Option<String>
+
+  TaskSet:
+    description: "Set of WebArena tasks"
+    fields:
+      total_tasks: Int
+      tasks: List<WebArenaTask>
+
+behaviors:
+  - name: load_webarena_tasks
+    given: "WebArena repository path"
+    when: "load called"
+    then: "All task definitions parsed from YAML files"
+    implementation: |
+      const tasks_dir = try std.fs.cwd().openDir(config.webarena_path, .{ .iterate = true });
+      defer tasks_dir.close();
+      
+      var task_list = std.ArrayList(WebArenaTask).init(self.allocator);
+      
+      while (try tasks_dir.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".yaml")) {
+          const file_path = try std.fs.path.join(self.allocator, &.{ config.webarena_path, entry.name });
+          defer self.allocator.free(file_path);
+          
+          const content = try std.fs.cwd().readFileAlloc(self.allocator, file_path);
+          defer self.allocator.free(content);
+          
+          const task = try self.parseTaskYAML(content);
+          try task_list.append(task);
+        }
+      }
+      
+      return task_list.toOwnedSlice();
+    test_cases:
+      - name: test_load_single_task
+        input: { webarena_path: "./test_tasks" }
+        expected: { task_count: 1 }
+      - name: test_load_multiple_tasks
+        input: { webarena_path: "./test_tasks" }
+        expected: { task_count: 5 }
+
+  - name: parse_task_yaml
+    given: "YAML task definition"
+    when: "parse called"
+    then: "Task structure extracted"
+    implementation: |
+      var lines = std.mem.splitScalar(u8, yaml, '\n');
+      defer lines.deinit(self.allocator);
+      
+      var task = WebArenaTask{
+        .task_id = 0,
+        .task_name = try self.allocator.dupe(u8, ""),
+        .task_type = try self.allocator.dupe(u8, ""),
+        .start_url = try self.allocator.dupe(u8, ""),
+        .intent = try self.allocator.dupe(u8, ""),
+        .sites = std.ArrayList([]const u8).init(self.allocator),
+      };
+      
+      for (lines.items) |line| {
+        if (std.mem.indexOf(u8, line, "task_id")) |_| {
+          const value = self.extractYAMLValue(line);
+          task.task_id = try std.fmt.parseInt(i64, value, 10);
+        }
+        if (std.mem.indexOf(u8, line, "task_name")) |_| {
+          task.task_name = try self.extractYAMLValueAlloc(line);
+        }
+        if (std.mem.indexOf(u8, line, "start_url")) |_| {
+          task.start_url = try self.extractYAMLValueAlloc(line);
+        }
+        if (std.mem.indexOf(u8, line, "intent")) |_| {
+          task.intent = try self.extractYAMLValueAlloc(line);
+        }
+      }
+      
+      return task;
+    test_cases:
+      - name: test_parse_simple_yaml
+        input: { yaml: "task_id: 1\ntask_name: Test" }
+        expected: { task_id: 1, task_name: "Test" }
+
+  - name: filter_tasks_by_type
+    given: "Task list and filter type"
+    when: "filter called"
+    then: "Returns only matching tasks"
+    implementation: |
+      var filtered = std.ArrayList(WebArenaTask).init(self.allocator);
+      
+      for (tasks) |task| {
+        if (std.mem.eql(u8, task.task_type, filter_type)) {
+          try filtered.append(task);
+        }
+      }
+      
+      return filtered.toOwnedSlice();
+    test_cases:
+      - name: test_filter_by_type
+        input: { filter_type: "shopping" }
+        expected: { matches_type: true }
+
+  - name: get_task_by_id
+    given: "Task list and task ID"
+    when: "get called"
+    then: "Returns matching task or error"
+    implementation: |
+      for (tasks) |task| {
+        if (task.task_id == task_id) {
+          return task;
+        }
+      }
+      return Error.TaskNotFound;
+    test_cases:
+      - name: test_get_existing_task
+        input: { task_id: 1 }
+        expected: { found: true }
+      - name: test_get_nonexistent_task
+        input: { task_id: 999 }
+        expected: { found: false }
+
+  - name: validate_task
+    given: "Task definition"
+    when: "validate called"
+    then: "Returns validation errors or success"
+    implementation: |
+      var errors = std.ArrayList([]const u8).init(self.allocator);
+      
+      if (task.task_id == 0) {
+        try errors.append(try self.allocator.dupe(u8, "task_id must be > 0"));
+      }
+      
+      if (task.start_url.len == 0) {
+        try errors.append(try self.allocator.dupe(u8, "start_url is required"));
+      }
+      
+      if (task.intent.len == 0) {
+        try errors.append(try self.allocator.dupe(u8, "intent is required"));
+      }
+      
+      if (errors.items.len == 0) {
+        return ValidationResult{ .valid = true, .errors = null };
+      }
+      
+      return ValidationResult{ .valid = false, .errors = errors.toOwnedSlice() };
+    test_cases:
+      - name: test_valid_task
+        input: { task: { task_id: 1, start_url: "http://test.com", intent: "Test task" }}
+        expected: { valid: true }
+      - name: test_invalid_task
+        input: { task: { task_id: 0, start_url: "", intent: "" }}
+        expected: { valid: false, error_count: 3 }
+
+pas_analysis:
+  current_complexity: "O(n) YAML parsing"
+  theoretical_lower_bound: "O(1) with pre-parsed index"
+  applicable_patterns: [PRE, MLS]
+  predicted_improvement: "20% parsing speedup"
+  confidence: 0.75
+  reasoning: "Pre-build task index for faster lookups"
+
+self_evolution:
+  enabled: true
+  mutation_rate: 0.0382
+  fitness_function: "task_parse_speed"
+  generation: 1
