@@ -131,6 +131,9 @@ vibee gen-multi specs/tri/feature.vibee all
 ## 🚀 Quick Start
 
 ```bash
+# Validate specification before generation
+vibeec validate specs/tri/feature.vibee
+
 # Generate Zig code from specification
 vibee gen specs/tri/feature.vibee
 
@@ -142,6 +145,40 @@ zig test trinity/output/feature.zig
 
 # Run all tests (parallel)
 cd trinity/output && ls *.zig | xargs -P 8 -I {} zig test {}
+```
+
+## ✅ Specification Validator
+
+Validate `.vibee` specifications before generating code:
+
+```bash
+# Validate a single specification
+vibeec validate specs/tri/core/absolute_security_v126.vibee
+
+# Use standalone validator
+./src/vibeec/bin/vibeec-validator specs/tri/core/absolute_security_v126.vibee
+```
+
+**Validation Rules:**
+- ✅ Mandatory `output:` field required
+- ✅ Must be in subfolder (`specs/tri/core/`, not root)
+- ✅ `.tri` extension forbidden (use `.vibee` only)
+
+**Example Output:**
+```
+╔══════════════════════════════════════════════════════════════════╗
+║              VIBEE SPECIFICATION VALIDATION ERRORS               ║
+╚══════════════════════════════════════════════════════════════════╝
+
+❌ Missing mandatory 'output:' key
+
+❌ Validation FAILED
+```
+
+**Build Validator:**
+```bash
+cd src/vibeec
+zig build-exe validator_main.zig -femit-bin=bin/vibeec-validator
 ```
 
 ## 🛠️ Tools

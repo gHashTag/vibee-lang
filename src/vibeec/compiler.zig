@@ -25,6 +25,7 @@ const vm_runtime = @import("vm_runtime.zig");
 const jit = @import("jit.zig");
 const repl = @import("repl.zig");
 const lsp = @import("lsp.zig");
+const validate_cmd = @import("validate_cmd.zig");
 
 // Re-export types
 pub const ParserV3 = parser.ParserV3;
@@ -356,6 +357,8 @@ pub fn main() !u8 {
     } else if (std.mem.eql(u8, cmd, "config")) {
         printConfig();
         return 0;
+    } else if (std.mem.eql(u8, cmd, "validate")) {
+        return validate_cmd.runValidation(args[1..]);
     }
 
     std.debug.print("Unknown command: {s}\nRun 'vibeec help' for usage.\n", .{cmd});
@@ -378,6 +381,7 @@ fn printSimpleHelp() void {
         \\    config            Show API configuration status
         \\    status            Show agent status
         \\    gen <file.vibee>  Generate .zig from .vibee specification
+        \\    validate <file>   Validate .vibee specification
         \\    pas               Show PAS DAEMONS patterns
         \\    phi               Show sacred constants
         \\    eval "expr"       Evaluate ternary logic expression
@@ -394,6 +398,7 @@ fn printSimpleHelp() void {
         \\    vibeec agent                        # Interactive agent mode
         \\    vibeec agent "Create hello.zig"    # Single task
         \\    vibeec gen specs/terminal_agent.vibee
+        \\    vibeec validate specs/tri/core/my_spec.vibee
         \\
     , .{}) catch {};
 }
