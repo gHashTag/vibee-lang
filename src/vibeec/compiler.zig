@@ -177,7 +177,8 @@ pub const Compiler = struct {
 
         // Phase 1: Parse
         const parse_start = std.time.nanoTimestamp();
-        var spec = self.parser.parse(source) catch {
+        var spec = self.parser.parse(source) catch |err| {
+            std.debug.print("Parse error: {}\n", .{err});
             return CompileResult{
                 .success = false,
                 .spec = null,
@@ -194,7 +195,18 @@ pub const Compiler = struct {
         // Phase 2: Type Check
         if (self.options.enable_type_check) {
             const tc_start = std.time.nanoTimestamp();
-            var tc_result = try self.type_checker.check(&spec);
+            var tc_result = self.type_checker.check(&spec) catch |err| {
+                std.debug.print("Type check error: {}\n", .{err});
+                metrics.error_count += 1;
+                return CompileResult{
+                    .success = false,
+                    .spec = spec,
+                    .zig_code = null,
+                    .code999 = null,
+                    .metrics = metrics,
+                    .allocator = self.allocator,
+                };
+            };
             defer tc_result.deinit(self.allocator);
             const tc_end = std.time.nanoTimestamp();
             metrics.type_check_time_ns = @intCast(tc_end - tc_start);
@@ -202,15 +214,36 @@ pub const Compiler = struct {
 
             if (!tc_result.success) {
                 metrics.error_count = @intCast(tc_result.errors.items.len);
+                std.debug.print("Type check failed: {} errors\n", .{tc_result.errors.items.len});
             }
         }
 
         // Phase 3: Code Generation
         const cg_start = std.time.nanoTimestamp();
-        var cg = try CodegenV4.init(self.allocator, self.options.target);
+        var cg = CodegenV4.init(self.allocator, self.options.target) catch |err| {
+            std.debug.print("Codegen init error: {}\n", .{err});
+            return CompileResult{
+                .success = false,
+                .spec = spec,
+                .zig_code = null,
+                .code999 = null,
+                .metrics = metrics,
+                .allocator = self.allocator,
+            };
+        };
         defer cg.deinit();
 
-        const gen_result = try cg.generate(&spec);
+        const gen_result = cg.generate(&spec) catch |err| {
+            std.debug.print("Codegen generate error: {}\n", .{err});
+            return CompileResult{
+                .success = false,
+                .spec = spec,
+                .zig_code = null,
+                .code999 = null,
+                .metrics = metrics,
+                .allocator = self.allocator,
+            };
+        };
         const cg_end = std.time.nanoTimestamp();
         metrics.codegen_time_ns = @intCast(cg_end - cg_start);
 
@@ -301,7 +334,18 @@ pub fn main() !u8 {
             return 1;
         }
         const input_path = args[2];
-        var compiler_inst = Compiler.init(allocator, .{});
+
+        // Check for --no-type-check flag
+        var enable_type_check = true;
+        if (args.len > 3) {
+            for (args[3..]) |arg| {
+                if (std.mem.eql(u8, arg, "--no-type-check")) {
+                    enable_type_check = false;
+                }
+            }
+        }
+
+        var compiler_inst = Compiler.init(allocator, .{ .enable_type_check = enable_type_check });
         defer compiler_inst.deinit();
 
         const result = try compiler_inst.compileFile(input_path);
@@ -333,6 +377,7 @@ pub fn main() !u8 {
             return 0;
         } else {
             std.debug.print("Failed to compile {s}\n", .{input_path});
+            std.debug.print("Errors: {}\n", .{result.metrics.error_count});
             return 1;
         }
     } else if (std.mem.eql(u8, cmd, "pas")) {
