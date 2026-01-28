@@ -481,12 +481,14 @@ fn printAgentStatus() void {
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST");
+    const eden_key = std.posix.getenv("EDEN_AI_API_KEY");
 
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
     const has_ollama = ollama_host != null and ollama_host.?.len > 0;
+    const has_eden = eden_key != null and eden_key.?.len > 0;
 
-    const ai_status = if (has_anthropic or has_openai or has_ollama) "READY" else "NO API KEY";
+    const ai_status = if (has_anthropic or has_openai or has_ollama or has_eden) "READY" else "NO API KEY";
 
     stdout.print(
         \\
@@ -500,6 +502,7 @@ fn printAgentStatus() void {
         \\  AI PROVIDERS:
         \\    Anthropic: {s}
         \\    OpenAI:    {s}
+        \\    Eden AI:   {s}
         \\    Ollama:    {s}
         \\
         \\  CAPABILITIES:
@@ -512,6 +515,7 @@ fn printAgentStatus() void {
         ai_status,
         if (has_anthropic) "✅ configured" else "❌ not set",
         if (has_openai) "✅ configured" else "❌ not set",
+        if (has_eden) "✅ configured (Qwen)" else "❌ not set",
         if (has_ollama) "✅ configured" else "○ localhost:11434",
     }) catch {};
 }
@@ -522,9 +526,11 @@ fn printConfig() void {
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST") orelse "http://localhost:11434";
+    const eden_key = std.posix.getenv("EDEN_AI_API_KEY");
 
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
+    const has_eden = eden_key != null and eden_key.?.len > 0;
 
     stdout.print(
         \\
@@ -534,15 +540,17 @@ fn printConfig() void {
         \\  API KEYS:
         \\    ANTHROPIC_API_KEY: {s}
         \\    OPENAI_API_KEY:    {s}
+        \\    EDEN_AI_API_KEY:   {s}
         \\    OLLAMA_HOST:       {s}
         \\
     , .{
         if (has_anthropic) "sk-ant-***" else "(not set)",
         if (has_openai) "sk-***" else "(not set)",
+        if (has_eden) "eyJhbGci***" else "(not set)",
         ollama_host,
     }) catch {};
 
-    if (!has_anthropic and !has_openai) {
+    if (!has_anthropic and !has_openai and !has_eden) {
         stdout.print(
             \\
             \\  ⚠️  NO API KEY CONFIGURED
@@ -551,6 +559,7 @@ fn printConfig() void {
             \\
             \\    export ANTHROPIC_API_KEY=sk-ant-your-key
             \\    export OPENAI_API_KEY=sk-your-key
+            \\    export EDEN_AI_API_KEY=your-eden-key
             \\
             \\  Or use local Ollama:
             \\
@@ -570,13 +579,17 @@ fn runChat(allocator: std.mem.Allocator) !u8 {
     const anthropic_key = std.posix.getenv("ANTHROPIC_API_KEY");
     const openai_key = std.posix.getenv("OPENAI_API_KEY");
     const ollama_host = std.posix.getenv("OLLAMA_HOST");
+    const eden_key = std.posix.getenv("EDEN_AI_API_KEY");
 
     const has_anthropic = anthropic_key != null and anthropic_key.?.len > 0;
     const has_openai = openai_key != null and openai_key.?.len > 0;
     const has_ollama = ollama_host != null and ollama_host.?.len > 0;
+    const has_eden = eden_key != null and eden_key.?.len > 0;
 
     // Determine provider
-    const provider: []const u8 = if (has_anthropic)
+    const provider: []const u8 = if (has_eden)
+        "Eden AI (Qwen)"
+    else if (has_anthropic)
         "Anthropic Claude"
     else if (has_openai)
         "OpenAI GPT"
@@ -594,13 +607,14 @@ fn runChat(allocator: std.mem.Allocator) !u8 {
         \\
     , .{}) catch {};
 
-    if (!has_anthropic and !has_openai and !has_ollama) {
+    if (!has_eden and !has_anthropic and !has_openai and !has_ollama) {
         stdout.print(
             \\
             \\  ❌ NO API KEY CONFIGURED
             \\
             \\  VIBEE requires an AI provider to chat. Set one of:
             \\
+            \\    export EDEN_AI_API_KEY=your-eden-key-here
             \\    export ANTHROPIC_API_KEY=sk-ant-your-key-here
             \\    export OPENAI_API_KEY=sk-your-key-here
             \\
