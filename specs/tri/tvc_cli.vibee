@@ -1,0 +1,220 @@
+name: tvc_cli
+version: "1.0.0"
+language: zig
+module: tvc_cli
+
+description: |
+  Trinity Vibeec Command - CLI tool for managing .tri specifications lifecycle
+  Provides commands: genesis, regress, chain
+
+types:
+  GenesisContext:
+    fields:
+      spec_path: String
+      message: String
+      version: Option<String>
+      tags: List<String>
+      metadata: Map<String, String>
+
+  RegressContext:
+    fields:
+      spec_path: String
+      target_version: Option<String>
+      diff_only: Bool
+
+  ChainContext:
+    fields:
+      spec_path: String
+      depth: Option<Int>
+      visualize: Bool
+
+  CommitRecord:
+    fields:
+      version: String
+      hash: String
+      timestamp: i64
+      message: String
+      author: String
+      parent_versions: List<String>
+
+  ChainNode:
+    fields:
+      version: String
+      commit: CommitRecord
+      branches: List<String>
+      tags: List<String>
+      children: List<String>
+
+behaviors:
+  - name: genesis
+    given: GenesisContext
+    when: Create new specification commit
+    then: CommitRecord
+    description: |
+      Generate new .tri version from specification:
+      1. Read spec_path
+      2. Validate structure
+      3. Create new version (increment version number)
+      4. Compute commit hash
+      5. Record commit with metadata
+      6. Write to akashic_records/
+      7. Return commit record
+
+  - name: regress
+    given: RegressContext
+    when: Revert to previous version
+    then: CommitRecord
+    description: |
+      Revert specification to previous version:
+      1. Get current version
+      2. Find previous commit
+      3. If target_version provided, find exact commit
+      4. Update current version
+      5. Record revert commit
+      6. Return old commit record
+
+  - name: chain
+    given: ChainContext
+    when: Show version history
+    then: ChainNode
+    description: |
+      Display version history and commit graph:
+      1. Fetch all commits for spec
+      2. Build commit DAG
+      3. Calculate branches
+      4. Include tags
+      5. Visualize with ASCII graph (optional)
+      6. Return root chain node
+
+  - name: validate_spec
+    given: String (spec_path)
+    when: Validate specification
+    then: Bool
+    description: |
+      Check if .tri spec is valid:
+      - Required fields present
+      - Version format correct
+      - Behavior definitions valid
+      - Type definitions complete
+
+  - name: compute_hash
+    given: String (spec_content)
+    when: Compute commit hash
+    then: String
+    description: |
+      Generate cryptographic hash for commit:
+      Use SHA-256 or SHA-3
+      Include timestamp, message, parent commits
+
+  - name: increment_version
+    given: String (current_version)
+    when: Create next version
+    then: String
+    description: |
+      Increment version number according to semver or custom scheme:
+      current → next
+      v1.0.0 → v1.0.1
+      v1.2.3 → v1.3.0
+
+  - name: get_commit_history
+    given: String (spec_name)
+    when: Fetch commit history
+    then: List<CommitRecord>
+    description: |
+      Get all commits for a specification:
+      - Return in chronological order
+      - Include parent relationships
+      - Include tags
+
+  - name: visualize_chain
+    given: ChainNode
+    when: Visualize commit graph
+    then: String
+    description: |
+      Generate ASCII art visualization:
+      Show commit nodes and arrows
+      Highlight branches and tags
+      Support diff view
+
+  - name: create_backup
+    given: GenesisContext
+    when: Create backup before commit
+    then: Bool
+    description: |
+      Create backup of current state:
+      - Copy spec to backup/
+      - Store with timestamp
+      - Mark as immutable
+
+constraints:
+  - akashic_records_dir: "specs/tri/akashic_records/"
+  - backup_dir: "specs/tri/backups/"
+  - default_branch: "main"
+  - max_commit_history: 1000
+  - hash_algorithm: "sha-256"
+  - version_scheme: "semantic" # or "simple"
+
+dependencies:
+  - std.crypto
+  - std.time
+  - std.fs
+  - std.process
+
+optimizations:
+  - history_caching: true
+  - lazy_load_commits: true
+  - incremental_hash: true
+  - graphviz_integration: optional
+
+test_cases:
+  - name: genesis_creates_commit
+    input:
+      spec_path: "test_spec.vibee"
+      message: "Initial commit"
+    expected:
+      has_commit: true
+      version_increments: true
+      backup_created: true
+
+  - name: regress_reverts_version
+    input:
+      spec_path: "test_spec.vibee"
+      target_version: "v1.0.0"
+    expected:
+      current_version: "v1.0.0"
+      revert_recorded: true
+
+  - name: chain_shows_history
+    input:
+      spec_path: "test_spec.vibee"
+      depth: 5
+    expected:
+      commits_count: >=1
+      branches_present: true
+      tags_present: true
+
+  - name: validate_valid_spec
+    input:
+      spec_path: "valid_spec.vibee"
+    expected:
+      is_valid: true
+      errors: empty
+
+  - name: compute_hash_consistent
+    input:
+      content: "test content"
+      timestamp: 1234567890
+    expected:
+      hash_format: sha-256
+      deterministic: true
+
+entry_points:
+  - name: main
+    signature: !void
+    description: |
+      Main entry point - parse CLI arguments and dispatch to commands:
+      tvc genesis [spec_path] [message]
+      tvc regress [spec_path] [version]
+      tvc chain [spec_path] [--depth] [--visualize]
+      tvc validate [spec_path]
+      tvc status [spec_path]

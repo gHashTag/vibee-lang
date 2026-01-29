@@ -1,0 +1,167 @@
+name: tvc
+version: "1.0.0"
+language: zig
+module: tvc
+
+description: |
+  Ternary Version Control (TVC) — система контроля версий на тритах.
+  Хранит только позиции с diff != 0, достигая божественной компактности.
+  Плоть Уробороса: каждый commit — поток тритов {-1, 0, +1}.
+
+types:
+  Trit:
+    description: "Атом TVC — трит {-1, 0, +1}"
+    fields:
+      value: Int
+
+  TritStream:
+    description: "Поток тритов — содержимое файла"
+    fields:
+      trits: List[Trit]
+      length: Int
+
+  TritDiff:
+    description: "Разница между версиями в тритах"
+    fields:
+      positions: List[Int]   # Где diff != 0
+      deltas: List[Trit]     # Значения {-2, -1, 0, +1, +2}
+      compressed: Bool       # Сжато ли хранение
+
+  TVCCommit:
+    description: "Коммит в троичной системе контроля версий"
+    fields:
+      commit_id: String      # SHA на тритах
+      parent_id: String      # Родительский коммит
+      message: String
+      diff: TritDiff         # Инкрементальные изменения
+      timestamp: Timestamp
+      author: String
+
+  TVCBranch:
+    description: "Ветка троичного дерева"
+    fields:
+      branch_name: String
+      head_commit: String
+      base_commit: String
+      is_active: Bool
+
+  TVCRepository:
+    description: "Репозиторий TVC"
+    fields:
+      repo_path: String
+      branches: Map[String, TVCBranch]
+      current_branch: String
+      commits: Map[String, TVCCommit]
+      head: String
+
+  TVCStatus:
+    description: "Статус рабочей директории"
+    fields:
+      modified: List[String]    # Файлы с изменениями
+      staged: List[String]      # Файлы в индексе
+      untracked: List[String]   # Новые файлы
+      trit_changes: Int         # Общее число изменённых тритов
+
+  TVCMergeResult:
+    description: "Результат слияния веток"
+    fields:
+      success: Bool
+      conflicts: List[String]
+      merged_diff: TritDiff
+      strategy: String  # "ours", "theirs", "trinary"
+
+behaviors:
+  - name: init_repository
+    given: "Путь к директории"
+    when: "Инициализируется TVC репозиторий"
+    then: "Создаётся .tvc директория с genesis commit"
+
+  - name: calculate_diff
+    given: "Два TritStream (старый и новый)"
+    when: "Вычисляется разница"
+    then: "Возвращается TritDiff только с ненулевыми позициями"
+
+  - name: apply_diff
+    given: "TritStream и TritDiff"
+    when: "Применяется diff"
+    then: "Возвращается новый TritStream с изменениями"
+
+  - name: commit_changes
+    given: "Сообщение и автор"
+    when: "Создаётся коммит"
+    then: "Сохраняется TritDiff в историю, HEAD обновляется"
+
+  - name: compress_diff
+    given: "TritDiff"
+    when: "Сжимается diff"
+    then: "Упаковывается в компактный формат (только ненулевые)"
+
+  - name: decompress_diff
+    given: "Сжатый TritDiff"
+    when: "Распаковывается diff"
+    then: "Восстанавливается полный TritDiff"
+
+  - name: checkout_commit
+    given: "Commit ID"
+    when: "Переключается версия"
+    then: "Реконструируется состояние из цепочки diffs"
+
+  - name: merge_branches
+    given: "Имена двух веток"
+    when: "Выполняется слияние"
+    then: "Возвращается TVCMergeResult с trinary resolution"
+
+  - name: get_file_at_commit
+    given: "Путь к файлу и commit ID"
+    when: "Запрашивается версия файла"
+    then: "Реконструируется TritStream из истории diffs"
+
+  - name: log_history
+    given: "Commit ID (опционально)"
+    when: "Запрашивается история"
+    then: "Возвращается цепочка TVCCommit до genesis"
+
+  - name: status
+    given: "Рабочая директория"
+    when: "Проверяется статус"
+    then: "Возвращается TVCStatus с подсчётом изменённых тритов"
+
+constants:
+  # Магические троичные константы
+  GENESIS_COMMIT: "00000000000000000000000000000000"
+  TRIT_EMPTY: 0
+  TRIT_MINUS: -1
+  TRIT_PLUS: 1
+  
+  # Компрессия
+  COMPRESSION_THRESHOLD: 100  # Мин. позиций для сжатия
+  MAX_DELTA: 2                # Максимальная дельта diff
+  
+  # Пути
+  TVC_DIR: ".tvc"
+  OBJECTS_DIR: ".tvc/objects"
+  REFS_DIR: ".tvc/refs"
+  HEAD_FILE: ".tvc/HEAD"
+
+notes: |
+  Принципы TVC:
+  
+  1. Абсолютная компактность: храним только diff != 0
+  2. Троичная арифметика: delta = {-2, -1, 0, +1, +2}
+  3. Genesis commit: полный снапшот, остальные — diffs
+  4. Реконструкция: применяем цепочку diffs к genesis
+  5. Trinary merge: разрешаем конфликты через {-1, 0, +1}
+  
+  Формат хранения:
+  ```
+  .tvc/
+    HEAD              → текущая ветка
+    genesis           → первый коммит (полный)
+    objects/
+      <commit_id>     → TritDiff сжатый
+    refs/
+      main            → HEAD commit
+      feature/vbt     → commit ID
+  ```
+  
+  φ² + 1/φ² = 3

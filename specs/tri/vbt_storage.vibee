@@ -1,0 +1,161 @@
+name: vbt_storage
+version: "1.0.0"
+language: zig
+module: vbt_storage
+
+description: |
+  VBT Storage - unified ternary storage system.
+  Integration of config_manager + TVC for immortal configs.
+  Every config change = commit in ternary stream.
+
+types:
+  Trit:
+    description: "VBT atom {-1, 0, +1}"
+    fields:
+      value: Int
+
+  TritStream:
+    description: "Stream of trits - heart of VBT"
+    fields:
+      trits: List[Trit]
+      length: Int
+      hash: String
+
+  VBTConfig:
+    description: "Config in VBT format with versioning"
+    fields:
+      config_id: String
+      name: String
+      current_data: TritStream
+      repo_path: String
+      head_commit: String
+      is_versioned: Bool
+
+  VBTCommit:
+    description: "Config change commit"
+    fields:
+      commit_id: String
+      parent_id: String
+      config_id: String
+      diff: TritDiff
+      message: String
+      timestamp: Timestamp
+
+  TritDiff:
+    description: "Ternary difference"
+    fields:
+      positions: List[Int]
+      deltas: List[Trit]
+      compression_ratio: Float
+
+  VBTBranch:
+    description: "Config branch (blue/green/canary)"
+    fields:
+      branch_name: String
+      config_id: String
+      head_commit: String
+      base_commit: String
+      environment: String
+
+  VBTStorage:
+    description: "Main VBT storage manager"
+    fields:
+      configs: Map[String, VBTConfig]
+      repo_root: String
+      auto_commit: Bool
+      compression: Bool
+
+  VBTChange:
+    description: "Change with metadata"
+    fields:
+      change_id: String
+      config_id: String
+      section: String
+      key: String
+      old_value: String
+      new_value: String
+      trit_diff: TritDiff
+      committed: Bool
+
+  VBTHistory:
+    description: "Config version history"
+    fields:
+      config_id: String
+      commits: List[VBTCommit]
+      total_changes: Int
+      first_commit: Timestamp
+      last_commit: Timestamp
+
+behaviors:
+  - name: init_storage
+    given: "Directory path and settings"
+    when: "VBT storage is initialized"
+    then: "Creates .tvc repository and config index"
+
+  - name: create_config
+    given: "Config name and initial data"
+    when: "New versioned config is created"
+    then: "Creates VBTConfig with genesis commit"
+
+  - name: get_config_value
+    given: "config_id, section, key"
+    when: "Reading value from config"
+    then: "Decodes TritStream and returns value"
+
+  - name: set_config_value
+    given: "config_id, section, key, new value"
+    when: "Config is updated"
+    then: "Creates TritDiff, applies change, creates commit"
+
+  - name: commit_config
+    given: "config_id and message"
+    when: "Config state is committed"
+    then: "Creates VBTCommit with diff from parent"
+
+  - name: checkout_config
+    given: "config_id and commit_id"
+    when: "Config version is switched"
+    then: "Reconstructs state from diff chain"
+
+  - name: get_config_history
+    given: "config_id"
+    when: "History is requested"
+    then: "Returns VBTHistory with commit chain"
+
+  - name: create_branch
+    given: "config_id, branch name, base_commit"
+    when: "Config branch is created"
+    then: "Creates VBTBranch pointing to base"
+
+  - name: merge_branches
+    given: "config_id, source_branch, target_branch"
+    when: "Branches are merged"
+    then: "Performs ternary merge with conflict resolution"
+
+  - name: compress_config_history
+    given: "config_id and compression settings"
+    when: "History is compressed"
+    then: "Aggregates old commits, recalculates diffs"
+
+  - name: export_config
+    given: "config_id and format (vbt/json/yaml)"
+    when: "Config is exported"
+    then: "Converts from TritStream to target format"
+
+  - name: import_config
+    given: "File path and config_id"
+    when: "Config is imported"
+    then: "Encodes to TritStream and saves with genesis commit"
+
+constants:
+  MAGIC_VBT: [1, 0, -1]
+  TRITS_PER_CHAR: 5
+  GENESIS_COMMIT: "genesis"
+  COMPRESSION_THRESHOLD: 100
+  MAX_HISTORY_COMMITS: 1000
+  VBT_DIR: ".vbt"
+  TVC_DIR: ".vbt/.tvc"
+  CONFIG_INDEX: ".vbt/index"
+  TRIT_CHAOS: -1
+  TRIT_VOID: 0
+  TRIT_ORDER: 1

@@ -1,5 +1,5 @@
 //! VIBEE ⲦⲢⲒⲚⲒⲦⲨ CLI
-//! Command-line interface for the VIBEE compiler
+//! Command-line interface for VIBEE compiler
 //! φ² + 1/φ² = 3
 
 const std = @import("std");
@@ -9,6 +9,7 @@ const coptic_lexer = @import("coptic_lexer.zig");
 const coptic_parser = @import("coptic_parser_real.zig");
 const bytecode_compiler = @import("bytecode_compiler.zig");
 const vm_runtime = @import("vm_runtime.zig");
+const tri_cmd = @import("tri_cmd.zig");
 // NOTE: coptic_interpreter.zig is DEPRECATED - use VM only!
 
 pub const PHI: f64 = 1.6180339887498948482;
@@ -28,6 +29,7 @@ const Command = enum {
     version,
     help,
     tri, // Compile to native Trinity code (.tri)
+    tri_fmt, // .tri format operations (TVC, encode, decode, etc.)
     unknown,
 };
 
@@ -121,6 +123,10 @@ pub fn main() !void {
             }
             try compileToTri(args[2], allocator);
         },
+        .tri_fmt => {
+            // .tri format operations
+            try tri_cmd.runTriCommand(allocator, args[2..]);
+        },
         .version => printVersion(),
         .help => printUsage(),
         .unknown => {
@@ -141,6 +147,7 @@ fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "parse") or std.mem.eql(u8, arg, "p")) return .parse;
     if (std.mem.eql(u8, arg, "repl")) return .repl;
     if (std.mem.eql(u8, arg, "tri") or std.mem.eql(u8, arg, "t")) return .tri;
+    if (std.mem.eql(u8, arg, "tri-fmt") or std.mem.eql(u8, arg, "tf")) return .tri_fmt;
     if (std.mem.eql(u8, arg, "version") or std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) return .version;
     if (std.mem.eql(u8, arg, "help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) return .help;
     return .unknown;
@@ -171,12 +178,12 @@ fn compileFile(path: []const u8, allocator: std.mem.Allocator) !void {
     } else {
         printError("Compilation failed!");
         for (result.errors.items) |err| {
-            std.debug.print("  [{d}:{d}] {s}\n", .{ err.line, err.column, err.message });
+            std.debug.print(" [{d}:{d}] {s}\n", .{ err.line, err.column, err.message });
         }
     }
 
     for (result.warnings.items) |warn| {
-        std.debug.print("  Warning [{d}:{d}]: {s}\n", .{ warn.line, warn.column, warn.message });
+        std.debug.print(" Warning [{d}:{d}]: {s}\n", .{ warn.line, warn.column, warn.message });
     }
 }
 
@@ -212,7 +219,7 @@ fn compileToTri(path: []const u8, allocator: std.mem.Allocator) !void {
     std.debug.print("  Output: {s} ({d} triads)\n", .{ output_path, ops.len });
 }
 
-// Run file via bytecode VM - the ONLY execution method
+// Run file via bytecode VM - ONLY execution method
 fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
     const source = readFile(path, allocator) catch |err| {
         printError("Cannot read file");
@@ -304,6 +311,7 @@ fn profileVM(path: []const u8, allocator: std.mem.Allocator) !void {
     defer vm.deinit();
 
     vm.load(code, constants);
+
     _ = vm.run() catch |err| {
         std.debug.print("Runtime error: {}\n", .{err});
         return;
@@ -465,25 +473,25 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
 
     // Print benchmark report
     std.debug.print("\n", .{});
-    std.debug.print("╔══════════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("╔════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║                    VIBEE BENCHMARK REPORT                        ║\n", .{});
-    std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("╠══════════════════════════════════════════════════════════════╣\n", .{});
     std.debug.print("║ File: {s:<57} ║\n", .{path});
     std.debug.print("║ Iterations: {d:<51} ║\n", .{iterations});
-    std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("╠══════════════════════════════════════════════════════════════╣\n", .{});
     std.debug.print("║ COMPILATION PHASE                                                ║\n", .{});
     std.debug.print("║   Parse time:    {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(parse_time)) / 1000.0});
     std.debug.print("║   Compile time:  {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(compile_time)) / 1000.0});
     std.debug.print("║   Bytecode size: {d:>12} bytes                                 ║\n", .{code.len});
     std.debug.print("║   Constants:     {d:>12}                                       ║\n", .{constants.len});
-    std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("╠════════════════════════════════════════════════════════════════════╣\n", .{});
     std.debug.print("║ EXECUTION PHASE (VM only)                                        ║\n", .{});
     std.debug.print("║   Avg time:      {d:>12.3} µs ({d:.3} ms)                       ║\n", .{ avg_time_us, avg_time_ms });
     std.debug.print("║   Min time:      {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(min_time_ns)) / 1000.0});
     std.debug.print("║   Max time:      {d:>12.3} µs                                  ║\n", .{@as(f64, @floatFromInt(max_time_ns)) / 1000.0});
     std.debug.print("║   Instructions:  {d:>12}                                       ║\n", .{avg_instructions});
     std.debug.print("║   Ops/sec:       {d:>12.0}                                       ║\n", .{ops_per_sec});
-    std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("╠════════════════════════════════════════════════════════════════════════════╣\n", .{});
 
     // Print result
     var buf: [64]u8 = undefined;
@@ -495,7 +503,7 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
         else => "complex",
     };
     std.debug.print("║ Result: {s:<56} ║\n", .{result_str});
-    std.debug.print("╚══════════════════════════════════════════════════════════════════╝\n", .{});
+    std.debug.print("╚════════════════════════════════════════════════════════════════════════════╝\n", .{});
 }
 
 fn checkFile(path: []const u8, allocator: std.mem.Allocator) !void {
@@ -626,6 +634,7 @@ fn printUsage() void {
         \\  version, -v         Show version
         \\  help, -h            Show this help
         \\  tri, t <file>       Compile to native .tri (Trinity code)
+        \\  tri-fmt <subcmd>    .tri format operations (TVC, encode, decode, etc.)
         \\
         \\Examples:
         \\  vibee run hello.999
@@ -661,6 +670,8 @@ test "cli parse command" {
     try std.testing.expectEqual(Command.check, parseCommand("check"));
     try std.testing.expectEqual(Command.version, parseCommand("-v"));
     try std.testing.expectEqual(Command.help, parseCommand("--help"));
+    try std.testing.expectEqual(Command.tri, parseCommand("tri"));
+    try std.testing.expectEqual(Command.tri_fmt, parseCommand("tri-fmt"));
     try std.testing.expectEqual(Command.unknown, parseCommand("invalid"));
 }
 

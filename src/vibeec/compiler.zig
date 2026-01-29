@@ -26,6 +26,7 @@ const jit = @import("jit.zig");
 const repl = @import("repl.zig");
 const lsp = @import("lsp.zig");
 const validate_cmd = @import("validate_cmd.zig");
+const tri_cmd = @import("tri_cmd.zig");
 
 // Re-export types
 pub const ParserV3 = parser.ParserV3;
@@ -429,6 +430,8 @@ pub fn main() !u8 {
         return 0;
     } else if (std.mem.eql(u8, cmd, "validate")) {
         return validate_cmd.runValidation(args[1..]);
+    } else if (std.mem.eql(u8, cmd, "tri-fmt") or std.mem.eql(u8, cmd, "tf")) {
+        return tri_cmd.runTriCommand(allocator, args[2..]);
     }
 
     std.debug.print("Unknown command: {s}\nRun 'vibeec help' for usage.\n", .{cmd});
@@ -452,6 +455,7 @@ fn printSimpleHelp() void {
         \\    status            Show agent status
         \\    gen <file.vibee>  Generate .zig from .vibee specification
         \\    validate <file>   Validate .vibee specification
+        \\    tri-fmt [subcmd]  .tri format operations (TVC, encode, decode, etc.)
         \\    pas               Show PAS DAEMONS patterns
         \\    phi               Show sacred constants
         \\    eval "expr"       Evaluate ternary logic expression
