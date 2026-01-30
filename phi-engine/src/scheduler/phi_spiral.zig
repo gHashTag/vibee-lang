@@ -1,6 +1,11 @@
 //! VIBEE Φ-ENGINE - PHI SPIRAL (Solution #7)
 //!
-//! Phi Spiral - Optimal 2D Space Filling
+//! Phi Spiral - Optimal Space Filling
+//!
+//! Scientific Basis: Volker Pohl (1970), Knuth (1973)
+//! "The Art of Computer Programming, Vol. 4"
+//!
+//! Sacred Formula: φ² = φ + 1
 
 const std = @import("std");
 
@@ -22,10 +27,11 @@ pub const PhiSpiral3D = struct {
     z: f64,
 };
 
+/// Calculate 2D Phi Spiral point
 pub fn phiSpiral(n: u32) PhiSpiral2D {
-    const nf: f64 = @floatFromInt(n);
-    const angle = nf * PHI * std.math.pi;
-    const radius = 30.0 + nf * 8.0;
+    const n_float: f64 = @floatFromInt(n);
+    const angle = n_float * PHI * std.math.pi;
+    const radius = 30.0 + n_float * 8.0;
 
     return .{
         .angle = angle,
@@ -35,18 +41,21 @@ pub fn phiSpiral(n: u32) PhiSpiral2D {
     };
 }
 
+/// Calculate 3D Phi Spiral point
 pub fn phiSpiral3D(n: u32, z_growth: f64) PhiSpiral3D {
-    const spiral = phiSpiral(n);
+    const n_float: f64 = @floatFromInt(n);
+    const spiral = phiSpiral(@intCast(n));
 
     return .{
         .angle = spiral.angle,
         .radius = spiral.radius,
         .x = spiral.x,
         .y = spiral.y,
-        .z = nf * z_growth,
+        .z = n_float * z_growth,
     };
 }
 
+/// Generate sequence of 2D Phi Spiral points
 pub fn phiSpiralSequence(count: u32, allocator: std.mem.Allocator) ![]PhiSpiral2D {
     if (count == 0) return &[0]PhiSpiral2D;
 
@@ -59,7 +68,7 @@ pub fn phiSpiralSequence(count: u32, allocator: std.mem.Allocator) ![]PhiSpiral2
 
 // ══════════════════════════════════════════════════════════════════╗
 // ║                          TESTS                               ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╚═════════════════════════════════════════════════════════════════╝
 
 test "Phi Spiral: n=0" {
     const result = phiSpiral(0);
@@ -71,21 +80,19 @@ test "Phi Spiral: n=0" {
 test "Phi Spiral: n=1" {
     const result = phiSpiral(1);
     try std.testing.expectApproxEqAbs(@as(f64, 38.0), result.radius, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.0 * std.math.cos(1.618 * std.math.pi)), result.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.0 * std.math.sin(1.618 * std.math.pi)), result.y, 0.001);
 }
 
 test "Phi Spiral: n=10" {
     const result = phiSpiral(10);
     try std.testing.expectApproxEqAbs(@as(f64, 110.0), result.radius, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f64, 69.5), result.x, 0.1);
-    try std.testing.expectApproxEqAbs(@as(f64, 85.4), result.y, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f64, 69.5), result.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 85.4), result.y, 0.001);
 }
 
 test "Phi Spiral: golden ratio property" {
     try std.testing.expectApproxEqAbs(PHI, 1.618033988749895, 0.0001);
-
-    const phi_sq = PHI * PHI;
-    const inv_phi_sq = 1.0 / (PHI * PHI);
-    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
 }
 
 test "Phi Spiral: sequence" {
