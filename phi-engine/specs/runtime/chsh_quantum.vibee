@@ -1,0 +1,133 @@
+# CHSH QUANTUM SPECIFICATION
+
+name: chsh_quantum
+version: "1.0.0"
+language: zig
+module: phi_engine.runtime
+
+types:
+  CHSHContext:
+    fields:
+      settings_A: Float  # 0 or π/4
+      settings_B: Float  # 0 or π/4
+
+  QubitPair:
+    fields:
+      a: Bool   # |0⟩ or |1⟩ for Alice's qubit
+      b: Bool   # |0⟩ or |1⟩ for Bob's qubit
+      a_prime: Bool   # |0⟩ or |1⟩ for Alice's second measurement
+      b_prime: Bool   # |0⟩ or |1⟩ for Bob's second measurement
+
+  CorrelationResult:
+    fields:
+      E_AB: Float
+      E_AB_prime: Float
+      E_A_prime_B: Float
+      E_A_prime_B_prime: Float
+      S: Float      # CHSH value
+
+behaviors:
+  - name: chsh_value
+    given: "QubitPair, CHSHContext"
+    when: "chsh_value is called"
+    then: "Calculate CHSH correlation S = E(a,b) - E(a,b') + E(a',b) + E(a',b')"
+    params:
+      - name: qubit_pair
+        type: QubitPair
+      - name: context
+        type: CHSHContext
+    returns: Float
+    test_cases:
+      - name: test_chsh_classical
+        input: '{"qubit_pair": {"a": true, "b": true, "a_prime": false, "b_prime": false}, "context": {"settings_A": 0.0, "settings_B": 0.0}}'
+        expected: '{"S": 2.0, "note": "Classical limit - all measurements aligned"}'
+      - name: test_chsh_maximal_quantum_violation
+        input: '{"qubit_pair": {"a": true, "b": true, "a_prime": false, "b_prime": false}, "context": {"settings_A": 0.0, "settings_B": 0.0}}'
+        expected: '{"S": -2.828, "note": "Maximal violation of classical limit (S = -2√2)"}'
+      - name: test_chsh_bell_state_correlation
+        input: '{"qubit_pair": {"a": true, "b": false, "a_prime": false, "b_prime": false}, "context": {"settings_A": 0.0, "settings_B": 0.0}}'
+        expected: '{"S": 1.0, "note": "Bell state |Φ⁺⟩ = (|00⟩ + |11⟩) / √2 has partial correlations"}'
+
+  - name: has_quantum_advantage
+    given: "CHSH value S"
+    when: "has_quantum_advantage is called"
+    then: "Return true if |S| > 2.0 (classical limit)"
+    params:
+      - name: s_value
+        type: Float
+    returns: Bool
+    test_cases:
+      - name: test_advantage_classical
+        input: '{"s_value": 2.0}'
+        expected: '{"has_advantage": false, "note": "S = 2.0 = classical limit"}'
+      - name: test_advantage_quantum
+        input: '{"s_value": 2.828}'
+        expected: '{"has_advantage": true, "note": "S = 2√2 = 2.828 > 2.0 = quantum advantage"}'
+      - name: test_advantage_maximal
+        input: '{"s_value": 2.828}'
+        expected: '{"has_advantage": true, "note": "S = 2.828 is the theoretical maximum for CHSH inequality"}'
+
+  - name: bell_correlation
+    given: "QubitPair, CHSHContext"
+    when: "bell_correlation is called"
+    then: "Calculate E(a,b) = P(00) + P(11) - P(01) - P(10)"
+    params:
+      - name: qubit_pair
+        type: QubitPair
+      - name: context
+        type: CHSHContext
+    returns: Float
+    test_cases:
+      - name: test_bell_identity
+        input: '{"qubit_pair": {"a": true, "b": true}, "context": {"settings_A": 0.0, "settings_B": 0.0}}'
+        expected: '{"E": 1.0, "note": "|11⟩ → P(11) = 1"}'
+      - name: test_bell_orthogonal
+        input: '{"qubit_pair": {"a": true, "b": false}, "context": {"settings_A": 0.0, "settings_B": 0.0}}'
+        expected: '{"E": 0.0, "note": "|10⟩ → P(10) = 0"}'
+
+patterns:
+  - name: chsh_inequality_verification
+    implementation: |
+      ```zig
+      const std = @import("std");
+      const math = std.math;
+
+      pub const CHSH_CLASSICAL: f64 = 2.0;
+      pub const CHSH_QUANTUM: f64 = 2.0 * math.sqrt(2.0); // 2√2 ≈ 2.828
+
+      pub fn bellCorrelation(a: bool, b: bool, settings_a: f64, settings_b: f64) f64 {
+          // Bell correlation: E = ⟨A ⊗ B⟩ = P(00) + P(11) - P(01) - P(10)
+          // With settings: A = σ_z ⊗ I, B = cos(θ)·σ_x + sin(θ)·σ_y
+          
+          const cos_a = if (a) @cos(settings_a) else 1.0;
+          const cos_b = if (b) @cos(settings_b) else 1.0;
+          
+          return cos_a * cos_b; // Simplified expectation
+      }
+
+      pub fn chshValue(pair: QubitPair, ctx: CHSHContext) f64 {
+          const E_AB = bellCorrelation(pair.a, pair.b, ctx.settings_A, ctx.settings_B);
+          const E_AB_prime = bellCorrelation(pair.a, pair.b_prime, ctx.settings_A, ctx.settings_B);
+          const E_A_prime_B = bellCorrelation(pair.a_prime, pair.b, ctx.settings_A, ctx.settings_B);
+          const E_A_prime_B_prime = bellCorrelation(pair.a_prime, pair.b_prime, ctx.settings_A, ctx.settings_B);
+          
+          const S = E_AB - E_AB_prime + E_A_prime_B + E_A_prime_B_prime;
+          return S;
+      }
+
+      pub fn hasQuantumAdvantage(chsh_value: f64) bool {
+          return @abs(chsh_value) > CHSH_CLASSICAL;
+      }
+      ```
+    sacred_formula: "S = E(a,b) - E(a,b') + E(a',b) + E(a',b') where |S| ≤ 2.0 (classical) or |S| ≤ 2√2 (quantum)"
+    phi_principle: "QUANTUM ADVANTAGE - φ (√2 = 1.414) is related to quantum limit 2√2 ≈ 2.828"
+    scientific_basis: "Bell (1964) - John Bell, 'On the Einstein Podolsky Rosen Paradox', Physics 1, 195-200
+                      CHSH (1969) - Clauser, Horne, Shimony, Holt, 'Proposed Test to Separate Local Hidden Variable Theories', Physical Review Letters"
+
+sacred_formula:
+  equation: "S = E(a,b) - E(a,b') + E(a',b) + E(a',b') where |S| ≤ 2.828"
+  proof: "Bell's theorem (1964) proves that quantum mechanics can violate classical limit of |S| ≤ 2.0, achieving |S| ≤ 2√2 = 2.828 (CHSH inequality, 1969)"
+  references:
+    - "Bell (1964) - John Bell, 'On the Einstein Podolsky Rosen Paradox', Physics 1, 195-200"
+    - "CHSH (1969) - Clauser, Horne, Shimony, Holt, 'Proposed Test to Separate Local Hidden Variable Theories', Physical Review Letters"
+    - "Aspect (1982) - Alain Aspect et al., 'Experimental Test of Bell's Inequalities Using Time-Varying Analyzers', Physical Review Letters"

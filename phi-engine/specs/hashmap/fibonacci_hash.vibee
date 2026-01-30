@@ -1,0 +1,97 @@
+# FIBONACCI HASH SPECIFICATION
+
+name: fibonacci_hash
+version: "1.0.0"
+language: zig
+module: phi_engine.hashmap
+
+types:
+  HashMap:
+    fields:
+      buckets: List<Bucket>
+      size: Int
+      capacity: Int
+
+  Bucket:
+    fields:
+      key: String
+      value: Any
+      next: Option<Bucket>
+
+behaviors:
+  - name: phi_hash
+    given: "key (64-bit integer)"
+    when: "hash function is called"
+    then: "Return hash = (key × φ × 2^64) >> shift"
+    params:
+      - name: key
+        type: Int
+      - name: table_bits
+        type: Int
+    returns: Int
+    test_cases:
+      - name: test_hash_uniformity
+        input: '{"key": 1, "table_bits": 10}'
+        expected: '{"collision_rate": "minimal", "distribution": "uniform"}'
+      - name: test_hash_power_of_two
+        input: '{"keys": [1, 2, 4, 8, 16, 32], "table_bits": 5}'
+        expected: '{"mod_32": "true", "formula": "hash = (key × φ × 2^64) >> 59"}'
+      - name: test_hash_optimal_multiplier
+        input: '{"key": 12345}'
+        expected: '{"hash": "11400714819323198485 × 12345", "mod_2^64": "distributed"}'
+
+  - name: phi_hash_insert
+    given: "HashMap, key, value"
+    when: "insert is called"
+    then: "Insert into bucket using phi_hash"
+    params:
+      - name: map
+        type: HashMap
+      - name: key
+        type: String
+      - name: value
+        type: Any
+    returns: Bool
+
+  - name: phi_hash_lookup
+    given: "HashMap, key"
+    when: "lookup is called"
+    then: "Find value using phi_hash"
+    params:
+      - name: map
+        type: HashMap
+      - name: key
+        type: String
+    returns: Option<Any>
+    test_cases:
+      - name: test_insert_lookup_cycle
+        input: '{"map": {}, "operations": [{"op": "insert", "key": "a", "value": 1}, {"op": "lookup", "key": "a"}]}'
+        expected: '{"found": "true", "value": 1}'
+
+patterns:
+  - name: fibonacci_hashing
+    implementation: |
+      ```zig
+      pub const PHI: f64 = 1.618033988749895;
+      pub const PHI_HASH_MULT: u64 = 11400714819323198485; // φ × 2^64
+
+      pub inline fn phiHash(key: u64, shift: u6) u64 {
+          return (key *% PHI_HASH_MULT) >> shift;
+      }
+
+      pub inline fn phiHashMod(key: u64, table_bits: u6) usize {
+          const shift: u6 = @intCast(64 - @as(u7, table_bits));
+          return @intCast(phiHash(key, shift));
+      }
+      ```
+    sacred_formula: "hash = (key × φ × 2^64) >> (64 - log₂(size))"
+    phi_principle: "MOST IRRATIONAL NUMBER - φ provides optimal uniform distribution"
+    scientific_basis: "Fibonacci Hashing - Donald Knuth, The Art of Computer Programming, Vol. 3 (1973)"
+
+sacred_formula:
+  equation: "hash = key × φ × 2^64 (mod 2^64)"
+  proof: "Multiplying by φ (most irrational number) minimizes clustering in hash tables"
+  references:
+    - "Fibonacci Hashing - Donald Knuth (1973)"
+    - "The Art of Computer Programming, Vol. 3: Sorting and Searching"
+    - "Optimal key distribution for power-of-2 tables"

@@ -1,0 +1,183 @@
+name: fs_integration
+version: "1.1.0"
+language: zig
+module: fs_integration
+
+description: |
+  Real Filesystem Integration Layer for VBT Storage
+  Provides actual file operations using std.fs and os calls
+
+types:
+  FSPath:
+    fields:
+      path: String
+      is_absolute: Bool
+
+  FSEntry:
+    fields:
+      name: String
+      path: String
+      is_directory: Bool
+      size: Int
+      modified: Timestamp
+
+  FSPermissions:
+    fields:
+      readable: Bool
+      writable: Bool
+      executable: Bool
+
+  FSOperation:
+    fields:
+      operation: String
+      source: String
+      destination: String
+      success: Bool
+      error_code: Int
+
+  FSError:
+    fields:
+      code: Int
+      message: String
+      path: String
+
+  VBTRepositoryConfig:
+    fields:
+      root_path: String
+      auto_commit: Bool
+      compression_level: Int
+      sync_on_write: Bool
+
+behaviors:
+  # Path Operations with real std.fs implementation
+  - name: normalize_path
+    given: RawPath: String
+    when: Call std.fs.path.normalize() internally
+    then: Return normalized path as []const u8
+
+  - name: resolve_path
+    given: BasePath: String, RelativePath: String
+    when: Use std.fs.path.resolve() with base + relative
+    then: Return absolute path
+
+  - name: path_exists
+    given: Path: String
+    when: Call fs.Dir.access() to check existence
+    then: Return true/false with error_code
+
+  # Directory Operations using std.fs.Dir
+  - name: list_directory
+    given: DirectoryPath: String
+    when: Open dir, iterate with next(), collect names
+    then: Return array of FSEntry
+
+  - name: create_directory
+    given: NewDirectoryPath: String
+    when: Call fs.Dir.makeDir() recursively if needed
+    then: Return success with error_code
+
+  - name: remove_directory
+    given: DirectoryPath: String, Recursive: Bool
+    when: If recursive: deleteTree(); else: remove()
+    then: Return removal result
+
+  # File Operations with real fs.File
+  - name: read_file
+    given: FilePath: String
+    when: Open fs.File, readToEndAlloc() into buffer
+    then: Return content as []u8 with bytes_read
+
+  - name: write_file
+    given: FilePath: String, Content: []u8
+    when: Create fs.File, writeAll() content
+    then: Return bytes_written with error_code
+
+  - name: append_file
+    given: FilePath: String, Content: []u8
+    when: Open fs.File with .append, writeAll()
+    then: Return bytes_appended
+
+  - name: delete_file
+    given: FilePath: String
+    when: Call fs.Dir.deleteFile()
+    then: Return deletion success
+
+  - name: copy_file
+    given: SourcePath: String, DestinationPath: String
+    when: Read source file, write to destination
+    then: Return copy result with bytes_copied
+
+  - name: move_file
+    given: SourcePath: String, DestinationPath: String
+    when: Use std.fs.rename() atomic operation
+    then: Return move result
+
+  # VBT-Specific Operations with real disk I/O
+  - name: load_vbt_repository
+    given: RepositoryPath: String
+    when: Read .vbt/head.json, load trits from objects/
+    then: Return parsed VBTRepository
+
+  - name: save_vbt_repository
+    given: Repository: VBTRepository, RepositoryPath: String
+    when: Write .vbt/head.json, persist objects/
+    then: Return save result
+
+  - name: export_vbt_entry
+    given: VBTEntry: VBTObject, ExportPath: String
+    when: Serialize entry to VBT format, write to file
+    then: Return export result
+
+  - name: import_vbt_file
+    given: ImportPath: String
+    when: Read file, parse VBT format, create entry
+    then: Return imported VBTEntry
+
+  # Repository Management with real config I/O
+  - name: initialize_repository
+    given: RootPath: String, Config: VBTRepositoryConfig
+    when: Create .vbt structure, write config.yaml
+    then: Return initialized Repository
+
+  - name: get_repository_info
+    given: RepositoryPath: String
+    when: Read .vbt/config, count objects, get metadata
+    then: Return RepositoryInfo
+
+  - name: sync_repository
+    given: RepositoryPath: String, ForceSync: Bool
+    when: Flush all pending writes, fsync() directories
+    then: Return sync result
+
+  # Watch Operations with real inotify/FSEvents
+  - name: watch_directory
+    given: DirectoryPath: String, Callback: fn(Event)void
+    when: Setup inotify/FSEvents watcher, register callback
+    then: Return WatchHandle
+
+  - name: unwatch_directory
+    given: WatchHandle: WatchHandle
+    when: Remove watcher, cleanup resources
+    then: Return unwatch result
+
+  # Permissions using os.chmod
+  - name: get_permissions
+    given: FilePath: String
+    when: Call os.stat(), extract mode bits
+    then: Return FSPermissions
+
+  - name: set_permissions
+    given: FilePath: String, Permissions: FSPermissions
+    when: Call os.chmod() with computed mode
+    then: Return permission set result
+
+  # Statistics using os.stat
+  - name: get_file_stats
+    given: FilePath: String
+    when: Call os.stat() and os.lstat()
+    then: Return StatsResult
+
+  - name: calculate_directory_size
+    given: DirectoryPath: String
+    when: Walk tree, sum stat.size for all files
+    then: Return total_size in bytes

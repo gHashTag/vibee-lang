@@ -1,0 +1,153 @@
+# INLINE COST SPECIFICATION
+
+name: inline_cost
+version: "1.0.0"
+language: zig
+module: phi_engine.core
+
+types:
+  InlineConfig:
+    fields:
+      max_inline_cost: Int
+      call_overhead: Int
+      max_function_size: Int
+      max_inline_depth: Int
+      always_inline_threshold: Int
+      hot_call_bonus: Int
+
+      sacred_threshold_factor: Float  # φ-based threshold
+
+  FunctionInfo:
+    fields:
+      name: String
+      instruction_count: Int
+      param_count: Int
+      has_side_effects: Bool
+      is_recursive: Bool
+      call_count: Int
+      inline_cost: Int
+      always_inline: Bool
+      never_inline: Bool
+
+behaviors:
+  - name: compute_cost
+    given: "FunctionInfo, InlineConfig"
+    when: "compute_cost is called"
+    then: "Calculate inline cost using φ-based thresholds"
+    params:
+      - name: info
+        type: FunctionInfo
+      - name: config
+        type: InlineConfig
+    returns: Int
+    test_cases:
+      - name: test_cost_small_hot_function
+        input: '{"info": {"instruction_count": 10, "call_count": 1000, "is_recursive": false, "has_side_effects": false}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"cost": 60, "should_inline": true, "note": "Hot function bonus (50) + call overhead (10) - cost (10) = 60.0"}'
+      - name: test_cost_large_function
+        input: '{"info": {"instruction_count": 500, "call_count": 1, "is_recursive": false, "has_side_effects": false}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"cost": 500, "should_inline": false, "note": "Cost (500) > threshold (100 × 1.618 = 161.8) = DON'T INLINE"}'
+      - name: test_cost_recursive
+        input: '{"info": {"instruction_count": 10, "is_recursive": true, "call_count": 1, "has_side_effects": false}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"cost": 110, "should_inline": false, "note": "Recursive penalty (100) + cost (10) = 110.0 = DON'T INLINE"}'
+
+  - name: should_inline
+    given: "FunctionInfo, InlineConfig"
+    when: "inlining decision is made"
+    then: "Decide whether to inline using φ-based sacred threshold"
+    params:
+      - name: info
+        type: FunctionInfo
+      - name: config
+        type: InlineConfig
+    returns: Bool
+    test_cases:
+      - name: test_should_inline_small_hot
+        input: '{"info": {"instruction_count": 10, "call_count": 1000, "is_recursive": false, "has_side_effects": false}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"should_inline": true, "note": "Cost (60) < threshold (161.8) = INLINE"}'
+      - name: test_should_inline_always_inline
+        input: '{"info": {"instruction_count": 5, "always_inline": true}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"should_inline": true, "note": "Always inline attribute overrides cost"}'
+      - name: test_should_inline_never_inline
+        input: '{"info": {"instruction_count": 5, "never_inline": true}, "config": {"sacred_threshold_factor": 1.618}}'
+        expected: '{"should_inline": false, "note": "Never inline attribute overrides cost"}'
+
+patterns:
+  - name: inline_cost_model
+    implementation: |
+      ```zig
+      const std = @import("std");
+
+      const PHI: f64 = 1.618033988749895;
+
+      pub const InlineConfig = struct {
+          max_inline_cost: u32 = 100,
+          call_overhead: u32 = 10,
+          max_function_size: u32 = 500,
+          max_inline_depth: u32 = 5,
+          always_inline_threshold: u32 = 20,
+          hot_call_bonus: u32 = 50,
+
+          // Sacred threshold: use φ for balance
+          sacred_threshold_factor: f64 = PHI, // φ = 1.618
+      };
+
+      pub const FunctionInfo = struct {
+          name: []const u8,
+          instruction_count: u32,
+          param_count: u8,
+          has_side_effects: bool,
+          is_recursive: bool,
+          call_count: u32 = 0,
+          inline_cost: u32 = 0,
+          always_inline: bool = false,
+          never_inline: bool = false,
+      };
+
+      pub fn computeCost(self: *FunctionInfo, config: *const InlineConfig) void {
+          // Base cost is instruction count
+          var cost: u32 = self.instruction_count;
+
+          // Add parameter passing cost
+          cost += @as(u32, self.param_count) * 2;
+
+          // Penalty for side effects
+          if (self.has_side_effects) {
+              cost += 20;
+          }
+
+          // Recursive functions have high cost
+          if (self.is_recursive) {
+              cost += 100;
+          }
+
+          // Hot call bonus
+          if (self.call_count > 100) {
+              cost -= @as(u32, config.hot_call_bonus);
+          }
+
+          self.inline_cost = cost;
+      }
+
+      pub fn shouldInline(self: *const FunctionInfo, config: *const InlineConfig) bool {
+          if (self.never_inline) return false;
+          if (self.always_inline) return true;
+          if (self.is_recursive) return false;
+
+          // Use φ-based sacred threshold
+          const threshold: f64 = @as(f64, config.max_inline_cost) * config.sacred_threshold_factor;
+
+          return @as(f64, self.inline_cost) < threshold;
+      }
+      ```
+    sacred_formula: "threshold = max_cost × φ"
+    phi_principle: "GOLDEN BALANCE - φ provides optimal balance between code size and speed"
+    scientific_basis: "LLVM Optimization Passes - Inlining heuristics in modern compilers"
+
+sacred_formula:
+  equation: "inline_cost = instruction_count + 2×params + side_effect_penalty + recursion_penalty - hot_bonus"
+  proof: "φ-based threshold (max_cost × 1.618) provides optimal balance between code size and speed"
+  references:
+    - "LLVM Project Documentation - https://llvm.org/docs/"
+    - "Inlining Heuristics - Modern compiler optimization techniques"
+    - "Connection to φ: φ provides optimal trade-off in multiple domains"

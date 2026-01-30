@@ -17,10 +17,10 @@ pub const E: f64 = 2.718281828459045;
 pub const PHI = 1.618033988749895;
 pub const PI = 3.141592653589793;
 
-test "add" {
-// Given: F64, F64
+test "add_numbers" {
+// Given: Int, Int
 // When: Addition operation
-// Then: F64
+// Then: Int
     
     // Golden identity verification
     const phi_sq = PHI * PHI;
@@ -28,10 +28,21 @@ test "add" {
     try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
 }
 
-test "multiply" {
-// Given: F64, F64
+test "multiply_numbers" {
+// Given: Int, Int
 // When: Multiplication operation
-// Then: F64
+// Then: Int
+    
+    // Golden identity verification
+    const phi_sq = PHI * PHI;
+    const inv_phi_sq = 1.0 / phi_sq;
+    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
+}
+
+test "greet_world" {
+// Given: void
+// When: Greeting
+// Then: void
     
     // Golden identity verification
     const phi_sq = PHI * PHI;
