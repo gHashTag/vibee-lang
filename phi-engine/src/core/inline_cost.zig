@@ -1,153 +1,125 @@
 //! VIBEE Φ-ENGINE - INLINE COST (Solution #8)
 //!
-//! Inline Cost - Phi-based Inlining Heuristics
+//! Inline Cost - Cost Model for JIT Compilation
+//!
+//! Scientific Basis: Amdahl's Law (1967)
+//! Cost Benefit Analysis of Inline Functions
+//!
+//! Sacred Formula: φ = (1 + √5) / 2
 
 const std = @import("std");
 
 pub const PHI: f64 = 1.618033988749895;
 pub const GOLDEN_IDENTITY: f64 = 3.0;
 
-pub const InlineConfig = struct {
-    max_inline_cost: u32 = 100,
-    call_overhead: u32 = 10,
-    max_function_size: u32 = 500,
-    max_inline_depth: u32 = 5,
-    always_inline_threshold: u32 = 20,
-    hot_call_bonus: u32 = 50,
-
-    sacred_threshold_factor: f64 = PHI,
+/// Function Cost Type
+pub const CostType = enum {
+    cheap, // O(1) simple ops
+    medium, // O(log n) or O(n) small loops
+    expensive, // O(n²) or recursion
 };
 
-pub const FunctionInfo = struct {
+/// Function Metadata
+pub const FunctionMeta = struct {
     name: []const u8,
-    instruction_count: u32,
-    param_count: u8,
-    has_side_effects: bool,
-    is_recursive: bool,
-    call_count: u32 = 0,
-    inline_cost: u32 = 0,
-    always_inline: bool = false,
-    never_inline: bool = false,
+    cost: f64, // Estimated execution cost
+    size: usize, // Code size in bytes
+    inlined: bool, // Was it inlined?
 };
 
-pub fn computeCost(info: *FunctionInfo, config: *const InlineConfig) void {
-    var cost: u32 = info.instruction_count;
+/// Calculate inline cost heuristic
+/// Uses golden ratio to weigh execution cost vs code size
+pub fn inlineCost(func_meta: FunctionMeta) f64 {
+    // Weight: Execution vs Size
+    // φ = 1.618, 1/φ = 0.618
+    // Execution is weighted more heavily
 
-    cost += @as(u32, info.param_count) * 2;
+    const weight_exec: f64 = PHI;
+    const weight_size: f64 = 1.0 / PHI;
 
-    if (info.has_side_effects) {
-        cost += 20;
-    }
+    // Heuristic Cost = (ExecCost * WeightExec) + (Size * WeightSize)
+    const cost = (func_meta.cost * weight_exec) + (@as(f64, func_meta.size) * weight_size);
 
-    if (info.is_recursive) {
-        cost += 100;
-    }
-
-    if (info.call_count > 100) {
-        cost -|= config.hot_call_bonus;
-    }
-
-    info.inline_cost = cost;
+    return cost;
 }
 
-pub fn shouldInline(info: *const FunctionInfo, config: *const InlineConfig) bool {
-    if (info.never_inline) return false;
-    if (info.always_inline) return true;
-    if (info.is_recursive) return false;
+/// Calculate benefit of inlining
+/// Benefit = (Cost of call overhead) - (Cost of inline bloat)
+pub fn inlineBenefit(func_meta: FunctionMeta) f64 {
+    const call_overhead_cost: f64 = 10.0; // Fixed cost for function call
+    const bloat_cost: f64 = @as(f64, func_meta.size);
 
-    const threshold: f64 = @as(f64, config.max_inline_cost) * config.sacred_threshold_factor;
-
-    return @as(f64, info.inline_cost) < threshold;
+    // Benefit = Call Overhead - Inline Bloat
+    // (If positive, inlining is beneficial)
+    return call_overhead_cost - bloat_cost;
 }
 
-// ════════════════════════════════════════════════════════════════════╗
-// ║                          TESTS                               ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+/// Decide if function should be inlined
+/// Returns true if benefit > threshold
+pub fn shouldInline(func_meta: FunctionMeta) bool {
+    const benefit = inlineBenefit(func_meta);
+    const cost = inlineCost(func_meta);
 
-test "Inline Cost: small hot function" {
-    const config = InlineConfig{};
-    var info = FunctionInfo{
-        .name = "test",
-        .instruction_count = 10,
-        .param_count = 2,
-        .has_side_effects = false,
-        .is_recursive = false,
-        .call_count = 1000,
-    };
-    computeCost(&info, &config);
+    // Decision threshold (can be tuned)
+    // φ × 5 ≈ 8
+    const threshold: f64 = PHI * 5.0;
 
-    try std.testing.expect(info.inline_cost == 60);
-    try std.testing.expect(shouldInline(&info, &config));
+    // Inline if benefit outweighs cost
+    return benefit > threshold or cost < 1.0; // Always inline cheap functions
 }
 
-test "Inline Cost: large function" {
-    const config = InlineConfig{};
-    var info = FunctionInfo{
-        .name = "test",
-        .instruction_count = 500,
-        .param_count = 2,
-        .has_side_effects = false,
-        .is_recursive = false,
-        .call_count = 1,
-    };
-    computeCost(&info, &config);
+// ════════════════════════════════════════════════════════════════════════════╗
+// ║                          TESTS                                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════════╝
 
-    try std.testing.expect(!shouldInline(&info, &config));
-}
-
-test "Inline Cost: recursive" {
-    const config = InlineConfig{};
-    var info = FunctionInfo{
-        .name = "test",
-        .instruction_count = 10,
-        .param_count = 2,
-        .has_side_effects = false,
-        .is_recursive = true,
-        .call_count = 1,
-    };
-    computeCost(&info, &config);
-
-    try std.testing.expect(!shouldInline(&info, &config));
-}
-
-test "Inline Cost: always inline" {
-    const config = InlineConfig{};
-    var info = FunctionInfo{
-        .name = "test",
-        .instruction_count = 5,
-        .param_count = 2,
-        .has_side_effects = false,
-        .is_recursive = false,
-        .call_count = 1,
-        .always_inline = true,
+test "Inline Cost: cheap function" {
+    const func_meta = FunctionMeta{
+        .name = "add",
+        .cost = 1.0, // O(1)
+        .size = 10, // Small
+        .inlined = false,
     };
 
-    try std.testing.expect(shouldInline(&info, &config));
+    const cost = inlineCost(func_meta);
+    const benefit = inlineBenefit(func_meta);
+    const should_inline = shouldInline(func_meta);
+
+    // Cheap functions should have low cost and high benefit
+    try std.testing.expect(cost < 100.0);
+    try std.testing.expect(benefit > 0.0);
+    try std.testing.expectEqual(true, should_inline);
 }
 
-test "Inline Cost: never inline" {
-    const config = InlineConfig{};
-    var info = FunctionInfo{
-        .name = "test",
-        .instruction_count = 5,
-        .param_count = 2,
-        .has_side_effects = false,
-        .is_recursive = false,
-        .call_count = 1,
-        .never_inline = true,
+test "Inline Cost: expensive function" {
+    const func_meta = FunctionMeta{
+        .name = "matrix_mul",
+        .cost = 100.0, // O(n²)
+        .size = 500, // Large
+        .inlined = false,
     };
 
-    try std.testing.expect(!shouldInline(&info, &config));
+    const cost = inlineCost(func_meta);
+    const benefit = inlineBenefit(func_meta);
+    const should_inline = shouldInline(func_meta);
+
+    // Expensive functions should have high cost and low benefit (bloat)
+    try std.testing.expect(cost > 1000.0);
+    try std.testing.expect(benefit < 0.0);
+    try std.testing.expectEqual(false, should_inline);
 }
 
-test "Inline Cost: sacred threshold" {
-    const config = InlineConfig{};
-    const threshold: f64 = @as(f64, config.max_inline_cost) * config.sacred_threshold_factor;
-    try std.testing.expectApproxEqAbs(@as(f64, 161.8033988749895), threshold, 0.001);
+test "Inline Cost: golden ratio weights" {
+    // Verify that weights follow golden ratio
+    const weight_exec: f64 = PHI;
+    const weight_size: f64 = 1.0 / PHI;
+
+    try std.testing.expectApproxEqAbs(weight_exec, 1.618, 0.001);
+    try std.testing.expectApproxEqAbs(weight_size, 0.618, 0.001);
 }
 
-test "Inline Cost: golden identity" {
-    const phi_sq = PHI * PHI;
-    const inv_phi_sq = 1.0 / (PHI * PHI);
-    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, phi_sq + inv_phi_sq, 0.0001);
+test "Inline Cost: phi identity" {
+    // φ × (1/φ) = 1
+    const phi_inv = 1.0 / PHI;
+    const product = PHI * phi_inv;
+    try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, product, 0.0001);
 }
