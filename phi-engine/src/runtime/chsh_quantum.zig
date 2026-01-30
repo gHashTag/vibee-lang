@@ -81,13 +81,15 @@ pub fn entangledPair(theta: f64) [2]QutritState {
         .gamma = 0.0,
     };
 
-    return [alice, bob];
+    // Explicit cast to avoid LSP confusion
+    const result: [2]QutritState = [_]QutritState{ alice, bob };
+    return result;
 }
 
 /// Simulate CHSH Experiment
 /// Returns correlation and CHSH value
 pub fn chshExperiment(settings: CHSHSettings) CHSHResult {
-    const [alice, bob] = entangledPair(settings.theta);
+    const pair = entangledPair(settings.theta);
 
     // Simplified CHSH measurement (MVP)
     // Correlation E(θ) = -cos(2θ)
@@ -116,9 +118,9 @@ pub fn bellViolation(result: CHSHResult) bool {
     return result.chsh_value > result.classical_limit;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════════╗
-// ║                          TESTS                                                ║
-// ╚═══════════════════════════════════════════════════════════════════════════════════════╝
+// ════════════════════════════════════════════════════════════════════════════════════╗
+// ║                          TESTS                                                    ║
+// ╚═════════════════════════════════════════════════════════════════════════════════════════╝
 
 test "Qutrit State: uniform init" {
     const state = qutritInitUniform();
@@ -196,8 +198,8 @@ test "CHSH Quantum: classical limit" {
     try std.testing.expectApproxEqAbs(2.0, max_quantum / std.math.sqrt(2.0), 0.001);
 }
 
-test "CHSH Quantum: golden ratio" {
-    // CHSH is related to Phi via the geometry of correlations
+test "CHSH Quantum: golden ratio property" {
+    // CHSH is related to Phi via geometry of correlations
     // (Not a direct formula, but involves φ in the limit)
     try std.testing.expectApproxEqAbs(PHI, 1.618033988749895, 0.0001);
 }
