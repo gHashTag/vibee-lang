@@ -2476,6 +2476,208 @@ pub const ProfileInstrumenter = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// INLINE EXPANSION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Information about a function that can be inlined
+pub const InlineCandidate = struct {
+    /// Function identifier
+    func_id: u32,
+    /// IR instructions of the function body
+    body: []const IRInstruction,
+    /// Number of parameters
+    param_count: u8,
+    /// Number of times this function has been called
+    call_count: u64,
+    /// Whether this function is marked as always inline
+    always_inline: bool,
+    /// Whether this function is marked as never inline
+    never_inline: bool,
+
+    /// Check if function is small enough to inline
+    pub fn isSmall(self: InlineCandidate, threshold: usize) bool {
+        return self.body.len <= threshold;
+    }
+
+    /// Estimate the benefit of inlining (call overhead saved vs code size increase)
+    pub fn inlineBenefit(self: InlineCandidate) i32 {
+        // Call overhead: ~5 instructions (push args, call, pop args, handle return)
+        const call_overhead: i32 = 5;
+        // Code size increase
+        const size_increase: i32 = @intCast(self.body.len);
+        // Benefit = overhead saved - size increase
+        // Positive = good to inline, negative = bad to inline
+        return call_overhead - size_increase;
+    }
+};
+
+/// Inline Expander - inlines small functions at call sites
+pub const InlineExpander = struct {
+    allocator: Allocator,
+    /// Function registry: func_id -> InlineCandidate
+    functions: std.AutoHashMap(u32, InlineCandidate),
+    /// Maximum function size to inline (in IR instructions)
+    max_inline_size: usize,
+    /// Minimum call count before considering for inlining
+    min_call_count: u64,
+    /// Statistics
+    functions_inlined: usize = 0,
+    calls_expanded: usize = 0,
+    instructions_saved: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .functions = std.AutoHashMap(u32, InlineCandidate).init(allocator),
+            .max_inline_size = 10, // Default: inline functions with <= 10 instructions
+            .min_call_count = 2,   // Default: inline after 2+ calls
+            .functions_inlined = 0,
+            .calls_expanded = 0,
+            .instructions_saved = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.functions.deinit();
+    }
+
+    /// Register a function as an inline candidate
+    pub fn registerFunction(self: *Self, func_id: u32, body: []const IRInstruction, param_count: u8) !void {
+        try self.functions.put(func_id, .{
+            .func_id = func_id,
+            .body = body,
+            .param_count = param_count,
+            .call_count = 0,
+            .always_inline = false,
+            .never_inline = false,
+        });
+    }
+
+    /// Mark a function as always inline
+    pub fn markAlwaysInline(self: *Self, func_id: u32) void {
+        if (self.functions.getPtr(func_id)) |candidate| {
+            candidate.always_inline = true;
+            candidate.never_inline = false;
+        }
+    }
+
+    /// Mark a function as never inline
+    pub fn markNeverInline(self: *Self, func_id: u32) void {
+        if (self.functions.getPtr(func_id)) |candidate| {
+            candidate.never_inline = true;
+            candidate.always_inline = false;
+        }
+    }
+
+    /// Record a call to a function
+    pub fn recordCall(self: *Self, func_id: u32) void {
+        if (self.functions.getPtr(func_id)) |candidate| {
+            candidate.call_count += 1;
+        }
+    }
+
+    /// Decide whether to inline a function
+    pub fn shouldInline(self: *Self, func_id: u32) bool {
+        const candidate = self.functions.get(func_id) orelse return false;
+
+        // Never inline if marked
+        if (candidate.never_inline) return false;
+
+        // Always inline if marked
+        if (candidate.always_inline) return true;
+
+        // Check size threshold
+        if (!candidate.isSmall(self.max_inline_size)) return false;
+
+        // Check call count threshold
+        if (candidate.call_count < self.min_call_count) return false;
+
+        // Check benefit
+        return candidate.inlineBenefit() >= 0;
+    }
+
+    /// Expand inline calls in IR
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var next_reg: u8 = 0;
+        // Find highest used register
+        for (ir) |instr| {
+            if (instr.dest < 32 and instr.dest >= next_reg) next_reg = instr.dest + 1;
+            if (instr.src1 < 32 and instr.src1 >= next_reg) next_reg = instr.src1 + 1;
+            if (instr.src2 < 32 and instr.src2 >= next_reg) next_reg = instr.src2 + 1;
+        }
+
+        for (ir) |instr| {
+            if (instr.opcode == .CALL) {
+                const func_id: u32 = @intCast(instr.imm);
+
+                if (self.shouldInline(func_id)) {
+                    // Inline the function
+                    if (self.functions.get(func_id)) |candidate| {
+                        // Add marker for inlined call
+                        try result.append(.{
+                            .opcode = .CALL_INLINE,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = instr.imm,
+                        });
+
+                        // Copy function body with register renaming
+                        const reg_offset = next_reg;
+                        for (candidate.body) |body_instr| {
+                            var new_instr = body_instr;
+                            // Rename registers to avoid conflicts
+                            if (body_instr.dest < 32) new_instr.dest = body_instr.dest + reg_offset;
+                            if (body_instr.src1 < 32) new_instr.src1 = body_instr.src1 + reg_offset;
+                            if (body_instr.src2 < 32) new_instr.src2 = body_instr.src2 + reg_offset;
+
+                            // Replace RETURN with move to dest register
+                            if (body_instr.opcode == .RETURN) {
+                                new_instr.opcode = .LOAD_LOCAL;
+                                new_instr.dest = instr.dest;
+                                new_instr.src1 = body_instr.dest + reg_offset;
+                                new_instr.imm = 0;
+                            }
+
+                            try result.append(new_instr);
+                        }
+
+                        next_reg += @intCast(candidate.param_count + 1);
+                        self.calls_expanded += 1;
+                        self.instructions_saved += 5; // Approximate call overhead
+                    }
+                } else {
+                    // Keep the call as-is
+                    try result.append(instr);
+                }
+            } else {
+                try result.append(instr);
+            }
+        }
+
+        if (self.calls_expanded > 0) {
+            self.functions_inlined += 1;
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { functions: usize, calls: usize, saved: usize } {
+        return .{
+            .functions = self.functions_inlined,
+            .calls = self.calls_expanded,
+            .saved = self.instructions_saved,
+        };
+    }
+};
+
 /// PGO Optimizer - uses profile data to guide optimizations
 pub const PGOOptimizer = struct {
     allocator: Allocator,
@@ -2611,6 +2813,8 @@ pub const TieredCompiler = struct {
     instrumenter: ?ProfileInstrumenter,
     /// PGO optimizer
     pgo: ?PGOOptimizer,
+    /// Inline expander
+    inliner: InlineExpander,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -2629,6 +2833,8 @@ pub const TieredCompiler = struct {
     enable_regalloc: bool,
     /// Enable PGO
     enable_pgo: bool,
+    /// Enable inline expansion
+    enable_inlining: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -2652,6 +2858,7 @@ pub const TieredCompiler = struct {
             .profile_data = ProfileData.init(allocator),
             .instrumenter = null,
             .pgo = null,
+            .inliner = InlineExpander.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -2661,6 +2868,7 @@ pub const TieredCompiler = struct {
             .enable_cse = true,
             .enable_regalloc = true,
             .enable_pgo = true,
+            .enable_inlining = true,
             .stats = TieredStats.init(),
         };
     }
@@ -2688,6 +2896,7 @@ pub const TieredCompiler = struct {
 
         self.function_states.deinit();
         self.profile_data.deinit();
+        self.inliner.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -2752,9 +2961,16 @@ pub const TieredCompiler = struct {
 
         switch (state.current_tier) {
             .JIT_IR => {
-                // Apply optimizations: strength reduction, constant folding, DCE, loop unrolling
+                // Apply optimizations: inline expansion, strength reduction, constant folding, DCE, loop unrolling
                 var optimized_ir = try self.allocator.dupe(IRInstruction, ir);
                 errdefer self.allocator.free(optimized_ir);
+
+                // Inline expansion first (before other optimizations)
+                if (self.enable_inlining) {
+                    const inlined = try self.inliner.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = inlined;
+                }
 
                 if (self.enable_strength_reduction) {
                     const reduced = try self.strength_reducer.optimize(optimized_ir);
@@ -7336,4 +7552,209 @@ test "Execute code with multiple spilled registers" {
     } else |_| {
         return error.ExecutableCodeFailed;
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INLINE EXPANSION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "InlineCandidate basic properties" {
+    const body = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const candidate = InlineCandidate{
+        .func_id = 1,
+        .body = &body,
+        .param_count = 2,
+        .call_count = 5,
+        .always_inline = false,
+        .never_inline = false,
+    };
+
+    // Small function (4 instructions)
+    try std.testing.expect(candidate.isSmall(10));
+    try std.testing.expect(!candidate.isSmall(3));
+
+    // Benefit: 5 (call overhead) - 4 (size) = 1 (positive = good to inline)
+    try std.testing.expect(candidate.inlineBenefit() > 0);
+}
+
+test "InlineExpander register function" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    const body = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try inliner.registerFunction(1, &body, 0);
+
+    // Function should not be inlined yet (call_count = 0)
+    try std.testing.expect(!inliner.shouldInline(1));
+
+    // Record calls
+    inliner.recordCall(1);
+    inliner.recordCall(1);
+
+    // Now should be inlined (call_count >= 2, size <= 10)
+    try std.testing.expect(inliner.shouldInline(1));
+}
+
+test "InlineExpander always/never inline" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    const body = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try inliner.registerFunction(1, &body, 0);
+    try inliner.registerFunction(2, &body, 0);
+
+    // Mark function 1 as always inline
+    inliner.markAlwaysInline(1);
+    try std.testing.expect(inliner.shouldInline(1)); // Should inline even with 0 calls
+
+    // Mark function 2 as never inline
+    inliner.markNeverInline(2);
+    inliner.recordCall(2);
+    inliner.recordCall(2);
+    inliner.recordCall(2);
+    try std.testing.expect(!inliner.shouldInline(2)); // Should not inline despite calls
+}
+
+test "InlineExpander optimize with CALL" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    // Register a small function: return 42
+    const func_body = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try inliner.registerFunction(1, &func_body, 0);
+    inliner.markAlwaysInline(1);
+
+    // IR with a call to function 1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // r0 = call func_1
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try inliner.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = inliner.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== InlineExpander Optimize Test ===\n", .{});
+        std.debug.print("Original IR: {d} instructions\n", .{ir.len});
+        std.debug.print("Optimized IR: {d} instructions\n", .{optimized.len});
+        std.debug.print("Calls expanded: {d}\n", .{stats.calls});
+        std.debug.print("Instructions saved: {d}\n", .{stats.saved});
+    }
+
+    // Should have expanded the call
+    try std.testing.expect(stats.calls >= 1);
+
+    // First instruction should be CALL_INLINE marker
+    try std.testing.expectEqual(jit.IROpcode.CALL_INLINE, optimized[0].opcode);
+}
+
+test "InlineExpander in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 20,
+    });
+    defer compiler.deinit();
+
+    // Verify inliner is enabled
+    try std.testing.expect(compiler.enable_inlining);
+
+    // Register a function
+    const func_body = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 100 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try compiler.inliner.registerFunction(1, &func_body, 0);
+    compiler.inliner.markAlwaysInline(1);
+
+    // IR with call
+    const ir = [_]IRInstruction{
+        .{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x5000;
+
+    // Trigger tier1 promotion
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted);
+
+    // Check inliner stats
+    const inliner_stats = compiler.inliner.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== InlineExpander in TieredCompiler ===\n", .{});
+        std.debug.print("Functions inlined: {d}\n", .{inliner_stats.functions});
+        std.debug.print("Calls expanded: {d}\n", .{inliner_stats.calls});
+        std.debug.print("Instructions saved: {d}\n", .{inliner_stats.saved});
+    }
+
+    try std.testing.expect(inliner_stats.calls >= 1);
+}
+
+test "InlineExpander large function not inlined" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    // Create a large function (> 10 instructions)
+    var large_body: [15]IRInstruction = undefined;
+    for (0..14) |i| {
+        large_body[i] = .{ .opcode = .LOAD_CONST, .dest = @intCast(i), .src1 = 0, .src2 = 0, .imm = @intCast(i) };
+    }
+    large_body[14] = .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 };
+
+    try inliner.registerFunction(1, &large_body, 0);
+
+    // Record many calls
+    for (0..10) |_| {
+        inliner.recordCall(1);
+    }
+
+    // Should NOT be inlined (too large)
+    try std.testing.expect(!inliner.shouldInline(1));
+
+    // IR with call
+    const ir = [_]IRInstruction{
+        .{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try inliner.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Call should NOT be expanded
+    try std.testing.expectEqual(jit.IROpcode.CALL, optimized[0].opcode);
 }

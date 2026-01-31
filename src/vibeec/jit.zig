@@ -188,6 +188,10 @@ pub const IROpcode = enum(u8) {
     GOLDEN_IDENTITY_IR,
     SACRED_FORMULA_IR,
 
+    // Function calls
+    CALL,        // dest = call func_id with args (imm = func_id, src1 = arg_count)
+    CALL_INLINE, // Marker for inlined call (for debugging/profiling)
+
     // Return
     RETURN,
 };
