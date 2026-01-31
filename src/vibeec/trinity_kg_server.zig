@@ -543,6 +543,8 @@ pub const KGServer = struct {
             try self.handleReason(request, target);
         } else if (mem.startsWith(u8, target, "/api/query")) {
             try self.handleQuery(request, target);
+        } else if (mem.startsWith(u8, target, "/api/graph")) {
+            try self.handleGraph(request);
         } else if (mem.startsWith(u8, target, "/api/stats")) {
             try self.handleStats(request);
         } else if (mem.startsWith(u8, target, "/api/list")) {
@@ -553,7 +555,9 @@ pub const KGServer = struct {
             try self.handleLoad(request, body);
         } else if (mem.startsWith(u8, target, "/api/clear") and method == .POST) {
             try self.handleClear(request);
-        } else if (mem.eql(u8, target, "/") or mem.eql(u8, target, "/health")) {
+        } else if (mem.eql(u8, target, "/")) {
+            try self.handleVisualization(request);
+        } else if (mem.eql(u8, target, "/health")) {
             try self.sendJson(request, "{\"status\":\"ok\",\"service\":\"trinity-kg\"}");
         } else {
             try self.sendError(request, "Not found");
@@ -815,6 +819,181 @@ pub const KGServer = struct {
         try self.sendJson(request, "{\"status\":\"ok\"}");
     }
     
+    /// Handle /api/graph - Return D3.js compatible graph format
+    fn handleGraph(self: *KGServer, request: *http.Server.Request) !void {
+        var response = std.ArrayList(u8).init(self.allocator);
+        defer response.deinit();
+        
+        // Collect unique entities
+        var entities = std.StringHashMap(usize).init(self.allocator);
+        defer entities.deinit();
+        
+        const group_counter: usize = 1;
+        for (self.kg.triples.items) |triple| {
+            if (!entities.contains(triple.subject)) {
+                try entities.put(triple.subject, group_counter);
+            }
+            if (!entities.contains(triple.object)) {
+                // Values get group 2, entities get group 1
+                const is_value = mem.eql(u8, triple.object, "true") or 
+                                 mem.eql(u8, triple.object, "false") or
+                                 (triple.object.len > 0 and (triple.object[0] >= '0' and triple.object[0] <= '9'));
+                try entities.put(triple.object, if (is_value) 2 else 1);
+            }
+        }
+        
+        // Build nodes array
+        try response.appendSlice("{\"nodes\":[");
+        var first_node = true;
+        var entity_iter = entities.iterator();
+        while (entity_iter.next()) |entry| {
+            if (!first_node) try response.appendSlice(",");
+            first_node = false;
+            
+            const node_json = try std.fmt.allocPrint(self.allocator,
+                "{{\"id\":\"{s}\",\"group\":{d}}}",
+                .{ entry.key_ptr.*, entry.value_ptr.* });
+            defer self.allocator.free(node_json);
+            try response.appendSlice(node_json);
+        }
+        try response.appendSlice("],");
+        
+        // Build links array
+        try response.appendSlice("\"links\":[");
+        for (self.kg.triples.items, 0..) |triple, i| {
+            if (i > 0) try response.appendSlice(",");
+            const link_json = try std.fmt.allocPrint(self.allocator,
+                "{{\"source\":\"{s}\",\"target\":\"{s}\",\"label\":\"{s}\"}}",
+                .{ triple.subject, triple.object, triple.predicate });
+            defer self.allocator.free(link_json);
+            try response.appendSlice(link_json);
+        }
+        try response.appendSlice("]}");
+        
+        try self.sendJson(request, response.items);
+    }
+    
+    /// Handle / - Serve visualization HTML page
+    fn handleVisualization(self: *KGServer, request: *http.Server.Request) !void {
+        _ = self;
+        const html = 
+            \\<!DOCTYPE html>
+            \\<html>
+            \\<head>
+            \\  <meta charset="utf-8">
+            \\  <title>Trinity Knowledge Graph</title>
+            \\  <script src="https://d3js.org/d3.v7.min.js"></script>
+            \\  <style>
+            \\    body { margin: 0; font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; }
+            \\    #controls { position: fixed; top: 10px; left: 10px; z-index: 100; background: #16213e; padding: 15px; border-radius: 8px; }
+            \\    #controls input, #controls button { margin: 5px 0; padding: 8px; border-radius: 4px; border: 1px solid #0f3460; }
+            \\    #controls input { background: #1a1a2e; color: #eee; width: 150px; }
+            \\    #controls button { background: #e94560; color: white; cursor: pointer; border: none; }
+            \\    #controls button:hover { background: #ff6b6b; }
+            \\    #stats { position: fixed; top: 10px; right: 10px; background: #16213e; padding: 15px; border-radius: 8px; }
+            \\    svg { width: 100vw; height: 100vh; }
+            \\    .node { cursor: pointer; }
+            \\    .node circle { stroke: #fff; stroke-width: 2px; }
+            \\    .node text { font-size: 12px; fill: #eee; }
+            \\    .link { stroke: #0f3460; stroke-width: 2px; }
+            \\    .link-label { font-size: 10px; fill: #888; }
+            \\    .group-1 { fill: #e94560; }
+            \\    .group-2 { fill: #0f3460; }
+            \\  </style>
+            \\</head>
+            \\<body>
+            \\  <div id="controls">
+            \\    <h3 style="margin-top:0">Add Triple</h3>
+            \\    <input id="subject" placeholder="Subject"><br>
+            \\    <input id="predicate" placeholder="Predicate"><br>
+            \\    <input id="object" placeholder="Object"><br>
+            \\    <button onclick="addTriple()">Add</button>
+            \\    <button onclick="clearGraph()">Clear</button>
+            \\    <button onclick="loadGraph()">Refresh</button>
+            \\  </div>
+            \\  <div id="stats"></div>
+            \\  <svg></svg>
+            \\  <script>
+            \\    const width = window.innerWidth, height = window.innerHeight;
+            \\    const svg = d3.select("svg");
+            \\    
+            \\    let simulation, link, node, linkLabel;
+            \\    
+            \\    function loadGraph() {
+            \\      Promise.all([
+            \\        fetch('/api/graph').then(r => r.json()),
+            \\        fetch('/api/stats').then(r => r.json())
+            \\      ]).then(([graph, stats]) => {
+            \\        document.getElementById('stats').innerHTML = 
+            \\          `<b>Entities:</b> ${stats.entities}<br><b>Relations:</b> ${stats.relations}<br><b>Triples:</b> ${stats.triples}`;
+            \\        
+            \\        svg.selectAll("*").remove();
+            \\        
+            \\        if (graph.nodes.length === 0) return;
+            \\        
+            \\        simulation = d3.forceSimulation(graph.nodes)
+            \\          .force("link", d3.forceLink(graph.links).id(d => d.id).distance(150))
+            \\          .force("charge", d3.forceManyBody().strength(-400))
+            \\          .force("center", d3.forceCenter(width / 2, height / 2));
+            \\        
+            \\        link = svg.append("g").selectAll("line")
+            \\          .data(graph.links).enter().append("line").attr("class", "link");
+            \\        
+            \\        linkLabel = svg.append("g").selectAll("text")
+            \\          .data(graph.links).enter().append("text")
+            \\          .attr("class", "link-label").text(d => d.label);
+            \\        
+            \\        node = svg.append("g").selectAll("g")
+            \\          .data(graph.nodes).enter().append("g").attr("class", "node")
+            \\          .call(d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended));
+            \\        
+            \\        node.append("circle").attr("r", 20).attr("class", d => "group-" + d.group);
+            \\        node.append("text").attr("dy", 35).attr("text-anchor", "middle").text(d => d.id);
+            \\        
+            \\        simulation.on("tick", () => {
+            \\          link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+            \\              .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+            \\          linkLabel.attr("x", d => (d.source.x + d.target.x) / 2)
+            \\                   .attr("y", d => (d.source.y + d.target.y) / 2);
+            \\          node.attr("transform", d => `translate(${d.x},${d.y})`);
+            \\        });
+            \\      });
+            \\    }
+            \\    
+            \\    function dragstarted(event) { if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
+            \\    function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
+            \\    function dragended(event) { if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
+            \\    
+            \\    function addTriple() {
+            \\      const s = document.getElementById('subject').value;
+            \\      const p = document.getElementById('predicate').value;
+            \\      const o = document.getElementById('object').value;
+            \\      if (!s || !p || !o) return alert('Fill all fields');
+            \\      fetch('/api/add', {
+            \\        method: 'POST',
+            \\        headers: {'Content-Type': 'application/json'},
+            \\        body: JSON.stringify({subject: s, predicate: p, object: o})
+            \\      }).then(() => { loadGraph(); document.getElementById('subject').value = ''; document.getElementById('predicate').value = ''; document.getElementById('object').value = ''; });
+            \\    }
+            \\    
+            \\    function clearGraph() {
+            \\      if (confirm('Clear all data?')) fetch('/api/clear', {method: 'POST'}).then(loadGraph);
+            \\    }
+            \\    
+            \\    loadGraph();
+            \\  </script>
+            \\</body>
+            \\</html>
+        ;
+        
+        try request.respond(html, .{
+            .status = .ok,
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            },
+        });
+    }
+    
     fn sendJson(self: *KGServer, request: *http.Server.Request, content: []const u8) !void {
         _ = self;
         try request.respond(content, .{
@@ -840,15 +1019,24 @@ pub const KGServer = struct {
     
     /// Run server loop
     pub fn run(self: *KGServer) !void {
-        std.debug.print("Trinity KG Server running on http://0.0.0.0:{d}\n", .{self.server.listen_address.getPort()});
-        std.debug.print("Endpoints:\n", .{});
-        std.debug.print("  POST /api/add    - Add triple\n", .{});
-        std.debug.print("  GET  /api/query  - Query graph\n", .{});
-        std.debug.print("  GET  /api/stats  - Statistics\n", .{});
-        std.debug.print("  GET  /api/list   - List triples\n", .{});
-        std.debug.print("  POST /api/save   - Save to file\n", .{});
-        std.debug.print("  POST /api/load   - Load from file\n", .{});
-        std.debug.print("  POST /api/clear  - Clear graph\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║         Trinity Knowledge Graph Server                       ║\n", .{});
+        std.debug.print("╠══════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║  http://0.0.0.0:{d:<5}                                       ║\n", .{self.server.listen_address.getPort()});
+        std.debug.print("╠══════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║  GET  /           - Interactive visualization               ║\n", .{});
+        std.debug.print("║  GET  /api/graph  - D3.js graph format                      ║\n", .{});
+        std.debug.print("║  GET  /api/reason - Multi-hop reasoning                     ║\n", .{});
+        std.debug.print("║  POST /api/add    - Add triple                              ║\n", .{});
+        std.debug.print("║  GET  /api/query  - Query graph                             ║\n", .{});
+        std.debug.print("║  GET  /api/stats  - Statistics                              ║\n", .{});
+        std.debug.print("║  GET  /api/list   - List triples                            ║\n", .{});
+        std.debug.print("║  POST /api/save   - Save to file                            ║\n", .{});
+        std.debug.print("║  POST /api/load   - Load from file                          ║\n", .{});
+        std.debug.print("║  POST /api/clear  - Clear graph                             ║\n", .{});
+        std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
+        std.debug.print("\n", .{});
         
         var read_buffer: [8192]u8 = undefined;
         
