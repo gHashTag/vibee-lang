@@ -31,8 +31,10 @@
     .controls{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:100}
     .ctrl-btn{padding:10px 20px;background:rgba(0,0,0,0.8);border:1px solid var(--border);border-radius:999px;color:var(--text);font-size:0.8rem;cursor:pointer;transition:all 0.3s}
     .ctrl-btn:hover{background:var(--accent);color:var(--bg)}
-    #tooltip{position:fixed;padding:12px 18px;background:rgba(0,0,0,0.95);border-radius:10px;border:1px solid var(--accent);pointer-events:none;opacity:0;z-index:1000}
+    #tooltip{position:fixed;padding:12px 18px;background:rgba(0,0,0,0.95);border-radius:10px;border:1px solid var(--accent);pointer-events:none;opacity:0;z-index:1000;transition:opacity 0.15s;font-size:0.85rem;line-height:1.5;box-shadow:0 4px 20px rgba(255,215,0,0.3)}
     #tooltip.show{opacity:1}
+    #star-info{border:2px solid transparent;border-radius:12px;transition:border-color 0.3s}
+    #star-info .stat-value{font-size:0.9rem}
     .loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg);z-index:2000}
     .spinner{width:60px;height:60px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
@@ -75,7 +77,9 @@
       <div class="stat"><span class="stat-label">Name</span><span class="stat-value" id="star-name">-</span></div>
       <div class="stat"><span class="stat-label">Magnitude</span><span class="stat-value" id="star-mag">-</span></div>
       <div class="stat"><span class="stat-label">Temperature</span><span class="stat-value" id="star-temp">-</span></div>
-      <div class="stat"><span class="stat-label">Distance (pc)</span><span class="stat-value" id="star-dist">-</span></div>
+      <div class="stat"><span class="stat-label">Spectral Class</span><span class="stat-value" id="star-class">-</span></div>
+      <div class="stat"><span class="stat-label">Distance</span><span class="stat-value" id="star-dist">-</span></div>
+      <div class="stat"><span class="stat-label">Coordinates</span><span class="stat-value" id="star-coords">-</span></div>
     </div>
   </div>
   <div class="controls">
@@ -498,6 +502,9 @@ for(let i=0;i<2000;i++){
 }
 
 let scene,camera,renderer,points,spiral,rotate=true,showSpiral=true;
+let raycaster,mouse,selectedStar=null,hoveredStar=null;
+const tooltip=document.getElementById('tooltip');
+const starInfo=document.getElementById('star-info');
 
 function init(){
   scene=new THREE.Scene();
@@ -539,9 +546,32 @@ function init(){
   geo.setAttribute('size',new THREE.BufferAttribute(siz,1));
   
   const mat=new THREE.ShaderMaterial({
-    vertexShader:`attribute float size;varying vec3 vColor;void main(){vColor=color;vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=size*(400.0/-mv.z);gl_Position=projectionMatrix*mv;}`,
-    fragmentShader:`varying vec3 vColor;void main(){float d=length(gl_PointCoord-0.5);if(d>0.5)discard;float a=1.0-smoothstep(0.2,0.5,d);float glow=exp(-d*3.0)*0.5;gl_FragColor=vec4(vColor*(1.0+glow),a);}`,
-    transparent:true,vertexColors:true,depthWrite:false
+    vertexShader:`
+      attribute float size;
+      varying vec3 vColor;
+      varying float vSize;
+      void main(){
+        vColor=color;
+        vSize=size;
+        vec4 mv=modelViewMatrix*vec4(position,1.0);
+        gl_PointSize=size*(500.0/-mv.z);
+        gl_Position=projectionMatrix*mv;
+      }`,
+    fragmentShader:`
+      varying vec3 vColor;
+      varying float vSize;
+      void main(){
+        float d=length(gl_PointCoord-0.5);
+        if(d>0.5)discard;
+        float core=1.0-smoothstep(0.0,0.15,d);
+        float glow=exp(-d*4.0)*0.6;
+        float halo=exp(-d*2.0)*0.2;
+        float alpha=core+glow+halo;
+        vec3 col=vColor*(1.0+glow*0.5);
+        col+=vec3(1.0)*core*0.3;
+        gl_FragColor=vec4(col,alpha*0.9);
+      }`,
+    transparent:true,vertexColors:true,depthWrite:false,blending:THREE.AdditiveBlending
   });
   
   points=new THREE.Points(geo,mat);
@@ -571,13 +601,35 @@ function init(){
   document.getElementById('star-count').textContent = STARS.length;
   document.getElementById('loading').style.display='none';
   
+  // Raycaster for star interaction
+  raycaster=new THREE.Raycaster();
+  raycaster.params.Points.threshold=5;
+  mouse=new THREE.Vector2();
+  
   window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
   document.addEventListener('wheel',e=>{camera.position.multiplyScalar(e.deltaY>0?1.1:0.9);});
   
-  let drag=false,px,py;
-  document.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;});
-  document.addEventListener('mouseup',()=>drag=false);
-  document.addEventListener('mousemove',e=>{if(drag){camera.position.x-=(e.clientX-px)*0.5;camera.position.y+=(e.clientY-py)*0.5;px=e.clientX;py=e.clientY;}});
+  let drag=false,px,py,dragMoved=false;
+  document.addEventListener('mousedown',e=>{drag=true;dragMoved=false;px=e.clientX;py=e.clientY;});
+  document.addEventListener('mouseup',e=>{
+    if(!dragMoved){
+      // Click - select star
+      checkStarClick(e);
+    }
+    drag=false;
+  });
+  document.addEventListener('mousemove',e=>{
+    if(drag){
+      dragMoved=true;
+      camera.position.x-=(e.clientX-px)*0.5;
+      camera.position.y+=(e.clientY-py)*0.5;
+      px=e.clientX;py=e.clientY;
+      rotate=false;
+    } else {
+      // Hover - show tooltip
+      checkStarHover(e);
+    }
+  });
   
   animate();
 }
@@ -596,6 +648,82 @@ function animate(){
 function resetView(){camera.position.set(0,200,400);rotate=true;}
 function toggleSpiral(){spiral.visible=!spiral.visible;}
 function toggleRotate(){rotate=!rotate;}
+
+function checkStarHover(e){
+  mouse.x=(e.clientX/innerWidth)*2-1;
+  mouse.y=-(e.clientY/innerHeight)*2+1;
+  raycaster.setFromCamera(mouse,camera);
+  const intersects=raycaster.intersectObject(points);
+  
+  if(intersects.length>0){
+    const idx=intersects[0].index;
+    const star=STARS[idx];
+    if(!star.bg){
+      hoveredStar=star;
+      tooltip.innerHTML=`<strong style="color:#FFD700">${star.n}</strong><br>
+        <span style="color:#888">Mag:</span> ${star.m.toFixed(2)}<br>
+        <span style="color:#888">Temp:</span> ${star.t}K`;
+      tooltip.style.left=(e.clientX+15)+'px';
+      tooltip.style.top=(e.clientY+15)+'px';
+      tooltip.classList.add('show');
+      document.body.style.cursor='pointer';
+    } else {
+      hideTooltip();
+    }
+  } else {
+    hideTooltip();
+  }
+}
+
+function hideTooltip(){
+  hoveredStar=null;
+  tooltip.classList.remove('show');
+  document.body.style.cursor='default';
+}
+
+function checkStarClick(e){
+  mouse.x=(e.clientX/innerWidth)*2-1;
+  mouse.y=-(e.clientY/innerHeight)*2+1;
+  raycaster.setFromCamera(mouse,camera);
+  const intersects=raycaster.intersectObject(points);
+  
+  if(intersects.length>0){
+    const idx=intersects[0].index;
+    const star=STARS[idx];
+    if(!star.bg){
+      selectStar(star);
+    }
+  }
+}
+
+function selectStar(star){
+  selectedStar=star;
+  const dist=Math.sqrt(star.x*star.x+star.y*star.y+star.z*star.z);
+  const distLy=(dist*3.26156).toFixed(1); // parsecs to light years
+  const spectral=getSpectralClass(star.t);
+  
+  document.getElementById('star-name').textContent=star.n;
+  document.getElementById('star-mag').textContent=star.m.toFixed(2);
+  document.getElementById('star-temp').textContent=star.t.toLocaleString()+'K';
+  document.getElementById('star-class').textContent=spectral+'-class';
+  document.getElementById('star-dist').textContent=dist.toFixed(1)+' pc ('+distLy+' ly)';
+  document.getElementById('star-coords').textContent=`(${star.x.toFixed(1)}, ${star.y.toFixed(1)}, ${star.z.toFixed(1)})`;
+  starInfo.style.display='block';
+  
+  // Flash effect
+  starInfo.style.borderColor='#FFD700';
+  setTimeout(()=>starInfo.style.borderColor='transparent',300);
+}
+
+function getSpectralClass(temp){
+  if(temp>=30000) return 'O';
+  if(temp>=10000) return 'B';
+  if(temp>=7500) return 'A';
+  if(temp>=6000) return 'F';
+  if(temp>=5200) return 'G';
+  if(temp>=3700) return 'K';
+  return 'M';
+}
 
 init();
 </script>
