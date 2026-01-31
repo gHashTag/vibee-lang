@@ -1709,6 +1709,133 @@ pub const CopyPropagator = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PEEPHOLE OPTIMIZER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Peephole Optimizer - optimizes small sequences of instructions
+pub const PeepholeOptimizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    patterns_matched: usize = 0,
+    instructions_eliminated: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .patterns_matched = 0,
+            .instructions_eliminated = 0,
+        };
+    }
+
+    /// Optimize IR using peephole patterns
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len < 2) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var i: usize = 0;
+        while (i < ir.len) {
+            // Try to match 2-instruction patterns
+            if (i + 1 < ir.len) {
+                const curr = ir[i];
+                const next = ir[i + 1];
+
+                // Pattern: LOAD_CONST r, X + LOAD_CONST r, Y -> keep only second
+                if (curr.opcode == .LOAD_CONST and next.opcode == .LOAD_CONST and
+                    curr.dest == next.dest)
+                {
+                    // Skip first LOAD_CONST, keep second
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 1;
+                    i += 1;
+                    continue;
+                }
+
+                // Pattern: NEG r + NEG r -> remove both (double negation)
+                if (curr.opcode == .NEG_INT and next.opcode == .NEG_INT and
+                    curr.dest == next.dest and curr.src1 == curr.dest and
+                    next.src1 == next.dest)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 2;
+                    i += 2;
+                    continue;
+                }
+
+                // Pattern: INC r + DEC r -> remove both
+                if (curr.opcode == .INC_INT and next.opcode == .DEC_INT and
+                    curr.dest == next.dest and curr.dest == next.src1)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 2;
+                    i += 2;
+                    continue;
+                }
+
+                // Pattern: DEC r + INC r -> remove both
+                if (curr.opcode == .DEC_INT and next.opcode == .INC_INT and
+                    curr.dest == next.dest and curr.dest == next.src1)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 2;
+                    i += 2;
+                    continue;
+                }
+
+                // Pattern: LOAD_LOCAL r, X + LOAD_LOCAL r, Y -> keep only second
+                if (curr.opcode == .LOAD_LOCAL and next.opcode == .LOAD_LOCAL and
+                    curr.dest == next.dest)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 1;
+                    i += 1;
+                    continue;
+                }
+
+                // Pattern: SHL r, N + SHR r, N -> remove both (if same shift amount)
+                if (curr.opcode == .SHL and next.opcode == .SHR and
+                    curr.dest == next.dest and curr.dest == next.src1 and
+                    curr.imm == next.imm and curr.imm != 0)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 2;
+                    i += 2;
+                    continue;
+                }
+
+                // Pattern: SHR r, N + SHL r, N -> remove both (if same shift amount)
+                if (curr.opcode == .SHR and next.opcode == .SHL and
+                    curr.dest == next.dest and curr.dest == next.src1 and
+                    curr.imm == next.imm and curr.imm != 0)
+                {
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 2;
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // No pattern matched, keep instruction
+            try result.append(ir[i]);
+            i += 1;
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { patterns: usize, eliminated: usize } {
+        return .{
+            .patterns = self.patterns_matched,
+            .eliminated = self.instructions_eliminated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1766,6 +1893,8 @@ pub const TieredCompiler = struct {
     strength_reducer: StrengthReducer,
     /// Copy propagator
     copy_propagator: CopyPropagator,
+    /// Peephole optimizer
+    peephole: PeepholeOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -1776,6 +1905,8 @@ pub const TieredCompiler = struct {
     enable_strength_reduction: bool,
     /// Enable copy propagation
     enable_copy_propagation: bool,
+    /// Enable peephole optimization
+    enable_peephole: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -1793,11 +1924,13 @@ pub const TieredCompiler = struct {
             .dce = DeadCodeEliminator.init(allocator),
             .strength_reducer = StrengthReducer.init(allocator),
             .copy_propagator = CopyPropagator.init(allocator),
+            .peephole = PeepholeOptimizer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
             .enable_strength_reduction = true,
             .enable_copy_propagation = true,
+            .enable_peephole = true,
             .stats = TieredStats.init(),
         };
     }
@@ -1906,6 +2039,12 @@ pub const TieredCompiler = struct {
                     optimized_ir = unrolled;
                 }
 
+                if (self.enable_peephole) {
+                    const peeped = try self.peephole.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = peeped;
+                }
+
                 try self.jit_ir_cache.put(address, optimized_ir);
                 self.stats.tier1_promotions += 1;
 
@@ -1946,6 +2085,12 @@ pub const TieredCompiler = struct {
                         const unrolled = try self.loop_unroller.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = unrolled;
+                    }
+
+                    if (self.enable_peephole) {
+                        const peeped = try self.peephole.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = peeped;
                     }
 
                     break :blk opt_ir;
@@ -5244,6 +5389,121 @@ test "CopyPropagator invalidation on write" {
     try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[3].opcode);
     try std.testing.expectEqual(@as(u8, 1), optimized[3].src1); // r1 (not r0!)
     try std.testing.expectEqual(@as(u8, 1), optimized[3].src2); // r1
+}
+
+test "PeepholeOptimizer redundant LOAD_CONST" {
+    const allocator = std.testing.allocator;
+
+    // IR: LOAD_CONST r0, 5 + LOAD_CONST r0, 10 -> keep only second
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have 2 instructions (first LOAD_CONST eliminated)
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+    try std.testing.expectEqual(@as(i64, 10), optimized[0].imm);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.patterns);
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+test "PeepholeOptimizer double NEG" {
+    const allocator = std.testing.allocator;
+
+    // IR: NEG r0 + NEG r0 -> remove both
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .NEG_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .NEG_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have 2 instructions (both NEGs eliminated)
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[0].opcode);
+    try std.testing.expectEqual(jit.IROpcode.RETURN, optimized[1].opcode);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.patterns);
+    try std.testing.expectEqual(@as(usize, 2), stats.eliminated);
+}
+
+test "PeepholeOptimizer INC + DEC" {
+    const allocator = std.testing.allocator;
+
+    // IR: INC r0 + DEC r0 -> remove both
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .DEC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have 2 instructions (INC + DEC eliminated)
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.patterns);
+    try std.testing.expectEqual(@as(usize, 2), stats.eliminated);
+}
+
+test "PeepholeOptimizer SHL + SHR same amount" {
+    const allocator = std.testing.allocator;
+
+    // IR: SHL r0, 3 + SHR r0, 3 -> remove both
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .SHL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .SHR, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have 2 instructions (SHL + SHR eliminated)
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.patterns);
+    try std.testing.expectEqual(@as(usize, 2), stats.eliminated);
+}
+
+test "PeepholeOptimizer no match different registers" {
+    const allocator = std.testing.allocator;
+
+    // IR: LOAD_CONST r0, 5 + LOAD_CONST r1, 10 -> no match (different regs)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have 3 instructions (no optimization)
+    try std.testing.expectEqual(@as(usize, 3), optimized.len);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.patterns);
 }
 
 test "Benchmark: Strength reduction effect" {
