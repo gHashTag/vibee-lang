@@ -447,6 +447,11 @@ const CallPatch = struct {
     bytecode_target: u32, // Target function address in bytecode
 };
 
+/// Halt patch - jump to epilogue
+const HaltPatch = struct {
+    code_offset: u32, // Offset where to patch JMP rel32
+};
+
 pub const JitCompiler = struct {
     encoder: X64Encoder,
     allocator: std.mem.Allocator,
@@ -457,6 +462,8 @@ pub const JitCompiler = struct {
     patches: std.ArrayList(JumpPatch),
     // Call patches to resolve
     call_patches: std.ArrayList(CallPatch),
+    // Halt patches - jumps to epilogue
+    halt_patches: std.ArrayList(HaltPatch),
 
     const Self = @This();
 
@@ -467,6 +474,7 @@ pub const JitCompiler = struct {
             .labels = std.AutoHashMap(u32, u32).init(allocator),
             .patches = std.ArrayList(JumpPatch).init(allocator),
             .call_patches = std.ArrayList(CallPatch).init(allocator),
+            .halt_patches = std.ArrayList(HaltPatch).init(allocator),
         };
     }
 
@@ -475,6 +483,7 @@ pub const JitCompiler = struct {
         self.labels.deinit();
         self.patches.deinit();
         self.call_patches.deinit();
+        self.halt_patches.deinit();
     }
 
     fn recordLabel(self: *Self, bytecode_addr: u32) !void {
@@ -687,6 +696,7 @@ pub const JitCompiler = struct {
         self.labels.clearRetainingCapacity();
         self.patches.clearRetainingCapacity();
         self.call_patches.clearRetainingCapacity();
+        self.halt_patches.clearRetainingCapacity();
 
         // Prologue - save callee-saved registers
         try self.encoder.push(.rbp);
@@ -927,7 +937,12 @@ pub const JitCompiler = struct {
                 .halt => {
                     // Pop result from value stack into rax
                     try self.emitVPop();
-                    break;
+                    // Jump to epilogue (will be patched)
+                    try self.encoder.code.append(0xE9); // JMP rel32
+                    try self.halt_patches.append(.{
+                        .code_offset = @intCast(self.encoder.code.items.len),
+                    });
+                    try self.encoder.code.appendSlice(&[4]u8{ 0, 0, 0, 0 });
                 },
 
                 else => {
@@ -944,6 +959,9 @@ pub const JitCompiler = struct {
         // Record final label
         try self.recordLabel(@intCast(ip));
 
+        // Epilogue label - halt jumps here
+        const epilogue_offset: u32 = @intCast(self.encoder.code.items.len);
+
         // Epilogue - restore callee-saved registers
         // Result is already in rax from halt
         try self.encoder.pop(.rbx);
@@ -951,8 +969,19 @@ pub const JitCompiler = struct {
         try self.encoder.pop(.rbp);
         try self.encoder.ret();
 
-        // Resolve forward jumps
+        // Resolve forward jumps and calls
         try self.resolvePatches();
+
+        // Resolve halt patches (jump to epilogue)
+        for (self.halt_patches.items) |patch| {
+            const jump_end = patch.code_offset + 4;
+            const rel_offset: i32 = @as(i32, @intCast(epilogue_offset)) - @as(i32, @intCast(jump_end));
+            const bytes: [4]u8 = @bitCast(rel_offset);
+            self.encoder.code.items[patch.code_offset] = bytes[0];
+            self.encoder.code.items[patch.code_offset + 1] = bytes[1];
+            self.encoder.code.items[patch.code_offset + 2] = bytes[2];
+            self.encoder.code.items[patch.code_offset + 3] = bytes[3];
+        }
 
         return self.encoder.getCode();
     }
@@ -1544,20 +1573,102 @@ test "JitExecutor inline double" {
 }
 
 test "JitExecutor function call returns constant" {
-    // Skip this test for now - function calls need more work
-    // The issue is that x86 CALL/RET and our value stack interaction
-    // needs careful handling of stack alignment and return addresses
-    return error.SkipZigTest;
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Bytecode layout:
+    // 0: CALL func (at offset 9)
+    // 6: HALT
+    // 9: func: LOAD_CONST 0 (42)
+    // 12: RET
+
+    const constants = [_]Value{
+        Value.int(42),
+    };
+
+    const bytecode = [_]u8{
+        // Main: call func at offset 8, 0 args
+        @intFromEnum(Opcode.call), 0, 0, 0, 8, 0, // call offset 8, 0 args (6 bytes, offset 0-5)
+        @intFromEnum(Opcode.halt), // halt (offset 6)
+        @intFromEnum(Opcode.nop), // padding (offset 7)
+        // Func at offset 8:
+        @intFromEnum(Opcode.load_const), 0, 0, // push 42 (offset 8-10)
+        @intFromEnum(Opcode.ret), // return (offset 11)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 42), val.asInt());
 }
 
 test "JitExecutor function call with args" {
-    // Skip - function calls need more work
-    return error.SkipZigTest;
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Bytecode layout:
+    // Main: push 10, push 20, call add_func, halt
+    // add_func: add (args already on stack), ret
+
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+
+    const bytecode = [_]u8{
+        // Main:
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10 (offset 0-2)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 20 (offset 3-5)
+        @intFromEnum(Opcode.call), 0, 0, 0, 14, 2, // call offset 14, 2 args (offset 6-11)
+        @intFromEnum(Opcode.halt), // halt (offset 12)
+        @intFromEnum(Opcode.nop), // padding (offset 13)
+        // add_func at offset 14:
+        @intFromEnum(Opcode.add), // add args (offset 14)
+        @intFromEnum(Opcode.ret), // return (offset 15)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
 }
 
 test "JitExecutor nested function calls" {
-    // Skip - function calls need more work
-    return error.SkipZigTest;
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Bytecode layout:
+    // Main: call outer, halt
+    // outer: push 5, call double, ret (returns 10)
+    // double: dup, add, ret
+
+    const constants = [_]Value{
+        Value.int(5),
+    };
+
+    const bytecode = [_]u8{
+        // Main (offset 0):
+        @intFromEnum(Opcode.call), 0, 0, 0, 8, 0, // call outer at 8 (offset 0-5)
+        @intFromEnum(Opcode.halt), // halt (offset 6)
+        @intFromEnum(Opcode.nop), // padding (offset 7)
+        // outer at offset 8:
+        @intFromEnum(Opcode.load_const), 0, 0, // push 5 (offset 8-10)
+        @intFromEnum(Opcode.call), 0, 0, 0, 19, 1, // call double at 19 (offset 11-16)
+        @intFromEnum(Opcode.ret), // return (offset 17)
+        @intFromEnum(Opcode.nop), // padding (offset 18)
+        // double at offset 19:
+        @intFromEnum(Opcode.dup), // dup (offset 19)
+        @intFromEnum(Opcode.add), // add (offset 20)
+        @intFromEnum(Opcode.ret), // return (offset 21)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 10), val.asInt());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
