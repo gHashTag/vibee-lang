@@ -2250,6 +2250,140 @@ pub const GVNOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ALIAS ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Alias result - relationship between two memory locations
+pub const AliasResult = enum {
+    NoAlias, // Definitely different locations
+    MayAlias, // Might be the same location
+    MustAlias, // Definitely the same location
+};
+
+/// Memory location descriptor
+pub const MemoryLocation = struct {
+    /// Base register (for local/global access)
+    base: u8,
+    /// Offset from base (for array access)
+    offset: i64,
+    /// Size of access in bytes (0 = unknown)
+    size: u8,
+    /// Is this a local variable access?
+    is_local: bool,
+    /// Is this a global variable access?
+    is_global: bool,
+
+    pub fn fromInstruction(instr: IRInstruction) ?MemoryLocation {
+        return switch (instr.opcode) {
+            .LOAD_LOCAL, .STORE_LOCAL => MemoryLocation{
+                .base = instr.src1,
+                .offset = instr.imm,
+                .size = 8, // Assume 64-bit
+                .is_local = true,
+                .is_global = false,
+            },
+            .LOAD_GLOBAL, .STORE_GLOBAL => MemoryLocation{
+                .base = instr.src1,
+                .offset = instr.imm,
+                .size = 8,
+                .is_local = false,
+                .is_global = true,
+            },
+            else => null,
+        };
+    }
+};
+
+/// Alias Analyzer - determines if two memory accesses may alias
+pub const AliasAnalyzer = struct {
+    allocator: Allocator,
+    /// Statistics
+    queries: usize = 0,
+    no_alias_count: usize = 0,
+    may_alias_count: usize = 0,
+    must_alias_count: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .queries = 0,
+            .no_alias_count = 0,
+            .may_alias_count = 0,
+            .must_alias_count = 0,
+        };
+    }
+
+    /// Check if two memory locations may alias
+    pub fn query(self: *Self, loc1: MemoryLocation, loc2: MemoryLocation) AliasResult {
+        self.queries += 1;
+
+        // Different address spaces don't alias
+        if (loc1.is_local != loc2.is_local or loc1.is_global != loc2.is_global) {
+            self.no_alias_count += 1;
+            return .NoAlias;
+        }
+
+        // Same base register and offset = must alias
+        if (loc1.base == loc2.base and loc1.offset == loc2.offset) {
+            self.must_alias_count += 1;
+            return .MustAlias;
+        }
+
+        // Same base but different offsets - check for overlap
+        if (loc1.base == loc2.base) {
+            const end1 = loc1.offset + @as(i64, loc1.size);
+            const end2 = loc2.offset + @as(i64, loc2.size);
+
+            // No overlap if one ends before the other starts
+            if (end1 <= loc2.offset or end2 <= loc1.offset) {
+                self.no_alias_count += 1;
+                return .NoAlias;
+            }
+        }
+
+        // Different base registers - conservatively assume may alias
+        // (could be improved with points-to analysis)
+        self.may_alias_count += 1;
+        return .MayAlias;
+    }
+
+    /// Check if two instructions may alias (convenience method)
+    pub fn instructionsMayAlias(self: *Self, instr1: IRInstruction, instr2: IRInstruction) bool {
+        const loc1 = MemoryLocation.fromInstruction(instr1) orelse return false;
+        const loc2 = MemoryLocation.fromInstruction(instr2) orelse return false;
+
+        const result = self.query(loc1, loc2);
+        return result != .NoAlias;
+    }
+
+    /// Check if a store may affect a load
+    pub fn storeMayAffectLoad(self: *Self, store: IRInstruction, load: IRInstruction) bool {
+        // Store must be a store instruction
+        if (store.opcode != .STORE_LOCAL and store.opcode != .STORE_GLOBAL) {
+            return false;
+        }
+        // Load must be a load instruction
+        if (load.opcode != .LOAD_LOCAL and load.opcode != .LOAD_GLOBAL) {
+            return false;
+        }
+
+        return self.instructionsMayAlias(store, load);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { queries: usize, no_alias: usize, may_alias: usize, must_alias: usize } {
+        return .{
+            .queries = self.queries,
+            .no_alias = self.no_alias_count,
+            .may_alias = self.may_alias_count,
+            .must_alias = self.must_alias_count,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INSTRUCTION SCHEDULING
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2281,9 +2415,12 @@ pub const InstructionScheduler = struct {
     ready_queue: std.ArrayList(usize),
     /// Critical path length from each instruction to end
     critical_path: std.ArrayList(i32),
+    /// Alias analyzer for memory disambiguation
+    alias_analyzer: AliasAnalyzer,
     /// Statistics
     instructions_moved: usize = 0,
     ilp_improvement: usize = 0,
+    memory_deps_removed: usize = 0,
 
     const Self = @This();
 
@@ -2294,8 +2431,10 @@ pub const InstructionScheduler = struct {
             .pred_count = std.ArrayList(usize).init(allocator),
             .ready_queue = std.ArrayList(usize).init(allocator),
             .critical_path = std.ArrayList(i32).init(allocator),
+            .alias_analyzer = AliasAnalyzer.init(allocator),
             .instructions_moved = 0,
             .ilp_improvement = 0,
+            .memory_deps_removed = 0,
         };
     }
 
@@ -2399,10 +2538,17 @@ pub const InstructionScheduler = struct {
                 try self.addEdge(writer, i, .WAW, 1);
             }
 
-            // Memory ordering: memory ops must maintain order
+            // Memory ordering with alias analysis
+            // Only add dependency if memory operations may alias
             if (isMemoryOp(instr.opcode)) {
                 if (last_memory_op) |mem_op| {
-                    try self.addEdge(mem_op, i, .RAW, 1);
+                    // Use alias analysis to check if we need a dependency
+                    if (self.alias_analyzer.instructionsMayAlias(ir[mem_op], instr)) {
+                        try self.addEdge(mem_op, i, .RAW, 1);
+                    } else {
+                        // No alias - can reorder these memory operations
+                        self.memory_deps_removed += 1;
+                    }
                 }
                 last_memory_op = i;
             }
@@ -2614,10 +2760,22 @@ pub const InstructionScheduler = struct {
     }
 
     /// Get statistics
-    pub fn getStats(self: *Self) struct { moved: usize, ilp: usize } {
+    pub fn getStats(self: *Self) struct { moved: usize, ilp: usize, mem_deps_removed: usize } {
         return .{
             .moved = self.instructions_moved,
             .ilp = self.ilp_improvement,
+            .mem_deps_removed = self.memory_deps_removed,
+        };
+    }
+
+    /// Get alias analyzer statistics
+    pub fn getAliasStats(self: *Self) struct { queries: usize, no_alias: usize, may_alias: usize, must_alias: usize } {
+        const stats = self.alias_analyzer.getStats();
+        return .{
+            .queries = stats.queries,
+            .no_alias = stats.no_alias,
+            .may_alias = stats.may_alias,
+            .must_alias = stats.must_alias,
         };
     }
 };
@@ -8684,6 +8842,178 @@ test "InstructionScheduler getCriticalPathLength" {
     // Before scheduling, critical path should be empty
     try std.testing.expectEqual(@as(i32, 0), scheduler.getCriticalPathLength(0));
     try std.testing.expectEqual(@as(i32, 0), scheduler.getCriticalPathLength(100));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALIAS ANALYSIS TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "AliasAnalyzer same location must alias" {
+    const allocator = std.testing.allocator;
+
+    var analyzer = AliasAnalyzer.init(allocator);
+
+    const loc1 = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const loc2 = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const result = analyzer.query(loc1, loc2);
+    try std.testing.expectEqual(AliasResult.MustAlias, result);
+}
+
+test "AliasAnalyzer different address spaces no alias" {
+    const allocator = std.testing.allocator;
+
+    var analyzer = AliasAnalyzer.init(allocator);
+
+    const local_loc = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const global_loc = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = false,
+        .is_global = true,
+    };
+
+    const result = analyzer.query(local_loc, global_loc);
+    try std.testing.expectEqual(AliasResult.NoAlias, result);
+}
+
+test "AliasAnalyzer non-overlapping offsets no alias" {
+    const allocator = std.testing.allocator;
+
+    var analyzer = AliasAnalyzer.init(allocator);
+
+    const loc1 = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const loc2 = MemoryLocation{
+        .base = 0,
+        .offset = 16, // Non-overlapping with loc1 (0-8)
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const result = analyzer.query(loc1, loc2);
+    try std.testing.expectEqual(AliasResult.NoAlias, result);
+}
+
+test "AliasAnalyzer different bases may alias" {
+    const allocator = std.testing.allocator;
+
+    var analyzer = AliasAnalyzer.init(allocator);
+
+    const loc1 = MemoryLocation{
+        .base = 0,
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const loc2 = MemoryLocation{
+        .base = 1, // Different base
+        .offset = 0,
+        .size = 8,
+        .is_local = true,
+        .is_global = false,
+    };
+
+    const result = analyzer.query(loc1, loc2);
+    try std.testing.expectEqual(AliasResult.MayAlias, result);
+}
+
+test "AliasAnalyzer getStats" {
+    const allocator = std.testing.allocator;
+
+    var analyzer = AliasAnalyzer.init(allocator);
+
+    const stats = analyzer.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.queries);
+    try std.testing.expectEqual(@as(usize, 0), stats.no_alias);
+    try std.testing.expectEqual(@as(usize, 0), stats.may_alias);
+    try std.testing.expectEqual(@as(usize, 0), stats.must_alias);
+}
+
+test "MemoryLocation fromInstruction" {
+    // Test LOAD_LOCAL
+    const load_local = IRInstruction{
+        .opcode = .LOAD_LOCAL,
+        .dest = 0,
+        .src1 = 1,
+        .src2 = 0,
+        .imm = 8,
+    };
+
+    const loc = MemoryLocation.fromInstruction(load_local);
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqual(@as(u8, 1), loc.?.base);
+    try std.testing.expectEqual(@as(i64, 8), loc.?.offset);
+    try std.testing.expect(loc.?.is_local);
+    try std.testing.expect(!loc.?.is_global);
+
+    // Test non-memory instruction
+    const add_int = IRInstruction{
+        .opcode = .ADD_INT,
+        .dest = 0,
+        .src1 = 1,
+        .src2 = 2,
+        .imm = 0,
+    };
+
+    const no_loc = MemoryLocation.fromInstruction(add_int);
+    try std.testing.expect(no_loc == null);
+}
+
+test "InstructionScheduler with alias analysis" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // Two STORE_LOCAL to different offsets (should not alias)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 }, // store to offset 0
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 16 }, // store to offset 16
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const scheduled = try scheduler.schedule(&ir);
+    defer allocator.free(scheduled);
+
+    // Should produce valid output
+    try std.testing.expectEqual(ir.len, scheduled.len);
+
+    // Check that alias analysis was used
+    const alias_stats = scheduler.getAliasStats();
+    try std.testing.expect(alias_stats.queries > 0);
 }
 
 test "Benchmark: Strength reduction effect" {
