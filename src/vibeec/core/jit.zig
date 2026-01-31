@@ -786,6 +786,47 @@ pub const JitCompiler = struct {
         }
     }
 
+    /// Emit native function call
+    /// Native IDs:
+    /// 0 = print (not supported in JIT - would need output buffer)
+    /// 1 = phi (push PHI constant)
+    /// 2 = pi (push PI constant)
+    /// 3 = e (push E constant)
+    /// 4 = len (placeholder - returns 0)
+    fn emitNativeCall(self: *Self, native_id: u16) !void {
+        switch (native_id) {
+            1 => {
+                // phi: push PHI constant (1.618033988749895)
+                const phi_val = Value.float(value.PHI);
+                try self.encoder.movImm64(.rax, phi_val.bits);
+                try self.emitVPush();
+            },
+            2 => {
+                // pi: push PI constant (3.141592653589793)
+                const pi_val = Value.float(std.math.pi);
+                try self.encoder.movImm64(.rax, pi_val.bits);
+                try self.emitVPush();
+            },
+            3 => {
+                // e: push E constant (2.718281828459045)
+                const e_val = Value.float(std.math.e);
+                try self.encoder.movImm64(.rax, e_val.bits);
+                try self.emitVPush();
+            },
+            4 => {
+                // len: pop value, push 0 (placeholder)
+                try self.emitVPop(); // discard input
+                try self.encoder.movImm64(.rax, Value.int(0).bits);
+                try self.emitVPush();
+            },
+            else => {
+                // Unsupported native - push nil
+                try self.encoder.movImm64(.rax, Value.nil().bits);
+                try self.emitVPush();
+            },
+        }
+    }
+
     /// Compile bytecode to x86-64 machine code
     /// Uses r12 as value stack pointer (passed in rdi from caller)
     /// This allows proper CALL/RET with nested function calls
@@ -1060,6 +1101,12 @@ pub const JitCompiler = struct {
                     try self.encoder.ret();
                 },
 
+                .native_call => {
+                    const native_id = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
+                    ip += 2;
+                    try self.emitNativeCall(native_id);
+                },
+
                 .halt => {
                     // Pop result from value stack into rax
                     try self.emitVPop();
@@ -1075,7 +1122,6 @@ pub const JitCompiler = struct {
                     // Skip unsupported opcodes
                     switch (opcode) {
                         .push => ip += 2,
-                        .native_call => ip += 2,
                         else => {},
                     }
                 },
@@ -2196,6 +2242,90 @@ test "JitExecutor global in loop" {
 
     try std.testing.expect(val.isInt());
     try std.testing.expectEqual(@as(i64, 0), val.asInt());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATIVE CALL TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "JitExecutor native phi constant" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: return phi (golden ratio)
+    const constants = [_]Value{};
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.native_call), 0, 1, // native_call 1 (phi)
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(value.PHI, val.asFloat(), 0.0001);
+}
+
+test "JitExecutor native pi constant" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: return pi
+    const constants = [_]Value{};
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.native_call), 0, 2, // native_call 2 (pi)
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(std.math.pi, val.asFloat(), 0.0001);
+}
+
+test "JitExecutor native e constant" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: return e (Euler's number)
+    const constants = [_]Value{};
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.native_call), 0, 3, // native_call 3 (e)
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(std.math.e, val.asFloat(), 0.0001);
+}
+
+test "JitExecutor native phi squared" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: phi * phi (should be ~2.618)
+    // Use fmul for float multiplication
+    const constants = [_]Value{};
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.native_call), 0, 1, // push phi
+        @intFromEnum(Opcode.native_call), 0, 1, // push phi
+        @intFromEnum(Opcode.fmul), // phi * phi (float mul)
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    // phi^2 = phi + 1 ≈ 2.618
+    try std.testing.expectApproxEqAbs(value.PHI * value.PHI, val.asFloat(), 0.0001);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
