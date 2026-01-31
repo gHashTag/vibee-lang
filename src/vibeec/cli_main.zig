@@ -22,6 +22,7 @@ const Command = enum {
     run, // Run via bytecode VM (the only way!)
     vm, // Fast VM mode for .999 files
     jit, // Run with JIT compilation
+    jit_bench, // JIT benchmark with warmup
     bench, // Benchmark with detailed timing
     profile, // Profile opcodes
     check,
@@ -81,6 +82,18 @@ pub fn main() !void {
                 return;
             }
             try runWithJIT(args[2], allocator);
+        },
+        .jit_bench => {
+            // JIT benchmark with warmup to trigger native compilation
+            if (args.len < 3) {
+                printError("Missing file argument for 'jit-bench'");
+                return;
+            }
+            const iterations: u32 = if (args.len >= 4)
+                std.fmt.parseInt(u32, args[3], 10) catch 200
+            else
+                200; // Default 200 iterations (100 warmup + 100 measured)
+            try benchmarkJIT(args[2], iterations, allocator);
         },
         .bench => {
             // Benchmark with detailed timing
@@ -151,6 +164,7 @@ fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "r")) return .run;
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "jit") or std.mem.eql(u8, arg, "j")) return .jit;
+    if (std.mem.eql(u8, arg, "jit-bench") or std.mem.eql(u8, arg, "jb")) return .jit_bench;
     if (std.mem.eql(u8, arg, "bench") or std.mem.eql(u8, arg, "b")) return .bench;
     if (std.mem.eql(u8, arg, "profile") or std.mem.eql(u8, arg, "p")) return .profile;
     if (std.mem.eql(u8, arg, "check") or std.mem.eql(u8, arg, "k")) return .check;
@@ -396,6 +410,105 @@ fn runWithJIT(path: []const u8, allocator: std.mem.Allocator) !void {
     if (!std.mem.eql(u8, result_str, "nil")) {
         std.debug.print("  Result: {s}\n", .{result_str});
     }
+}
+
+// JIT benchmark - runs code multiple times to trigger JIT compilation
+fn benchmarkJIT(path: []const u8, total_iterations: u32, allocator: std.mem.Allocator) !void {
+    // Read and parse file
+    const source = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
+        printError("Failed to read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parser = coptic_parser.Parser.init(allocator, source);
+    var ast = parser.parseProgram() catch |err| {
+        printError("Parse error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer ast.deinit();
+
+    // Compile to bytecode
+    var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
+    defer compiler.deinit();
+
+    compiler.compile(&ast) catch |err| {
+        printError("Compilation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const code = compiler.getCode();
+    const constants = compiler.getConstants();
+
+    // Initialize JIT adapter
+    var jit_vm = jit_adapter.JITAdapter.init(allocator) catch |err| {
+        printError("JIT initialization failed");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer jit_vm.deinit();
+
+    const warmup_iterations = total_iterations / 2;
+    const measured_iterations = total_iterations - warmup_iterations;
+
+    std.debug.print("\n", .{});
+    std.debug.print("╔════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║                    JIT BENCHMARK                           ║\n", .{});
+    std.debug.print("╠════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("║ File: {s:<53} ║\n", .{path});
+    std.debug.print("║ Warmup iterations: {d:<43} ║\n", .{warmup_iterations});
+    std.debug.print("║ Measured iterations: {d:<41} ║\n", .{measured_iterations});
+    std.debug.print("╠════════════════════════════════════════════════════════════╣\n", .{});
+
+    // Warmup phase - trigger JIT compilation
+    std.debug.print("║ WARMUP PHASE (triggering JIT compilation)...               ║\n", .{});
+    var warmup_time: u64 = 0;
+    var i: u32 = 0;
+    while (i < warmup_iterations) : (i += 1) {
+        const start = std.time.nanoTimestamp();
+        _ = jit_vm.executeTiered(code, constants) catch continue;
+        const end = std.time.nanoTimestamp();
+        warmup_time += @intCast(@max(0, end - start));
+    }
+    const warmup_avg = warmup_time / warmup_iterations;
+    std.debug.print("║   Warmup avg: {d:>10.2} µs                                 ║\n", .{@as(f64, @floatFromInt(warmup_avg)) / 1000.0});
+
+    // Measured phase - should use JIT-compiled code
+    std.debug.print("║ MEASURED PHASE (using JIT-compiled code)...                ║\n", .{});
+    var measured_time: u64 = 0;
+    var min_time: u64 = std.math.maxInt(u64);
+    var max_time: u64 = 0;
+    
+    i = 0;
+    while (i < measured_iterations) : (i += 1) {
+        const start = std.time.nanoTimestamp();
+        _ = jit_vm.executeTiered(code, constants) catch continue;
+        const end = std.time.nanoTimestamp();
+        const elapsed: u64 = @intCast(@max(0, end - start));
+        measured_time += elapsed;
+        min_time = @min(min_time, elapsed);
+        max_time = @max(max_time, elapsed);
+    }
+    
+    const measured_avg = measured_time / measured_iterations;
+    const speedup = @as(f64, @floatFromInt(warmup_avg)) / @as(f64, @floatFromInt(@max(1, measured_avg)));
+
+    std.debug.print("╠════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("║ RESULTS                                                    ║\n", .{});
+    std.debug.print("║   Measured avg: {d:>8.2} µs                                 ║\n", .{@as(f64, @floatFromInt(measured_avg)) / 1000.0});
+    std.debug.print("║   Min time:     {d:>8.2} µs                                 ║\n", .{@as(f64, @floatFromInt(min_time)) / 1000.0});
+    std.debug.print("║   Max time:     {d:>8.2} µs                                 ║\n", .{@as(f64, @floatFromInt(max_time)) / 1000.0});
+    std.debug.print("║   JIT Speedup:  {d:>8.2}x                                   ║\n", .{speedup});
+    std.debug.print("╠════════════════════════════════════════════════════════════╣\n", .{});
+    std.debug.print("║ JIT METRICS                                                ║\n", .{});
+    std.debug.print("║   Interpreter instructions: {d:<33} ║\n", .{jit_vm.interpreter_instructions});
+    std.debug.print("║   JIT IR instructions:      {d:<33} ║\n", .{jit_vm.jit_instructions});
+    std.debug.print("║   Native instructions:      {d:<33} ║\n", .{jit_vm.native_instructions});
+    std.debug.print("╚════════════════════════════════════════════════════════════╝\n", .{});
 }
 
 // Fast VM mode - minimal overhead, maximum performance
