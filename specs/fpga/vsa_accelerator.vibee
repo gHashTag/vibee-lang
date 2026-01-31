@@ -1,0 +1,362 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VSA ACCELERATOR - Ternary Vector Symbolic Architecture Hardware
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# V = n × 3^k × π^m × φ^p × e^q
+# φ² + 1/φ² = 3 = TRINITY
+#
+# Hardware accelerator for hyperdimensional computing operations
+# Target: 1000x energy efficiency vs GPU
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: vsa_accelerator
+version: "1.0.0"
+language: varlog
+module: vsa_accelerator
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FPGA CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fpga_target: xilinx
+pipeline: stage3
+target_frequency: 200
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  
+  Trit:
+    description: "Balanced ternary digit: -1, 0, +1"
+    fields:
+      value: Int
+    width: 2
+    encoding: "2'b00=-1, 2'b01=0, 2'b10=+1"
+  
+  Hypervector:
+    description: "256-trit hyperdimensional vector"
+    fields:
+      trits: List<Trit>
+    width: 512
+    dimension: 256
+  
+  VsaOp:
+    description: "VSA operation code"
+    fields:
+      opcode: Int
+    width: 4
+    enum:
+      - BIND: 0
+      - UNBIND: 1
+      - BUNDLE2: 2
+      - BUNDLE3: 3
+      - PERMUTE: 4
+      - IPERMUTE: 5
+      - DOT: 6
+      - COSINE: 7
+      - HAMMING: 8
+      - RANDOM: 9
+      - LOAD: 10
+      - STORE: 11
+      - NOP: 15
+  
+  VsaResult:
+    description: "Result of VSA operation"
+    fields:
+      vector: Hypervector
+      scalar: Int
+      valid: Bool
+    width: 545
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNALS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+signals:
+  
+  # Clock and reset
+  - name: clk
+    direction: input
+    width: 1
+    
+  - name: rst_n
+    direction: input
+    width: 1
+    
+  # Input vectors
+  - name: vec_a
+    direction: input
+    width: 512
+    description: "First input hypervector"
+    
+  - name: vec_b
+    direction: input
+    width: 512
+    description: "Second input hypervector"
+    
+  - name: vec_c
+    direction: input
+    width: 512
+    description: "Third input hypervector (for bundle3)"
+    
+  # Operation control
+  - name: opcode
+    direction: input
+    width: 4
+    description: "VSA operation to perform"
+    
+  - name: shift_amount
+    direction: input
+    width: 8
+    description: "Shift amount for permute"
+    
+  - name: start
+    direction: input
+    width: 1
+    description: "Start operation"
+    
+  # Output
+  - name: result_vec
+    direction: output
+    width: 512
+    description: "Result hypervector"
+    
+  - name: result_scalar
+    direction: output
+    width: 32
+    description: "Scalar result (dot product, similarity)"
+    
+  - name: done
+    direction: output
+    width: 1
+    description: "Operation complete"
+    
+  - name: ready
+    direction: output
+    width: 1
+    description: "Ready for new operation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  
+  - name: vsa_bind
+    given: "Two hypervectors A and B"
+    when: "BIND operation requested"
+    then: "Return element-wise multiplication (XOR-like for ternary)"
+    latency: 1
+    implementation: |
+      for i in 0..256:
+        result[i] = a[i] * b[i]
+    
+  - name: vsa_unbind
+    given: "Bound vector and key"
+    when: "UNBIND operation requested"
+    then: "Return original vector (bind is self-inverse)"
+    latency: 1
+    implementation: |
+      result = bind(bound, key)
+    
+  - name: vsa_bundle2
+    given: "Two hypervectors A and B"
+    when: "BUNDLE2 operation requested"
+    then: "Return element-wise majority (sum with threshold)"
+    latency: 1
+    implementation: |
+      for i in 0..256:
+        sum = a[i] + b[i]
+        result[i] = sign(sum)
+    
+  - name: vsa_bundle3
+    given: "Three hypervectors A, B, C"
+    when: "BUNDLE3 operation requested"
+    then: "Return element-wise majority voting"
+    latency: 1
+    implementation: |
+      for i in 0..256:
+        sum = a[i] + b[i] + c[i]
+        result[i] = sign(sum)
+    
+  - name: vsa_permute
+    given: "Hypervector and shift amount k"
+    when: "PERMUTE operation requested"
+    then: "Return cyclic right shift by k positions"
+    latency: 1
+    implementation: |
+      for i in 0..256:
+        result[i] = vec[(i - k) mod 256]
+    
+  - name: vsa_inverse_permute
+    given: "Permuted vector and shift amount k"
+    when: "IPERMUTE operation requested"
+    then: "Return cyclic left shift by k positions"
+    latency: 1
+    implementation: |
+      for i in 0..256:
+        result[i] = vec[(i + k) mod 256]
+    
+  - name: vsa_dot_product
+    given: "Two hypervectors A and B"
+    when: "DOT operation requested"
+    then: "Return sum of element-wise products"
+    latency: 3
+    implementation: |
+      sum = 0
+      for i in 0..256:
+        sum += a[i] * b[i]
+      result_scalar = sum
+    
+  - name: vsa_cosine_similarity
+    given: "Two hypervectors A and B"
+    when: "COSINE operation requested"
+    then: "Return normalized dot product"
+    latency: 5
+    implementation: |
+      dot = dot_product(a, b)
+      norm_a = sqrt(dot_product(a, a))
+      norm_b = sqrt(dot_product(b, b))
+      result_scalar = dot / (norm_a * norm_b)
+    
+  - name: vsa_hamming_distance
+    given: "Two hypervectors A and B"
+    when: "HAMMING operation requested"
+    then: "Return count of differing trits"
+    latency: 2
+    implementation: |
+      count = 0
+      for i in 0..256:
+        if a[i] != b[i]:
+          count += 1
+      result_scalar = count
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FSM DEFINITION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fsm:
+  name: vsa_controller
+  initial_state: IDLE
+  encoding: onehot
+  
+  states:
+    - IDLE
+    - DECODE
+    - EXECUTE
+    - WRITEBACK
+    - DONE
+  
+  transitions:
+    - from: IDLE
+      to: DECODE
+      condition: "start"
+      
+    - from: DECODE
+      to: EXECUTE
+      condition: "always"
+      
+    - from: EXECUTE
+      to: WRITEBACK
+      condition: "exec_done"
+      
+    - from: WRITEBACK
+      to: DONE
+      condition: "always"
+      
+    - from: DONE
+      to: IDLE
+      condition: "always"
+  
+  outputs:
+    - state: IDLE
+      signals:
+        ready: 1
+        done: 0
+        
+    - state: EXECUTE
+      signals:
+        ready: 0
+        done: 0
+        
+    - state: DONE
+      signals:
+        ready: 0
+        done: 1
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALGORITHMS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  
+  - name: parallel_trit_multiply
+    description: "256-wide parallel trit multiplication for bind"
+    complexity: "O(1) with 256 parallel units"
+    pattern: "SIMD"
+    steps:
+      - "Load 256 trits from vec_a"
+      - "Load 256 trits from vec_b"
+      - "Parallel multiply all 256 pairs"
+      - "Store result"
+  
+  - name: tree_reduction_sum
+    description: "Tree-based reduction for dot product"
+    complexity: "O(log n) depth"
+    pattern: "Reduction tree"
+    steps:
+      - "Parallel multiply 256 pairs"
+      - "8-level reduction tree"
+      - "Final sum accumulator"
+  
+  - name: barrel_shifter
+    description: "Barrel shifter for permute"
+    complexity: "O(log n) levels"
+    pattern: "Barrel shift"
+    steps:
+      - "8-bit shift amount"
+      - "8 levels of 2:1 muxes"
+      - "Single cycle permute"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PERFORMANCE TARGETS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  
+  throughput:
+    bind_ops_per_sec: 200_000_000
+    bundle_ops_per_sec: 200_000_000
+    dot_ops_per_sec: 66_000_000
+    
+  latency:
+    bind_cycles: 1
+    bundle_cycles: 1
+    permute_cycles: 1
+    dot_cycles: 3
+    cosine_cycles: 5
+    
+  power:
+    target_watts: 5
+    efficiency_tops_per_watt: 40
+    
+  area:
+    target_luts: 50000
+    target_ffs: 25000
+    target_brams: 10
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METADATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "VIBEE Team"
+  project: "TRINITY VSA Accelerator"
+  date: "January 2026"
+  license: "MIT"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
