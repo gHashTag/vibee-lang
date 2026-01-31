@@ -1,11 +1,13 @@
 //! Trinity Knowledge Graph HTTP Server
 //! REST API for semantic triple store with embedding-based similarity search
+//! AKASHIC RECORDS INTEGRATION: φ² + 1/φ² = 3 = TRINITY
 //!
 //! Endpoints:
 //!   POST /api/add    - Add triple (subject, predicate, object)
 //!   GET  /api/query  - Query by subject+predicate or object+predicate
 //!   GET  /api/stats  - Graph statistics
 //!   GET  /api/list   - List all triples
+//!   GET  /api/akashic - Akashic Records sacred metrics
 //!   POST /api/save   - Save graph to file
 //!   POST /api/load   - Load graph from file
 //!   POST /api/clear  - Clear all data
@@ -15,6 +17,39 @@ const net = std.net;
 const http = std.http;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
+
+// ============================================================================
+// AKASHIC RECORDS - Sacred Constants
+// φ² + 1/φ² = 3 = TRINITY
+// ============================================================================
+
+pub const PHI: f64 = 1.618033988749;
+pub const TRINITY: f64 = PHI * PHI + 1.0 / (PHI * PHI); // = 3.0
+pub const FINE_STRUCTURE_INV: f64 = 137.035999084;
+pub const TRANSCENDENTAL: f64 = std.math.pi * PHI * std.math.e; // ≈ 13.82
+
+/// φ-hash function for entity names (Akashic addressing)
+fn phiHash(data: []const u8) i64 {
+    var hash: f64 = 0.0;
+    for (data, 0..) |byte, i| {
+        const phi_power = std.math.pow(f64, PHI, @as(f64, @floatFromInt(i % 20)));
+        hash += @as(f64, @floatFromInt(byte)) * phi_power;
+    }
+    return @intFromFloat(@mod(hash, 1e12));
+}
+
+/// Lucas number L(n) = φⁿ + 1/φⁿ
+fn lucasNumber(n: i64) i64 {
+    const phi_n = std.math.pow(f64, PHI, @as(f64, @floatFromInt(n)));
+    const inv_phi_n = 1.0 / phi_n;
+    return @intFromFloat(@round(phi_n + inv_phi_n));
+}
+
+/// Sacred similarity via φ-distance (not embedding)
+fn sacredSimilarity(hash1: i64, hash2: i64) f64 {
+    const diff = @abs(@as(f64, @floatFromInt(hash1 - hash2)));
+    return 1.0 / (1.0 + diff / (PHI * 1e9));
+}
 
 // ============================================================================
 // Trinity Knowledge Graph Core
@@ -547,6 +582,8 @@ pub const KGServer = struct {
             try self.handleGraph(request);
         } else if (mem.startsWith(u8, target, "/api/stats")) {
             try self.handleStats(request);
+        } else if (mem.startsWith(u8, target, "/api/akashic")) {
+            try self.handleAkashic(request);
         } else if (mem.startsWith(u8, target, "/api/list")) {
             try self.handleList(request);
         } else if (mem.startsWith(u8, target, "/api/save") and method == .POST) {
@@ -771,6 +808,40 @@ pub const KGServer = struct {
         const response = try jsonResponse(self.allocator, 
             "{{\"status\":\"ok\",\"entities\":{d},\"relations\":{d},\"triples\":{d}}}", 
             .{ stats.entities, stats.relations, stats.triples });
+        defer self.allocator.free(response);
+        try self.sendJson(request, response);
+    }
+    
+    /// Handle /api/akashic - Sacred Akashic Records metrics
+    fn handleAkashic(self: *KGServer, request: *http.Server.Request) !void {
+        const stats = self.kg.getStats();
+        
+        // Compute Akashic metrics
+        var total_phi_hash: i64 = 0;
+        for (self.kg.triples.items) |triple| {
+            total_phi_hash +%= phiHash(triple.subject);
+            total_phi_hash +%= phiHash(triple.object);
+        }
+        
+        const lucas_10 = lucasNumber(10);
+        const sacred_index = @mod(total_phi_hash, lucas_10);
+        
+        const response = try jsonResponse(self.allocator, 
+            "{{\"status\":\"ok\"," ++
+            "\"phi\":{d:.6}," ++
+            "\"trinity\":{d:.6}," ++
+            "\"fine_structure_inv\":{d:.6}," ++
+            "\"transcendental\":{d:.6}," ++
+            "\"lucas_10\":{d}," ++
+            "\"entities\":{d}," ++
+            "\"relations\":{d}," ++
+            "\"triples\":{d}," ++
+            "\"total_phi_hash\":{d}," ++
+            "\"sacred_index\":{d}," ++
+            "\"formula\":\"phi^2 + 1/phi^2 = 3\"}}", 
+            .{ PHI, TRINITY, FINE_STRUCTURE_INV, TRANSCENDENTAL, lucas_10,
+               stats.entities, stats.relations, stats.triples, 
+               total_phi_hash, sacred_index });
         defer self.allocator.free(response);
         try self.sendJson(request, response);
     }
