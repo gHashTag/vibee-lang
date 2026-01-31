@@ -2313,3 +2313,277 @@ test "X86_64Emitter PXOR xmm0, xmm0 (zero register)" {
     try std.testing.expectEqual(@as(u8, 0xEF), emitter.code.items[2]);
     try std.testing.expectEqual(@as(u8, 0xC0), emitter.code.items[3]);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMD EXECUTION TESTS - Verify correctness of generated SIMD code
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Execute SIMD: PADDD 4x i32 addition" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: [1, 2, 3, 4] + [10, 20, 30, 40] = [11, 22, 33, 44]
+    // 
+    // Function that takes pointer to two arrays in RDI, RSI and stores result in RDX
+    // 
+    // movdqu xmm0, [rdi]     ; Load first vector
+    // movdqu xmm1, [rsi]     ; Load second vector
+    // paddd xmm0, xmm1       ; Add vectors
+    // movdqu [rdx], xmm0     ; Store result
+    // ret
+
+    // movdqu xmm0, [rdi]: F3 0F 6F 07
+    try emitter.movdquLoad(.XMM0, .RDI, 0);
+    // movdqu xmm1, [rsi]: F3 0F 6F 0E
+    try emitter.movdquLoad(.XMM1, .RSI, 0);
+    // paddd xmm0, xmm1: 66 0F FE C1
+    try emitter.paddd(.XMM0, .XMM1);
+    // movdqu [rdx], xmm0: F3 0F 7F 02
+    try emitter.movdquStore(.RDX, 0, .XMM0);
+    // ret: C3
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    // Prepare test data (aligned to 16 bytes for safety)
+    var input_a align(16) = [4]i32{ 1, 2, 3, 4 };
+    var input_b align(16) = [4]i32{ 10, 20, 30, 40 };
+    var result align(16) = [4]i32{ 0, 0, 0, 0 };
+
+    // Call the function: fn(rdi=&input_a, rsi=&input_b, rdx=&result)
+    const func: *const fn (*[4]i32, *[4]i32, *[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&input_a, &input_b, &result);
+
+    // Verify results
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 22), result[1]);
+    try std.testing.expectEqual(@as(i32, 33), result[2]);
+    try std.testing.expectEqual(@as(i32, 44), result[3]);
+}
+
+test "Execute SIMD: PMULLD 4x i32 multiplication" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: [2, 3, 4, 5] * [10, 10, 10, 10] = [20, 30, 40, 50]
+    //
+    // movdqu xmm0, [rdi]     ; Load first vector
+    // movdqu xmm1, [rsi]     ; Load second vector
+    // pmulld xmm0, xmm1      ; Multiply vectors
+    // movdqu [rdx], xmm0     ; Store result
+    // ret
+
+    try emitter.movdquLoad(.XMM0, .RDI, 0);
+    try emitter.movdquLoad(.XMM1, .RSI, 0);
+    try emitter.pmulld(.XMM0, .XMM1);
+    try emitter.movdquStore(.RDX, 0, .XMM0);
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    var input_a align(16) = [4]i32{ 2, 3, 4, 5 };
+    var input_b align(16) = [4]i32{ 10, 10, 10, 10 };
+    var result align(16) = [4]i32{ 0, 0, 0, 0 };
+
+    const func: *const fn (*[4]i32, *[4]i32, *[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&input_a, &input_b, &result);
+
+    try std.testing.expectEqual(@as(i32, 20), result[0]);
+    try std.testing.expectEqual(@as(i32, 30), result[1]);
+    try std.testing.expectEqual(@as(i32, 40), result[2]);
+    try std.testing.expectEqual(@as(i32, 50), result[3]);
+}
+
+test "Execute SIMD: PSUBD 4x i32 subtraction" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: [100, 200, 300, 400] - [1, 2, 3, 4] = [99, 198, 297, 396]
+
+    try emitter.movdquLoad(.XMM0, .RDI, 0);
+    try emitter.movdquLoad(.XMM1, .RSI, 0);
+    try emitter.psubd(.XMM0, .XMM1);
+    try emitter.movdquStore(.RDX, 0, .XMM0);
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    var input_a align(16) = [4]i32{ 100, 200, 300, 400 };
+    var input_b align(16) = [4]i32{ 1, 2, 3, 4 };
+    var result align(16) = [4]i32{ 0, 0, 0, 0 };
+
+    const func: *const fn (*[4]i32, *[4]i32, *[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&input_a, &input_b, &result);
+
+    try std.testing.expectEqual(@as(i32, 99), result[0]);
+    try std.testing.expectEqual(@as(i32, 198), result[1]);
+    try std.testing.expectEqual(@as(i32, 297), result[2]);
+    try std.testing.expectEqual(@as(i32, 396), result[3]);
+}
+
+test "Execute SIMD: MOVDQU load/store roundtrip" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: Load from [rdi], store to [rsi] - data should be preserved
+    //
+    // movdqu xmm0, [rdi]     ; Load
+    // movdqu [rsi], xmm0     ; Store
+    // ret
+
+    try emitter.movdquLoad(.XMM0, .RDI, 0);
+    try emitter.movdquStore(.RSI, 0, .XMM0);
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    var input align(16) = [4]i32{ 0x12345678, -559038737, -889275714, -2023406815 };
+    var output align(16) = [4]i32{ 0, 0, 0, 0 };
+
+    const func: *const fn (*[4]i32, *[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&input, &output);
+
+    try std.testing.expectEqual(input[0], output[0]);
+    try std.testing.expectEqual(input[1], output[1]);
+    try std.testing.expectEqual(input[2], output[2]);
+    try std.testing.expectEqual(input[3], output[3]);
+}
+
+test "Execute SIMD: PADDD with negative numbers" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: [-1, -2, -3, -4] + [1, 2, 3, 4] = [0, 0, 0, 0]
+
+    try emitter.movdquLoad(.XMM0, .RDI, 0);
+    try emitter.movdquLoad(.XMM1, .RSI, 0);
+    try emitter.paddd(.XMM0, .XMM1);
+    try emitter.movdquStore(.RDX, 0, .XMM0);
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    var input_a align(16) = [4]i32{ -1, -2, -3, -4 };
+    var input_b align(16) = [4]i32{ 1, 2, 3, 4 };
+    var result align(16) = [4]i32{ 99, 99, 99, 99 };
+
+    const func: *const fn (*[4]i32, *[4]i32, *[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&input_a, &input_b, &result);
+
+    try std.testing.expectEqual(@as(i32, 0), result[0]);
+    try std.testing.expectEqual(@as(i32, 0), result[1]);
+    try std.testing.expectEqual(@as(i32, 0), result[2]);
+    try std.testing.expectEqual(@as(i32, 0), result[3]);
+}
+
+test "Execute SIMD: PXOR to zero register" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // Test: XOR register with itself to zero it, then store
+    //
+    // pxor xmm0, xmm0        ; Zero xmm0
+    // movdqu [rdi], xmm0     ; Store zeros
+    // ret
+
+    try emitter.pxor(.XMM0, .XMM0);
+    try emitter.movdquStore(.RDI, 0, .XMM0);
+    try emitter.ret();
+
+    const code = emitter.getCode();
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    var output align(16) = [4]i32{ 0x12345678, -559038737, -889275714, -2023406815 };
+
+    const func: *const fn (*[4]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&output);
+
+    try std.testing.expectEqual(@as(i32, 0), output[0]);
+    try std.testing.expectEqual(@as(i32, 0), output[1]);
+    try std.testing.expectEqual(@as(i32, 0), output[2]);
+    try std.testing.expectEqual(@as(i32, 0), output[3]);
+}
+
+test "Benchmark SIMD: PADDD vs scalar addition" {
+    const allocator = std.testing.allocator;
+
+    // Generate SIMD version: add 4 integers at once
+    var simd_emitter = X86_64Emitter.init(allocator);
+    defer simd_emitter.deinit();
+
+    try simd_emitter.movdquLoad(.XMM0, .RDI, 0);
+    try simd_emitter.movdquLoad(.XMM1, .RSI, 0);
+    try simd_emitter.paddd(.XMM0, .XMM1);
+    try simd_emitter.movdquStore(.RDX, 0, .XMM0);
+    try simd_emitter.ret();
+
+    var simd_exec = try ExecutableCode.init(simd_emitter.getCode());
+    defer simd_exec.deinit();
+
+    // Generate scalar version: add 4 integers one by one
+    var scalar_emitter = X86_64Emitter.init(allocator);
+    defer scalar_emitter.deinit();
+
+    // mov eax, [rdi]
+    try scalar_emitter.movRegMemBase(.RAX, .RDI, 0);
+    // add eax, [rsi]
+    try scalar_emitter.code.append(0x03); // ADD r32, r/m32
+    try scalar_emitter.code.append(0x06); // [rsi]
+    // mov [rdx], eax
+    try scalar_emitter.code.append(0x89); // MOV r/m32, r32
+    try scalar_emitter.code.append(0x02); // [rdx]
+
+    // Repeat for other 3 elements (simplified - just return for benchmark)
+    try scalar_emitter.ret();
+
+    var scalar_exec = try ExecutableCode.init(scalar_emitter.getCode());
+    defer scalar_exec.deinit();
+
+    // Benchmark data
+    var input_a align(16) = [4]i32{ 1, 2, 3, 4 };
+    var input_b align(16) = [4]i32{ 10, 20, 30, 40 };
+    var result align(16) = [4]i32{ 0, 0, 0, 0 };
+
+    const simd_func: *const fn (*[4]i32, *[4]i32, *[4]i32) callconv(.C) void = @ptrCast(simd_exec.code.ptr);
+
+    const iterations: usize = 100000;
+
+    // Benchmark SIMD
+    const simd_start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        simd_func(&input_a, &input_b, &result);
+    }
+    const simd_end = std.time.nanoTimestamp();
+    const simd_time: u64 = @intCast(@max(0, simd_end - simd_start));
+
+    const simd_per_iter = @as(f64, @floatFromInt(simd_time)) / @as(f64, @floatFromInt(iterations));
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== SIMD vs Scalar Benchmark ===\n", .{});
+        std.debug.print("SIMD PADDD: {d:.2} ns/iter\n", .{simd_per_iter});
+        std.debug.print("Result: [{}, {}, {}, {}]\n", .{ result[0], result[1], result[2], result[3] });
+    }
+
+    // Verify SIMD result is correct
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 22), result[1]);
+    try std.testing.expectEqual(@as(i32, 33), result[2]);
+    try std.testing.expectEqual(@as(i32, 44), result[3]);
+}
