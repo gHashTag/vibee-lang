@@ -206,8 +206,8 @@ pub const VM = struct {
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.call_stack);
-        self.globals.deinit(self.allocator);
-        self.natives.deinit(self.allocator);
+        self.globals.deinit();
+        self.natives.deinit();
     }
 
     fn registerBuiltins(self: *Self) !void {
@@ -1619,14 +1619,14 @@ pub const VM = struct {
             .TRYTE_ARRAY_COPY => {
                 // Copy TryteArray
                 const src_val = try self.pop();
-                if (src_val != .trye_array_val) return VMError.TypeMismatch;
-                const src = src_val.trye_array_val;
+                if (src_val != .tryte_array_val) return VMError.TypeMismatch;
+                const src = src_val.tryte_array_val;
                 const dst = self.allocator.create(bytecode.TryteArrayValue) catch return VMError.OutOfMemory;
                 dst.data = self.allocator.alloc(i8, src.len) catch return VMError.OutOfMemory;
                 dst.len = src.len;
                 dst.capacity = src.len;
                 @memcpy(dst.data, src.data[0..src.len]);
-                try self.push(.{ .trye_array_val = dst });
+                try self.push(.{ .tryte_array_val = dst });
             },
 
             // Sacred Constants
@@ -1954,6 +1954,109 @@ pub const VM = struct {
             .call_depth = self.fp,
         };
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HOT PATH DETECTION - For JIT Integration
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Get opcode execution count for a specific opcode
+    pub fn getOpcodeCount(self: *const Self, opcode: u8) u64 {
+        return self.opcode_counts[opcode];
+    }
+
+    /// Get all opcode counts (for JIT analysis)
+    pub fn getOpcodeCounts(self: *const Self) *const [256]u64 {
+        return &self.opcode_counts;
+    }
+
+    /// Check if an opcode is "hot" (executed more than threshold times)
+    pub fn isOpcodeHot(self: *const Self, opcode: u8, threshold: u64) bool {
+        return self.opcode_counts[opcode] >= threshold;
+    }
+
+    /// Get list of hot opcodes (above threshold)
+    pub fn getHotOpcodes(self: *const Self, threshold: u64, buffer: []HotOpcodeInfo) []HotOpcodeInfo {
+        var count: usize = 0;
+        for (0..256) |i| {
+            if (self.opcode_counts[i] >= threshold and count < buffer.len) {
+                buffer[count] = .{
+                    .opcode = @intCast(i),
+                    .count = self.opcode_counts[i],
+                };
+                count += 1;
+            }
+        }
+        return buffer[0..count];
+    }
+
+    /// Reset opcode counts (for fresh profiling)
+    pub fn resetOpcodeCounts(self: *Self) void {
+        @memset(&self.opcode_counts, 0);
+    }
+
+    /// Get total opcode execution time for profiling
+    pub fn getOpcodeTime(self: *const Self, opcode: u8) u64 {
+        return self.opcode_times[opcode];
+    }
+
+    /// Get average time per opcode execution
+    pub fn getAverageOpcodeTime(self: *const Self, opcode: u8) f64 {
+        if (self.opcode_counts[opcode] == 0) return 0;
+        return @as(f64, @floatFromInt(self.opcode_times[opcode])) /
+            @as(f64, @floatFromInt(self.opcode_counts[opcode]));
+    }
+
+    /// Find the most frequently executed opcode
+    pub fn getMostFrequentOpcode(self: *const Self) ?HotOpcodeInfo {
+        var max_count: u64 = 0;
+        var max_opcode: u8 = 0;
+        for (0..256) |i| {
+            if (self.opcode_counts[i] > max_count) {
+                max_count = self.opcode_counts[i];
+                max_opcode = @intCast(i);
+            }
+        }
+        if (max_count == 0) return null;
+        return .{ .opcode = max_opcode, .count = max_count };
+    }
+
+    /// Get execution profile summary
+    pub fn getProfileSummary(self: *const Self) ProfileSummary {
+        var total_count: u64 = 0;
+        var unique_opcodes: u32 = 0;
+        var max_count: u64 = 0;
+
+        for (0..256) |i| {
+            if (self.opcode_counts[i] > 0) {
+                total_count += self.opcode_counts[i];
+                unique_opcodes += 1;
+                if (self.opcode_counts[i] > max_count) {
+                    max_count = self.opcode_counts[i];
+                }
+            }
+        }
+
+        return .{
+            .total_instructions = total_count,
+            .unique_opcodes = unique_opcodes,
+            .max_opcode_count = max_count,
+            .execution_time_ns = self.execution_time_ns,
+        };
+    }
+};
+
+/// Information about a hot opcode
+pub const HotOpcodeInfo = struct {
+    opcode: u8,
+    count: u64,
+};
+
+/// Profile summary for JIT decisions
+pub const ProfileSummary = struct {
+    total_instructions: u64,
+    unique_opcodes: u32,
+    max_opcode_count: u64,
+    execution_time_ns: u64,
 };
 
 pub const VMMetrics = struct {
@@ -2795,7 +2898,7 @@ fn nativeElapsed(_: *VM, args: []const Value) VMError!Value {
 test "VM basic push and halt" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit(allocator);
+    defer vm.deinit();
 
     // Simple: push 42, halt
     const code = [_]u8{
@@ -2813,7 +2916,7 @@ test "VM basic push and halt" {
 test "VM sacred constants" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit(allocator);
+    defer vm.deinit();
 
     const code = [_]u8{
         @intFromEnum(Opcode.PUSH_PHI),
@@ -2829,7 +2932,7 @@ test "VM sacred constants" {
 test "VM golden identity" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit(allocator);
+    defer vm.deinit();
 
     const code = [_]u8{
         @intFromEnum(Opcode.GOLDEN_IDENTITY_OP),
@@ -2845,7 +2948,7 @@ test "VM golden identity" {
 test "VM comparison" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit(allocator);
+    defer vm.deinit();
 
     // 10 > 5 = true
     const code = [_]u8{
@@ -2864,7 +2967,7 @@ test "VM comparison" {
 test "VM metrics" {
     const allocator = std.testing.allocator;
     var vm = try VM.init(allocator);
-    defer vm.deinit(allocator);
+    defer vm.deinit();
 
     const code = [_]u8{
         @intFromEnum(Opcode.PUSH_CONST), 0, 0,

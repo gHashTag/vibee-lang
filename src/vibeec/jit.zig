@@ -115,6 +115,13 @@ pub const IROpcode = enum(u8) {
     LOAD_CONST,
     LOAD_LOCAL,
     STORE_LOCAL,
+    LOAD_GLOBAL,
+    STORE_GLOBAL,
+
+    // Stack
+    DUP,
+    SWAP,
+    POP,
 
     // Arithmetic (typed)
     ADD_INT,
@@ -125,6 +132,11 @@ pub const IROpcode = enum(u8) {
     MUL_FLOAT,
     DIV_INT,
     DIV_FLOAT,
+    MOD_INT,
+    NEG_INT,
+    NEG_FLOAT,
+    INC_INT,
+    DEC_INT,
 
     // Comparison
     CMP_LT_INT,
@@ -132,19 +144,46 @@ pub const IROpcode = enum(u8) {
     CMP_GT_INT,
     CMP_GE_INT,
     CMP_EQ_INT,
+    CMP_NE_INT,
+
+    // Logic
+    NOT,
+    AND,
+    OR,
+    XOR,
+
+    // Bitwise
+    SHL,
+    SHR,
+    BAND,
+    BOR,
+    BXOR,
+    BNOT,
 
     // Control
     JUMP,
     JUMP_IF_ZERO,
     JUMP_IF_NOT_ZERO,
+    LOOP_BACK,
     GUARD_TYPE,
     DEOPT,
+
+    // Tryte operations
+    TRYTE_ADD,
+    TRYTE_SUB,
+    TRYTE_MUL,
+    TRYTE_NEG,
+    TRYTE_INC,
+    TRYTE_DEC,
+    TRYTE_LT,
+    TRYTE_EQ,
 
     // Sacred
     LOAD_PHI,
     LOAD_PI,
     LOAD_E,
     GOLDEN_IDENTITY_IR,
+    SACRED_FORMULA_IR,
 
     // Return
     RETURN,
@@ -308,6 +347,9 @@ pub const JITCompiler = struct {
         reg.* = (reg.* + 1) % 32;
 
         return switch (entry.opcode) {
+            // ═══════════════════════════════════════════════════════════════
+            // LOAD/STORE
+            // ═══════════════════════════════════════════════════════════════
             .PUSH_CONST => IRInstruction{
                 .opcode = .LOAD_CONST,
                 .dest = dest,
@@ -316,6 +358,68 @@ pub const JITCompiler = struct {
                 .imm = entry.operand,
             },
 
+            .LOAD_LOCAL => IRInstruction{
+                .opcode = .LOAD_LOCAL,
+                .dest = dest,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
+            .STORE_LOCAL => IRInstruction{
+                .opcode = .STORE_LOCAL,
+                .dest = 0,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
+            .LOAD_GLOBAL => IRInstruction{
+                .opcode = .LOAD_GLOBAL,
+                .dest = dest,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
+            .STORE_GLOBAL => IRInstruction{
+                .opcode = .STORE_GLOBAL,
+                .dest = 0,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // STACK OPERATIONS
+            // ═══════════════════════════════════════════════════════════════
+            .DUP => IRInstruction{
+                .opcode = .DUP,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .SWAP => IRInstruction{
+                .opcode = .SWAP,
+                .dest = dest -% 2,
+                .src1 = dest -% 1,
+                .src2 = dest -% 2,
+                .imm = 0,
+            },
+
+            .POP => IRInstruction{
+                .opcode = .POP,
+                .dest = 0,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // ARITHMETIC
+            // ═══════════════════════════════════════════════════════════════
             .ADD => switch (entry.type_info) {
                 .int_type => IRInstruction{
                     .opcode = .ADD_INT,
@@ -331,7 +435,13 @@ pub const JITCompiler = struct {
                     .src2 = dest -% 1,
                     .imm = 0,
                 },
-                else => null,
+                else => IRInstruction{
+                    .opcode = .ADD_INT,
+                    .dest = dest,
+                    .src1 = dest -% 2,
+                    .src2 = dest -% 1,
+                    .imm = 0,
+                },
             },
 
             .SUB => switch (entry.type_info) {
@@ -349,7 +459,13 @@ pub const JITCompiler = struct {
                     .src2 = dest -% 1,
                     .imm = 0,
                 },
-                else => null,
+                else => IRInstruction{
+                    .opcode = .SUB_INT,
+                    .dest = dest,
+                    .src1 = dest -% 2,
+                    .src2 = dest -% 1,
+                    .imm = 0,
+                },
             },
 
             .MUL => switch (entry.type_info) {
@@ -367,9 +483,76 @@ pub const JITCompiler = struct {
                     .src2 = dest -% 1,
                     .imm = 0,
                 },
-                else => null,
+                else => IRInstruction{
+                    .opcode = .MUL_INT,
+                    .dest = dest,
+                    .src1 = dest -% 2,
+                    .src2 = dest -% 1,
+                    .imm = 0,
+                },
             },
 
+            .DIV => switch (entry.type_info) {
+                .float_type => IRInstruction{
+                    .opcode = .DIV_FLOAT,
+                    .dest = dest,
+                    .src1 = dest -% 2,
+                    .src2 = dest -% 1,
+                    .imm = 0,
+                },
+                else => IRInstruction{
+                    .opcode = .DIV_INT,
+                    .dest = dest,
+                    .src1 = dest -% 2,
+                    .src2 = dest -% 1,
+                    .imm = 0,
+                },
+            },
+
+            .MOD => IRInstruction{
+                .opcode = .MOD_INT,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .NEG => switch (entry.type_info) {
+                .float_type => IRInstruction{
+                    .opcode = .NEG_FLOAT,
+                    .dest = dest,
+                    .src1 = dest -% 1,
+                    .src2 = 0,
+                    .imm = 0,
+                },
+                else => IRInstruction{
+                    .opcode = .NEG_INT,
+                    .dest = dest,
+                    .src1 = dest -% 1,
+                    .src2 = 0,
+                    .imm = 0,
+                },
+            },
+
+            .INC => IRInstruction{
+                .opcode = .INC_INT,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .DEC => IRInstruction{
+                .opcode = .DEC_INT,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // COMPARISON
+            // ═══════════════════════════════════════════════════════════════
             .LT => IRInstruction{
                 .opcode = .CMP_LT_INT,
                 .dest = dest,
@@ -394,6 +577,127 @@ pub const JITCompiler = struct {
                 .imm = 0,
             },
 
+            .GE => IRInstruction{
+                .opcode = .CMP_GE_INT,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .EQ => IRInstruction{
+                .opcode = .CMP_EQ_INT,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .NE => IRInstruction{
+                .opcode = .CMP_NE_INT,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // LOGIC
+            // ═══════════════════════════════════════════════════════════════
+            .NOT => IRInstruction{
+                .opcode = .NOT,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .AND => IRInstruction{
+                .opcode = .AND,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .OR => IRInstruction{
+                .opcode = .OR,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .XOR => IRInstruction{
+                .opcode = .XOR,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // BITWISE
+            // ═══════════════════════════════════════════════════════════════
+            .SHL => IRInstruction{
+                .opcode = .SHL,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .SHR => IRInstruction{
+                .opcode = .SHR,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .BAND => IRInstruction{
+                .opcode = .BAND,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .BOR => IRInstruction{
+                .opcode = .BOR,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .BXOR => IRInstruction{
+                .opcode = .BXOR,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .BNOT => IRInstruction{
+                .opcode = .BNOT,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // CONTROL FLOW
+            // ═══════════════════════════════════════════════════════════════
+            .JMP => IRInstruction{
+                .opcode = .JUMP,
+                .dest = 0,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
             .JZ => IRInstruction{
                 .opcode = .JUMP_IF_ZERO,
                 .dest = 0,
@@ -410,6 +714,84 @@ pub const JITCompiler = struct {
                 .imm = entry.operand,
             },
 
+            .LOOP => IRInstruction{
+                .opcode = .LOOP_BACK,
+                .dest = 0,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = entry.operand,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // TRYTE OPERATIONS
+            // ═══════════════════════════════════════════════════════════════
+            .TRYTE_ADD => IRInstruction{
+                .opcode = .TRYTE_ADD,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .TRYTE_SUB => IRInstruction{
+                .opcode = .TRYTE_SUB,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .TRYTE_MUL => IRInstruction{
+                .opcode = .TRYTE_MUL,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .TRYTE_NEG => IRInstruction{
+                .opcode = .TRYTE_NEG,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .TRYTE_INC => IRInstruction{
+                .opcode = .TRYTE_INC,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .TRYTE_DEC => IRInstruction{
+                .opcode = .TRYTE_DEC,
+                .dest = dest,
+                .src1 = dest -% 1,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            .TRYTE_LT => IRInstruction{
+                .opcode = .TRYTE_LT,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            .TRYTE_EQ => IRInstruction{
+                .opcode = .TRYTE_EQ,
+                .dest = dest,
+                .src1 = dest -% 2,
+                .src2 = dest -% 1,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // SACRED CONSTANTS
+            // ═══════════════════════════════════════════════════════════════
             .PUSH_PHI => IRInstruction{
                 .opcode = .LOAD_PHI,
                 .dest = dest,
@@ -442,6 +824,17 @@ pub const JITCompiler = struct {
                 .imm = 0,
             },
 
+            .SACRED_FORMULA => IRInstruction{
+                .opcode = .SACRED_FORMULA_IR,
+                .dest = dest,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            // ═══════════════════════════════════════════════════════════════
+            // TERMINATION
+            // ═══════════════════════════════════════════════════════════════
             .HALT => IRInstruction{
                 .opcode = .RETURN,
                 .dest = dest -% 1,
@@ -449,6 +842,17 @@ pub const JITCompiler = struct {
                 .src2 = 0,
                 .imm = 0,
             },
+
+            .RET => IRInstruction{
+                .opcode = .RETURN,
+                .dest = dest -% 1,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = 0,
+            },
+
+            // NOP - no operation
+            .NOP => null,
 
             else => null,
         };
