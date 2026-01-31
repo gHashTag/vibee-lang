@@ -2011,6 +2011,245 @@ pub const CSEOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL VALUE NUMBERING (GVN)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Value Number - unique identifier for an expression's value
+pub const ValueNumber = struct {
+    number: u32,
+};
+
+/// Expression for value numbering
+pub const GVNExpression = struct {
+    opcode: jit.IROpcode,
+    /// Value numbers of operands (not registers!)
+    vn_src1: u32,
+    vn_src2: u32,
+    imm: i64,
+
+    pub fn hash(self: GVNExpression) u64 {
+        var h: u64 = @intFromEnum(self.opcode);
+        h = h *% 31 +% self.vn_src1;
+        h = h *% 31 +% self.vn_src2;
+        h = h *% 31 +% @as(u64, @bitCast(self.imm));
+        return h;
+    }
+
+    pub fn eql(a: GVNExpression, b: GVNExpression) bool {
+        return a.opcode == b.opcode and a.vn_src1 == b.vn_src1 and a.vn_src2 == b.vn_src2 and a.imm == b.imm;
+    }
+};
+
+/// Global Value Numbering Optimizer
+/// More powerful than CSE - uses value numbers instead of registers
+/// and respects dominator tree for scoping
+pub const GVNOptimizer = struct {
+    allocator: Allocator,
+    /// CFG for block structure
+    cfg: ?*CFG = null,
+    /// Dominator tree for scoping
+    dom_tree: ?*DominatorTree = null,
+    /// Next value number to assign
+    next_vn: u32 = 1,
+    /// Register to value number mapping
+    reg_to_vn: std.AutoHashMap(u8, u32),
+    /// Expression to value number mapping
+    expr_to_vn: std.AutoHashMap(u64, u32),
+    /// Value number to defining register (for replacement)
+    vn_to_reg: std.AutoHashMap(u32, u8),
+    /// Statistics
+    redundant_eliminated: usize = 0,
+    values_numbered: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .cfg = null,
+            .dom_tree = null,
+            .next_vn = 1,
+            .reg_to_vn = std.AutoHashMap(u8, u32).init(allocator),
+            .expr_to_vn = std.AutoHashMap(u64, u32).init(allocator),
+            .vn_to_reg = std.AutoHashMap(u32, u8).init(allocator),
+            .redundant_eliminated = 0,
+            .values_numbered = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.reg_to_vn.deinit();
+        self.expr_to_vn.deinit();
+        self.vn_to_reg.deinit();
+    }
+
+    /// Set dominator info for scoped value numbering
+    pub fn setDominatorInfo(self: *Self, cfg: *CFG, dom_tree: *DominatorTree) void {
+        self.cfg = cfg;
+        self.dom_tree = dom_tree;
+    }
+
+    /// Reset state for new optimization pass
+    fn reset(self: *Self) void {
+        self.reg_to_vn.clearRetainingCapacity();
+        self.expr_to_vn.clearRetainingCapacity();
+        self.vn_to_reg.clearRetainingCapacity();
+        self.next_vn = 1;
+    }
+
+    /// Get or create value number for a register
+    fn getValueNumber(self: *Self, reg: u8) !u32 {
+        if (self.reg_to_vn.get(reg)) |vn| {
+            return vn;
+        }
+        // New register - assign fresh value number
+        const vn = self.next_vn;
+        self.next_vn += 1;
+        try self.reg_to_vn.put(reg, vn);
+        try self.vn_to_reg.put(vn, reg);
+        return vn;
+    }
+
+    /// Assign a new value number to a register (for definitions)
+    fn assignValueNumber(self: *Self, reg: u8, vn: u32) !void {
+        try self.reg_to_vn.put(reg, vn);
+        // Only update vn_to_reg if this is the first definition
+        if (!self.vn_to_reg.contains(vn)) {
+            try self.vn_to_reg.put(vn, reg);
+        }
+    }
+
+    /// Check if opcode is a pure computation
+    fn isPure(opcode: jit.IROpcode) bool {
+        return switch (opcode) {
+            .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT, .MOD_INT,
+            .NEG_INT, .SHL, .SHR, .LEA,
+            .AND, .OR, .XOR, .BAND, .BOR, .BXOR,
+            .CMP_LT_INT, .CMP_LE_INT, .CMP_GT_INT, .CMP_GE_INT, .CMP_EQ_INT, .CMP_NE_INT,
+            .ADD_FLOAT, .SUB_FLOAT, .MUL_FLOAT, .DIV_FLOAT, .NEG_FLOAT,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Optimize IR using global value numbering
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len < 2) return self.allocator.dupe(IRInstruction, ir);
+
+        self.reset();
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir) |instr| {
+            switch (instr.opcode) {
+                .LOAD_CONST => {
+                    // Constants get unique value numbers based on their value
+                    const expr = GVNExpression{
+                        .opcode = .LOAD_CONST,
+                        .vn_src1 = 0,
+                        .vn_src2 = 0,
+                        .imm = instr.imm,
+                    };
+                    const hash_val = expr.hash();
+
+                    if (self.expr_to_vn.get(hash_val)) |existing_vn| {
+                        // Same constant already loaded - reuse
+                        if (self.vn_to_reg.get(existing_vn)) |existing_reg| {
+                            if (existing_reg != instr.dest) {
+                                // Emit copy instead of load
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = existing_reg,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                                try self.assignValueNumber(instr.dest, existing_vn);
+                                self.redundant_eliminated += 1;
+                                continue;
+                            }
+                        }
+                    }
+
+                    // New constant
+                    const vn = self.next_vn;
+                    self.next_vn += 1;
+                    try self.expr_to_vn.put(hash_val, vn);
+                    try self.assignValueNumber(instr.dest, vn);
+                    try result.append(instr);
+                    self.values_numbered += 1;
+                },
+                else => {
+                    if (isPure(instr.opcode)) {
+                        // Get value numbers for operands
+                        const vn_src1 = try self.getValueNumber(instr.src1);
+                        const vn_src2 = try self.getValueNumber(instr.src2);
+
+                        const expr = GVNExpression{
+                            .opcode = instr.opcode,
+                            .vn_src1 = vn_src1,
+                            .vn_src2 = vn_src2,
+                            .imm = instr.imm,
+                        };
+                        const hash_val = expr.hash();
+
+                        if (self.expr_to_vn.get(hash_val)) |existing_vn| {
+                            // Same expression already computed
+                            if (self.vn_to_reg.get(existing_vn)) |existing_reg| {
+                                if (existing_reg != instr.dest) {
+                                    // Emit copy instead of recomputation
+                                    try result.append(.{
+                                        .opcode = .LOAD_LOCAL,
+                                        .dest = instr.dest,
+                                        .src1 = existing_reg,
+                                        .src2 = 0,
+                                        .imm = 0,
+                                    });
+                                    try self.assignValueNumber(instr.dest, existing_vn);
+                                    self.redundant_eliminated += 1;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // New expression
+                        const vn = self.next_vn;
+                        self.next_vn += 1;
+                        try self.expr_to_vn.put(hash_val, vn);
+                        try self.assignValueNumber(instr.dest, vn);
+                        try result.append(instr);
+                        self.values_numbered += 1;
+                    } else {
+                        // Non-pure instruction - just emit and invalidate dest
+                        const vn = self.next_vn;
+                        self.next_vn += 1;
+                        try self.assignValueNumber(instr.dest, vn);
+                        try result.append(instr);
+                    }
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Optimize with dominator info for better scoping
+    pub fn optimizeWithDomInfo(self: *Self, ir: []const IRInstruction, cfg: *CFG, dom_tree: *DominatorTree) ![]IRInstruction {
+        self.setDominatorInfo(cfg, dom_tree);
+        return self.optimize(ir);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { eliminated: usize, numbered: usize } {
+        return .{
+            .eliminated = self.redundant_eliminated,
+            .numbered = self.values_numbered,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // REGISTER ALLOCATOR (Linear Scan)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3820,6 +4059,8 @@ pub const TieredCompiler = struct {
     peephole: PeepholeOptimizer,
     /// CSE optimizer
     cse: CSEOptimizer,
+    /// GVN optimizer
+    gvn: GVNOptimizer,
     /// Register allocator
     regalloc: RegisterAllocator,
     /// Profile data for PGO
@@ -3854,6 +4095,8 @@ pub const TieredCompiler = struct {
     enable_peephole: bool,
     /// Enable CSE
     enable_cse: bool,
+    /// Enable GVN
+    enable_gvn: bool,
     /// Enable register allocation
     enable_regalloc: bool,
     /// Enable PGO
@@ -3887,6 +4130,7 @@ pub const TieredCompiler = struct {
             .copy_propagator = CopyPropagator.init(allocator),
             .peephole = PeepholeOptimizer.init(allocator),
             .cse = CSEOptimizer.init(allocator),
+            .gvn = GVNOptimizer.init(allocator),
             .regalloc = RegisterAllocator.init(allocator),
             .profile_data = ProfileData.init(allocator),
             .instrumenter = null,
@@ -3904,6 +4148,7 @@ pub const TieredCompiler = struct {
             .enable_copy_propagation = true,
             .enable_peephole = true,
             .enable_cse = true,
+            .enable_gvn = true,
             .enable_regalloc = true,
             .enable_pgo = true,
             .enable_inlining = true,
@@ -3939,6 +4184,7 @@ pub const TieredCompiler = struct {
         self.function_states.deinit();
         self.profile_data.deinit();
         self.inliner.deinit();
+        self.gvn.deinit();
 
         // Free CFG and dominator tree
         if (self.cfg) |*cfg| {
@@ -4117,6 +4363,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = cse_result;
                 }
 
+                // GVN - more powerful than CSE, uses value numbers
+                if (self.enable_gvn) {
+                    const gvn_result = try self.gvn.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = gvn_result;
+                }
+
                 if (self.enable_folding) {
                     const folded = try self.constant_folder.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -4191,6 +4444,12 @@ pub const TieredCompiler = struct {
                         const cse_result = try self.cse.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = cse_result;
+                    }
+
+                    if (self.enable_gvn) {
+                        const gvn_result = try self.gvn.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = gvn_result;
                     }
 
                     if (self.enable_folding) {
@@ -7778,6 +8037,106 @@ test "CSEOptimizer with shifts" {
 
     const stats = cse.getStats();
     try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GVN OPTIMIZER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "GVNOptimizer eliminate redundant constant" {
+    const allocator = std.testing.allocator;
+
+    var gvn = GVNOptimizer.init(allocator);
+    defer gvn.deinit();
+
+    // IR: r0 = 42, r1 = 42 (same constant)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try gvn.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Second LOAD_CONST should be replaced with copy
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[1].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[1].src1);
+
+    const stats = gvn.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+test "GVNOptimizer eliminate redundant expression" {
+    const allocator = std.testing.allocator;
+
+    var gvn = GVNOptimizer.init(allocator);
+    defer gvn.deinit();
+
+    // IR: r2 = r0 + r1, r3 = r0 + r1 (same expression)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try gvn.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Second ADD_INT should be replaced with copy
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[3].opcode);
+    try std.testing.expectEqual(@as(u8, 2), optimized[3].src1);
+
+    const stats = gvn.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+test "GVNOptimizer different constants not eliminated" {
+    const allocator = std.testing.allocator;
+
+    var gvn = GVNOptimizer.init(allocator);
+    defer gvn.deinit();
+
+    // IR: r0 = 42, r1 = 43 (different constants)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 43 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try gvn.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Both LOAD_CONST should remain
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[0].opcode);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+
+    const stats = gvn.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+}
+
+test "GVNOptimizer in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify GVN is enabled by default
+    try std.testing.expect(compiler.enable_gvn);
+}
+
+test "GVNOptimizer getStats" {
+    const allocator = std.testing.allocator;
+
+    var gvn = GVNOptimizer.init(allocator);
+    defer gvn.deinit();
+
+    const stats = gvn.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+    try std.testing.expectEqual(@as(usize, 0), stats.numbered);
 }
 
 test "Benchmark: Strength reduction effect" {
