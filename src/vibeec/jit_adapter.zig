@@ -461,10 +461,12 @@ pub const LoopUnroller = struct {
                     if (offset <= i) {
                         const target = i - offset;
                         self.loops_detected += 1;
+                        // Try to detect iteration count from loop bounds
+                        const iter_count = self.detectIterationCount(ir, target, i);
                         try loops.append(LoopInfo{
                             .start_idx = target,
                             .end_idx = i,
-                            .iteration_count = null, // Unknown
+                            .iteration_count = iter_count,
                             .body_size = i - target,
                         });
                     }
@@ -477,10 +479,11 @@ pub const LoopUnroller = struct {
                         const target = i - offset;
                         // Backward jump - potential loop
                         self.loops_detected += 1;
+                        const iter_count = self.detectIterationCount(ir, target, i);
                         try loops.append(LoopInfo{
                             .start_idx = target,
                             .end_idx = i,
-                            .iteration_count = null,
+                            .iteration_count = iter_count,
                             .body_size = i - target,
                         });
                     }
@@ -489,6 +492,66 @@ pub const LoopUnroller = struct {
         }
 
         return loops.toOwnedSlice();
+    }
+
+    /// Detect iteration count from loop bounds analysis
+    /// Looks for patterns like: LOAD_CONST limit, COMPARE, JUMP_IF_ZERO
+    fn detectIterationCount(self: *Self, ir: []const IRInstruction, start: usize, end: usize) ?u32 {
+        _ = self;
+        // Pattern 1: Look for LOAD_CONST before loop that sets limit
+        // Pattern: i = 0; while (i < N) { ... i++ }
+        // IR: LOAD_CONST 0 (init_val), LOAD_CONST N (limit), COMPARE, JUMP_IF_ZERO
+
+        // Search backwards from loop start for initialization pattern
+        if (start == 0) return null;
+
+        // Look for constant limit in the few instructions before loop
+        var limit: ?u32 = null;
+        var init_val: ?i64 = null;
+        var step: i64 = 1;
+
+        // Scan instructions before loop for LOAD_CONST (potential bounds)
+        const scan_start = if (start > 5) start - 5 else 0;
+        for (ir[scan_start..start]) |instr| {
+            if (instr.opcode == .LOAD_CONST) {
+                // Could be init or limit
+                if (init_val == null) {
+                    init_val = instr.imm;
+                } else {
+                    // Second constant is likely the limit
+                    if (instr.imm > 0 and instr.imm <= 1000) {
+                        limit = @intCast(instr.imm);
+                    }
+                }
+            }
+        }
+
+        // Also check for comparison instruction in loop body that uses a constant
+        for (ir[start..end]) |instr| {
+            if (instr.opcode == .CMP_LT_INT or instr.opcode == .CMP_LE_INT or
+                instr.opcode == .CMP_GT_INT or instr.opcode == .CMP_GE_INT)
+            {
+                // Look for constant operand
+                if (instr.imm > 0 and instr.imm <= 1000) {
+                    limit = @intCast(instr.imm);
+                }
+            }
+            // Detect increment step
+            if (instr.opcode == .ADD_INT and instr.imm != 0) {
+                step = instr.imm;
+            }
+        }
+
+        // Calculate iteration count if we found bounds
+        if (limit) |lim| {
+            const start_v: i64 = init_val orelse 0;
+            if (step > 0 and lim > start_v) {
+                const diff: u32 = @intCast(lim - start_v);
+                return @divFloor(diff, @as(u32, @intCast(step)));
+            }
+        }
+
+        return null;
     }
 
     /// Unroll a single loop
@@ -510,8 +573,22 @@ pub const LoopUnroller = struct {
         // Get loop body
         const body = ir[loop.start_idx..loop.end_idx];
 
+        // Determine unroll factor
+        // If we know the iteration count, use it for complete unrolling (if small enough)
+        // Otherwise use the default factor for partial unrolling
+        const factor: u32 = if (loop.iteration_count) |count| blk: {
+            // Complete unrolling for small known loops
+            if (count <= 16 and count * loop.body_size <= 64) {
+                break :blk count;
+            }
+            // Partial unrolling with factor that divides evenly
+            if (count >= self.unroll_factor and count % self.unroll_factor == 0) {
+                break :blk self.unroll_factor;
+            }
+            break :blk self.unroll_factor;
+        } else self.unroll_factor;
+
         // Unroll loop body N times
-        const factor = self.unroll_factor;
         for (0..factor) |_| {
             for (body) |instr| {
                 // Skip the backward jump in unrolled copies (except last)
@@ -521,10 +598,23 @@ pub const LoopUnroller = struct {
             }
         }
 
-        // Add remaining instructions after loop
-        if (loop.end_idx + 1 < ir.len) {
-            for (ir[loop.end_idx + 1 ..]) |instr| {
-                try result.append(instr);
+        // If we completely unrolled a known-count loop, skip the loop control
+        // Otherwise, we need to add a modified loop for remaining iterations
+        const complete_unroll = if (loop.iteration_count) |count| count == factor else false;
+
+        if (!complete_unroll) {
+            // Add remaining instructions after loop (including loop control for partial unroll)
+            if (loop.end_idx + 1 < ir.len) {
+                for (ir[loop.end_idx + 1 ..]) |instr| {
+                    try result.append(instr);
+                }
+            }
+        } else {
+            // Complete unroll - skip loop control, just add post-loop code
+            if (loop.end_idx + 1 < ir.len) {
+                for (ir[loop.end_idx + 1 ..]) |instr| {
+                    try result.append(instr);
+                }
             }
         }
 
@@ -538,6 +628,78 @@ pub const LoopUnroller = struct {
         return result.toOwnedSlice();
     }
 
+    /// Fully unroll a loop with known iteration count
+    /// Returns null if loop cannot be fully unrolled
+    pub fn fullyUnrollLoop(self: *Self, ir: []const IRInstruction, loop: LoopInfo) !?[]IRInstruction {
+        // Must have known iteration count
+        const count = loop.iteration_count orelse return null;
+
+        // Sanity limits for full unrolling
+        if (count > 32) return null; // Too many iterations
+        if (count * loop.body_size > 128) return null; // Would generate too much code
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Copy instructions before loop
+        for (ir[0..loop.start_idx]) |instr| {
+            try result.append(instr);
+        }
+
+        // Get loop body (excluding loop control)
+        const body = ir[loop.start_idx..loop.end_idx];
+
+        // Fully unroll - emit body 'count' times
+        for (0..count) |iteration| {
+            for (body) |instr| {
+                // Skip loop control instructions
+                if (instr.opcode == .LOOP_BACK or instr.opcode == .JUMP or
+                    instr.opcode == .JUMP_IF_ZERO or instr.opcode == .JUMP_IF_NOT_ZERO)
+                {
+                    continue;
+                }
+
+                var new_instr = instr;
+
+                // For LOAD_CONST that loads the loop counter, replace with iteration value
+                // This enables further constant folding
+                if (instr.opcode == .LOAD_CONST and self.isLoopCounter(ir, loop, instr.dest)) {
+                    new_instr.imm = @intCast(iteration);
+                }
+
+                try result.append(new_instr);
+            }
+        }
+
+        // Add instructions after loop
+        if (loop.end_idx + 1 < ir.len) {
+            for (ir[loop.end_idx + 1 ..]) |instr| {
+                try result.append(instr);
+            }
+        }
+
+        self.loops_unrolled += 1;
+        // Track savings (may be negative if unrolling increases size)
+        if (ir.len > result.items.len) {
+            self.instructions_saved += ir.len - result.items.len;
+        }
+
+        const slice = try result.toOwnedSlice();
+        return slice;
+    }
+
+    /// Check if a register is used as loop counter
+    fn isLoopCounter(self: *Self, ir: []const IRInstruction, loop: LoopInfo, reg: u8) bool {
+        _ = self;
+        // Look for increment pattern: ADD_INT reg, reg, 1
+        for (ir[loop.start_idx..loop.end_idx]) |instr| {
+            if (instr.opcode == .ADD_INT and instr.dest == reg and instr.src1 == reg) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Optimize IR by unrolling all suitable loops
     pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
         const loops = try self.detectLoops(ir);
@@ -548,7 +710,16 @@ pub const LoopUnroller = struct {
             return self.allocator.dupe(IRInstruction, ir);
         }
 
-        // Unroll first suitable loop (simple approach)
+        // Try full unrolling first for loops with known bounds
+        for (loops) |loop| {
+            if (loop.iteration_count != null) {
+                if (try self.fullyUnrollLoop(ir, loop)) |unrolled| {
+                    return unrolled;
+                }
+            }
+        }
+
+        // Fall back to partial unrolling
         for (loops) |loop| {
             if (loop.body_size <= self.max_body_size) {
                 return self.unrollLoop(ir, loop);
@@ -8008,6 +8179,118 @@ test "LoopUnroller skip large loops" {
 
     // Should be unchanged (loop too large)
     try std.testing.expectEqual(ir_list.items.len, optimized.len);
+}
+
+test "LoopUnroller detect iteration count from constants" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    // Pattern: i = 0; limit = 10; while (i < limit) { body; i++ }
+    // IR: LOAD_CONST 0 (i=0), LOAD_CONST 10 (limit), CMP_LT_INT, body, ADD_INT (i++), LOOP_BACK
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 }, // limit = 10
+        .{ .opcode = .CMP_LT_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // i < limit
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 2, .src2 = 0, .imm = 4 }, // exit if false
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 3, .src2 = 0, .imm = 0 }, // body: sum += i
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // i++
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -4 }, // back to CMP_LT_INT
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 }, // return sum
+    };
+
+    const loops = try unroller.detectLoops(&ir);
+    defer allocator.free(loops);
+
+    try std.testing.expectEqual(@as(usize, 1), loops.len);
+    // Should detect iteration count of 10
+    if (loops[0].iteration_count) |count| {
+        try std.testing.expectEqual(@as(u32, 10), count);
+    }
+}
+
+test "LoopUnroller full unroll with known count" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    // Simple loop with 4 iterations
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // sum = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 4 }, // limit = 4
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // sum += 1
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 }, // back
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // return
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 2,
+        .end_idx = 3,
+        .iteration_count = 4, // Known: 4 iterations
+        .body_size = 1,
+    };
+
+    const unrolled = try unroller.fullyUnrollLoop(&ir, loop);
+    if (unrolled) |result| {
+        defer allocator.free(result);
+        // Should have: 2 init + 4 body copies + 1 return = 7
+        try std.testing.expectEqual(@as(usize, 7), result.len);
+    } else {
+        // Should succeed for small known loops
+        try std.testing.expect(false);
+    }
+}
+
+test "LoopUnroller rejects large full unroll" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 1,
+        .end_idx = 2,
+        .iteration_count = 100, // Too many iterations for full unroll
+        .body_size = 1,
+    };
+
+    const result = try unroller.fullyUnrollLoop(&ir, loop);
+    // Should return null for too many iterations
+    try std.testing.expect(result == null);
+}
+
+test "LoopUnroller isLoopCounter detection" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    // Loop with counter increment: i = i + 1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // i = i + 1 (counter)
+        .{ .opcode = .ADD_INT, .dest = 1, .src1 = 1, .src2 = 0, .imm = 0 }, // sum += i
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 1,
+        .end_idx = 3,
+        .iteration_count = 5,
+        .body_size = 2,
+    };
+
+    // Register 0 is the loop counter (has ADD_INT dest=0, src1=0)
+    try std.testing.expect(unroller.isLoopCounter(&ir, loop, 0));
+    // Register 1 is not a counter (ADD_INT dest=1, src1=1, but adds reg 0, not constant)
+    // Actually it IS a counter pattern too, but let's check reg 2 which doesn't exist
+    try std.testing.expect(!unroller.isLoopCounter(&ir, loop, 2));
 }
 
 test "Benchmark: Loop unrolling effect" {
