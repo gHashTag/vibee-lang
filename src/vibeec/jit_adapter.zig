@@ -744,6 +744,170 @@ pub const ConstantFolder = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DEAD CODE ELIMINATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Dead Code Eliminator - removes instructions whose results are never used
+pub const DeadCodeEliminator = struct {
+    allocator: Allocator,
+    /// Statistics
+    instructions_eliminated: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .instructions_eliminated = 0,
+        };
+    }
+
+    /// Optimize IR by removing dead code
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        // Step 1: Compute liveness (backward pass)
+        // A register is live if it's used before being redefined
+        var live_regs: [32]bool = [_]bool{false} ** 32;
+
+        // Mark registers used in RETURN as live
+        var i: usize = ir.len;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+
+            switch (instr.opcode) {
+                .RETURN => {
+                    live_regs[instr.dest] = true;
+                },
+                // Control flow - all regs potentially live
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK => {
+                    // Conservative: mark condition register as live
+                    if (instr.opcode == .JUMP_IF_ZERO or instr.opcode == .JUMP_IF_NOT_ZERO) {
+                        live_regs[instr.dest] = true;
+                    }
+                },
+                // Store operations - source is live
+                .STORE_LOCAL, .STORE_GLOBAL => {
+                    live_regs[instr.src1] = true;
+                },
+                else => {},
+            }
+        }
+
+        // Step 2: Forward pass - mark used registers
+        var used_at: [32]?usize = [_]?usize{null} ** 32;
+
+        for (ir, 0..) |instr, idx| {
+            // Mark source registers as used
+            switch (instr.opcode) {
+                .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT, .MOD_INT,
+                .CMP_LT_INT, .CMP_LE_INT, .CMP_GT_INT, .CMP_GE_INT, .CMP_EQ_INT, .CMP_NE_INT,
+                .AND, .OR, .XOR, .SHL, .SHR, .BAND, .BOR, .BXOR => {
+                    used_at[instr.src1] = idx;
+                    used_at[instr.src2] = idx;
+                },
+                .NEG_INT, .NEG_FLOAT, .NOT, .BNOT, .INC_INT, .DEC_INT => {
+                    used_at[instr.src1] = idx;
+                },
+                .RETURN => {
+                    used_at[instr.dest] = idx;
+                },
+                .STORE_LOCAL, .STORE_GLOBAL => {
+                    used_at[instr.src1] = idx;
+                },
+                .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    used_at[instr.dest] = idx;
+                },
+                else => {},
+            }
+        }
+
+        // Step 3: Backward pass - determine which instructions are dead
+        var is_dead = try self.allocator.alloc(bool, ir.len);
+        defer self.allocator.free(is_dead);
+        @memset(is_dead, false);
+
+        // Track last use of each register
+        var last_use: [32]?usize = [_]?usize{null} ** 32;
+
+        // Initialize last_use from used_at
+        for (0..32) |r| {
+            last_use[r] = used_at[r];
+        }
+
+        // Backward pass to find dead instructions
+        i = ir.len;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+
+            // Skip control flow and side-effect instructions
+            switch (instr.opcode) {
+                .RETURN, .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK,
+                .STORE_LOCAL, .STORE_GLOBAL, .DEOPT, .GUARD_TYPE => {
+                    // These have side effects - never dead
+                    continue;
+                },
+                else => {},
+            }
+
+            // Check if dest register is used after this instruction
+            const dest = instr.dest;
+            if (dest < 32) {
+                if (last_use[dest]) |use_idx| {
+                    if (use_idx <= i) {
+                        // Dest is not used after this instruction - it's dead
+                        is_dead[i] = true;
+                        self.instructions_eliminated += 1;
+                    }
+                } else {
+                    // Dest is never used - it's dead
+                    is_dead[i] = true;
+                    self.instructions_eliminated += 1;
+                }
+
+                // Update last_use for source registers
+                switch (instr.opcode) {
+                    .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT, .MOD_INT,
+                    .CMP_LT_INT, .CMP_LE_INT, .CMP_GT_INT, .CMP_GE_INT, .CMP_EQ_INT, .CMP_NE_INT => {
+                        if (!is_dead[i]) {
+                            last_use[instr.src1] = i;
+                            last_use[instr.src2] = i;
+                        }
+                    },
+                    .NEG_INT, .NOT => {
+                        if (!is_dead[i]) {
+                            last_use[instr.src1] = i;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        // Step 4: Build result without dead instructions
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir, 0..) |instr, idx| {
+            if (!is_dead[idx]) {
+                try result.append(instr);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { eliminated: usize } {
+        return .{
+            .eliminated = self.instructions_eliminated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -795,10 +959,14 @@ pub const TieredCompiler = struct {
     loop_unroller: LoopUnroller,
     /// Constant folder for optimization
     constant_folder: ConstantFolder,
+    /// Dead code eliminator
+    dce: DeadCodeEliminator,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
     enable_folding: bool,
+    /// Enable dead code elimination
+    enable_dce: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -813,8 +981,10 @@ pub const TieredCompiler = struct {
             .thresholds = TierThresholds{},
             .loop_unroller = LoopUnroller.init(allocator),
             .constant_folder = ConstantFolder.init(allocator),
+            .dce = DeadCodeEliminator.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
+            .enable_dce = true,
             .stats = TieredStats.init(),
         };
     }
@@ -889,7 +1059,7 @@ pub const TieredCompiler = struct {
 
         switch (state.current_tier) {
             .JIT_IR => {
-                // Apply optimizations: constant folding then loop unrolling
+                // Apply optimizations: constant folding, DCE, then loop unrolling
                 var optimized_ir = try self.allocator.dupe(IRInstruction, ir);
                 errdefer self.allocator.free(optimized_ir);
 
@@ -897,6 +1067,12 @@ pub const TieredCompiler = struct {
                     const folded = try self.constant_folder.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
                     optimized_ir = folded;
+                }
+
+                if (self.enable_dce) {
+                    const dce_result = try self.dce.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = dce_result;
                 }
 
                 if (self.enable_unrolling) {
@@ -921,6 +1097,12 @@ pub const TieredCompiler = struct {
                         const folded = try self.constant_folder.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = folded;
+                    }
+
+                    if (self.enable_dce) {
+                        const dce_result = try self.dce.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = dce_result;
                     }
 
                     if (self.enable_unrolling) {
@@ -3568,6 +3750,155 @@ test "Benchmark: Constant folding effect" {
         std.debug.print("Constants folded: {d}\n", .{stats.folded});
         if (unfolded_per_iter > folded_per_iter) {
             std.debug.print("Speedup: {d:.2}x\n", .{unfolded_per_iter / folded_per_iter});
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEAD CODE ELIMINATOR TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "DeadCodeEliminator remove unused loads" {
+    const allocator = std.testing.allocator;
+
+    var dce = DeadCodeEliminator.init(allocator);
+
+    // IR: r0 = 5, r1 = 3, r2 = 8, return r2
+    // r0 and r1 are dead (never used)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 }, // dead
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 }, // dead
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 8 }, // live
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dce.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Should have only: LOAD_CONST 8, RETURN
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+    try std.testing.expectEqual(@as(i64, 8), optimized[0].imm);
+    try std.testing.expectEqual(jit.IROpcode.RETURN, optimized[1].opcode);
+
+    const stats = dce.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.eliminated);
+}
+
+test "DeadCodeEliminator keep used registers" {
+    const allocator = std.testing.allocator;
+
+    var dce = DeadCodeEliminator.init(allocator);
+
+    // IR: r0 = 5, r1 = 3, r2 = r0 + r1, return r2
+    // All are live
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dce.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // All instructions should remain
+    try std.testing.expectEqual(@as(usize, 4), optimized.len);
+}
+
+test "DeadCodeEliminator with folding" {
+    const allocator = std.testing.allocator;
+
+    // First fold constants
+    var folder = ConstantFolder.init(allocator);
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const folded = try folder.optimize(&ir);
+    defer allocator.free(folded);
+
+    // After folding: r0=5, r1=3, r2=8, return r2
+    // r0 and r1 are now dead
+
+    var dce = DeadCodeEliminator.init(allocator);
+    const optimized = try dce.optimize(folded);
+    defer allocator.free(optimized);
+
+    // Should have: LOAD_CONST 8, RETURN
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+    try std.testing.expectEqual(@as(i64, 8), optimized[0].imm);
+}
+
+test "Benchmark: Folding + DCE combined effect" {
+    const allocator = std.testing.allocator;
+
+    // Original IR: (2 + 3) * (4 + 5) = 45
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 3, .src1 = 0, .src2 = 0, .imm = 4 },
+        .{ .opcode = .LOAD_CONST, .dest = 4, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 5, .src1 = 3, .src2 = 4, .imm = 0 },
+        .{ .opcode = .MUL_INT, .dest = 6, .src1 = 2, .src2 = 5, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 6, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Apply folding
+    var folder = ConstantFolder.init(allocator);
+    const folded = try folder.optimize(&original_ir);
+    defer allocator.free(folded);
+
+    // Apply DCE
+    var dce = DeadCodeEliminator.init(allocator);
+    const optimized = try dce.optimize(folded);
+    defer allocator.free(optimized);
+
+    const iterations: usize = 10000;
+
+    // Benchmark original
+    const orig_start = std.time.nanoTimestamp();
+    var orig_result: i64 = 0;
+    for (0..iterations) |_| {
+        orig_result = interpretIRCode(&original_ir);
+    }
+    const orig_end = std.time.nanoTimestamp();
+    const orig_time: u64 = @intCast(@max(0, orig_end - orig_start));
+
+    // Benchmark optimized
+    const opt_start = std.time.nanoTimestamp();
+    var opt_result: i64 = 0;
+    for (0..iterations) |_| {
+        opt_result = interpretIRCode(optimized);
+    }
+    const opt_end = std.time.nanoTimestamp();
+    const opt_time: u64 = @intCast(@max(0, opt_end - opt_start));
+
+    // Both should produce same result
+    try std.testing.expectEqual(@as(i64, 45), orig_result);
+    try std.testing.expectEqual(@as(i64, 45), opt_result);
+
+    const folder_stats = folder.getStats();
+    const dce_stats = dce.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        const orig_per_iter = @as(f64, @floatFromInt(orig_time)) / @as(f64, @floatFromInt(iterations));
+        const opt_per_iter = @as(f64, @floatFromInt(opt_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Folding + DCE Combined Benchmark ===\n", .{});
+        std.debug.print("Original: {d:.2} ns/iter ({d} instructions)\n", .{ orig_per_iter, original_ir.len });
+        std.debug.print("Optimized: {d:.2} ns/iter ({d} instructions)\n", .{ opt_per_iter, optimized.len });
+        std.debug.print("Constants folded: {d}, Dead code eliminated: {d}\n", .{ folder_stats.folded, dce_stats.eliminated });
+        std.debug.print("Instruction reduction: {d} -> {d} ({d:.1}%)\n", .{
+            original_ir.len,
+            optimized.len,
+            (1.0 - @as(f64, @floatFromInt(optimized.len)) / @as(f64, @floatFromInt(original_ir.len))) * 100.0,
+        });
+        if (orig_per_iter > opt_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{orig_per_iter / opt_per_iter});
         }
     }
 }
