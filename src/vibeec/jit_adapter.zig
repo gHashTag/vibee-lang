@@ -132,6 +132,196 @@ pub const NativeMetrics = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HOT PATH PROFILER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Function execution profile
+pub const FunctionProfile = struct {
+    address: u32,
+    execution_count: u64,
+    total_time_ns: u64,
+    is_hot: bool,
+    is_compiled: bool,
+    last_execution_ns: i128,
+
+    pub fn avgTimeNs(self: FunctionProfile) u64 {
+        if (self.execution_count == 0) return 0;
+        return self.total_time_ns / self.execution_count;
+    }
+};
+
+/// Hot Path Profiler - tracks function execution and triggers JIT compilation
+pub const HotPathProfiler = struct {
+    allocator: Allocator,
+    /// Function address -> profile
+    profiles: std.AutoHashMap(u32, FunctionProfile),
+    /// Threshold for marking function as hot
+    hot_threshold: u32,
+    /// Threshold for triggering JIT compilation
+    jit_threshold: u32,
+    /// Total functions profiled
+    total_functions: usize,
+    /// Hot functions detected
+    hot_functions: usize,
+    /// Functions compiled to native
+    compiled_functions: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .profiles = std.AutoHashMap(u32, FunctionProfile).init(allocator),
+            .hot_threshold = 10, // Mark as hot after 10 executions
+            .jit_threshold = 100, // Compile to native after 100 executions
+            .total_functions = 0,
+            .hot_functions = 0,
+            .compiled_functions = 0,
+        };
+    }
+
+    pub fn initWithThresholds(allocator: Allocator, hot_threshold: u32, jit_threshold: u32) Self {
+        var profiler = Self.init(allocator);
+        profiler.hot_threshold = hot_threshold;
+        profiler.jit_threshold = jit_threshold;
+        return profiler;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.profiles.deinit();
+    }
+
+    /// Record function entry - returns true if function should be JIT compiled
+    pub fn recordEntry(self: *Self, address: u32) !bool {
+        const now = std.time.nanoTimestamp();
+
+        const result = try self.profiles.getOrPut(address);
+        if (!result.found_existing) {
+            result.value_ptr.* = FunctionProfile{
+                .address = address,
+                .execution_count = 0,
+                .total_time_ns = 0,
+                .is_hot = false,
+                .is_compiled = false,
+                .last_execution_ns = now,
+            };
+            self.total_functions += 1;
+        }
+
+        var profile = result.value_ptr;
+        profile.execution_count += 1;
+        profile.last_execution_ns = now;
+
+        // Check if became hot
+        if (!profile.is_hot and profile.execution_count >= self.hot_threshold) {
+            profile.is_hot = true;
+            self.hot_functions += 1;
+        }
+
+        // Check if should compile
+        if (!profile.is_compiled and profile.execution_count >= self.jit_threshold) {
+            return true; // Signal to compile
+        }
+
+        return false;
+    }
+
+    /// Record function exit with timing
+    pub fn recordExit(self: *Self, address: u32, execution_time_ns: u64) void {
+        if (self.profiles.getPtr(address)) |profile| {
+            profile.total_time_ns += execution_time_ns;
+        }
+    }
+
+    /// Mark function as compiled
+    pub fn markCompiled(self: *Self, address: u32) void {
+        if (self.profiles.getPtr(address)) |profile| {
+            if (!profile.is_compiled) {
+                profile.is_compiled = true;
+                self.compiled_functions += 1;
+            }
+        }
+    }
+
+    /// Get all hot functions that need compilation
+    pub fn getHotUncompiled(self: *Self, allocator: Allocator) ![]u32 {
+        var result = std.ArrayList(u32).init(allocator);
+        errdefer result.deinit();
+
+        var iter = self.profiles.iterator();
+        while (iter.next()) |entry| {
+            const profile = entry.value_ptr;
+            if (profile.is_hot and !profile.is_compiled and
+                profile.execution_count >= self.jit_threshold)
+            {
+                try result.append(profile.address);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get profile for address
+    pub fn getProfile(self: *Self, address: u32) ?FunctionProfile {
+        return self.profiles.get(address);
+    }
+
+    /// Get profiler statistics
+    pub fn getStats(self: *Self) ProfilerStats {
+        var total_executions: u64 = 0;
+        var total_time: u64 = 0;
+        var hottest_address: u32 = 0;
+        var hottest_count: u64 = 0;
+
+        var iter = self.profiles.iterator();
+        while (iter.next()) |entry| {
+            const profile = entry.value_ptr;
+            total_executions += profile.execution_count;
+            total_time += profile.total_time_ns;
+            if (profile.execution_count > hottest_count) {
+                hottest_count = profile.execution_count;
+                hottest_address = profile.address;
+            }
+        }
+
+        return ProfilerStats{
+            .total_functions = self.total_functions,
+            .hot_functions = self.hot_functions,
+            .compiled_functions = self.compiled_functions,
+            .total_executions = total_executions,
+            .total_time_ns = total_time,
+            .hottest_address = hottest_address,
+            .hottest_count = hottest_count,
+        };
+    }
+
+    /// Reset all profiles
+    pub fn reset(self: *Self) void {
+        self.profiles.clearRetainingCapacity();
+        self.total_functions = 0;
+        self.hot_functions = 0;
+        self.compiled_functions = 0;
+    }
+};
+
+/// Profiler statistics summary
+pub const ProfilerStats = struct {
+    total_functions: usize,
+    hot_functions: usize,
+    compiled_functions: usize,
+    total_executions: u64,
+    total_time_ns: u64,
+    hottest_address: u32,
+    hottest_count: u64,
+
+    pub fn compilationRatio(self: ProfilerStats) f64 {
+        if (self.hot_functions == 0) return 0;
+        return @as(f64, @floatFromInt(self.compiled_functions)) /
+            @as(f64, @floatFromInt(self.hot_functions));
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // JIT ADAPTER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -150,6 +340,9 @@ pub const JITAdapter = struct {
 
     // Native code cache: address -> executable code
     native_cache: std.AutoHashMap(u32, NativeCodeEntry),
+
+    // Hot Path Profiler for automatic JIT
+    profiler: HotPathProfiler,
 
     // Execution state
     is_recording: bool,
@@ -173,6 +366,7 @@ pub const JITAdapter = struct {
             .jit_compiler = JITCompiler.init(allocator),
             .config = AdapterConfig{},
             .native_cache = std.AutoHashMap(u32, NativeCodeEntry).init(allocator),
+            .profiler = HotPathProfiler.init(allocator),
             .is_recording = false,
             .current_trace_start = 0,
             .jit_instructions = 0,
@@ -188,6 +382,8 @@ pub const JITAdapter = struct {
     pub fn initWithConfig(allocator: Allocator, config: AdapterConfig) !Self {
         var adapter = try Self.init(allocator);
         adapter.config = config;
+        // Sync profiler thresholds with config
+        adapter.profiler.jit_threshold = config.hot_threshold;
         return adapter;
     }
 
@@ -199,8 +395,19 @@ pub const JITAdapter = struct {
             native_entry.executable.deinit();
         }
         self.native_cache.deinit();
+        self.profiler.deinit();
         self.vm.deinit();
         self.jit_compiler.deinit();
+    }
+
+    /// Get profiler statistics
+    pub fn getProfilerStats(self: *Self) ProfilerStats {
+        return self.profiler.getStats();
+    }
+
+    /// Get profile for specific function
+    pub fn getFunctionProfile(self: *Self, address: u32) ?FunctionProfile {
+        return self.profiler.getProfile(address);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -249,22 +456,113 @@ pub const JITAdapter = struct {
     /// Mixed mode: interpret + JIT hot paths
     /// Автоматически использует нативный код когда доступен
     fn executeMixed(self: *Self, code: []const u8) !Value {
-        // Проверяем есть ли уже скомпилированный нативный код для начала программы
+        const entry_addr: u32 = 0;
+
+        // Record function entry in profiler
+        const should_compile = try self.profiler.recordEntry(entry_addr);
+
+        // Check if we have native code and should use it
         if (self.config.use_native) {
-            if (self.tryExecuteNative(0)) |native_result| {
+            if (self.tryExecuteNative(entry_addr)) |native_result| {
                 self.native_instructions += 1;
+                self.profiler.recordExit(entry_addr, 0); // Native is fast
                 return .{ .int_val = native_result };
             }
         }
 
-        // Первый проход: выполняем через интерпретатор с профилированием
+        // Execute via interpreter
+        const exec_start = std.time.nanoTimestamp();
         const result = try self.vm.run();
-        self.interpreter_instructions = self.vm.instructions_executed;
+        const exec_end = std.time.nanoTimestamp();
+        const exec_time: u64 = @intCast(@max(0, exec_end - exec_start));
 
-        // Анализируем hot paths и компилируем в нативный код
+        self.interpreter_instructions = self.vm.instructions_executed;
+        self.profiler.recordExit(entry_addr, exec_time);
+
+        // If profiler says compile, do it now
+        if (should_compile and self.config.use_native) {
+            try self.compileHotFunction(entry_addr, code);
+        }
+
+        // Analyze hot paths for future compilations
         try self.analyzeHotPaths(code);
 
         return result;
+    }
+
+    /// Compile a hot function to native code
+    fn compileHotFunction(self: *Self, address: u32, code: []const u8) !void {
+        // Skip if already compiled
+        if (self.native_cache.contains(address)) {
+            self.profiler.markCompiled(address);
+            return;
+        }
+
+        const compile_start = std.time.nanoTimestamp();
+
+        // Record trace for the function
+        try self.jit_compiler.startTrace(address);
+
+        var ip: usize = address;
+        var trace_len: usize = 0;
+        const max_trace = self.config.trace_max_length;
+
+        while (ip < code.len and trace_len < max_trace) {
+            const opcode_byte = code[ip];
+            const opcode: Opcode = @enumFromInt(opcode_byte);
+            const type_info = inferTypeFromOpcode(opcode);
+
+            const operand_size = opcode.operandSize();
+            var operand: u16 = 0;
+            if (operand_size >= 2 and ip + 2 < code.len) {
+                operand = (@as(u16, code[ip + 1]) << 8) | @as(u16, code[ip + 2]);
+            } else if (operand_size == 1 and ip + 1 < code.len) {
+                operand = code[ip + 1];
+            }
+
+            try self.jit_compiler.recordInstruction(opcode, operand, type_info);
+            trace_len += 1;
+
+            if (opcode == .HALT or opcode == .RET) {
+                _ = try self.jit_compiler.stopTrace(false, 0);
+                break;
+            }
+
+            if (opcode == .LOOP) {
+                _ = try self.jit_compiler.stopTrace(true, address);
+                break;
+            }
+
+            ip += 1 + operand_size;
+        }
+
+        // Try to compile to native
+        if (self.jit_compiler.lookupCode(address)) |compiled_code| {
+            var native_compiler = NativeCompiler.init(self.allocator);
+
+            if (native_compiler.compile(compiled_code.ir.items)) |machine_code| {
+                defer self.allocator.free(machine_code);
+                native_compiler.deinit();
+
+                // Create executable memory region
+                if (ExecutableCode.init(machine_code)) |executable| {
+                    try self.native_cache.put(address, NativeCodeEntry{
+                        .executable = executable,
+                        .execution_count = 0,
+                        .is_valid = true,
+                    });
+                    self.profiler.markCompiled(address);
+                } else |_| {
+                    // Failed to create executable memory
+                }
+            } else |_| {
+                native_compiler.deinit();
+                // Compilation failed, continue with interpreter
+            }
+        }
+
+        const compile_end = std.time.nanoTimestamp();
+        self.native_compile_time_ns += @intCast(@max(0, compile_end - compile_start));
     }
 
     /// Full JIT mode: compile everything aggressively
@@ -1174,5 +1472,237 @@ test "Бенчмарк: нативный код vs интерпретатор" {
         std.debug.print("Итераций: {d}\n", .{iterations});
         std.debug.print("Время: {d} нс ({d:.2} нс/итер)\n", .{ native_time, per_iter });
         std.debug.print("Результат: {d} (ожидалось 5)\n", .{result});
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HOT PATH PROFILER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "HotPathProfiler basic profiling" {
+    const allocator = std.testing.allocator;
+
+    var profiler = HotPathProfiler.init(allocator);
+    defer profiler.deinit();
+
+    // Record function entries
+    const addr: u32 = 0x100;
+    for (0..5) |_| {
+        _ = try profiler.recordEntry(addr);
+    }
+
+    // Check profile
+    const profile = profiler.getProfile(addr).?;
+    try std.testing.expectEqual(@as(u64, 5), profile.execution_count);
+    try std.testing.expect(!profile.is_hot); // Below threshold (10)
+    try std.testing.expect(!profile.is_compiled);
+
+    // Stats
+    const stats = profiler.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.total_functions);
+    try std.testing.expectEqual(@as(usize, 0), stats.hot_functions);
+}
+
+test "HotPathProfiler hot detection" {
+    const allocator = std.testing.allocator;
+
+    var profiler = HotPathProfiler.initWithThresholds(allocator, 5, 10);
+    defer profiler.deinit();
+
+    const addr: u32 = 0x200;
+
+    // Execute 4 times - not hot yet
+    for (0..4) |_| {
+        const should_compile = try profiler.recordEntry(addr);
+        try std.testing.expect(!should_compile);
+    }
+    try std.testing.expect(!profiler.getProfile(addr).?.is_hot);
+
+    // 5th execution - becomes hot
+    _ = try profiler.recordEntry(addr);
+    try std.testing.expect(profiler.getProfile(addr).?.is_hot);
+
+    const stats = profiler.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.hot_functions);
+}
+
+test "HotPathProfiler JIT trigger" {
+    const allocator = std.testing.allocator;
+
+    var profiler = HotPathProfiler.initWithThresholds(allocator, 5, 10);
+    defer profiler.deinit();
+
+    const addr: u32 = 0x300;
+
+    // Execute 9 times - hot but not compiled
+    for (0..9) |_| {
+        const should_compile = try profiler.recordEntry(addr);
+        try std.testing.expect(!should_compile);
+    }
+
+    // 10th execution - triggers JIT
+    const should_compile = try profiler.recordEntry(addr);
+    try std.testing.expect(should_compile);
+
+    // Mark as compiled
+    profiler.markCompiled(addr);
+    try std.testing.expect(profiler.getProfile(addr).?.is_compiled);
+
+    // 11th execution - already compiled, no trigger
+    const should_compile_again = try profiler.recordEntry(addr);
+    try std.testing.expect(!should_compile_again);
+}
+
+test "HotPathProfiler multiple functions" {
+    const allocator = std.testing.allocator;
+
+    var profiler = HotPathProfiler.initWithThresholds(allocator, 3, 5);
+    defer profiler.deinit();
+
+    // Function A: called 10 times (hot, should compile)
+    for (0..10) |_| {
+        _ = try profiler.recordEntry(0x100);
+    }
+
+    // Function B: called 4 times (hot, not compiled yet)
+    for (0..4) |_| {
+        _ = try profiler.recordEntry(0x200);
+    }
+
+    // Function C: called 2 times (not hot)
+    for (0..2) |_| {
+        _ = try profiler.recordEntry(0x300);
+    }
+
+    const stats = profiler.getStats();
+    try std.testing.expectEqual(@as(usize, 3), stats.total_functions);
+    try std.testing.expectEqual(@as(usize, 2), stats.hot_functions); // A and B
+    try std.testing.expectEqual(@as(u32, 0x100), stats.hottest_address);
+    try std.testing.expectEqual(@as(u64, 10), stats.hottest_count);
+
+    // Get uncompiled hot functions
+    const hot_uncompiled = try profiler.getHotUncompiled(allocator);
+    defer allocator.free(hot_uncompiled);
+    try std.testing.expectEqual(@as(usize, 1), hot_uncompiled.len); // Only A (>=5 calls)
+}
+
+test "HotPathProfiler timing" {
+    const allocator = std.testing.allocator;
+
+    var profiler = HotPathProfiler.init(allocator);
+    defer profiler.deinit();
+
+    const addr: u32 = 0x400;
+
+    // Record entry
+    _ = try profiler.recordEntry(addr);
+
+    // Simulate execution time
+    profiler.recordExit(addr, 1000); // 1000 ns
+
+    _ = try profiler.recordEntry(addr);
+    profiler.recordExit(addr, 2000); // 2000 ns
+
+    const profile = profiler.getProfile(addr).?;
+    try std.testing.expectEqual(@as(u64, 3000), profile.total_time_ns);
+    try std.testing.expectEqual(@as(u64, 1500), profile.avgTimeNs()); // 3000/2
+}
+
+test "HotPathProfiler integration with JITAdapter" {
+    const allocator = std.testing.allocator;
+
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Set low thresholds for testing
+    adapter.profiler.hot_threshold = 2;
+    adapter.profiler.jit_threshold = 3;
+
+    // Simulate multiple executions
+    for (0..5) |_| {
+        _ = try adapter.profiler.recordEntry(0);
+    }
+
+    const stats = adapter.getProfilerStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.total_functions);
+    try std.testing.expectEqual(@as(usize, 1), stats.hot_functions);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Hot Path Profiler Integration ===\n", .{});
+        std.debug.print("Total functions: {d}\n", .{stats.total_functions});
+        std.debug.print("Hot functions: {d}\n", .{stats.hot_functions});
+        std.debug.print("Compiled functions: {d}\n", .{stats.compiled_functions});
+        std.debug.print("Total executions: {d}\n", .{stats.total_executions});
+    }
+}
+
+test "Benchmark: Hot Path Profiler automatic JIT" {
+    const allocator = std.testing.allocator;
+
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Configure for automatic JIT after 10 executions
+    adapter.profiler.hot_threshold = 5;
+    adapter.profiler.jit_threshold = 10;
+
+    // Pre-compile native code for address 0
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const iterations: usize = 1000;
+
+    // Phase 1: Cold execution (profiling only)
+    const cold_start = std.time.nanoTimestamp();
+    for (0..9) |_| {
+        const should_compile = try adapter.profiler.recordEntry(0);
+        try std.testing.expect(!should_compile);
+        adapter.profiler.recordExit(0, 100);
+    }
+    const cold_end = std.time.nanoTimestamp();
+    const cold_time: u64 = @intCast(@max(0, cold_end - cold_start));
+
+    // Phase 2: JIT trigger
+    const should_compile = try adapter.profiler.recordEntry(0);
+    try std.testing.expect(should_compile);
+
+    // Compile to native
+    try adapter.compileToNative(0, &ir);
+    adapter.profiler.markCompiled(0);
+
+    // Phase 3: Hot execution (native code)
+    const hot_start = std.time.nanoTimestamp();
+    var result: i64 = 0;
+    for (0..iterations) |_| {
+        result = adapter.tryExecuteNative(0).?;
+        _ = try adapter.profiler.recordEntry(0);
+    }
+    const hot_end = std.time.nanoTimestamp();
+    const hot_time: u64 = @intCast(@max(0, hot_end - hot_start));
+
+    // Verify result
+    try std.testing.expectEqual(@as(i64, 15), result);
+
+    // Get final stats
+    const stats = adapter.getProfilerStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.total_functions);
+    try std.testing.expect(stats.hot_functions >= 1);
+    try std.testing.expectEqual(@as(usize, 1), stats.compiled_functions);
+
+    if (@import("builtin").mode == .Debug) {
+        const cold_per_iter = @as(f64, @floatFromInt(cold_time)) / 9.0;
+        const hot_per_iter = @as(f64, @floatFromInt(hot_time)) / @as(f64, @floatFromInt(iterations));
+        const speedup = cold_per_iter / hot_per_iter;
+
+        std.debug.print("\n=== Benchmark: Hot Path Profiler Automatic JIT ===\n", .{});
+        std.debug.print("Cold phase (9 iters): {d} ns ({d:.2} ns/iter)\n", .{ cold_time, cold_per_iter });
+        std.debug.print("Hot phase ({d} iters): {d} ns ({d:.2} ns/iter)\n", .{ iterations, hot_time, hot_per_iter });
+        std.debug.print("Speedup after JIT: {d:.1}x\n", .{speedup});
+        std.debug.print("Total executions: {d}\n", .{stats.total_executions});
+        std.debug.print("Compiled functions: {d}\n", .{stats.compiled_functions});
     }
 }
