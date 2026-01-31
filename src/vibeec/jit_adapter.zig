@@ -479,6 +479,170 @@ pub const VectorizationStats = struct {
     }
 };
 
+/// Array loop pattern types
+pub const ArrayLoopPattern = enum {
+    ArrayAdd,      // c[i] = a[i] + b[i]
+    ArrayMul,      // c[i] = a[i] * b[i]
+    ArraySum,      // sum += a[i]
+    ArrayMax,      // max = max(max, a[i])
+    ArrayMin,      // min = min(min, a[i])
+    ArrayDot,      // dot += a[i] * b[i]
+    Unknown,
+};
+
+/// Detected array loop information
+pub const ArrayLoopInfo = struct {
+    pattern: ArrayLoopPattern,
+    base_ptr_reg: u8,
+    index_reg: u8,
+    stride: i32,
+    element_size: u32,
+    iteration_count: ?u32,
+    has_second_array: bool,
+    second_base_reg: u8,
+    result_reg: u8,
+};
+
+/// Auto-Vectorizer: integrates VectorizationCostModel with SIMDArrayOps
+pub const AutoVectorizer = struct {
+    allocator: Allocator,
+    cost_model: VectorizationCostModel,
+    stats: VectorizationStats,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .cost_model = VectorizationCostModel.initWithAVX(),
+            .stats = VectorizationStats.init(),
+        };
+    }
+
+    /// Detect array loop pattern from IR
+    pub fn detectArrayPattern(self: *Self, loop: LoopInfo, ir: []const IRInstruction) ?ArrayLoopInfo {
+        _ = self;
+        const body_start = loop.start_idx;
+        const body_end = @min(loop.end_idx, ir.len);
+
+        var has_load = false;
+        var has_store = false;
+        var has_add = false;
+        var has_mul = false;
+        var load_reg: u8 = 0;
+        var store_reg: u8 = 0;
+        var accumulator_reg: u8 = 0;
+        var is_reduction = false;
+
+        for (ir[body_start..body_end]) |instr| {
+            switch (instr.opcode) {
+                .LOAD_LOCAL, .LOAD_GLOBAL => {
+                    has_load = true;
+                    load_reg = instr.src1;
+                },
+                .STORE_LOCAL, .STORE_GLOBAL => {
+                    has_store = true;
+                    store_reg = instr.dest;
+                },
+                .ADD_INT, .ADD_FLOAT => {
+                    has_add = true;
+                    // Check for reduction pattern: acc = acc + val
+                    if (instr.dest == instr.src1 or instr.dest == instr.src2) {
+                        is_reduction = true;
+                        accumulator_reg = instr.dest;
+                    }
+                },
+                .MUL_INT, .MUL_FLOAT => {
+                    has_mul = true;
+                },
+                else => {},
+            }
+        }
+
+        // Determine pattern
+        var pattern: ArrayLoopPattern = .Unknown;
+
+        if (has_load and has_store and has_add and !is_reduction) {
+            pattern = .ArrayAdd;
+        } else if (has_load and has_store and has_mul and !is_reduction) {
+            pattern = .ArrayMul;
+        } else if (has_load and has_add and is_reduction and !has_mul) {
+            pattern = .ArraySum;
+        } else if (has_load and has_mul and has_add and is_reduction) {
+            pattern = .ArrayDot;
+        }
+
+        if (pattern == .Unknown) return null;
+
+        return ArrayLoopInfo{
+            .pattern = pattern,
+            .base_ptr_reg = load_reg,
+            .index_reg = 0, // Would need more analysis
+            .stride = 4, // Assume i32
+            .element_size = 4,
+            .iteration_count = loop.iteration_count,
+            .has_second_array = has_mul or (has_add and has_store),
+            .second_base_reg = 0,
+            .result_reg = if (is_reduction) accumulator_reg else store_reg,
+        };
+    }
+
+    /// Decide if loop should be vectorized
+    pub fn shouldVectorize(self: *Self, loop: LoopInfo, ir: []const IRInstruction) bool {
+        const decision = self.cost_model.makeDecision(loop, ir);
+        self.stats.recordAnalysis(decision);
+        return decision.should_vectorize;
+    }
+
+    /// Get the appropriate SIMD operation for a pattern
+    pub fn getSIMDOperation(self: *Self, pattern: ArrayLoopPattern) ?*const fn (*x86_codegen.SIMDArrayOps) anyerror!x86_codegen.ExecutableCode {
+        _ = self;
+        return switch (pattern) {
+            .ArrayAdd => &x86_codegen.SIMDArrayOps.generateArrayAdd,
+            .ArrayMul => &x86_codegen.SIMDArrayOps.generateArrayMul,
+            .ArraySum => &x86_codegen.SIMDArrayOps.generateArraySum,
+            .ArrayMax => &x86_codegen.SIMDArrayOps.generateArrayMax,
+            else => null,
+        };
+    }
+
+    /// Vectorize a detected array loop
+    pub fn vectorizeArrayLoop(self: *Self, loop_info: ArrayLoopInfo) !?x86_codegen.ExecutableCode {
+        var simd_ops = x86_codegen.SIMDArrayOps.init(self.allocator);
+
+        const exec = switch (loop_info.pattern) {
+            .ArrayAdd => try simd_ops.generateArrayAdd(),
+            .ArrayMul => try simd_ops.generateArrayMul(),
+            .ArraySum => try simd_ops.generateArraySum(),
+            .ArrayMax => try simd_ops.generateArrayMax(),
+            else => return null,
+        };
+
+        self.stats.loops_vectorized += 1;
+        self.stats.estimated_speedup_total += 4.0; // Assume 4x speedup for SSE
+
+        return exec;
+    }
+
+    /// Full auto-vectorization pipeline
+    pub fn autoVectorize(self: *Self, loop: LoopInfo, ir: []const IRInstruction) !?x86_codegen.ExecutableCode {
+        // Step 1: Check if vectorization is profitable
+        if (!self.shouldVectorize(loop, ir)) {
+            return null;
+        }
+
+        // Step 2: Detect array pattern
+        const pattern_info = self.detectArrayPattern(loop, ir) orelse return null;
+
+        // Step 3: Generate vectorized code
+        return try self.vectorizeArrayLoop(pattern_info);
+    }
+
+    pub fn getStats(self: *Self) VectorizationStats {
+        return self.stats;
+    }
+};
+
 /// Cost model for vectorization decisions
 pub const VectorizationCostModel = struct {
     /// Hardware features
@@ -17700,6 +17864,175 @@ test "VectorizationCostModel analyzeDependencies reduction" {
     const deps = model.analyzeDependencies(loop, &ir);
     try std.testing.expect(deps.has_reduction);
     try std.testing.expect(deps.can_parallelize);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-VECTORIZER INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "AutoVectorizer init" {
+    const allocator = std.testing.allocator;
+    const vectorizer = AutoVectorizer.init(allocator);
+
+    try std.testing.expectEqual(@as(u32, 256), vectorizer.cost_model.simd_width);
+    try std.testing.expect(vectorizer.cost_model.has_avx);
+    try std.testing.expectEqual(@as(u64, 0), vectorizer.stats.loops_analyzed);
+}
+
+test "AutoVectorizer detectArrayPattern ArrayAdd" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64,
+        .body_size = 4,
+    };
+
+    // Pattern: c[i] = a[i] + b[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // load b[i]
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },     // add
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // store c[i]
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArrayAdd, pattern.?.pattern);
+}
+
+test "AutoVectorizer detectArrayPattern ArraySum" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 2,
+        .iteration_count = 100,
+        .body_size = 2,
+    };
+
+    // Pattern: sum += a[i] (reduction)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 },     // sum = sum + a[i]
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArraySum, pattern.?.pattern);
+}
+
+test "AutoVectorizer detectArrayPattern ArrayDot" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 3,
+        .iteration_count = 100,
+        .body_size = 3,
+    };
+
+    // Pattern: dot += a[i] * b[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 1, .src2 = 3, .imm = 0 },     // tmp = a[i] * b[i]
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 2, .imm = 0 },     // dot = dot + tmp
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArrayDot, pattern.?.pattern);
+}
+
+test "AutoVectorizer shouldVectorize" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    // Large loop - should vectorize
+    const large_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 10,
+        .iteration_count = 64,
+        .body_size = 10,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 4, .src1 = 4, .src2 = 0, .imm = 1 },
+        .{ .opcode = .CMP_LT_INT, .dest = 5, .src1 = 4, .src2 = 0, .imm = 64 },
+        .{ .opcode = .JUMP_IF_NOT_ZERO, .dest = 0, .src1 = 5, .src2 = 0, .imm = -6 },
+        .{ .opcode = .DUP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .POP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -9 },
+    };
+
+    const should = vectorizer.shouldVectorize(large_loop, &ir);
+    try std.testing.expect(should);
+    try std.testing.expectEqual(@as(u64, 1), vectorizer.stats.loops_analyzed);
+}
+
+test "AutoVectorizer vectorizeArrayLoop ArrayAdd" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop_info = ArrayLoopInfo{
+        .pattern = .ArrayAdd,
+        .base_ptr_reg = 0,
+        .index_reg = 1,
+        .stride = 4,
+        .element_size = 4,
+        .iteration_count = 64,
+        .has_second_array = true,
+        .second_base_reg = 2,
+        .result_reg = 3,
+    };
+
+    var exec = try vectorizer.vectorizeArrayLoop(loop_info);
+    try std.testing.expect(exec != null);
+    defer exec.?.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), vectorizer.stats.loops_vectorized);
+    try std.testing.expect(vectorizer.stats.estimated_speedup_total > 0);
+}
+
+test "AutoVectorizer end-to-end ArrayAdd execution" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    // Use vectorizeArrayLoop directly with ArrayAdd pattern
+    const loop_info = ArrayLoopInfo{
+        .pattern = .ArrayAdd,
+        .base_ptr_reg = 0,
+        .index_reg = 1,
+        .stride = 4,
+        .element_size = 4,
+        .iteration_count = 8,
+        .has_second_array = true,
+        .second_base_reg = 2,
+        .result_reg = 3,
+    };
+
+    var exec = try vectorizer.vectorizeArrayLoop(loop_info);
+    try std.testing.expect(exec != null);
+    defer exec.?.deinit();
+
+    // Execute the generated code
+    var a align(16) = [8]i32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var b align(16) = [8]i32{ 10, 20, 30, 40, 50, 60, 70, 80 };
+    var result align(16) = [8]i32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec.?.code.ptr);
+    func(&a, &b, &result, 8);
+
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 88), result[7]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
