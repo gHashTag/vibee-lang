@@ -398,6 +398,170 @@ pub const ProfilerStats = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// LOOP UNROLLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Detected loop information
+pub const LoopInfo = struct {
+    start_idx: usize, // Index of first instruction in loop body
+    end_idx: usize, // Index of LOOP_BACK or backward JUMP
+    iteration_count: ?u32, // Known iteration count (if constant)
+    body_size: usize, // Number of instructions in loop body
+
+    pub fn bodyInstructions(self: LoopInfo) usize {
+        return self.end_idx - self.start_idx;
+    }
+};
+
+/// Loop Unroller - detects and unrolls simple loops
+pub const LoopUnroller = struct {
+    allocator: Allocator,
+    /// Default unroll factor
+    unroll_factor: u32 = 4,
+    /// Maximum loop body size to unroll
+    max_body_size: usize = 16,
+    /// Statistics
+    loops_detected: usize = 0,
+    loops_unrolled: usize = 0,
+    instructions_saved: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .unroll_factor = 4,
+            .max_body_size = 16,
+            .loops_detected = 0,
+            .loops_unrolled = 0,
+            .instructions_saved = 0,
+        };
+    }
+
+    pub fn initWithFactor(allocator: Allocator, factor: u32) Self {
+        var unroller = Self.init(allocator);
+        unroller.unroll_factor = factor;
+        return unroller;
+    }
+
+    /// Detect loops in IR code
+    pub fn detectLoops(self: *Self, ir: []const IRInstruction) ![]LoopInfo {
+        var loops = std.ArrayList(LoopInfo).init(self.allocator);
+        errdefer loops.deinit();
+
+        var i: usize = 0;
+        while (i < ir.len) : (i += 1) {
+            const instr = ir[i];
+
+            // Look for backward jumps (LOOP_BACK or JUMP with negative offset)
+            if (instr.opcode == .LOOP_BACK) {
+                const target: usize = @intCast(instr.imm);
+                if (target < i) {
+                    self.loops_detected += 1;
+                    try loops.append(LoopInfo{
+                        .start_idx = target,
+                        .end_idx = i,
+                        .iteration_count = null, // Unknown
+                        .body_size = i - target,
+                    });
+                }
+            } else if (instr.opcode == .JUMP) {
+                const target: usize = @intCast(instr.imm);
+                if (target < i) {
+                    // Backward jump - potential loop
+                    self.loops_detected += 1;
+                    try loops.append(LoopInfo{
+                        .start_idx = target,
+                        .end_idx = i,
+                        .iteration_count = null,
+                        .body_size = i - target,
+                    });
+                }
+            }
+        }
+
+        return loops.toOwnedSlice();
+    }
+
+    /// Unroll a single loop
+    pub fn unrollLoop(self: *Self, ir: []const IRInstruction, loop: LoopInfo) ![]IRInstruction {
+        // Check if loop is suitable for unrolling
+        if (loop.body_size > self.max_body_size) {
+            // Too large, return original
+            return self.allocator.dupe(IRInstruction, ir);
+        }
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Copy instructions before loop
+        for (ir[0..loop.start_idx]) |instr| {
+            try result.append(instr);
+        }
+
+        // Get loop body
+        const body = ir[loop.start_idx..loop.end_idx];
+
+        // Unroll loop body N times
+        const factor = self.unroll_factor;
+        for (0..factor) |_| {
+            for (body) |instr| {
+                // Skip the backward jump in unrolled copies (except last)
+                if (instr.opcode != .LOOP_BACK and instr.opcode != .JUMP) {
+                    try result.append(instr);
+                }
+            }
+        }
+
+        // Add remaining instructions after loop
+        if (loop.end_idx + 1 < ir.len) {
+            for (ir[loop.end_idx + 1 ..]) |instr| {
+                try result.append(instr);
+            }
+        }
+
+        self.loops_unrolled += 1;
+        const original_size = ir.len;
+        const new_size = result.items.len;
+        if (new_size < original_size * factor) {
+            self.instructions_saved += (original_size * factor) - new_size;
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Optimize IR by unrolling all suitable loops
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        const loops = try self.detectLoops(ir);
+        defer self.allocator.free(loops);
+
+        if (loops.len == 0) {
+            // No loops, return copy
+            return self.allocator.dupe(IRInstruction, ir);
+        }
+
+        // Unroll first suitable loop (simple approach)
+        for (loops) |loop| {
+            if (loop.body_size <= self.max_body_size) {
+                return self.unrollLoop(ir, loop);
+            }
+        }
+
+        // No suitable loops
+        return self.allocator.dupe(IRInstruction, ir);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { detected: usize, unrolled: usize, saved: usize } {
+        return .{
+            .detected = self.loops_detected,
+            .unrolled = self.loops_unrolled,
+            .saved = self.instructions_saved,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -445,6 +609,10 @@ pub const TieredCompiler = struct {
     native_cache: std.AutoHashMap(u32, ExecutableCode),
     /// Thresholds for tier promotion
     thresholds: TierThresholds,
+    /// Loop unroller for optimization
+    loop_unroller: LoopUnroller,
+    /// Enable loop unrolling optimization
+    enable_unrolling: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -457,6 +625,8 @@ pub const TieredCompiler = struct {
             .jit_ir_cache = std.AutoHashMap(u32, []IRInstruction).init(allocator),
             .native_cache = std.AutoHashMap(u32, ExecutableCode).init(allocator),
             .thresholds = TierThresholds{},
+            .loop_unroller = LoopUnroller.init(allocator),
+            .enable_unrolling = true,
             .stats = TieredStats.init(),
         };
     }
@@ -531,9 +701,13 @@ pub const TieredCompiler = struct {
 
         switch (state.current_tier) {
             .JIT_IR => {
-                // Copy IR to cache
-                const ir_copy = try self.allocator.dupe(IRInstruction, ir);
-                try self.jit_ir_cache.put(address, ir_copy);
+                // Optimize IR with loop unrolling if enabled
+                const optimized_ir = if (self.enable_unrolling)
+                    try self.loop_unroller.optimize(ir)
+                else
+                    try self.allocator.dupe(IRInstruction, ir);
+
+                try self.jit_ir_cache.put(address, optimized_ir);
                 self.stats.tier1_promotions += 1;
 
                 const compile_time: u64 = @intCast(@max(0, std.time.nanoTimestamp() - compile_start));
@@ -541,9 +715,19 @@ pub const TieredCompiler = struct {
                 self.stats.total_compile_time_ns += compile_time;
             },
             .Native => {
-                // Compile IR to native
+                // Get optimized IR from cache or optimize now
+                const optimized_ir = self.jit_ir_cache.get(address) orelse blk: {
+                    if (self.enable_unrolling) {
+                        break :blk try self.loop_unroller.optimize(ir);
+                    } else {
+                        break :blk try self.allocator.dupe(IRInstruction, ir);
+                    }
+                };
+                defer if (self.jit_ir_cache.get(address) == null) self.allocator.free(optimized_ir);
+
+                // Compile optimized IR to native
                 var native_compiler = NativeCompiler.init(self.allocator);
-                if (native_compiler.compile(ir)) |machine_code| {
+                if (native_compiler.compile(optimized_ir)) |machine_code| {
                     defer self.allocator.free(machine_code);
                     native_compiler.deinit();
 
@@ -2843,5 +3027,161 @@ test "Benchmark: Native call overhead analysis" {
         std.debug.print("IR interpreter: {d:.2} ns/iter\n", .{ir_per_iter});
         std.debug.print("HashMap lookup only: {d:.2} ns/iter\n", .{lookup_per_iter});
         std.debug.print("Speedup (IR vs Native): {d:.1}x\n", .{ir_per_iter / direct_per_iter});
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOOP UNROLLER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "LoopUnroller detect simple loop" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    // IR with a simple loop: instructions 0-3, then LOOP_BACK to 1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 0: init
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 1 }, // 1: loop start
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, // 2: body
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // 3: back to 1
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 4: return
+    };
+
+    const loops = try unroller.detectLoops(&ir);
+    defer allocator.free(loops);
+
+    try std.testing.expectEqual(@as(usize, 1), loops.len);
+    try std.testing.expectEqual(@as(usize, 1), loops[0].start_idx);
+    try std.testing.expectEqual(@as(usize, 3), loops[0].end_idx);
+    try std.testing.expectEqual(@as(usize, 2), loops[0].body_size);
+}
+
+test "LoopUnroller unroll simple loop" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.initWithFactor(allocator, 2); // Unroll 2x
+
+    // Simple loop body
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 0: init
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // 1: loop body
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // 2: back to 1
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 3: return
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 1,
+        .end_idx = 2,
+        .iteration_count = null,
+        .body_size = 1,
+    };
+
+    const unrolled = try unroller.unrollLoop(&ir, loop);
+    defer allocator.free(unrolled);
+
+    // Should have: init + (body * 2) + return = 1 + 2 + 1 = 4
+    try std.testing.expectEqual(@as(usize, 4), unrolled.len);
+
+    const stats = unroller.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.unrolled);
+}
+
+test "LoopUnroller optimize with no loops" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+
+    // No loops
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try unroller.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Should be unchanged
+    try std.testing.expectEqual(@as(usize, 2), optimized.len);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[0].opcode);
+    try std.testing.expectEqual(jit.IROpcode.RETURN, optimized[1].opcode);
+}
+
+test "LoopUnroller skip large loops" {
+    const allocator = std.testing.allocator;
+
+    var unroller = LoopUnroller.init(allocator);
+    unroller.max_body_size = 2; // Only unroll loops with <= 2 instructions
+
+    // Loop with 5 instructions in body (too large)
+    var ir_list = std.ArrayList(IRInstruction).init(allocator);
+    defer ir_list.deinit();
+
+    try ir_list.append(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 });
+    for (0..5) |_| {
+        try ir_list.append(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 });
+    }
+    try ir_list.append(.{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 });
+    try ir_list.append(.{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 });
+
+    const optimized = try unroller.optimize(ir_list.items);
+    defer allocator.free(optimized);
+
+    // Should be unchanged (loop too large)
+    try std.testing.expectEqual(ir_list.items.len, optimized.len);
+}
+
+test "Benchmark: Loop unrolling effect" {
+    const allocator = std.testing.allocator;
+
+    // Create a simple loop: sum = 0; for i in 0..4: sum += 1
+    const loop_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // sum = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 1 }, // inc = 1
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, // sum += inc
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 }, // back to ADD
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // return sum
+    };
+
+    // Unroll 4x
+    var unroller = LoopUnroller.initWithFactor(allocator, 4);
+    const unrolled_ir = try unroller.optimize(&loop_ir);
+    defer allocator.free(unrolled_ir);
+
+    const iterations: usize = 10000;
+
+    // Benchmark original loop
+    const loop_start = std.time.nanoTimestamp();
+    var loop_result: i64 = 0;
+    for (0..iterations) |_| {
+        loop_result = interpretIRCode(&loop_ir);
+    }
+    const loop_end = std.time.nanoTimestamp();
+    const loop_time: u64 = @intCast(@max(0, loop_end - loop_start));
+
+    // Benchmark unrolled
+    const unrolled_start = std.time.nanoTimestamp();
+    var unrolled_result: i64 = 0;
+    for (0..iterations) |_| {
+        unrolled_result = interpretIRCode(unrolled_ir);
+    }
+    const unrolled_end = std.time.nanoTimestamp();
+    const unrolled_time: u64 = @intCast(@max(0, unrolled_end - unrolled_start));
+
+    const stats = unroller.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        const loop_per_iter = @as(f64, @floatFromInt(loop_time)) / @as(f64, @floatFromInt(iterations));
+        const unrolled_per_iter = @as(f64, @floatFromInt(unrolled_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Loop Unrolling Benchmark ===\n", .{});
+        std.debug.print("Original loop: {d:.2} ns/iter (result: {d})\n", .{ loop_per_iter, loop_result });
+        std.debug.print("Unrolled (4x): {d:.2} ns/iter (result: {d})\n", .{ unrolled_per_iter, unrolled_result });
+        std.debug.print("Original size: {d} instructions\n", .{loop_ir.len});
+        std.debug.print("Unrolled size: {d} instructions\n", .{unrolled_ir.len});
+        std.debug.print("Loops detected: {d}, unrolled: {d}\n", .{ stats.detected, stats.unrolled });
+        if (loop_per_iter > unrolled_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{loop_per_iter / unrolled_per_iter});
+        }
     }
 }
