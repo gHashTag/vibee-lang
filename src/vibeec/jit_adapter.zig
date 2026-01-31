@@ -705,6 +705,219 @@ pub const ConstantFolder = struct {
                     }
                 },
 
+                .MOD_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null and b.? != 0) {
+                        const folded_value = @mod(a.?, b.?);
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .SHL => {
+                    const a = reg_constants[instr.src1];
+                    const shift = if (instr.imm != 0) instr.imm else reg_constants[instr.src2];
+                    if (a != null and shift != null) {
+                        const shift_amt: u6 = @intCast(@min(63, @max(0, shift.?)));
+                        const folded_value = a.? << shift_amt;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .SHR => {
+                    const a = reg_constants[instr.src1];
+                    const shift = if (instr.imm != 0) instr.imm else reg_constants[instr.src2];
+                    if (a != null and shift != null) {
+                        const shift_amt: u6 = @intCast(@min(63, @max(0, shift.?)));
+                        const folded_value = a.? >> shift_amt;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .LEA => {
+                    const a = reg_constants[instr.src1];
+                    if (a != null) {
+                        // LEA: dest = src1 + src1 * scale
+                        const folded_value = a.? + a.? * instr.imm;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                // Comparison folding
+                .CMP_LT_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? < b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .CMP_LE_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? <= b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .CMP_GT_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? > b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .CMP_GE_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? >= b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .CMP_EQ_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? == b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .CMP_NE_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value: i64 = if (a.? != b.?) 1 else 0;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
                 // Instructions that invalidate register constants
                 .STORE_LOCAL, .STORE_GLOBAL => {
                     try result.append(instr);
@@ -4064,6 +4277,108 @@ test "ConstantFolder division by zero protection" {
 
     // DIV_INT should remain (not folded due to div by zero)
     try std.testing.expectEqual(jit.IROpcode.DIV_INT, optimized[2].opcode);
+}
+
+test "ConstantFolder fold SHL" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 5, r1 = 5 << 3 = 40
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .SHL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // SHL should be folded to LOAD_CONST 40
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 40), optimized[1].imm);
+}
+
+test "ConstantFolder fold SHR" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 64, r1 = 64 >> 2 = 16
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 64 },
+        .{ .opcode = .SHR, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // SHR should be folded to LOAD_CONST 16
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 16), optimized[1].imm);
+}
+
+test "ConstantFolder fold LEA" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 7, r1 = 7 + 7*2 = 21 (LEA for x*3)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LEA, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // LEA should be folded to LOAD_CONST 21
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 21), optimized[1].imm);
+}
+
+test "ConstantFolder fold comparison" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 5, r1 = 10, r2 = (5 < 10) = 1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .CMP_LT_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // CMP_LT_INT should be folded to LOAD_CONST 1
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 1), optimized[2].imm);
+}
+
+test "ConstantFolder fold equality" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 42, r1 = 42, r2 = (42 == 42) = 1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .CMP_EQ_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // CMP_EQ_INT should be folded to LOAD_CONST 1
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 1), optimized[2].imm);
 }
 
 test "Benchmark: Constant folding effect" {
