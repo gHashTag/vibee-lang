@@ -649,6 +649,34 @@ pub const VM = struct {
                 continue;
             }
 
+            // INC_LOCAL - increment local by 1 (superinstruction)
+            if (opcode_byte == 0xAE) { // INC_LOCAL
+                const idx = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                ip += 2;
+                const local_val = self.locals[@min(idx, MAX_LOCALS - 1)];
+                if (local_val == .int_val) {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = local_val.int_val + 1 };
+                } else {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = (local_val.toInt() orelse 0) + 1 };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
+            // DEC_LOCAL - decrement local by 1 (superinstruction)
+            if (opcode_byte == 0xAF) { // DEC_LOCAL
+                const idx = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                ip += 2;
+                const local_val = self.locals[@min(idx, MAX_LOCALS - 1)];
+                if (local_val == .int_val) {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = local_val.int_val - 1 };
+                } else {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = (local_val.toInt() orelse 0) - 1 };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
             // Fast path for common ternary operations (inline dispatch)
             if (opcode_byte == 0x79) { // TRYTE_ADD
                 const b = stack[sp - 1];
@@ -1899,6 +1927,28 @@ pub const VM = struct {
                 const addr = try self.readU16();
                 // Don't push new frame, just jump
                 self.ip = addr;
+            },
+
+            .INC_LOCAL => {
+                // Superinstruction: increment local by 1
+                const idx = try self.readU16();
+                const local = self.locals[@min(idx, MAX_LOCALS - 1)];
+                if (local == .int_val) {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = local.int_val + 1 };
+                } else {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = (local.toInt() orelse 0) + 1 };
+                }
+            },
+
+            .DEC_LOCAL => {
+                // Superinstruction: decrement local by 1
+                const idx = try self.readU16();
+                const local = self.locals[@min(idx, MAX_LOCALS - 1)];
+                if (local == .int_val) {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = local.int_val - 1 };
+                } else {
+                    self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = (local.toInt() orelse 0) - 1 };
+                }
             },
 
             else => return VMError.InvalidOpcode,

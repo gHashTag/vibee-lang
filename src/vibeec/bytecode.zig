@@ -175,12 +175,15 @@ pub const Opcode = enum(u8) {
     LOAD_TRYTE_ADD = 0xA4, // Load local + tryte add (fused)
     INC_LT = 0xA5,
     DEC_GT = 0xA6,
+    // New superinstructions for loop optimization
+    INC_LOCAL = 0xAE, // locals[idx] += 1 (increment local)
+    DEC_LOCAL = 0xAF, // locals[idx] -= 1 (decrement local)
 
     pub fn operandSize(self: Opcode) u8 {
         return switch (self) {
             .PUSH_CONST, .JMP, .JZ, .JNZ, .CALL, .LOOP => 2,
             .LOAD_LOCAL, .STORE_LOCAL, .LOAD_GLOBAL, .STORE_GLOBAL => 2,
-            .LOAD_ADD, .LOAD_SUB, .LOAD_MUL, .TAIL_CALL, .LOAD_TRYTE_ADD => 2,
+            .LOAD_ADD, .LOAD_SUB, .LOAD_MUL, .TAIL_CALL, .LOAD_TRYTE_ADD, .INC_LOCAL, .DEC_LOCAL => 2,
             .LT_JZ, .LE_JZ, .GT_JZ, .GE_JZ, .EQ_JZ, .NE_JZ => 2,
             .CALL_INDIRECT => 1, // arity (number of args)
             .LOAD_ARG, .STORE_ARG => 1, // arg index

@@ -573,15 +573,49 @@ pub const BytecodeCompiler = struct {
             
             // Left side is identifier
             const name = left.token.lexeme(self.source);
-            // Compile right side (value)
-            try self.compileNode(&node.children.items[1]);
-            // Store to variable
+            const right_node = &node.children.items[1];
+            
+            // Optimization: detect i = i + 1 or i = i - 1 patterns
             if (self.resolveLocal(name)) |idx| {
+                if (right_node.kind == .binary_expr and right_node.children.items.len >= 2) {
+                    const rhs_left = &right_node.children.items[0];
+                    const rhs_right = &right_node.children.items[1];
+                    const rhs_op = right_node.token.lexeme(self.source);
+                    
+                    // Check if pattern is: name op literal
+                    if (rhs_left.kind == .identifier) {
+                        const rhs_name = rhs_left.token.lexeme(self.source);
+                        if (std.mem.eql(u8, rhs_name, name)) {
+                            // Pattern: x = x op something
+                            if (rhs_right.kind == .literal_int) {
+                                const val_str = rhs_right.token.lexeme(self.source);
+                                const val = std.fmt.parseInt(i64, val_str, 10) catch 0;
+                                
+                                // x = x + 1 -> INC_LOCAL
+                                if (std.mem.eql(u8, rhs_op, "+") and val == 1) {
+                                    try self.emitter.emitWithU16(.INC_LOCAL, idx);
+                                    try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
+                                    return;
+                                }
+                                // x = x - 1 -> DEC_LOCAL
+                                if (std.mem.eql(u8, rhs_op, "-") and val == 1) {
+                                    try self.emitter.emitWithU16(.DEC_LOCAL, idx);
+                                    try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Default: compile right side and store
+                try self.compileNode(right_node);
                 try self.emitter.emitWithU16(.STORE_LOCAL, idx);
                 // Push value back for expression result
                 try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
             } else {
                 // Variable not found - create it as global
+                try self.compileNode(right_node);
                 const idx = try self.addLocal(name);
                 try self.emitter.emitWithU16(.STORE_LOCAL, idx);
                 try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
