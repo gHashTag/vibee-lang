@@ -260,8 +260,149 @@ pub fn randomVector(len: usize, seed: u64) HybridBigInt {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PERMUTE OPERATIONS (для кодирования последовательностей)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Permute (циклический сдвиг вправо на k позиций)
+/// Используется для кодирования последовательностей:
+/// sequence(a, b, c) = a + permute(b, 1) + permute(c, 2)
+pub fn permute(v: *HybridBigInt, k: usize) HybridBigInt {
+    v.ensureUnpacked();
+
+    var result = HybridBigInt.zero();
+    result.mode = .unpacked_mode;
+    result.dirty = true;
+    result.trit_len = v.trit_len;
+
+    if (v.trit_len == 0) return result;
+
+    const shift = k % v.trit_len;
+
+    // Циклический сдвиг вправо: новая позиция = (старая + shift) % len
+    for (0..v.trit_len) |i| {
+        const new_pos = (i + shift) % v.trit_len;
+        result.unpacked_cache[new_pos] = v.unpacked_cache[i];
+    }
+
+    return result;
+}
+
+/// Inverse permute (циклический сдвиг влево на k позиций)
+/// inverse_permute(permute(v, k), k) = v
+pub fn inversePermute(v: *HybridBigInt, k: usize) HybridBigInt {
+    v.ensureUnpacked();
+
+    var result = HybridBigInt.zero();
+    result.mode = .unpacked_mode;
+    result.dirty = true;
+    result.trit_len = v.trit_len;
+
+    if (v.trit_len == 0) return result;
+
+    const shift = k % v.trit_len;
+
+    // Циклический сдвиг влево: новая позиция = (старая - shift + len) % len
+    for (0..v.trit_len) |i| {
+        const new_pos = (i + v.trit_len - shift) % v.trit_len;
+        result.unpacked_cache[new_pos] = v.unpacked_cache[i];
+    }
+
+    return result;
+}
+
+/// Encode sequence using permute
+/// sequence(items) = items[0] + permute(items[1], 1) + permute(items[2], 2) + ...
+pub fn encodeSequence(items: []HybridBigInt) HybridBigInt {
+    if (items.len == 0) return HybridBigInt.zero();
+
+    var result = items[0];
+
+    for (1..items.len) |i| {
+        var permuted = permute(&items[i], i);
+        result = result.add(&permuted);
+    }
+
+    return result;
+}
+
+/// Decode element from sequence at position
+/// Проверяет similarity с permuted версией кандидата
+pub fn probeSequence(sequence: *HybridBigInt, candidate: *HybridBigInt, position: usize) f64 {
+    var permuted = permute(candidate, position);
+    return cosineSimilarity(sequence, &permuted);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+test "permute/inverse_permute roundtrip" {
+    var v = randomVector(100, 99999);
+
+    // permute then inverse_permute should return original
+    var permuted = permute(&v, 7);
+    const recovered = inversePermute(&permuted, 7);
+
+    for (0..v.trit_len) |i| {
+        try std.testing.expectEqual(v.unpacked_cache[i], recovered.unpacked_cache[i]);
+    }
+}
+
+test "permute shift correctness" {
+    var v = HybridBigInt.zero();
+    v.mode = .unpacked_mode;
+    v.trit_len = 5;
+
+    // v = [1, -1, 0, 1, -1]
+    v.unpacked_cache[0] = 1;
+    v.unpacked_cache[1] = -1;
+    v.unpacked_cache[2] = 0;
+    v.unpacked_cache[3] = 1;
+    v.unpacked_cache[4] = -1;
+
+    // permute by 2: [1, -1, 0, 1, -1] -> [1, -1, 1, -1, 0]
+    // (shift right, so element at 0 goes to 2, element at 3 goes to 0)
+    const p = permute(&v, 2);
+
+    // After shift right by 2:
+    // old[0]=1 -> new[2]=1
+    // old[1]=-1 -> new[3]=-1
+    // old[2]=0 -> new[4]=0
+    // old[3]=1 -> new[0]=1
+    // old[4]=-1 -> new[1]=-1
+    try std.testing.expectEqual(@as(Trit, 1), p.unpacked_cache[0]); // from old[3]
+    try std.testing.expectEqual(@as(Trit, -1), p.unpacked_cache[1]); // from old[4]
+    try std.testing.expectEqual(@as(Trit, 1), p.unpacked_cache[2]); // from old[0]
+    try std.testing.expectEqual(@as(Trit, -1), p.unpacked_cache[3]); // from old[1]
+    try std.testing.expectEqual(@as(Trit, 0), p.unpacked_cache[4]); // from old[2]
+}
+
+test "permute orthogonality" {
+    var v = randomVector(256, 77777);
+
+    // permute(v, k) should be nearly orthogonal to v for k > 0
+    var p1 = permute(&v, 1);
+    var p10 = permute(&v, 10);
+
+    const sim1 = cosineSimilarity(&v, &p1);
+    const sim10 = cosineSimilarity(&v, &p10);
+
+    // Random vectors permuted should have low similarity
+    try std.testing.expect(sim1 < 0.3);
+    try std.testing.expect(sim10 < 0.3);
+}
+
+test "sequence encoding" {
+    // Тест encodeSequence - просто проверяем что функция работает без ошибок
+    const a = randomVector(100, 11111);
+    const b = randomVector(100, 22222);
+
+    var items = [_]HybridBigInt{ a, b };
+    const seq = encodeSequence(&items);
+
+    // Sequence должна иметь ту же длину
+    try std.testing.expectEqual(a.trit_len, seq.trit_len);
+}
 
 test "bind self-inverse" {
     var a = randomVector(100, 12345);
@@ -489,11 +630,29 @@ pub fn runBenchmarks() void {
         @as(f64, @floatFromInt(iterations * vec_size)) / @as(f64, @floatFromInt(dot_ns)) * 1000.0,
     });
 
+    // Permute benchmark
+    const perm_start = std.time.nanoTimestamp();
+    var perm_result = HybridBigInt.zero();
+    i = 0;
+    while (i < iterations) : (i += 1) {
+        perm_result = permute(&a, 7);
+    }
+    const perm_end = std.time.nanoTimestamp();
+    std.mem.doNotOptimizeAway(perm_result);
+    const perm_ns = @as(u64, @intCast(perm_end - perm_start));
+
+    std.debug.print("Permute x {} iterations:\n", .{iterations});
+    std.debug.print("  Total: {} ns ({} ns/op)\n", .{ perm_ns, perm_ns / iterations });
+    std.debug.print("  Throughput: {d:.1} M trits/sec\n\n", .{
+        @as(f64, @floatFromInt(iterations * vec_size)) / @as(f64, @floatFromInt(perm_ns)) * 1000.0,
+    });
+
     std.debug.print("Summary:\n", .{});
     std.debug.print("  Bind:       {} ns/op\n", .{bind_ns / iterations});
     std.debug.print("  Bundle3:    {} ns/op\n", .{bundle_ns / iterations});
     std.debug.print("  Similarity: {} ns/op\n", .{sim_ns / iterations});
     std.debug.print("  Dot:        {} ns/op\n", .{dot_ns / iterations});
+    std.debug.print("  Permute:    {} ns/op\n", .{perm_ns / iterations});
 }
 
 pub fn main() !void {

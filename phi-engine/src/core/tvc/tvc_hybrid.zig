@@ -276,7 +276,7 @@ pub const HybridBigInt = struct {
             result.unpacked_cache[i] = @intCast(sum);
         }
 
-        result.trit_len = max_len + 1;
+        result.trit_len = @min(max_len + 1, MAX_TRITS);
         result.normalize();
         return result;
     }

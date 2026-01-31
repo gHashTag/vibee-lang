@@ -45,6 +45,11 @@ pub const VSAOpcode = enum(u8) {
     // Comparison
     v_cmp,       // Compare vectors (sets condition codes)
 
+    // Permute operations (для кодирования последовательностей)
+    v_permute,   // Циклический сдвиг вправо
+    v_ipermute,  // Обратный сдвиг (влево)
+    v_seq,       // Encode sequence
+
     nop,
     halt,
 };
@@ -174,6 +179,10 @@ pub const VSAVM = struct {
             .v_unpack => self.execVUnpack(inst),
 
             .v_cmp => self.execVCmp(inst),
+
+            .v_permute => self.execVPermute(inst),
+            .v_ipermute => self.execVIPermute(inst),
+            .v_seq => self.execVSeq(inst),
 
             .nop => {},
             .halt => self.halted = true,
@@ -311,6 +320,31 @@ pub const VSAVM = struct {
         self.registers.f0 = sim;
     }
 
+    fn execVPermute(self: *VSAVM, inst: VSAInstruction) void {
+        const dst = self.getVReg(inst.dst);
+        var src = self.getVReg(inst.src1).*;
+        const shift: usize = @intCast(inst.imm);
+        dst.* = tvc_vsa.permute(&src, shift);
+    }
+
+    fn execVIPermute(self: *VSAVM, inst: VSAInstruction) void {
+        const dst = self.getVReg(inst.dst);
+        var src = self.getVReg(inst.src1).*;
+        const shift: usize = @intCast(inst.imm);
+        dst.* = tvc_vsa.inversePermute(&src, shift);
+    }
+
+    fn execVSeq(self: *VSAVM, inst: VSAInstruction) void {
+        // Encode sequence from v0, v1 into dst
+        // v_seq dst, src1, src2 -> dst = src1 + permute(src2, 1)
+        const dst = self.getVReg(inst.dst);
+        var src1 = self.getVReg(inst.src1).*;
+        var src2 = self.getVReg(inst.src2).*;
+
+        var permuted = tvc_vsa.permute(&src2, 1);
+        dst.* = src1.add(&permuted);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // DEBUG
     // ═══════════════════════════════════════════════════════════════════════════
@@ -397,6 +431,25 @@ test "VSA VM bundle similarity" {
 
     // Bundle should be similar to inputs
     try std.testing.expect(vm.registers.f0 > 0.3);
+}
+
+test "VSA VM permute" {
+    var vm = VSAVM.init(std.testing.allocator);
+    defer vm.deinit();
+
+    const program = [_]VSAInstruction{
+        .{ .opcode = .v_random, .dst = 0, .imm = 999 },
+        .{ .opcode = .v_permute, .dst = 1, .src1 = 0, .imm = 5 }, // permute by 5
+        .{ .opcode = .v_ipermute, .dst = 2, .src1 = 1, .imm = 5 }, // inverse permute
+        .{ .opcode = .v_cosine, .src1 = 0, .src2 = 2 }, // should be identical
+        .{ .opcode = .halt },
+    };
+
+    try vm.loadProgram(&program);
+    try vm.run();
+
+    // After permute then inverse_permute, should be identical (similarity ~1.0)
+    try std.testing.expect(vm.registers.f0 > 0.99);
 }
 
 test "VSA VM memory efficiency" {
