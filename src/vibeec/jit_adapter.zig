@@ -2270,7 +2270,7 @@ pub const DependencyEdge = struct {
 };
 
 /// Instruction Scheduler - reorders instructions for better ILP
-/// Uses list scheduling algorithm with dependency analysis
+/// Uses list scheduling algorithm with critical path analysis
 pub const InstructionScheduler = struct {
     allocator: Allocator,
     /// Dependency edges
@@ -2279,6 +2279,8 @@ pub const InstructionScheduler = struct {
     pred_count: std.ArrayList(usize),
     /// Ready queue (instructions with no pending dependencies)
     ready_queue: std.ArrayList(usize),
+    /// Critical path length from each instruction to end
+    critical_path: std.ArrayList(i32),
     /// Statistics
     instructions_moved: usize = 0,
     ilp_improvement: usize = 0,
@@ -2291,6 +2293,7 @@ pub const InstructionScheduler = struct {
             .edges = std.ArrayList(DependencyEdge).init(allocator),
             .pred_count = std.ArrayList(usize).init(allocator),
             .ready_queue = std.ArrayList(usize).init(allocator),
+            .critical_path = std.ArrayList(i32).init(allocator),
             .instructions_moved = 0,
             .ilp_improvement = 0,
         };
@@ -2300,6 +2303,7 @@ pub const InstructionScheduler = struct {
         self.edges.deinit();
         self.pred_count.deinit();
         self.ready_queue.deinit();
+        self.critical_path.deinit();
     }
 
     /// Reset state for new scheduling pass
@@ -2307,6 +2311,7 @@ pub const InstructionScheduler = struct {
         self.edges.clearRetainingCapacity();
         self.pred_count.clearRetainingCapacity();
         self.ready_queue.clearRetainingCapacity();
+        self.critical_path.clearRetainingCapacity();
     }
 
     /// Check if instruction has side effects (cannot be reordered freely)
@@ -2442,16 +2447,79 @@ pub const InstructionScheduler = struct {
         self.pred_count.items[to] += 1;
     }
 
+    /// Compute critical path length from each instruction to the end
+    /// Critical path = longest path (in latency) from instruction to any exit
+    fn computeCriticalPath(self: *Self, ir: []const IRInstruction) !void {
+        const n = ir.len;
+        try self.critical_path.resize(n);
+
+        // Initialize with instruction's own latency
+        for (ir, 0..) |instr, i| {
+            self.critical_path.items[i] = @as(i32, getLatency(instr.opcode));
+        }
+
+        // Build successor list for reverse traversal
+        var successors = std.AutoHashMap(usize, std.ArrayList(DependencyEdge)).init(self.allocator);
+        defer {
+            var iter = successors.valueIterator();
+            while (iter.next()) |list| {
+                list.deinit();
+            }
+            successors.deinit();
+        }
+
+        for (self.edges.items) |edge| {
+            var succ_list = successors.get(edge.from) orelse std.ArrayList(DependencyEdge).init(self.allocator);
+            try succ_list.append(edge);
+            try successors.put(edge.from, succ_list);
+        }
+
+        // Compute critical path in reverse topological order
+        // Process instructions from end to start
+        var i: usize = n;
+        while (i > 0) {
+            i -= 1;
+            if (successors.get(i)) |succ_list| {
+                var max_succ_path: i32 = 0;
+                for (succ_list.items) |edge| {
+                    const succ_path = self.critical_path.items[edge.to] + @as(i32, edge.latency);
+                    if (succ_path > max_succ_path) {
+                        max_succ_path = succ_path;
+                    }
+                }
+                self.critical_path.items[i] += max_succ_path;
+            }
+        }
+    }
+
+    /// Get critical path length for an instruction
+    pub fn getCriticalPathLength(self: *Self, idx: usize) i32 {
+        if (idx < self.critical_path.items.len) {
+            return self.critical_path.items[idx];
+        }
+        return 0;
+    }
+
     /// Get priority for scheduling (higher = schedule earlier)
+    /// Uses critical path length as primary priority
     fn getPriority(self: *Self, ir: []const IRInstruction, idx: usize) i32 {
-        _ = self;
         const instr = ir[idx];
 
-        // Prioritize high-latency instructions (start them early)
-        var priority: i32 = @as(i32, getLatency(instr.opcode)) * 10;
+        // Primary: Critical path length (longer path = higher priority)
+        // Instructions on the critical path should be scheduled first
+        var priority: i32 = self.getCriticalPathLength(idx) * 10;
 
-        // Prioritize instructions with many dependents
-        // (they unlock more instructions)
+        // Secondary: High-latency instructions (start them early to hide latency)
+        priority += @as(i32, getLatency(instr.opcode)) * 2;
+
+        // Tertiary: Count of dependents (more dependents = unlocks more work)
+        var dependent_count: i32 = 0;
+        for (self.edges.items) |edge| {
+            if (edge.from == idx) {
+                dependent_count += 1;
+            }
+        }
+        priority += dependent_count * 5;
 
         // Deprioritize side-effect instructions (keep them in order)
         if (hasSideEffects(instr.opcode)) {
@@ -2461,11 +2529,14 @@ pub const InstructionScheduler = struct {
         return priority;
     }
 
-    /// Schedule instructions using list scheduling
+    /// Schedule instructions using list scheduling with critical path analysis
     pub fn schedule(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
         if (ir.len < 2) return self.allocator.dupe(IRInstruction, ir);
 
         try self.buildDependencyGraph(ir);
+
+        // Compute critical path lengths for priority calculation
+        try self.computeCriticalPath(ir);
 
         var result = std.ArrayList(IRInstruction).init(self.allocator);
         errdefer result.deinit();
@@ -8544,6 +8615,75 @@ test "InstructionScheduler getStats" {
 
     try std.testing.expectEqual(@as(usize, 0), stats.moved);
     try std.testing.expectEqual(@as(usize, 0), stats.ilp);
+}
+
+test "InstructionScheduler critical path computation" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // IR with chain: r0 -> r1 (MUL, latency 3) -> r2 (ADD, latency 1) -> RETURN
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 }, // latency 1
+        .{ .opcode = .MUL_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // latency 3
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 1, .src2 = 0, .imm = 0 }, // latency 1
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 }, // latency 1
+    };
+
+    const scheduled = try scheduler.schedule(&ir);
+    defer allocator.free(scheduled);
+
+    // Critical path should be computed
+    try std.testing.expect(scheduler.critical_path.items.len == ir.len);
+
+    // First instruction (LOAD_CONST) should have longest critical path
+    // because it's at the start of the dependency chain
+    const cp0 = scheduler.getCriticalPathLength(0);
+    const cp3 = scheduler.getCriticalPathLength(3);
+
+    // LOAD_CONST should have longer critical path than RETURN
+    try std.testing.expect(cp0 >= cp3);
+}
+
+test "InstructionScheduler prioritizes critical path" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // Two independent chains:
+    // Chain 1: r0 -> r2 (DIV, latency 10) - long latency
+    // Chain 2: r1 -> r3 (ADD, latency 1) - short latency
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .DIV_INT, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 }, // high latency
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 0, .imm = 0 }, // low latency
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const scheduled = try scheduler.schedule(&ir);
+    defer allocator.free(scheduled);
+
+    // Should produce valid output
+    try std.testing.expectEqual(ir.len, scheduled.len);
+
+    // DIV chain should have higher critical path than ADD chain
+    const cp_div = scheduler.getCriticalPathLength(2);
+    const cp_add = scheduler.getCriticalPathLength(3);
+    try std.testing.expect(cp_div > cp_add);
+}
+
+test "InstructionScheduler getCriticalPathLength" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // Before scheduling, critical path should be empty
+    try std.testing.expectEqual(@as(i32, 0), scheduler.getCriticalPathLength(0));
+    try std.testing.expectEqual(@as(i32, 0), scheduler.getCriticalPathLength(100));
 }
 
 test "Benchmark: Strength reduction effect" {
