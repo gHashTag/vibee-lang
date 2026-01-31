@@ -9,6 +9,8 @@ RUN addgroup -g 1001 -S nginx-user && \
     chown -R nginx-user:nginx-user /var/run/nginx.pid
 
 COPY runtime/runtime.html /usr/share/nginx/html/index.html
+COPY runtime/trinity-stars-ui.html /usr/share/nginx/html/stars.html
+COPY trinity-kg-ui.html /usr/share/nginx/html/kg.html
 COPY runtime/ /usr/share/nginx/html/runtime/
 
 RUN chown -R nginx-user:nginx-user /usr/share/nginx/html
