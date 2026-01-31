@@ -1,0 +1,281 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# JIT X86-64 CODEGEN - Native Code Generation for VIBEE VM
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# V = n × 3^k × π^m × φ^p × e^q
+# φ² + 1/φ² = 3 = TRINITY
+#
+# Генератор нативного x86-64 кода для JIT компилятора
+# Цель: 10x ускорение vs интерпретатор
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: jit_x86_codegen
+version: "1.0.0"
+language: zig
+module: jit_x86_codegen
+author: "VIBEE Team"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ТИПЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  
+  X86Register:
+    description: "x86-64 регистры"
+    fields:
+      code: Int
+    enum:
+      - RAX: 0
+      - RCX: 1
+      - RDX: 2
+      - RBX: 3
+      - RSP: 4
+      - RBP: 5
+      - RSI: 6
+      - RDI: 7
+      - R8: 8
+      - R9: 9
+      - R10: 10
+      - R11: 11
+      - R12: 12
+      - R13: 13
+      - R14: 14
+      - R15: 15
+  
+  X86Opcode:
+    description: "x86-64 опкоды"
+    fields:
+      bytes: List<Int>
+    enum:
+      - MOV_REG_REG: [0x48, 0x89]
+      - MOV_REG_IMM64: [0x48, 0xB8]
+      - ADD_REG_REG: [0x48, 0x01]
+      - SUB_REG_REG: [0x48, 0x29]
+      - IMUL_REG_REG: [0x48, 0x0F, 0xAF]
+      - PUSH_REG: [0x50]
+      - POP_REG: [0x58]
+      - CALL_REL32: [0xE8]
+      - RET: [0xC3]
+      - JMP_REL32: [0xE9]
+      - JZ_REL32: [0x0F, 0x84]
+      - JNZ_REL32: [0x0F, 0x85]
+      - CMP_REG_REG: [0x48, 0x39]
+      - TEST_REG_REG: [0x48, 0x85]
+      - NOP: [0x90]
+  
+  CodeBuffer:
+    description: "Буфер для генерируемого кода"
+    fields:
+      data: List<Int>
+      capacity: Int
+      position: Int
+  
+  JITFunction:
+    description: "Скомпилированная JIT функция"
+    fields:
+      code: List<Int>
+      entry_point: Int
+      stack_size: Int
+      is_valid: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ПОВЕДЕНИЯ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  
+  - name: emit_prologue
+    given: "Начало функции"
+    when: "Генерация пролога"
+    then: "push rbp; mov rbp, rsp; sub rsp, stack_size"
+    implementation: |
+      emit(0x55)           // push rbp
+      emit(0x48, 0x89, 0xE5) // mov rbp, rsp
+      emit_sub_rsp(stack_size)
+  
+  - name: emit_epilogue
+    given: "Конец функции"
+    when: "Генерация эпилога"
+    then: "add rsp, stack_size; pop rbp; ret"
+    implementation: |
+      emit_add_rsp(stack_size)
+      emit(0x5D)           // pop rbp
+      emit(0xC3)           // ret
+  
+  - name: emit_mov_reg_imm64
+    given: "Регистр и 64-битное значение"
+    when: "Загрузка константы"
+    then: "mov reg, imm64"
+    implementation: |
+      emit(0x48 | ((reg >> 3) & 1))
+      emit(0xB8 | (reg & 7))
+      emit_i64(imm64)
+  
+  - name: emit_add_reg_reg
+    given: "Два регистра"
+    when: "Сложение"
+    then: "add dst, src"
+    implementation: |
+      emit_rex(dst, src)
+      emit(0x01)
+      emit_modrm(3, src, dst)
+  
+  - name: emit_sub_reg_reg
+    given: "Два регистра"
+    when: "Вычитание"
+    then: "sub dst, src"
+    implementation: |
+      emit_rex(dst, src)
+      emit(0x29)
+      emit_modrm(3, src, dst)
+  
+  - name: emit_imul_reg_reg
+    given: "Два регистра"
+    when: "Умножение"
+    then: "imul dst, src"
+    implementation: |
+      emit_rex(dst, src)
+      emit(0x0F, 0xAF)
+      emit_modrm(3, dst, src)
+  
+  - name: emit_cmp_reg_reg
+    given: "Два регистра"
+    when: "Сравнение"
+    then: "cmp dst, src"
+    implementation: |
+      emit_rex(dst, src)
+      emit(0x39)
+      emit_modrm(3, src, dst)
+  
+  - name: emit_jz_rel32
+    given: "Смещение перехода"
+    when: "Условный переход если ноль"
+    then: "jz rel32"
+    implementation: |
+      emit(0x0F, 0x84)
+      emit_i32(offset)
+  
+  - name: emit_jnz_rel32
+    given: "Смещение перехода"
+    when: "Условный переход если не ноль"
+    then: "jnz rel32"
+    implementation: |
+      emit(0x0F, 0x85)
+      emit_i32(offset)
+  
+  - name: emit_call_rel32
+    given: "Смещение вызова"
+    when: "Вызов функции"
+    then: "call rel32"
+    implementation: |
+      emit(0xE8)
+      emit_i32(offset)
+  
+  - name: compile_bytecode_add
+    given: "Байткод ADD"
+    when: "Компиляция сложения"
+    then: "pop rax; pop rcx; add rax, rcx; push rax"
+    implementation: |
+      emit_pop(RAX)
+      emit_pop(RCX)
+      emit_add_reg_reg(RAX, RCX)
+      emit_push(RAX)
+  
+  - name: compile_bytecode_sub
+    given: "Байткод SUB"
+    when: "Компиляция вычитания"
+    then: "pop rcx; pop rax; sub rax, rcx; push rax"
+    implementation: |
+      emit_pop(RCX)
+      emit_pop(RAX)
+      emit_sub_reg_reg(RAX, RCX)
+      emit_push(RAX)
+  
+  - name: compile_bytecode_mul
+    given: "Байткод MUL"
+    when: "Компиляция умножения"
+    then: "pop rax; pop rcx; imul rax, rcx; push rax"
+    implementation: |
+      emit_pop(RAX)
+      emit_pop(RCX)
+      emit_imul_reg_reg(RAX, RCX)
+      emit_push(RAX)
+  
+  - name: compile_bytecode_push_const
+    given: "Байткод PUSH_CONST с индексом"
+    when: "Загрузка константы"
+    then: "mov rax, const[idx]; push rax"
+    implementation: |
+      emit_mov_reg_imm64(RAX, constants[idx])
+      emit_push(RAX)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# АЛГОРИТМЫ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+algorithms:
+  
+  - name: basic_block_compilation
+    description: "Компиляция базового блока"
+    complexity: "O(n) где n - число инструкций"
+    pattern: "Linear scan"
+    steps:
+      - "Выделить буфер кода"
+      - "Сгенерировать пролог"
+      - "Для каждой инструкции: сгенерировать x86-64 код"
+      - "Сгенерировать эпилог"
+      - "Сделать буфер исполняемым (mprotect)"
+  
+  - name: register_allocation
+    description: "Распределение регистров"
+    complexity: "O(n) линейное сканирование"
+    pattern: "Linear scan"
+    steps:
+      - "Вычислить live ranges"
+      - "Отсортировать по началу"
+      - "Жадно назначить регистры"
+      - "Spill при нехватке"
+  
+  - name: hot_path_detection
+    description: "Обнаружение горячих путей"
+    complexity: "O(1) на инструкцию"
+    pattern: "Counter-based"
+    steps:
+      - "Инкрементировать счётчик при входе в блок"
+      - "Если счётчик > HOT_THRESHOLD: запустить JIT"
+      - "Заменить интерпретатор на нативный код"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# МЕТРИКИ ПРОИЗВОДИТЕЛЬНОСТИ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+performance:
+  
+  compilation_speed:
+    target_mb_per_sec: 100
+    
+  runtime_speedup:
+    vs_interpreter: 10
+    vs_baseline_jit: 2
+    
+  memory_overhead:
+    code_expansion: 3
+    metadata_per_function: 64
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# МЕТАДАННЫЕ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "VIBEE Team"
+  project: "TRINITY JIT Compiler"
+  date: "January 2026"
+  license: "MIT"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"
+  references:
+    - "Copy-and-Patch Compilation (OOPSLA 2021)"
+    - "LuaJIT 2.0 (Mike Pall)"
+    - "YJIT: BBV JIT for CRuby (arXiv:2411.0352)"
