@@ -2384,6 +2384,118 @@ pub const AliasAnalyzer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DEAD STORE ELIMINATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Dead Store Eliminator - removes stores that are overwritten before being read
+/// Uses alias analysis to determine if stores can be safely removed
+pub const DeadStoreEliminator = struct {
+    allocator: Allocator,
+    /// Alias analyzer for memory disambiguation
+    alias_analyzer: AliasAnalyzer,
+    /// Statistics
+    stores_eliminated: usize = 0,
+    stores_analyzed: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .alias_analyzer = AliasAnalyzer.init(allocator),
+            .stores_eliminated = 0,
+            .stores_analyzed = 0,
+        };
+    }
+
+    /// Check if instruction is a store
+    fn isStore(opcode: jit.IROpcode) bool {
+        return opcode == .STORE_LOCAL or opcode == .STORE_GLOBAL;
+    }
+
+    /// Check if instruction is a load
+    fn isLoad(opcode: jit.IROpcode) bool {
+        return opcode == .LOAD_LOCAL or opcode == .LOAD_GLOBAL;
+    }
+
+    /// Check if a store is dead (overwritten before being read)
+    fn isDeadStore(self: *Self, ir: []const IRInstruction, store_idx: usize) bool {
+        const store = ir[store_idx];
+        if (!isStore(store.opcode)) return false;
+
+        self.stores_analyzed += 1;
+
+        const store_loc = MemoryLocation.fromInstruction(store) orelse return false;
+
+        // Scan forward to find if this store is read or overwritten
+        var i = store_idx + 1;
+        while (i < ir.len) : (i += 1) {
+            const instr = ir[i];
+
+            // Control flow - conservatively keep the store
+            switch (instr.opcode) {
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK, .RETURN, .CALL, .TAIL_CALL => {
+                    return false;
+                },
+                else => {},
+            }
+
+            // Check if this instruction reads from the stored location
+            if (isLoad(instr.opcode)) {
+                const load_loc = MemoryLocation.fromInstruction(instr) orelse continue;
+                const alias_result = self.alias_analyzer.query(store_loc, load_loc);
+
+                if (alias_result != .NoAlias) {
+                    // Store might be read - not dead
+                    return false;
+                }
+            }
+
+            // Check if this instruction overwrites the stored location
+            if (isStore(instr.opcode)) {
+                const other_store_loc = MemoryLocation.fromInstruction(instr) orelse continue;
+                const alias_result = self.alias_analyzer.query(store_loc, other_store_loc);
+
+                if (alias_result == .MustAlias) {
+                    // Store is overwritten without being read - it's dead!
+                    return true;
+                }
+            }
+        }
+
+        // Reached end without finding overwrite - store might be needed
+        return false;
+    }
+
+    /// Optimize IR by removing dead stores
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir, 0..) |instr, idx| {
+            if (isStore(instr.opcode) and self.isDeadStore(ir, idx)) {
+                // Skip dead store
+                self.stores_eliminated += 1;
+            } else {
+                try result.append(instr);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { eliminated: usize, analyzed: usize } {
+        return .{
+            .eliminated = self.stores_eliminated,
+            .analyzed = self.stores_analyzed,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INSTRUCTION SCHEDULING
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -4582,6 +4694,8 @@ pub const TieredCompiler = struct {
     constant_folder: ConstantFolder,
     /// Dead code eliminator
     dce: DeadCodeEliminator,
+    /// Dead store eliminator
+    dse: DeadStoreEliminator,
     /// Strength reducer
     strength_reducer: StrengthReducer,
     /// Copy propagator
@@ -4620,6 +4734,8 @@ pub const TieredCompiler = struct {
     enable_folding: bool,
     /// Enable dead code elimination
     enable_dce: bool,
+    /// Enable dead store elimination
+    enable_dse: bool,
     /// Enable strength reduction
     enable_strength_reduction: bool,
     /// Enable copy propagation
@@ -4661,6 +4777,7 @@ pub const TieredCompiler = struct {
             .loop_unroller = LoopUnroller.init(allocator),
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
+            .dse = DeadStoreEliminator.init(allocator),
             .strength_reducer = StrengthReducer.init(allocator),
             .copy_propagator = CopyPropagator.init(allocator),
             .peephole = PeepholeOptimizer.init(allocator),
@@ -4680,6 +4797,7 @@ pub const TieredCompiler = struct {
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
+            .enable_dse = true,
             .enable_strength_reduction = true,
             .enable_copy_propagation = true,
             .enable_peephole = true,
@@ -4920,6 +5038,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = dce_result;
                 }
 
+                // Dead store elimination (after DCE, uses alias analysis)
+                if (self.enable_dse) {
+                    const dse_result = try self.dse.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = dse_result;
+                }
+
                 if (self.enable_unrolling) {
                     const unrolled = try self.loop_unroller.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -5007,6 +5132,12 @@ pub const TieredCompiler = struct {
                         const dce_result = try self.dce.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = dce_result;
+                    }
+
+                    if (self.enable_dse) {
+                        const dse_result = try self.dse.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = dse_result;
                     }
 
                     if (self.enable_unrolling) {
@@ -9014,6 +9145,118 @@ test "InstructionScheduler with alias analysis" {
     // Check that alias analysis was used
     const alias_stats = scheduler.getAliasStats();
     try std.testing.expect(alias_stats.queries > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEAD STORE ELIMINATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "DeadStoreEliminator remove overwritten store" {
+    const allocator = std.testing.allocator;
+
+    var dse = DeadStoreEliminator.init(allocator);
+
+    // Store to same location twice - first store is dead
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 }, // dead store
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 }, // overwrites first
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dse.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // First store should be eliminated
+    try std.testing.expect(optimized.len < ir.len);
+
+    const stats = dse.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+test "DeadStoreEliminator keep read store" {
+    const allocator = std.testing.allocator;
+
+    var dse = DeadStoreEliminator.init(allocator);
+
+    // Store followed by load - store is not dead
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 }, // store
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 1, .src2 = 0, .imm = 0 }, // load from same location
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dse.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Store should be kept (it's read)
+    try std.testing.expectEqual(ir.len, optimized.len);
+
+    const stats = dse.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+}
+
+test "DeadStoreEliminator keep store before control flow" {
+    const allocator = std.testing.allocator;
+
+    var dse = DeadStoreEliminator.init(allocator);
+
+    // Store followed by jump - conservatively keep
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 },
+        .{ .opcode = .JUMP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dse.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Store should be kept (control flow)
+    try std.testing.expectEqual(ir.len, optimized.len);
+}
+
+test "DeadStoreEliminator different locations not eliminated" {
+    const allocator = std.testing.allocator;
+
+    var dse = DeadStoreEliminator.init(allocator);
+
+    // Stores to different locations - neither is dead
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 0 }, // offset 0
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 1, .src2 = 0, .imm = 8 }, // offset 8
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try dse.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Both stores should be kept (different locations)
+    try std.testing.expectEqual(ir.len, optimized.len);
+}
+
+test "DeadStoreEliminator in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify DSE is enabled by default
+    try std.testing.expect(compiler.enable_dse);
+}
+
+test "DeadStoreEliminator getStats" {
+    const allocator = std.testing.allocator;
+
+    var dse = DeadStoreEliminator.init(allocator);
+
+    const stats = dse.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+    try std.testing.expectEqual(@as(usize, 0), stats.analyzed);
 }
 
 test "Benchmark: Strength reduction effect" {
