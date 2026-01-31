@@ -741,6 +741,432 @@ pub const LoopUnroller = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TRACE-BASED JIT COMPILER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Trace entry with type specialization info
+pub const TraceInstruction = struct {
+    ir: IRInstruction,
+    /// Observed type at this point (for specialization)
+    observed_type: TypeTag = .unknown,
+    /// Is this a guard instruction?
+    is_guard: bool = false,
+    /// Side exit target if guard fails
+    side_exit: ?u32 = null,
+};
+
+/// Type tags for trace specialization
+pub const TypeTag = enum(u8) {
+    unknown,
+    int,
+    float,
+    bool,
+    string,
+    list,
+    map,
+    nil,
+};
+
+/// Recorded trace - a linear sequence of instructions from a hot path
+pub const RecordedTrace = struct {
+    /// Instructions in the trace
+    instructions: std.ArrayList(TraceInstruction),
+    /// Start address (loop header or function entry)
+    start_addr: u32,
+    /// Is this a loop trace?
+    is_loop: bool,
+    /// Loop back address (if is_loop)
+    loop_back_addr: u32,
+    /// Number of times this trace was executed
+    execution_count: u64,
+    /// Number of side exits taken
+    side_exit_count: u64,
+    /// Compiled IR (after optimization)
+    compiled_ir: ?[]IRInstruction,
+    /// Is trace valid for execution?
+    is_valid: bool,
+
+    pub fn init(allocator: Allocator, start_addr: u32) RecordedTrace {
+        return .{
+            .instructions = std.ArrayList(TraceInstruction).init(allocator),
+            .start_addr = start_addr,
+            .is_loop = false,
+            .loop_back_addr = 0,
+            .execution_count = 0,
+            .side_exit_count = 0,
+            .compiled_ir = null,
+            .is_valid = false,
+        };
+    }
+
+    pub fn deinit(self: *RecordedTrace, allocator: Allocator) void {
+        self.instructions.deinit();
+        if (self.compiled_ir) |ir| {
+            allocator.free(ir);
+        }
+    }
+
+    pub fn length(self: *const RecordedTrace) usize {
+        return self.instructions.items.len;
+    }
+};
+
+/// Trace Recorder - records hot execution paths
+pub const TraceRecorder = struct {
+    allocator: Allocator,
+    /// Currently recording trace (null if not recording)
+    current_trace: ?*RecordedTrace,
+    /// All recorded traces by start address
+    traces: std.AutoHashMap(u32, RecordedTrace),
+    /// Maximum trace length
+    max_trace_length: usize,
+    /// Minimum execution count to start recording
+    hot_threshold: u32,
+    /// Statistics
+    traces_started: usize = 0,
+    traces_completed: usize = 0,
+    traces_aborted: usize = 0,
+    instructions_recorded: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .current_trace = null,
+            .traces = std.AutoHashMap(u32, RecordedTrace).init(allocator),
+            .max_trace_length = 256,
+            .hot_threshold = 10,
+            .traces_started = 0,
+            .traces_completed = 0,
+            .traces_aborted = 0,
+            .instructions_recorded = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.traces.valueIterator();
+        while (iter.next()) |trace| {
+            trace.deinit(self.allocator);
+        }
+        self.traces.deinit();
+    }
+
+    /// Start recording a trace at the given address
+    pub fn startRecording(self: *Self, addr: u32) !void {
+        if (self.current_trace != null) return; // Already recording
+
+        const result = try self.traces.getOrPut(addr);
+        if (!result.found_existing) {
+            result.value_ptr.* = RecordedTrace.init(self.allocator, addr);
+        }
+
+        self.current_trace = result.value_ptr;
+        self.traces_started += 1;
+    }
+
+    /// Record an IR instruction to the current trace
+    pub fn recordInstruction(self: *Self, ir: IRInstruction, observed_type: TypeTag) !void {
+        const trace = self.current_trace orelse return;
+
+        if (trace.instructions.items.len >= self.max_trace_length) {
+            // Trace too long, abort
+            self.abortRecording();
+            return;
+        }
+
+        try trace.instructions.append(.{
+            .ir = ir,
+            .observed_type = observed_type,
+            .is_guard = false,
+            .side_exit = null,
+        });
+
+        self.instructions_recorded += 1;
+    }
+
+    /// Record a guard instruction (type check, bounds check, etc.)
+    pub fn recordGuard(self: *Self, ir: IRInstruction, expected_type: TypeTag, side_exit: u32) !void {
+        const trace = self.current_trace orelse return;
+
+        try trace.instructions.append(.{
+            .ir = ir,
+            .observed_type = expected_type,
+            .is_guard = true,
+            .side_exit = side_exit,
+        });
+
+        self.instructions_recorded += 1;
+    }
+
+    /// Complete recording and mark as loop trace
+    pub fn completeLoopTrace(self: *Self, loop_back_addr: u32) void {
+        const trace = self.current_trace orelse return;
+
+        trace.is_loop = true;
+        trace.loop_back_addr = loop_back_addr;
+        trace.is_valid = true;
+
+        self.current_trace = null;
+        self.traces_completed += 1;
+    }
+
+    /// Complete recording as a linear trace
+    pub fn completeLinearTrace(self: *Self) void {
+        const trace = self.current_trace orelse return;
+
+        trace.is_loop = false;
+        trace.is_valid = true;
+
+        self.current_trace = null;
+        self.traces_completed += 1;
+    }
+
+    /// Abort current recording
+    pub fn abortRecording(self: *Self) void {
+        if (self.current_trace) |trace| {
+            trace.instructions.clearRetainingCapacity();
+            trace.is_valid = false;
+        }
+        self.current_trace = null;
+        self.traces_aborted += 1;
+    }
+
+    /// Check if currently recording
+    pub fn isRecording(self: *Self) bool {
+        return self.current_trace != null;
+    }
+
+    /// Get a recorded trace by address
+    pub fn getTrace(self: *Self, addr: u32) ?*RecordedTrace {
+        return self.traces.getPtr(addr);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { started: usize, completed: usize, aborted: usize, recorded: usize } {
+        return .{
+            .started = self.traces_started,
+            .completed = self.traces_completed,
+            .aborted = self.traces_aborted,
+            .recorded = self.instructions_recorded,
+        };
+    }
+};
+
+/// Trace Compiler - compiles recorded traces to optimized IR
+pub const TraceCompiler = struct {
+    allocator: Allocator,
+    /// Constant folder for trace optimization
+    constant_folder: ConstantFolder,
+    /// Dead code eliminator
+    dce: DeadCodeEliminator,
+    /// Statistics
+    traces_compiled: usize = 0,
+    guards_inserted: usize = 0,
+    instructions_optimized: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .constant_folder = ConstantFolder.init(allocator),
+            .dce = DeadCodeEliminator.init(allocator),
+            .traces_compiled = 0,
+            .guards_inserted = 0,
+            .instructions_optimized = 0,
+        };
+    }
+
+    /// Compile a recorded trace to optimized IR
+    pub fn compileTrace(self: *Self, trace: *RecordedTrace) ![]IRInstruction {
+        if (!trace.is_valid or trace.instructions.items.len == 0) {
+            return &[_]IRInstruction{};
+        }
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Phase 1: Extract IR and insert type guards
+        for (trace.instructions.items) |entry| {
+            // Insert guard if this is a guarded instruction
+            if (entry.is_guard) {
+                try result.append(.{
+                    .opcode = .GUARD_TYPE,
+                    .dest = entry.ir.dest,
+                    .src1 = @intFromEnum(entry.observed_type),
+                    .src2 = 0,
+                    .imm = @intCast(entry.side_exit orelse 0),
+                });
+                self.guards_inserted += 1;
+            }
+
+            try result.append(entry.ir);
+        }
+
+        // Phase 2: Add loop back jump if this is a loop trace
+        if (trace.is_loop) {
+            // Calculate offset to jump back to start
+            const offset: i32 = -@as(i32, @intCast(result.items.len));
+            try result.append(.{
+                .opcode = .LOOP_BACK,
+                .dest = 0,
+                .src1 = 0,
+                .src2 = 0,
+                .imm = offset,
+            });
+        }
+
+        // Phase 3: Optimize the trace IR
+        var optimized = try result.toOwnedSlice();
+
+        // Constant folding
+        const folded = try self.constant_folder.optimize(optimized);
+        self.allocator.free(optimized);
+        optimized = folded;
+
+        // Dead code elimination
+        const dce_result = try self.dce.optimize(optimized);
+        self.allocator.free(optimized);
+        optimized = dce_result;
+
+        self.traces_compiled += 1;
+        self.instructions_optimized += trace.instructions.items.len - optimized.len;
+
+        // Store compiled IR in trace
+        trace.compiled_ir = optimized;
+
+        return optimized;
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { compiled: usize, guards: usize, optimized: usize } {
+        return .{
+            .compiled = self.traces_compiled,
+            .guards = self.guards_inserted,
+            .optimized = self.instructions_optimized,
+        };
+    }
+};
+
+/// Trace-based JIT Manager - coordinates trace recording and compilation
+pub const TraceJIT = struct {
+    allocator: Allocator,
+    /// Trace recorder
+    recorder: TraceRecorder,
+    /// Trace compiler
+    compiler: TraceCompiler,
+    /// Execution counts per address (for hot detection)
+    execution_counts: std.AutoHashMap(u32, u32),
+    /// Hot threshold for starting trace recording
+    hot_threshold: u32,
+    /// Statistics
+    hot_spots_detected: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .recorder = TraceRecorder.init(allocator),
+            .compiler = TraceCompiler.init(allocator),
+            .execution_counts = std.AutoHashMap(u32, u32).init(allocator),
+            .hot_threshold = 10,
+            .hot_spots_detected = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.recorder.deinit();
+        self.execution_counts.deinit();
+    }
+
+    /// Record execution at an address, start tracing if hot
+    pub fn recordExecution(self: *Self, addr: u32) !bool {
+        const result = try self.execution_counts.getOrPut(addr);
+        if (!result.found_existing) {
+            result.value_ptr.* = 0;
+        }
+        result.value_ptr.* += 1;
+
+        // Check if this is now a hot spot
+        if (result.value_ptr.* == self.hot_threshold) {
+            self.hot_spots_detected += 1;
+
+            // Start recording if not already
+            if (!self.recorder.isRecording()) {
+                try self.recorder.startRecording(addr);
+                return true; // Started recording
+            }
+        }
+
+        return false;
+    }
+
+    /// Record an instruction during trace recording
+    pub fn recordInstruction(self: *Self, ir: IRInstruction, observed_type: TypeTag) !void {
+        try self.recorder.recordInstruction(ir, observed_type);
+    }
+
+    /// Record a guard instruction
+    pub fn recordGuard(self: *Self, ir: IRInstruction, expected_type: TypeTag, side_exit: u32) !void {
+        try self.recorder.recordGuard(ir, expected_type, side_exit);
+    }
+
+    /// Complete a loop trace and compile it
+    pub fn completeLoopTrace(self: *Self, loop_back_addr: u32) !?[]IRInstruction {
+        self.recorder.completeLoopTrace(loop_back_addr);
+
+        // Get the trace and compile it
+        if (self.recorder.getTrace(loop_back_addr)) |trace| {
+            return try self.compiler.compileTrace(trace);
+        }
+        return null;
+    }
+
+    /// Complete a linear trace and compile it
+    pub fn completeLinearTrace(self: *Self, addr: u32) !?[]IRInstruction {
+        self.recorder.completeLinearTrace();
+
+        if (self.recorder.getTrace(addr)) |trace| {
+            return try self.compiler.compileTrace(trace);
+        }
+        return null;
+    }
+
+    /// Abort current trace recording
+    pub fn abortTrace(self: *Self) void {
+        self.recorder.abortRecording();
+    }
+
+    /// Check if currently recording
+    pub fn isRecording(self: *Self) bool {
+        return self.recorder.isRecording();
+    }
+
+    /// Get compiled trace for an address
+    pub fn getCompiledTrace(self: *Self, addr: u32) ?[]IRInstruction {
+        if (self.recorder.getTrace(addr)) |trace| {
+            return trace.compiled_ir;
+        }
+        return null;
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct {
+        hot_spots: usize,
+        recorder: @TypeOf(self.recorder.getStats()),
+        compiler: @TypeOf(self.compiler.getStats()),
+    } {
+        return .{
+            .hot_spots = self.hot_spots_detected,
+            .recorder = self.recorder.getStats(),
+            .compiler = self.compiler.getStats(),
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5292,6 +5718,10 @@ pub const TieredCompiler = struct {
     enable_licm: bool,
     /// Enable loop-based strength reduction
     enable_loop_strength_reduction: bool,
+    /// Enable trace-based JIT
+    enable_trace_jit: bool,
+    /// Trace-based JIT manager
+    trace_jit: TraceJIT,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -5346,6 +5776,8 @@ pub const TieredCompiler = struct {
             .enable_tco = true,
             .enable_licm = true,
             .enable_loop_strength_reduction = true,
+            .enable_trace_jit = true,
+            .trace_jit = TraceJIT.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -5388,6 +5820,9 @@ pub const TieredCompiler = struct {
         if (self.dom_tree) |*dt| {
             dt.deinit();
         }
+
+        // Free trace JIT
+        self.trace_jit.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -5451,6 +5886,23 @@ pub const TieredCompiler = struct {
     /// Get profile data for analysis
     pub fn getProfileData(self: *Self) *ProfileData {
         return &self.profile_data;
+    }
+
+    /// Get trace JIT manager
+    pub fn getTraceJIT(self: *Self) *TraceJIT {
+        return &self.trace_jit;
+    }
+
+    /// Record execution for trace-based JIT
+    pub fn recordTraceExecution(self: *Self, addr: u32) !bool {
+        if (!self.enable_trace_jit) return false;
+        return try self.trace_jit.recordExecution(addr);
+    }
+
+    /// Get compiled trace for an address
+    pub fn getCompiledTrace(self: *Self, addr: u32) ?[]IRInstruction {
+        if (!self.enable_trace_jit) return null;
+        return self.trace_jit.getCompiledTrace(addr);
     }
 
     /// Get or create function state
@@ -11625,6 +12077,214 @@ test "LICMOptimizer stats include prevented" {
     try std.testing.expectEqual(@as(usize, 0), stats.hoisted);
     try std.testing.expectEqual(@as(usize, 0), stats.saved);
     try std.testing.expectEqual(@as(usize, 0), stats.prevented);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRACE-BASED JIT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TraceRecorder basic recording" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    // Start recording
+    try recorder.startRecording(0x100);
+    try std.testing.expect(recorder.isRecording());
+
+    // Record some instructions
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 }, .int);
+    try recorder.recordInstruction(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+
+    // Complete as loop trace
+    recorder.completeLoopTrace(0x100);
+    try std.testing.expect(!recorder.isRecording());
+
+    // Check trace was recorded
+    const trace = recorder.getTrace(0x100);
+    try std.testing.expect(trace != null);
+    try std.testing.expectEqual(@as(usize, 2), trace.?.length());
+    try std.testing.expect(trace.?.is_loop);
+    try std.testing.expect(trace.?.is_valid);
+
+    const stats = recorder.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.started);
+    try std.testing.expectEqual(@as(usize, 1), stats.completed);
+    try std.testing.expectEqual(@as(usize, 2), stats.recorded);
+}
+
+test "TraceRecorder guard recording" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    try recorder.startRecording(0x200);
+
+    // Record a guard instruction
+    try recorder.recordGuard(
+        .{ .opcode = .GUARD_TYPE, .dest = 0, .src1 = @intFromEnum(TypeTag.int), .src2 = 0, .imm = 0x300 },
+        .int,
+        0x300,
+    );
+
+    recorder.completeLinearTrace();
+
+    const trace = recorder.getTrace(0x200);
+    try std.testing.expect(trace != null);
+    try std.testing.expectEqual(@as(usize, 1), trace.?.length());
+    try std.testing.expect(trace.?.instructions.items[0].is_guard);
+    try std.testing.expectEqual(@as(?u32, 0x300), trace.?.instructions.items[0].side_exit);
+}
+
+test "TraceRecorder abort on max length" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    recorder.max_trace_length = 3; // Very small for testing
+
+    try recorder.startRecording(0x100);
+
+    // Record up to max length
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 }, .int);
+    try recorder.recordInstruction(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, .int);
+
+    // This should trigger abort
+    try recorder.recordInstruction(.{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, .int);
+
+    try std.testing.expect(!recorder.isRecording());
+
+    const stats = recorder.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.aborted);
+}
+
+test "TraceCompiler compile simple trace" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    var compiler = TraceCompiler.init(allocator);
+
+    // Record a simple trace with instructions that won't be eliminated
+    try recorder.startRecording(0x100);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 }, .int);
+    try recorder.recordInstruction(.{ .opcode = .ADD_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 }, .int);
+    try recorder.recordInstruction(.{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, .int);
+    recorder.completeLoopTrace(0x100);
+
+    // Compile the trace
+    const trace = recorder.getTrace(0x100).?;
+    const compiled = try compiler.compileTrace(trace);
+    // Note: compiled is stored in trace.compiled_ir, will be freed by recorder.deinit()
+
+    // Should have at least some instructions (may be optimized)
+    try std.testing.expect(compiled.len >= 1);
+
+    const stats = compiler.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.compiled);
+}
+
+test "TraceCompiler insert guards" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    var compiler = TraceCompiler.init(allocator);
+
+    // Record trace with guard
+    try recorder.startRecording(0x100);
+    try recorder.recordGuard(
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .int,
+        0x200,
+    );
+    try recorder.recordInstruction(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+    recorder.completeLinearTrace();
+
+    const trace = recorder.getTrace(0x100).?;
+    _ = try compiler.compileTrace(trace);
+    // Note: compiled is stored in trace.compiled_ir, will be freed by recorder.deinit()
+
+    // Should have guard inserted
+    const stats = compiler.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.guards);
+}
+
+test "TraceJIT hot spot detection" {
+    const allocator = std.testing.allocator;
+
+    var trace_jit = TraceJIT.init(allocator);
+    defer trace_jit.deinit();
+
+    trace_jit.hot_threshold = 5;
+
+    // Execute below threshold
+    for (0..4) |_| {
+        const started = try trace_jit.recordExecution(0x100);
+        try std.testing.expect(!started);
+    }
+
+    // This execution should trigger recording
+    const started = try trace_jit.recordExecution(0x100);
+    try std.testing.expect(started);
+    try std.testing.expect(trace_jit.isRecording());
+
+    const stats = trace_jit.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.hot_spots);
+}
+
+test "TraceJIT complete loop trace" {
+    const allocator = std.testing.allocator;
+
+    var trace_jit = TraceJIT.init(allocator);
+    defer trace_jit.deinit();
+
+    trace_jit.hot_threshold = 1; // Immediate hot
+
+    // Trigger recording
+    _ = try trace_jit.recordExecution(0x100);
+    try std.testing.expect(trace_jit.isRecording());
+
+    // Record instructions
+    try trace_jit.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, .int);
+    try trace_jit.recordInstruction(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+
+    // Complete as loop
+    const compiled = try trace_jit.completeLoopTrace(0x100);
+    try std.testing.expect(compiled != null);
+    // Note: compiled is stored in trace, will be freed by trace_jit.deinit()
+
+    try std.testing.expect(!trace_jit.isRecording());
+
+    // Should be able to get compiled trace
+    const cached = trace_jit.getCompiledTrace(0x100);
+    try std.testing.expect(cached != null);
+}
+
+test "TraceJIT in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_trace_jit);
+
+    // Record execution
+    const started = try compiler.recordTraceExecution(0x100);
+    // May or may not start depending on threshold
+    _ = started;
+
+    // Get trace JIT manager
+    const trace_jit = compiler.getTraceJIT();
+    // Verify it's accessible
+    const stats = trace_jit.getStats();
+    _ = stats;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
