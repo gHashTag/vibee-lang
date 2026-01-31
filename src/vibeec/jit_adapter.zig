@@ -908,6 +908,301 @@ pub const DeadCodeEliminator = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STRENGTH REDUCER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Strength Reducer - replaces expensive operations with cheaper ones
+pub const StrengthReducer = struct {
+    allocator: Allocator,
+    /// Statistics
+    reductions: usize = 0,
+    mul_to_shift: usize = 0,
+    div_to_shift: usize = 0,
+    identity_removed: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .reductions = 0,
+            .mul_to_shift = 0,
+            .div_to_shift = 0,
+            .identity_removed = 0,
+        };
+    }
+
+    /// Check if value is a power of 2 and return the exponent
+    fn isPowerOf2(value: i64) ?u6 {
+        if (value <= 0) return null;
+        const uval: u64 = @intCast(value);
+        if (uval & (uval - 1) != 0) return null; // Not power of 2
+
+        // Count trailing zeros = log2
+        var shift: u6 = 0;
+        var v = uval;
+        while (v > 1) : (v >>= 1) {
+            shift += 1;
+        }
+        return shift;
+    }
+
+    /// Optimize IR by reducing operation strength
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Track constant values in registers for pattern matching
+        var reg_constants: [32]?i64 = [_]?i64{null} ** 32;
+
+        for (ir) |instr| {
+            switch (instr.opcode) {
+                .LOAD_CONST => {
+                    reg_constants[instr.dest] = instr.imm;
+                    try result.append(instr);
+                },
+
+                .MUL_INT => {
+                    // Check for multiplication by power of 2
+                    const src1_const = reg_constants[instr.src1];
+                    const src2_const = reg_constants[instr.src2];
+
+                    if (src2_const) |c| {
+                        if (c == 0) {
+                            // x * 0 = 0
+                            try result.append(.{
+                                .opcode = .LOAD_CONST,
+                                .dest = instr.dest,
+                                .src1 = 0,
+                                .src2 = 0,
+                                .imm = 0,
+                            });
+                            reg_constants[instr.dest] = 0;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        } else if (c == 1) {
+                            // x * 1 = x (copy src1 to dest if different)
+                            if (instr.dest != instr.src1) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL, // Use as move
+                                    .dest = instr.dest,
+                                    .src1 = instr.src1,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = src1_const;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        } else if (isPowerOf2(c)) |shift| {
+                            // x * 2^n = x << n
+                            try result.append(.{
+                                .opcode = .SHL,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = 0,
+                                .imm = shift,
+                            });
+                            reg_constants[instr.dest] = if (src1_const) |v| v << shift else null;
+                            self.reductions += 1;
+                            self.mul_to_shift += 1;
+                            continue;
+                        }
+                    }
+
+                    // Check src1 for power of 2 (commutative)
+                    if (src1_const) |c| {
+                        if (c == 0) {
+                            try result.append(.{
+                                .opcode = .LOAD_CONST,
+                                .dest = instr.dest,
+                                .src1 = 0,
+                                .src2 = 0,
+                                .imm = 0,
+                            });
+                            reg_constants[instr.dest] = 0;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        } else if (c == 1) {
+                            if (instr.dest != instr.src2) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = instr.src2,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = src2_const;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        } else if (isPowerOf2(c)) |shift| {
+                            try result.append(.{
+                                .opcode = .SHL,
+                                .dest = instr.dest,
+                                .src1 = instr.src2,
+                                .src2 = 0,
+                                .imm = shift,
+                            });
+                            reg_constants[instr.dest] = if (src2_const) |v| v << shift else null;
+                            self.reductions += 1;
+                            self.mul_to_shift += 1;
+                            continue;
+                        }
+                    }
+
+                    // No reduction possible
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .DIV_INT => {
+                    // Check for division by power of 2
+                    const src2_const = reg_constants[instr.src2];
+
+                    if (src2_const) |c| {
+                        if (c == 1) {
+                            // x / 1 = x
+                            if (instr.dest != instr.src1) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = instr.src1,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = reg_constants[instr.src1];
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        } else if (isPowerOf2(c)) |shift| {
+                            // x / 2^n = x >> n (for positive x)
+                            try result.append(.{
+                                .opcode = .SHR,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = 0,
+                                .imm = shift,
+                            });
+                            const src1_const = reg_constants[instr.src1];
+                            reg_constants[instr.dest] = if (src1_const) |v| v >> shift else null;
+                            self.reductions += 1;
+                            self.div_to_shift += 1;
+                            continue;
+                        }
+                    }
+
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .ADD_INT => {
+                    // x + 0 = x
+                    const src1_const = reg_constants[instr.src1];
+                    const src2_const = reg_constants[instr.src2];
+
+                    if (src2_const) |c| {
+                        if (c == 0) {
+                            if (instr.dest != instr.src1) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = instr.src1,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = src1_const;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        }
+                    }
+
+                    if (src1_const) |c| {
+                        if (c == 0) {
+                            if (instr.dest != instr.src2) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = instr.src2,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = src2_const;
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        }
+                    }
+
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .SUB_INT => {
+                    // x - 0 = x
+                    const src2_const = reg_constants[instr.src2];
+
+                    if (src2_const) |c| {
+                        if (c == 0) {
+                            if (instr.dest != instr.src1) {
+                                try result.append(.{
+                                    .opcode = .LOAD_LOCAL,
+                                    .dest = instr.dest,
+                                    .src1 = instr.src1,
+                                    .src2 = 0,
+                                    .imm = 0,
+                                });
+                            }
+                            reg_constants[instr.dest] = reg_constants[instr.src1];
+                            self.reductions += 1;
+                            self.identity_removed += 1;
+                            continue;
+                        }
+                    }
+
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .LOAD_LOCAL, .LOAD_GLOBAL => {
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                else => {
+                    if (instr.dest < 32) {
+                        reg_constants[instr.dest] = null;
+                    }
+                    try result.append(instr);
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { reductions: usize, mul_to_shift: usize, div_to_shift: usize, identity: usize } {
+        return .{
+            .reductions = self.reductions,
+            .mul_to_shift = self.mul_to_shift,
+            .div_to_shift = self.div_to_shift,
+            .identity = self.identity_removed,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -961,12 +1256,16 @@ pub const TieredCompiler = struct {
     constant_folder: ConstantFolder,
     /// Dead code eliminator
     dce: DeadCodeEliminator,
+    /// Strength reducer
+    strength_reducer: StrengthReducer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
     enable_folding: bool,
     /// Enable dead code elimination
     enable_dce: bool,
+    /// Enable strength reduction
+    enable_strength_reduction: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -982,9 +1281,11 @@ pub const TieredCompiler = struct {
             .loop_unroller = LoopUnroller.init(allocator),
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
+            .strength_reducer = StrengthReducer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
+            .enable_strength_reduction = true,
             .stats = TieredStats.init(),
         };
     }
@@ -1059,9 +1360,15 @@ pub const TieredCompiler = struct {
 
         switch (state.current_tier) {
             .JIT_IR => {
-                // Apply optimizations: constant folding, DCE, then loop unrolling
+                // Apply optimizations: strength reduction, constant folding, DCE, loop unrolling
                 var optimized_ir = try self.allocator.dupe(IRInstruction, ir);
                 errdefer self.allocator.free(optimized_ir);
+
+                if (self.enable_strength_reduction) {
+                    const reduced = try self.strength_reducer.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = reduced;
+                }
 
                 if (self.enable_folding) {
                     const folded = try self.constant_folder.optimize(optimized_ir);
@@ -1092,6 +1399,12 @@ pub const TieredCompiler = struct {
                 // Get optimized IR from cache or optimize now
                 const optimized_ir = self.jit_ir_cache.get(address) orelse blk: {
                     var opt_ir = try self.allocator.dupe(IRInstruction, ir);
+
+                    if (self.enable_strength_reduction) {
+                        const reduced = try self.strength_reducer.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = reduced;
+                    }
 
                     if (self.enable_folding) {
                         const folded = try self.constant_folder.optimize(opt_ir);
@@ -1224,6 +1537,18 @@ fn interpretIRCode(ir: []const IRInstruction) i64 {
                 if (b != 0) {
                     registers[instr.dest] = @divTrunc(registers[instr.src1], b);
                 }
+            },
+            .SHL => {
+                // If imm is set, use immediate shift amount; otherwise use register
+                const shift_val = if (instr.imm != 0) instr.imm else registers[instr.src2];
+                const shift_amt: u6 = @intCast(@min(63, @max(0, shift_val)));
+                registers[instr.dest] = registers[instr.src1] << shift_amt;
+            },
+            .SHR => {
+                // If imm is set, use immediate shift amount; otherwise use register
+                const shift_val = if (instr.imm != 0) instr.imm else registers[instr.src2];
+                const shift_amt: u6 = @intCast(@min(63, @max(0, shift_val)));
+                registers[instr.dest] = registers[instr.src1] >> shift_amt;
             },
             .RETURN => {
                 return registers[instr.dest];
@@ -3899,6 +4224,180 @@ test "Benchmark: Folding + DCE combined effect" {
         });
         if (orig_per_iter > opt_per_iter) {
             std.debug.print("Speedup: {d:.2}x\n", .{orig_per_iter / opt_per_iter});
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRENGTH REDUCER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "StrengthReducer mul by power of 2" {
+    const allocator = std.testing.allocator;
+
+    var reducer = StrengthReducer.init(allocator);
+
+    // IR: r0 = x, r1 = 8, r2 = r0 * r1 -> should become r2 = r0 << 3
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // x from local
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 8 }, // 8 = 2^3
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try reducer.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // MUL should be replaced with SHL
+    try std.testing.expectEqual(jit.IROpcode.SHL, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 3), optimized[2].imm); // shift by 3
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.mul_to_shift);
+}
+
+test "StrengthReducer div by power of 2" {
+    const allocator = std.testing.allocator;
+
+    var reducer = StrengthReducer.init(allocator);
+
+    // IR: r0 = x, r1 = 4, r2 = r0 / r1 -> should become r2 = r0 >> 2
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 4 }, // 4 = 2^2
+        .{ .opcode = .DIV_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try reducer.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // DIV should be replaced with SHR
+    try std.testing.expectEqual(jit.IROpcode.SHR, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 2), optimized[2].imm); // shift by 2
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.div_to_shift);
+}
+
+test "StrengthReducer mul by 0" {
+    const allocator = std.testing.allocator;
+
+    var reducer = StrengthReducer.init(allocator);
+
+    // IR: r0 = x, r1 = 0, r2 = r0 * r1 -> should become r2 = 0
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try reducer.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // MUL should be replaced with LOAD_CONST 0
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 0), optimized[2].imm);
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.identity);
+}
+
+test "StrengthReducer add 0 identity" {
+    const allocator = std.testing.allocator;
+
+    var reducer = StrengthReducer.init(allocator);
+
+    // IR: r0 = x, r1 = 0, r2 = r0 + r1 -> should become r2 = r0
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try reducer.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // ADD should be replaced with move (LOAD_LOCAL)
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[2].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[2].src1); // copy from r0
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.identity);
+}
+
+test "StrengthReducer isPowerOf2" {
+    _ = std.testing.allocator;
+
+    // Test isPowerOf2 helper
+    try std.testing.expectEqual(@as(?u6, 0), StrengthReducer.isPowerOf2(1)); // 2^0
+    try std.testing.expectEqual(@as(?u6, 1), StrengthReducer.isPowerOf2(2)); // 2^1
+    try std.testing.expectEqual(@as(?u6, 2), StrengthReducer.isPowerOf2(4)); // 2^2
+    try std.testing.expectEqual(@as(?u6, 3), StrengthReducer.isPowerOf2(8)); // 2^3
+    try std.testing.expectEqual(@as(?u6, 10), StrengthReducer.isPowerOf2(1024)); // 2^10
+    try std.testing.expectEqual(@as(?u6, null), StrengthReducer.isPowerOf2(3)); // not power of 2
+    try std.testing.expectEqual(@as(?u6, null), StrengthReducer.isPowerOf2(0)); // 0
+    try std.testing.expectEqual(@as(?u6, null), StrengthReducer.isPowerOf2(-4)); // negative
+}
+
+test "Benchmark: Strength reduction effect" {
+    const allocator = std.testing.allocator;
+
+    // IR: x * 8 (should become x << 3)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 }, // x = 5
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 8 }, // 8
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // x * 8
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const reduced = try reducer.optimize(&original_ir);
+    defer allocator.free(reduced);
+
+    const iterations: usize = 10000;
+
+    // Benchmark original
+    const orig_start = std.time.nanoTimestamp();
+    var orig_result: i64 = 0;
+    for (0..iterations) |_| {
+        orig_result = interpretIRCode(&original_ir);
+    }
+    const orig_end = std.time.nanoTimestamp();
+    const orig_time: u64 = @intCast(@max(0, orig_end - orig_start));
+
+    // Benchmark reduced
+    const red_start = std.time.nanoTimestamp();
+    var red_result: i64 = 0;
+    for (0..iterations) |_| {
+        red_result = interpretIRCode(reduced);
+    }
+    const red_end = std.time.nanoTimestamp();
+    const red_time: u64 = @intCast(@max(0, red_end - red_start));
+
+    // Both should produce same result: 5 * 8 = 40
+    try std.testing.expectEqual(@as(i64, 40), orig_result);
+    try std.testing.expectEqual(@as(i64, 40), red_result);
+
+    const stats = reducer.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        const orig_per_iter = @as(f64, @floatFromInt(orig_time)) / @as(f64, @floatFromInt(iterations));
+        const red_per_iter = @as(f64, @floatFromInt(red_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Strength Reduction Benchmark ===\n", .{});
+        std.debug.print("Original (MUL): {d:.2} ns/iter\n", .{orig_per_iter});
+        std.debug.print("Reduced (SHL): {d:.2} ns/iter\n", .{red_per_iter});
+        std.debug.print("Reductions: {d} (mul->shift: {d}, div->shift: {d}, identity: {d})\n", .{
+            stats.reductions,
+            stats.mul_to_shift,
+            stats.div_to_shift,
+            stats.identity,
+        });
+        if (orig_per_iter > red_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{orig_per_iter / red_per_iter});
         }
     }
 }
