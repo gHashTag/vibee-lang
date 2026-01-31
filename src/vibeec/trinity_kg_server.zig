@@ -926,8 +926,12 @@ pub const KGServer = struct {
             \\    <h4>Reasoning</h4>
             \\    <input id="reasonFrom" placeholder="From entity"><br>
             \\    <input id="reasonTo" placeholder="To entity"><br>
-            \\    <button onclick="findPath()">Find Path</button>
-            \\    <p style="font-size:11px;color:#888;margin-top:10px">Click node to see connections.<br>Use Find Path for reasoning.</p>
+            \\    <button onclick="findPath()">Find Path</button><br>
+            \\    <h4>Try Examples</h4>
+            \\    <button onclick="example1()" style="font-size:11px;padding:5px;margin:2px 0;width:100%">Is Socrates mortal?</button><br>
+            \\    <button onclick="example2()" style="font-size:11px;padding:5px;margin:2px 0;width:100%">Socrates → Aristotle</button><br>
+            \\    <button onclick="example3()" style="font-size:11px;padding:5px;margin:2px 0;width:100%">Athens → place</button><br>
+            \\    <p style="font-size:10px;color:#888;margin-top:8px">Click examples above or any node on graph</p>
             \\  </div>
             \\  <div id="stats"></div>
             \\  <div id="tooltip"><span id="tooltipText"></span><div class="path" id="tooltipPath"></div></div>
@@ -1046,7 +1050,9 @@ pub const KGServer = struct {
             \\      }).then(() => { loadGraph(); ['subject','predicate','object'].forEach(id => document.getElementById(id).value = ''); });
             \\    }
             \\    function clearGraph() { if (confirm('Clear all data?')) fetch('/api/clear', {method: 'POST'}).then(loadGraph); }
-            \\    
+            \\    function example1() { document.getElementById('reasonFrom').value = 'Socrates'; document.getElementById('reasonTo').value = 'true'; findPath(); }
+            \\    function example2() { document.getElementById('reasonFrom').value = 'Socrates'; document.getElementById('reasonTo').value = 'Aristotle'; findPath(); }
+            \\    function example3() { document.getElementById('reasonFrom').value = 'Athens'; document.getElementById('reasonTo').value = 'place'; findPath(); }
             \\    loadGraph();
             \\  </script>
             \\</body>
