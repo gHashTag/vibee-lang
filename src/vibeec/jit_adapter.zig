@@ -15,9 +15,13 @@ const VMError = vm_runtime.VMError;
 const jit = @import("jit.zig");
 const JITCompiler = jit.JITCompiler;
 const TypeInfo = jit.TypeInfo;
+const IRInstruction = jit.IRInstruction;
 const bytecode = @import("bytecode.zig");
 const Opcode = bytecode.Opcode;
 const Value = bytecode.Value;
+const x86_codegen = @import("x86_64_codegen.zig");
+const NativeCompiler = x86_codegen.NativeCompiler;
+const ExecutableCode = x86_codegen.ExecutableCode;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SACRED CONSTANTS
@@ -111,15 +115,40 @@ pub const AdapterMetrics = struct {
     }
 };
 
+/// Native code specific metrics
+pub const NativeMetrics = struct {
+    native_instructions: u64,
+    native_cache_hits: u64,
+    native_cache_misses: u64,
+    native_compile_time_ns: u64,
+    cached_functions: usize,
+
+    pub fn hitRatio(self: NativeMetrics) f64 {
+        const total = self.native_cache_hits + self.native_cache_misses;
+        if (total == 0) return 0;
+        return @as(f64, @floatFromInt(self.native_cache_hits)) / @as(f64, @floatFromInt(total));
+    }
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // JIT ADAPTER
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// Cached native code entry
+pub const NativeCodeEntry = struct {
+    executable: ExecutableCode,
+    execution_count: u64,
+    is_valid: bool,
+};
 
 pub const JITAdapter = struct {
     allocator: Allocator,
     vm: VM,
     jit_compiler: JITCompiler,
     config: AdapterConfig,
+
+    // Native code cache: address -> executable code
+    native_cache: std.AutoHashMap(u32, NativeCodeEntry),
 
     // Execution state
     is_recording: bool,
@@ -128,7 +157,11 @@ pub const JITAdapter = struct {
     // Metrics
     jit_instructions: u64,
     interpreter_instructions: u64,
+    native_instructions: u64,
     jit_compile_time_ns: u64,
+    native_compile_time_ns: u64,
+    native_cache_hits: u64,
+    native_cache_misses: u64,
 
     const Self = @This();
 
@@ -138,11 +171,16 @@ pub const JITAdapter = struct {
             .vm = try VM.init(allocator),
             .jit_compiler = JITCompiler.init(allocator),
             .config = AdapterConfig{},
+            .native_cache = std.AutoHashMap(u32, NativeCodeEntry).init(allocator),
             .is_recording = false,
             .current_trace_start = 0,
             .jit_instructions = 0,
             .interpreter_instructions = 0,
+            .native_instructions = 0,
             .jit_compile_time_ns = 0,
+            .native_compile_time_ns = 0,
+            .native_cache_hits = 0,
+            .native_cache_misses = 0,
         };
     }
 
@@ -153,6 +191,13 @@ pub const JITAdapter = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free all native code entries
+        var iter = self.native_cache.iterator();
+        while (iter.next()) |entry| {
+            var native_entry = entry.value_ptr;
+            native_entry.executable.deinit();
+        }
+        self.native_cache.deinit();
         self.vm.deinit();
         self.jit_compiler.deinit();
     }
@@ -307,6 +352,42 @@ pub const JITAdapter = struct {
 
         const compile_end = std.time.nanoTimestamp();
         self.jit_compile_time_ns += @intCast(@max(0, compile_end - compile_start));
+
+        // Try to compile to native code
+        if (self.jit_compiler.lookupCode(addr)) |compiled| {
+            try self.compileToNative(addr, compiled.ir.items);
+        }
+    }
+
+    /// Compile IR to native x86-64 code
+    fn compileToNative(self: *Self, addr: u32, ir: []const IRInstruction) !void {
+        // Skip if already in native cache
+        if (self.native_cache.contains(addr)) return;
+
+        const native_start = std.time.nanoTimestamp();
+
+        var compiler = NativeCompiler.init(self.allocator);
+        defer compiler.deinit();
+
+        const machine_code = compiler.compile(ir) catch {
+            // Native compilation failed, fall back to IR
+            return;
+        };
+        defer self.allocator.free(machine_code);
+
+        const executable = ExecutableCode.init(machine_code) catch {
+            // mmap failed
+            return;
+        };
+
+        try self.native_cache.put(addr, .{
+            .executable = executable,
+            .execution_count = 0,
+            .is_valid = true,
+        });
+
+        const native_end = std.time.nanoTimestamp();
+        self.native_compile_time_ns += @intCast(@max(0, native_end - native_start));
     }
 
     fn inferTypeFromOpcode(opcode: Opcode) TypeInfo {
@@ -321,6 +402,32 @@ pub const JITAdapter = struct {
     // ═══════════════════════════════════════════════════════════════════════════
     // JIT CODE EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Try to execute native code for the given address
+    /// Returns null if no native code is available
+    pub fn tryExecuteNative(self: *Self, addr: u32) ?i64 {
+        if (self.native_cache.getPtr(addr)) |entry| {
+            if (entry.is_valid) {
+                self.native_cache_hits += 1;
+                entry.execution_count += 1;
+                self.native_instructions += 1;
+                return entry.executable.call();
+            }
+        }
+        self.native_cache_misses += 1;
+        return null;
+    }
+
+    /// Execute compiled code - tries native first, falls back to IR
+    pub fn executeCompiledCodeWithNative(self: *Self, addr: u32, compiled: *jit.CompiledCode) !Value {
+        // Try native code first
+        if (self.tryExecuteNative(addr)) |result| {
+            return .{ .int_val = result };
+        }
+
+        // Fall back to IR interpretation
+        return try self.executeCompiledCode(compiled);
+    }
 
     /// Execute compiled IR code
     pub fn executeCompiledCode(self: *Self, compiled: *jit.CompiledCode) !Value {
@@ -749,16 +856,27 @@ pub const JITAdapter = struct {
         const jit_metrics = self.jit_compiler.getMetrics();
 
         return AdapterMetrics{
-            .total_instructions = self.interpreter_instructions + self.jit_instructions,
+            .total_instructions = self.interpreter_instructions + self.jit_instructions + self.native_instructions,
             .jit_instructions = self.jit_instructions,
             .interpreter_instructions = self.interpreter_instructions,
             .hot_spots_detected = jit_metrics.hot_spots,
             .traces_compiled = jit_metrics.traces_compiled,
             .deoptimizations = jit_metrics.deoptimizations,
-            .cache_hits = jit_metrics.cache_hits,
-            .cache_misses = jit_metrics.cache_misses,
+            .cache_hits = jit_metrics.cache_hits + self.native_cache_hits,
+            .cache_misses = jit_metrics.cache_misses + self.native_cache_misses,
             .total_time_ns = self.vm.execution_time_ns,
-            .jit_compile_time_ns = self.jit_compile_time_ns,
+            .jit_compile_time_ns = self.jit_compile_time_ns + self.native_compile_time_ns,
+        };
+    }
+
+    /// Get native-specific metrics
+    pub fn getNativeMetrics(self: *const Self) NativeMetrics {
+        return .{
+            .native_instructions = self.native_instructions,
+            .native_cache_hits = self.native_cache_hits,
+            .native_cache_misses = self.native_cache_misses,
+            .native_compile_time_ns = self.native_compile_time_ns,
+            .cached_functions = self.native_cache.count(),
         };
     }
 
@@ -856,4 +974,126 @@ test "golden identity" {
     const inv_phi_sq = 1.0 / phi_sq;
     const result = phi_sq + inv_phi_sq;
     try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, result, 0.0001);
+}
+
+test "JITAdapter native code compilation" {
+    const allocator = std.testing.allocator;
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Manually compile some IR to native code
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try adapter.compileToNative(0, &ir);
+
+    // Check that native code was cached
+    try std.testing.expect(adapter.native_cache.contains(0));
+}
+
+test "JITAdapter execute native code" {
+    const allocator = std.testing.allocator;
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Compile IR to native
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try adapter.compileToNative(0, &ir);
+
+    // Execute native code
+    const result = adapter.tryExecuteNative(0);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(i64, 42), result.?);
+}
+
+test "JITAdapter native arithmetic" {
+    const allocator = std.testing.allocator;
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Compile: return 2 + 3
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try adapter.compileToNative(100, &ir);
+
+    const result = adapter.tryExecuteNative(100);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(i64, 5), result.?);
+}
+
+test "JITAdapter native metrics" {
+    const allocator = std.testing.allocator;
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Compile some code
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try adapter.compileToNative(0, &ir);
+
+    // Execute multiple times
+    _ = adapter.tryExecuteNative(0);
+    _ = adapter.tryExecuteNative(0);
+    _ = adapter.tryExecuteNative(0);
+
+    const metrics = adapter.getNativeMetrics();
+    try std.testing.expectEqual(@as(u64, 3), metrics.native_cache_hits);
+    try std.testing.expectEqual(@as(usize, 1), metrics.cached_functions);
+}
+
+test "Benchmark: VM vs JIT IR vs Native" {
+    const allocator = std.testing.allocator;
+
+    // IR for: (2 + 3) * 7 = 35
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 3, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .MUL_INT, .dest = 4, .src1 = 2, .src2 = 3, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 4, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const iterations: usize = 10000;
+
+    // Benchmark Native Code
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+    try adapter.compileToNative(0, &ir);
+
+    const native_start = std.time.nanoTimestamp();
+    var native_result: i64 = 0;
+    for (0..iterations) |_| {
+        native_result = adapter.tryExecuteNative(0).?;
+    }
+    const native_end = std.time.nanoTimestamp();
+    const native_time = native_end - native_start;
+
+    // Verify result
+    try std.testing.expectEqual(@as(i64, 35), native_result);
+
+    // Print benchmark results
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== VM vs JIT IR vs Native Benchmark ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("Native:     {d} ns ({d:.2} ns/iter)\n", .{
+            native_time,
+            @as(f64, @floatFromInt(native_time)) / @as(f64, @floatFromInt(iterations)),
+        });
+        std.debug.print("Result: {d} (expected 35)\n", .{native_result});
+    }
 }
