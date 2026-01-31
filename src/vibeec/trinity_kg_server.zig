@@ -555,7 +555,11 @@ pub const KGServer = struct {
             try self.handleLoad(request, body);
         } else if (mem.startsWith(u8, target, "/api/clear") and method == .POST) {
             try self.handleClear(request);
-        } else if (mem.eql(u8, target, "/")) {
+        } else if (mem.eql(u8, target, "/") or mem.eql(u8, target, "/ui")) {
+            try self.handleNewUI(request);
+        } else if (mem.eql(u8, target, "/stars")) {
+            try self.handleStarsUI(request);
+        } else if (mem.eql(u8, target, "/old")) {
             try self.handleVisualization(request);
         } else if (mem.eql(u8, target, "/health")) {
             try self.sendJson(request, "{\"status\":\"ok\",\"service\":\"trinity-kg\"}");
@@ -873,7 +877,59 @@ pub const KGServer = struct {
         try self.sendJson(request, response.items);
     }
     
-    /// Handle / - Serve visualization HTML page
+    /// Handle / and /ui - Serve new visualization HTML
+    fn handleNewUI(self: *KGServer, request: *http.Server.Request) !void {
+        _ = self;
+        // Read HTML file
+        const file = std.fs.cwd().openFile("trinity-kg-ui.html", .{}) catch {
+            // Fallback to embedded HTML if file not found
+            try request.respond("<html><body><h1>trinity-kg-ui.html not found</h1><p>Please ensure the file exists in the current directory.</p></body></html>", .{
+                .status = .not_found,
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+                },
+            });
+            return;
+        };
+        defer file.close();
+        
+        var buf: [65536]u8 = undefined;
+        const len = file.readAll(&buf) catch 0;
+        
+        try request.respond(buf[0..len], .{
+            .status = .ok,
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            },
+        });
+    }
+    
+    /// Handle /stars - Serve 3D star map visualization
+    fn handleStarsUI(self: *KGServer, request: *http.Server.Request) !void {
+        _ = self;
+        const file = std.fs.cwd().openFile("trinity-stars-ui.html", .{}) catch {
+            try request.respond("<html><body><h1>trinity-stars-ui.html not found</h1></body></html>", .{
+                .status = .not_found,
+                .extra_headers = &.{
+                    .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+                },
+            });
+            return;
+        };
+        defer file.close();
+        
+        var buf: [131072]u8 = undefined;  // 128KB for stars page
+        const len = file.readAll(&buf) catch 0;
+        
+        try request.respond(buf[0..len], .{
+            .status = .ok,
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            },
+        });
+    }
+
+    /// Handle /old - Serve old visualization HTML page
     fn handleVisualization(self: *KGServer, request: *http.Server.Request) !void {
         _ = self;
         const html = 
@@ -1142,10 +1198,10 @@ pub const KGServer = struct {
             };
             
             var server = http.Server.init(connection, &read_buffer);
+            defer connection.stream.close();
             
             var request = server.receiveHead() catch |err| {
                 std.debug.print("Receive error: {}\n", .{err});
-                connection.stream.close();
                 continue;
             };
             

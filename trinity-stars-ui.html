@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trinity Star Map - ⲡⲕⲟⲥⲙⲟⲥ</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    :root{--bg:#000;--accent:#00E599;--accent2:#3B82F6;--text:#FFF;--muted:#888;--border:rgba(255,255,255,0.08)}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Outfit',system-ui,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+    #canvas{position:fixed;inset:0}
+    header{position:fixed;top:0;left:0;right:0;height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(0,0,0,0.7);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);z-index:1000}
+    .logo{display:flex;align-items:center;gap:12px;font-weight:600;font-size:1.1rem}
+    .logo-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--accent2),#1D4ED8);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+    .sacred{font-family:serif;color:var(--accent2);font-size:0.75rem;opacity:0.8;margin-left:12px;letter-spacing:2px}
+    nav{display:flex;gap:8px}
+    nav a{padding:8px 16px;background:transparent;border:1px solid var(--border);border-radius:999px;color:var(--muted);text-decoration:none;font-size:0.8rem;transition:all 0.3s}
+    nav a:hover,nav a.active{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+    #panel{position:fixed;top:60px;right:0;width:280px;height:calc(100vh - 60px);background:rgba(0,0,0,0.5);backdrop-filter:blur(20px);border-left:1px solid var(--border);padding:20px;overflow-y:auto;z-index:100;transition:transform 0.3s}
+    #panel.collapsed{transform:translateX(280px)}
+    .section{margin-bottom:20px}
+    .section-title{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.15em;color:var(--muted);margin-bottom:10px}
+    .stat-card{background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px}
+    .stat-label{font-size:0.7rem;color:var(--muted);margin-bottom:4px}
+    .stat-value{font-size:1.4rem;font-weight:600;color:var(--accent2)}
+    .star-info{background:linear-gradient(135deg,rgba(59,130,246,0.1),rgba(29,78,216,0.1));border:1px solid rgba(59,130,246,0.3);border-radius:12px;padding:16px;margin-top:16px}
+    .star-name{font-size:1.2rem;font-weight:600;color:var(--accent2);margin-bottom:8px}
+    .star-data{font-size:0.8rem;color:var(--muted);line-height:1.8}
+    .star-data span{color:var(--text)}
+    .coptic-formula{background:linear-gradient(135deg,rgba(59,130,246,0.05),rgba(29,78,216,0.05));border:1px solid rgba(59,130,246,0.2);border-radius:12px;padding:16px;margin-top:16px;text-align:center}
+    .coptic-text{font-family:'Times New Roman',serif;font-size:1.3rem;color:var(--accent2);letter-spacing:3px;margin-bottom:8px;text-shadow:0 0 20px rgba(59,130,246,0.5)}
+    .coptic-sub{font-size:0.6rem;color:var(--muted);letter-spacing:1px}
+    .controls{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:100}
+    .ctrl-btn{padding:10px 20px;background:rgba(0,0,0,0.7);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:999px;color:var(--text);font-family:inherit;font-size:0.8rem;cursor:pointer;transition:all 0.3s}
+    .ctrl-btn:hover{background:var(--accent2);border-color:var(--accent2)}
+    #tooltip{position:fixed;padding:12px 18px;background:rgba(0,0,0,0.9);backdrop-filter:blur(20px);border-radius:10px;border:1px solid var(--accent2);pointer-events:none;opacity:0;transition:opacity 0.2s;z-index:1000;font-size:0.85rem}
+    #tooltip.show{opacity:1}
+    #tooltip .name{color:var(--accent2);font-weight:600;margin-bottom:4px}
+    #tooltip .info{color:var(--muted);font-size:0.75rem}
+    .loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg);z-index:2000}
+    .loading-text{font-size:1.2rem;color:var(--accent2);margin-top:20px}
+    .loading-sub{font-size:0.8rem;color:var(--muted);margin-top:8px}
+    .spinner{width:50px;height:50px;border:3px solid var(--border);border-top-color:var(--accent2);border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">ⲡⲕⲟⲥⲙⲟⲥ ⲛⲁϣⲱⲡⲉ</div>
+    <div class="loading-sub">Loading stellar database...</div>
+  </div>
+  
+  <canvas id="canvas"></canvas>
+  
+  <header>
+    <div class="logo">
+      <div class="logo-icon">✦</div>
+      <span>Trinity Stars</span>
+      <span class="sacred">ⲡⲕⲟⲥⲙⲟⲥ · ⲛⲥⲓⲟⲩ</span>
+    </div>
+    <nav>
+      <a href="/">Knowledge Graph</a>
+      <a href="/stars" class="active">Star Map</a>
+    </nav>
+  </header>
+  
+  <div id="panel">
+    <div class="section">
+      <div class="section-title">Universe Stats</div>
+      <div class="stat-card">
+        <div class="stat-label">Visible Stars</div>
+        <div class="stat-value" id="star-count">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Constellations</div>
+        <div class="stat-value">88</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Nearest Star</div>
+        <div class="stat-value">4.24 ly</div>
+      </div>
+    </div>
+    
+    <div class="section">
+      <div class="section-title">Selected Star</div>
+      <div class="star-info" id="star-info">
+        <div class="star-name">ⲡⲣⲏ - Sun</div>
+        <div class="star-data">
+          Distance: <span>0 ly</span><br>
+          Magnitude: <span>-26.74</span><br>
+          Spectral: <span>G2V</span><br>
+          Temperature: <span>5,778 K</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="coptic-formula">
+      <div class="coptic-text">d = 1/p × 3.26</div>
+      <div class="coptic-sub">ⲡⲁⲣⲁⲗⲗⲁⲝⲓⲥ · PARALLAX TO LIGHT-YEARS</div>
+    </div>
+    
+    <div class="coptic-formula" style="margin-top:12px">
+      <div class="coptic-text">L = 4πd²F</div>
+      <div class="coptic-sub">ⲗⲁⲙⲡⲣⲟⲧⲏⲥ · LUMINOSITY</div>
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button class="ctrl-btn" onclick="resetCamera()">Reset View</button>
+    <button class="ctrl-btn" onclick="toggleRotation()">Auto Rotate</button>
+    <button class="ctrl-btn" onclick="zoomToSun()">Go to Sun</button>
+    <button class="ctrl-btn" onclick="showConstellations()">Constellations</button>
+  </div>
+  
+  <div id="tooltip"><div class="name"></div><div class="info"></div></div>
+
+<script>
+// Famous stars data (HYG subset with real coordinates)
+const STARS = [
+  // Sun and nearest stars
+  {name:"Sun",coptic:"ⲡⲣⲏ",x:0,y:0,z:0,mag:-26.74,dist:0,spec:"G2V",temp:5778},
+  {name:"Proxima Centauri",coptic:"ⲡⲣⲟⲝⲓⲙⲁ",x:-1.55,y:-1.18,z:-3.77,mag:11.13,dist:4.24,spec:"M5.5V",temp:3042},
+  {name:"Alpha Centauri A",coptic:"ⲁⲗⲫⲁ ⲕⲉⲛⲧⲁⲩⲣⲟⲩ",x:-1.64,y:-1.37,z:-3.84,mag:0.01,dist:4.37,spec:"G2V",temp:5790},
+  {name:"Barnard's Star",coptic:"ⲃⲁⲣⲛⲁⲣⲇ",x:-0.06,y:-5.94,z:0.49,mag:9.54,dist:5.96,spec:"M4V",temp:3134},
+  {name:"Wolf 359",coptic:"ⲟⲩⲱⲗⲫ",x:-2.48,y:-6.93,z:1.05,mag:13.53,dist:7.86,spec:"M6V",temp:2800},
+  {name:"Sirius",coptic:"ⲥⲟⲑⲓⲥ",x:-1.61,y:8.06,z:-2.47,mag:-1.46,dist:8.60,spec:"A1V",temp:9940},
+  {name:"Luyten 726-8",coptic:"ⲗⲩⲧⲉⲛ",x:2.04,y:-8.39,z:-0.98,mag:12.54,dist:8.73,spec:"M5.5V",temp:2670},
+  {name:"Ross 154",coptic:"ⲣⲟⲥⲥ",x:1.91,y:-8.85,z:-3.91,mag:10.44,dist:9.68,spec:"M3.5V",temp:3340},
+  {name:"Ross 248",coptic:"ⲣⲟⲥⲥ ⲥⲙⲏ",x:7.38,y:-0.58,z:7.19,mag:12.29,dist:10.32,spec:"M5.5V",temp:2799},
+  {name:"Epsilon Eridani",coptic:"ⲉⲣⲓⲇⲁⲛⲟⲥ",x:6.21,y:8.31,z:-1.73,mag:3.73,dist:10.50,spec:"K2V",temp:5084},
+  // Bright stars
+  {name:"Vega",coptic:"ⲟⲩⲉⲅⲁ",x:0.03,y:25.04,z:0.58,mag:0.03,dist:25.04,spec:"A0V",temp:9602},
+  {name:"Arcturus",coptic:"ⲁⲣⲕⲧⲟⲩⲣⲟⲥ",x:-32.37,y:19.02,z:10.95,mag:-0.05,dist:36.7,spec:"K1.5III",temp:4286},
+  {name:"Capella",coptic:"ⲕⲁⲡⲉⲗⲗⲁ",x:4.30,y:42.92,z:-0.50,mag:0.08,dist:42.9,spec:"G5III",temp:4970},
+  {name:"Rigel",coptic:"ⲣⲓⲅⲉⲗ",x:-237.68,y:-822.89,z:76.11,mag:0.13,dist:860,spec:"B8Ia",temp:12100},
+  {name:"Procyon",coptic:"ⲡⲣⲟⲕⲩⲱⲛ",x:-4.77,y:10.31,z:1.04,mag:0.34,dist:11.46,spec:"F5IV",temp:6530},
+  {name:"Betelgeuse",coptic:"ⲃⲉⲧⲉⲗⲅⲉⲩⲥⲉ",x:-109.54,y:642.78,z:-90.82,mag:0.42,dist:700,spec:"M1Ia",temp:3500},
+  {name:"Altair",coptic:"ⲁⲗⲧⲁⲓⲣ",x:7.68,y:14.65,z:-2.21,mag:0.77,dist:16.73,spec:"A7V",temp:7550},
+  {name:"Aldebaran",coptic:"ⲁⲗⲇⲉⲃⲁⲣⲁⲛ",x:21.98,y:60.45,z:-12.47,mag:0.85,dist:65.3,spec:"K5III",temp:3910},
+  {name:"Spica",coptic:"ⲥⲡⲓⲕⲁ",x:-41.15,y:-243.95,z:22.55,mag:0.97,dist:250,spec:"B1V",temp:22400},
+  {name:"Antares",coptic:"ⲁⲛⲧⲁⲣⲏⲥ",x:-170.28,y:-520.89,z:35.83,mag:1.06,dist:550,spec:"M1Ib",temp:3660},
+  {name:"Pollux",coptic:"ⲡⲟⲗⲗⲩⲝ",x:-8.03,y:33.78,z:-0.65,mag:1.14,dist:33.78,spec:"K0III",temp:4666},
+  {name:"Fomalhaut",coptic:"ⲫⲟⲙⲁⲗϩⲁⲩⲧ",x:22.46,y:-5.90,z:-11.43,mag:1.16,dist:25.13,spec:"A3V",temp:8590},
+  {name:"Deneb",coptic:"ⲇⲉⲛⲉⲃ",x:413.85,y:2614.12,z:99.90,mag:1.25,dist:2615,spec:"A2Ia",temp:8525},
+  {name:"Regulus",coptic:"ⲣⲉⲅⲟⲩⲗⲟⲥ",x:-35.90,y:72.86,z:17.85,mag:1.35,dist:79.3,spec:"B7V",temp:12460},
+  {name:"Castor",coptic:"ⲕⲁⲥⲧⲱⲣ",x:-5.67,y:51.56,z:1.93,mag:1.58,dist:51,spec:"A1V",temp:10286},
+  // More stars for density
+  {name:"Polaris",coptic:"ⲡⲟⲗⲁⲣⲓⲥ",x:99.64,y:323.22,z:308.05,mag:1.98,dist:433,spec:"F7Ib",temp:6015},
+  {name:"Canopus",coptic:"ⲕⲁⲛⲱⲡⲟⲥ",x:-95.99,y:-309.42,z:36.38,mag:-0.74,dist:310,spec:"A9II",temp:7350},
+  {name:"Achernar",coptic:"ⲁⲭⲉⲣⲛⲁⲣ",x:69.17,y:-139.01,z:-22.48,mag:0.46,dist:139,spec:"B6V",temp:14500},
+  {name:"Hadar",coptic:"ϩⲁⲇⲁⲣ",x:-130.13,y:-390.40,z:-11.05,mag:0.61,dist:390,spec:"B1III",temp:25000},
+  {name:"Acrux",coptic:"ⲁⲕⲣⲟⲩⲝ",x:-88.57,y:-321.00,z:10.00,mag:0.76,dist:320,spec:"B0.5IV",temp:28000}
+];
+
+// Generate random background stars
+for(let i=0;i<2000;i++){
+  const r=Math.random()*500+50;
+  const theta=Math.random()*Math.PI*2;
+  const phi=Math.acos(2*Math.random()-1);
+  STARS.push({
+    name:`Star-${i}`,
+    coptic:`ⲥⲓⲟⲩ-${i}`,
+    x:r*Math.sin(phi)*Math.cos(theta),
+    y:r*Math.sin(phi)*Math.sin(theta),
+    z:r*Math.cos(phi),
+    mag:Math.random()*8+4,
+    dist:r,
+    spec:['M','K','G','F','A','B'][Math.floor(Math.random()*6)]+'V',
+    temp:Math.floor(Math.random()*20000+2500)
+  });
+}
+
+let scene,camera,renderer,stars,raycaster,mouse,autoRotate=true,selectedStar=null;
+
+function init(){
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.1,10000);
+  camera.position.set(0,50,100);
+  
+  renderer=new THREE.WebGLRenderer({canvas:document.getElementById('canvas'),antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  
+  // Stars
+  const geometry=new THREE.BufferGeometry();
+  const positions=new Float32Array(STARS.length*3);
+  const colors=new Float32Array(STARS.length*3);
+  const sizes=new Float32Array(STARS.length);
+  
+  STARS.forEach((s,i)=>{
+    positions[i*3]=s.x;
+    positions[i*3+1]=s.y;
+    positions[i*3+2]=s.z;
+    
+    // Color by temperature
+    const t=s.temp;
+    let r,g,b;
+    if(t<3500){r=1;g=0.5;b=0.3;}
+    else if(t<5000){r=1;g=0.8;b=0.6;}
+    else if(t<6000){r=1;g=1;b=0.9;}
+    else if(t<7500){r=0.9;g=0.95;b=1;}
+    else if(t<10000){r=0.7;g=0.8;b=1;}
+    else{r=0.6;g=0.7;b=1;}
+    colors[i*3]=r;colors[i*3+1]=g;colors[i*3+2]=b;
+    
+    // Size by magnitude (brighter = bigger)
+    sizes[i]=Math.max(1,8-s.mag*0.5);
+  });
+  
+  geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  geometry.setAttribute('color',new THREE.BufferAttribute(colors,3));
+  geometry.setAttribute('size',new THREE.BufferAttribute(sizes,1));
+  
+  const material=new THREE.ShaderMaterial({
+    uniforms:{},
+    vertexShader:`
+      attribute float size;
+      varying vec3 vColor;
+      void main(){
+        vColor=color;
+        vec4 mvPosition=modelViewMatrix*vec4(position,1.0);
+        gl_PointSize=size*(300.0/-mvPosition.z);
+        gl_Position=projectionMatrix*mvPosition;
+      }
+    `,
+    fragmentShader:`
+      varying vec3 vColor;
+      void main(){
+        float d=length(gl_PointCoord-vec2(0.5));
+        if(d>0.5)discard;
+        float alpha=1.0-smoothstep(0.3,0.5,d);
+        gl_FragColor=vec4(vColor,alpha);
+      }
+    `,
+    transparent:true,
+    vertexColors:true,
+    depthWrite:false
+  });
+  
+  stars=new THREE.Points(geometry,material);
+  scene.add(stars);
+  
+  // Sun glow
+  const sunGeo=new THREE.SphereGeometry(2,32,32);
+  const sunMat=new THREE.MeshBasicMaterial({color:0xffff00});
+  const sun=new THREE.Mesh(sunGeo,sunMat);
+  scene.add(sun);
+  
+  // Grid
+  const grid=new THREE.GridHelper(200,20,0x00E599,0x003322);
+  grid.position.y=-50;
+  scene.add(grid);
+  
+  raycaster=new THREE.Raycaster();
+  raycaster.params.Points.threshold=2;
+  mouse=new THREE.Vector2();
+  
+  document.addEventListener('mousemove',onMouseMove);
+  document.addEventListener('click',onClick);
+  window.addEventListener('resize',onResize);
+  document.addEventListener('wheel',onWheel);
+  
+  let isDragging=false,prevX,prevY;
+  document.addEventListener('mousedown',e=>{isDragging=true;prevX=e.clientX;prevY=e.clientY;});
+  document.addEventListener('mouseup',()=>isDragging=false);
+  document.addEventListener('mousemove',e=>{
+    if(!isDragging)return;
+    const dx=e.clientX-prevX,dy=e.clientY-prevY;
+    camera.position.x-=dx*0.5;
+    camera.position.y+=dy*0.5;
+    prevX=e.clientX;prevY=e.clientY;
+  });
+  
+  document.getElementById('star-count').textContent=STARS.length.toLocaleString();
+  document.getElementById('loading').style.display='none';
+  
+  animate();
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  if(autoRotate){
+    camera.position.x=Math.sin(Date.now()*0.0001)*150;
+    camera.position.z=Math.cos(Date.now()*0.0001)*150;
+  }
+  camera.lookAt(0,0,0);
+  renderer.render(scene,camera);
+}
+
+function onMouseMove(e){
+  mouse.x=(e.clientX/innerWidth)*2-1;
+  mouse.y=-(e.clientY/innerHeight)*2+1;
+  
+  raycaster.setFromCamera(mouse,camera);
+  const intersects=raycaster.intersectObject(stars);
+  
+  const tooltip=document.getElementById('tooltip');
+  if(intersects.length>0){
+    const idx=intersects[0].index;
+    const s=STARS[idx];
+    tooltip.querySelector('.name').textContent=`${s.coptic} - ${s.name}`;
+    tooltip.querySelector('.info').textContent=`${s.dist.toFixed(2)} ly · ${s.spec} · ${s.temp}K`;
+    tooltip.style.left=e.clientX+15+'px';
+    tooltip.style.top=e.clientY+15+'px';
+    tooltip.classList.add('show');
+  }else{
+    tooltip.classList.remove('show');
+  }
+}
+
+function onClick(e){
+  raycaster.setFromCamera(mouse,camera);
+  const intersects=raycaster.intersectObject(stars);
+  if(intersects.length>0){
+    const s=STARS[intersects[0].index];
+    selectedStar=s;
+    document.getElementById('star-info').innerHTML=`
+      <div class="star-name">${s.coptic} - ${s.name}</div>
+      <div class="star-data">
+        Distance: <span>${s.dist.toFixed(2)} ly</span><br>
+        Magnitude: <span>${s.mag.toFixed(2)}</span><br>
+        Spectral: <span>${s.spec}</span><br>
+        Temperature: <span>${s.temp.toLocaleString()} K</span>
+      </div>
+    `;
+    autoRotate=false;
+  }
+}
+
+function onWheel(e){
+  camera.position.multiplyScalar(e.deltaY>0?1.1:0.9);
+}
+
+function onResize(){
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+}
+
+function resetCamera(){camera.position.set(0,50,100);autoRotate=true;}
+function toggleRotation(){autoRotate=!autoRotate;}
+function zoomToSun(){camera.position.set(0,10,20);autoRotate=false;}
+function showConstellations(){alert('ⲛⲉⲥⲧⲉⲗⲗⲁ - Constellations coming soon!');}
+
+init();
+</script>
+</body>
+</html>
