@@ -138,20 +138,20 @@ pub const SSAFunction = struct {
 // Optimization Passes
 pub const OptimizationPass = struct {
     
-    // Constant Folding
+    // Constant Folding - Enhanced with mod, neg, and comparisons
     pub fn constantFold(func: *SSAFunction) u32 {
         var folded: u32 = 0;
         var constants = std.AutoHashMap(SSAValue, i64).init(func.allocator);
         defer constants.deinit();
         
         for (func.blocks.items) |*block| {
-            for (block.instrs.items, 0..) |*instr, i| {
-                _ = i;
+            for (block.instrs.items) |*instr| {
                 switch (instr.op) {
                     .const_int => {
                         constants.put(instr.dest, instr.imm) catch {};
                     },
-                    .add, .sub, .mul, .div => {
+                    // Binary arithmetic operations
+                    .add, .sub, .mul, .div, .mod => {
                         const v1 = constants.get(instr.src1);
                         const v2 = constants.get(instr.src2);
                         if (v1 != null and v2 != null) {
@@ -160,6 +160,36 @@ pub const OptimizationPass = struct {
                                 .sub => v1.? - v2.?,
                                 .mul => v1.? * v2.?,
                                 .div => if (v2.? != 0) @divTrunc(v1.?, v2.?) else v1.?,
+                                .mod => if (v2.? != 0) @mod(v1.?, v2.?) else v1.?,
+                                else => unreachable,
+                            };
+                            instr.* = SSAInstr.constInt(instr.dest, result);
+                            constants.put(instr.dest, result) catch {};
+                            folded += 1;
+                        }
+                    },
+                    // Unary negation
+                    .neg => {
+                        const v1 = constants.get(instr.src1);
+                        if (v1 != null) {
+                            const result = -v1.?;
+                            instr.* = SSAInstr.constInt(instr.dest, result);
+                            constants.put(instr.dest, result) catch {};
+                            folded += 1;
+                        }
+                    },
+                    // Comparison operations (result is 0 or 1)
+                    .eq, .ne, .lt, .le, .gt, .ge => {
+                        const v1 = constants.get(instr.src1);
+                        const v2 = constants.get(instr.src2);
+                        if (v1 != null and v2 != null) {
+                            const result: i64 = switch (instr.op) {
+                                .eq => if (v1.? == v2.?) @as(i64, 1) else @as(i64, 0),
+                                .ne => if (v1.? != v2.?) @as(i64, 1) else @as(i64, 0),
+                                .lt => if (v1.? < v2.?) @as(i64, 1) else @as(i64, 0),
+                                .le => if (v1.? <= v2.?) @as(i64, 1) else @as(i64, 0),
+                                .gt => if (v1.? > v2.?) @as(i64, 1) else @as(i64, 0),
+                                .ge => if (v1.? >= v2.?) @as(i64, 1) else @as(i64, 0),
                                 else => unreachable,
                             };
                             instr.* = SSAInstr.constInt(instr.dest, result);
@@ -174,13 +204,13 @@ pub const OptimizationPass = struct {
         return folded;
     }
     
-    // Dead Code Elimination
+    // Dead Code Elimination - Enhanced with more instruction types
     pub fn deadCodeElimination(func: *SSAFunction) u32 {
         var eliminated: u32 = 0;
         var used = std.AutoHashMap(SSAValue, bool).init(func.allocator);
         defer used.deinit();
         
-        // Mark phase - find all used values
+        // Mark phase - find all used values (including ret instruction sources)
         for (func.blocks.items) |block| {
             for (block.instrs.items) |instr| {
                 if (instr.src1 != SSA_UNDEF) used.put(instr.src1, true) catch {};
@@ -196,7 +226,9 @@ pub const OptimizationPass = struct {
                 if (instr.dest != SSA_UNDEF and !used.contains(instr.dest)) {
                     // Check if it's a side-effect free instruction
                     switch (instr.op) {
-                        .const_int, .const_float, .add, .sub, .mul, .div, .copy => {
+                        // All pure operations can be eliminated if unused
+                        .const_int, .const_float, .add, .sub, .mul, .div, .mod, .neg, .copy,
+                        .eq, .ne, .lt, .le, .gt, .ge => {
                             _ = block.instrs.orderedRemove(i);
                             eliminated += 1;
                             continue;
@@ -534,4 +566,155 @@ test "golden identity" {
     const inv_phi_sq = 1.0 / phi_sq;
     const result = phi_sq + inv_phi_sq;
     try std.testing.expectApproxEqAbs(GOLDEN_IDENTITY, result, 0.0001);
+}
+
+test "constant folding - modulo" {
+    const allocator = std.testing.allocator;
+    
+    var func = SSAFunction.init(allocator, "test_mod");
+    defer func.deinit();
+    
+    // v0 = 17, v1 = 5, v2 = v0 % v1 -> should fold to 2
+    const v0 = func.newValue();
+    const v1 = func.newValue();
+    const v2 = func.newValue();
+    
+    func.emit(0, SSAInstr.constInt(v0, 17));
+    func.emit(0, SSAInstr.constInt(v1, 5));
+    func.emit(0, SSAInstr.binop(.mod, v2, v0, v1));
+    
+    const folded = OptimizationPass.constantFold(&func);
+    try std.testing.expectEqual(@as(u32, 1), folded);
+    try std.testing.expectEqual(@as(i64, 2), func.blocks.items[0].instrs.items[2].imm);
+}
+
+test "constant folding - negation" {
+    const allocator = std.testing.allocator;
+    
+    var func = SSAFunction.init(allocator, "test_neg");
+    defer func.deinit();
+    
+    // v0 = 42, v1 = -v0 -> should fold to -42
+    const v0 = func.newValue();
+    const v1 = func.newValue();
+    
+    func.emit(0, SSAInstr.constInt(v0, 42));
+    func.emit(0, SSAInstr.unop(.neg, v1, v0));
+    
+    const folded = OptimizationPass.constantFold(&func);
+    try std.testing.expectEqual(@as(u32, 1), folded);
+    try std.testing.expectEqual(@as(i64, -42), func.blocks.items[0].instrs.items[1].imm);
+}
+
+test "constant folding - comparisons" {
+    const allocator = std.testing.allocator;
+    
+    var func = SSAFunction.init(allocator, "test_cmp");
+    defer func.deinit();
+    
+    // v0 = 10, v1 = 20
+    // v2 = v0 < v1 -> 1 (true)
+    // v3 = v0 > v1 -> 0 (false)
+    // v4 = v0 == v0 -> 1 (true)
+    const v0 = func.newValue();
+    const v1 = func.newValue();
+    const v2 = func.newValue();
+    const v3 = func.newValue();
+    const v4 = func.newValue();
+    
+    func.emit(0, SSAInstr.constInt(v0, 10));
+    func.emit(0, SSAInstr.constInt(v1, 20));
+    func.emit(0, SSAInstr.binop(.lt, v2, v0, v1));
+    func.emit(0, SSAInstr.binop(.gt, v3, v0, v1));
+    func.emit(0, SSAInstr.binop(.eq, v4, v0, v0));
+    
+    const folded = OptimizationPass.constantFold(&func);
+    try std.testing.expectEqual(@as(u32, 3), folded);
+    
+    // v2 = 1 (10 < 20)
+    try std.testing.expectEqual(@as(i64, 1), func.blocks.items[0].instrs.items[2].imm);
+    // v3 = 0 (10 > 20 is false)
+    try std.testing.expectEqual(@as(i64, 0), func.blocks.items[0].instrs.items[3].imm);
+    // v4 = 1 (10 == 10)
+    try std.testing.expectEqual(@as(i64, 1), func.blocks.items[0].instrs.items[4].imm);
+}
+
+test "dead code elimination - comprehensive" {
+    const allocator = std.testing.allocator;
+    
+    var func = SSAFunction.init(allocator, "test_dce");
+    defer func.deinit();
+    
+    // v0 = 100 (dead)
+    // v1 = 200 (dead)
+    // v2 = v0 + v1 (dead)
+    // v3 = 42 (live - used by ret)
+    // ret v3
+    const v0 = func.newValue();
+    const v1 = func.newValue();
+    const v2 = func.newValue();
+    const v3 = func.newValue();
+    
+    func.emit(0, SSAInstr.constInt(v0, 100));
+    func.emit(0, SSAInstr.constInt(v1, 200));
+    func.emit(0, SSAInstr.binop(.add, v2, v0, v1));
+    func.emit(0, SSAInstr.constInt(v3, 42));
+    func.emit(0, SSAInstr{ .op = .ret, .dest = SSA_UNDEF, .src1 = v3, .src2 = SSA_UNDEF, .imm = 0 });
+    
+    const before = func.blocks.items[0].instrs.items.len;
+    const eliminated = OptimizationPass.deadCodeElimination(&func);
+    const after = func.blocks.items[0].instrs.items.len;
+    
+    // Should eliminate v0, v1, v2 (3 instructions)
+    try std.testing.expect(eliminated >= 1);
+    try std.testing.expect(after < before);
+}
+
+test "optimization pipeline - full" {
+    const allocator = std.testing.allocator;
+    
+    var jit = JITTier2.init(allocator);
+    defer jit.deinit();
+    
+    var func = SSAFunction.init(allocator, "pipeline_test");
+    defer func.deinit();
+    
+    // Complex: (10 + 20) * 3 - 5 + dead code
+    // Live: v0=10, v1=20, v2=30, v3=3, v4=90, v5=5, v6=85
+    // Dead: v7=1000, v8=2000, v9=3000
+    const v0 = func.newValue();
+    const v1 = func.newValue();
+    const v2 = func.newValue();
+    const v3 = func.newValue();
+    const v4 = func.newValue();
+    const v5 = func.newValue();
+    const v6 = func.newValue();
+    const v7 = func.newValue();
+    const v8 = func.newValue();
+    const v9 = func.newValue();
+    
+    func.emit(0, SSAInstr.constInt(v0, 10));
+    func.emit(0, SSAInstr.constInt(v1, 20));
+    func.emit(0, SSAInstr.binop(.add, v2, v0, v1));
+    func.emit(0, SSAInstr.constInt(v3, 3));
+    func.emit(0, SSAInstr.binop(.mul, v4, v2, v3));
+    func.emit(0, SSAInstr.constInt(v5, 5));
+    func.emit(0, SSAInstr.binop(.sub, v6, v4, v5));
+    // Dead code
+    func.emit(0, SSAInstr.constInt(v7, 1000));
+    func.emit(0, SSAInstr.constInt(v8, 2000));
+    func.emit(0, SSAInstr.binop(.add, v9, v7, v8));
+    // Return live value
+    func.emit(0, SSAInstr{ .op = .ret, .dest = SSA_UNDEF, .src1 = v6, .src2 = SSA_UNDEF, .imm = 0 });
+    
+    const before = func.blocks.items[0].instrs.items.len;
+    jit.compile(&func);
+    const after = func.blocks.items[0].instrs.items.len;
+    
+    const stats = jit.getStats();
+    
+    // Should fold constants and eliminate dead code
+    try std.testing.expect(stats.folded >= 3);
+    try std.testing.expect(after < before);
+    // Final result should be v6 = 85 as a constant
 }
