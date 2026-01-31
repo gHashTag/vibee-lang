@@ -885,38 +885,57 @@ pub const KGServer = struct {
             \\  <script src="https://d3js.org/d3.v7.min.js"></script>
             \\  <style>
             \\    body { margin: 0; font-family: Arial, sans-serif; background: #1a1a2e; color: #eee; }
-            \\    #controls { position: fixed; top: 10px; left: 10px; z-index: 100; background: #16213e; padding: 15px; border-radius: 8px; }
+            \\    #controls { position: fixed; top: 10px; left: 10px; z-index: 100; background: #16213e; padding: 15px; border-radius: 8px; max-width: 200px; }
             \\    #controls input, #controls button { margin: 5px 0; padding: 8px; border-radius: 4px; border: 1px solid #0f3460; }
             \\    #controls input { background: #1a1a2e; color: #eee; width: 150px; }
-            \\    #controls button { background: #e94560; color: white; cursor: pointer; border: none; }
+            \\    #controls button { background: #e94560; color: white; cursor: pointer; border: none; margin-right: 5px; }
             \\    #controls button:hover { background: #ff6b6b; }
             \\    #stats { position: fixed; top: 10px; right: 10px; background: #16213e; padding: 15px; border-radius: 8px; }
+            \\    #tooltip { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #16213e; padding: 15px 25px; border-radius: 8px; display: none; border: 2px solid #e94560; max-width: 600px; }
+            \\    #tooltip.show { display: block; }
+            \\    #tooltip .path { color: #4ade80; font-family: monospace; margin: 10px 0; }
             \\    svg { width: 100vw; height: 100vh; }
             \\    .node { cursor: pointer; }
-            \\    .node circle { stroke: #fff; stroke-width: 2px; }
+            \\    .node circle { stroke: #fff; stroke-width: 2px; transition: all 0.3s; }
             \\    .node text { font-size: 12px; fill: #eee; }
-            \\    .link { stroke: #0f3460; stroke-width: 2px; }
-            \\    .link-label { font-size: 10px; fill: #888; }
+            \\    .node.highlighted circle { stroke: #4ade80; stroke-width: 4px; filter: drop-shadow(0 0 10px #4ade80); }
+            \\    .node.dimmed circle { opacity: 0.3; }
+            \\    .node.dimmed text { opacity: 0.3; }
+            \\    .link { stroke: #0f3460; stroke-width: 2px; transition: all 0.3s; }
+            \\    .link.highlighted { stroke: #4ade80; stroke-width: 4px; filter: drop-shadow(0 0 5px #4ade80); }
+            \\    .link.dimmed { opacity: 0.2; }
+            \\    .link-label { font-size: 10px; fill: #888; transition: all 0.3s; }
+            \\    .link-label.highlighted { fill: #4ade80; font-weight: bold; }
+            \\    .link-label.dimmed { opacity: 0.2; }
             \\    .group-1 { fill: #e94560; }
             \\    .group-2 { fill: #0f3460; }
+            \\    h4 { margin: 15px 0 5px 0; color: #888; font-size: 12px; }
             \\  </style>
             \\</head>
             \\<body>
             \\  <div id="controls">
-            \\    <h3 style="margin-top:0">Add Triple</h3>
+            \\    <h3 style="margin-top:0">Trinity KG</h3>
+            \\    <h4>Add Triple</h4>
             \\    <input id="subject" placeholder="Subject"><br>
             \\    <input id="predicate" placeholder="Predicate"><br>
             \\    <input id="object" placeholder="Object"><br>
-            \\    <button onclick="addTriple()">Add</button>
+            \\    <button onclick="addTriple()">Add</button><br>
+            \\    <h4>Actions</h4>
             \\    <button onclick="clearGraph()">Clear</button>
-            \\    <button onclick="loadGraph()">Refresh</button>
+            \\    <button onclick="loadGraph()">Refresh</button><br>
+            \\    <h4>Reasoning</h4>
+            \\    <input id="reasonFrom" placeholder="From entity"><br>
+            \\    <input id="reasonTo" placeholder="To entity"><br>
+            \\    <button onclick="findPath()">Find Path</button>
+            \\    <p style="font-size:11px;color:#888;margin-top:10px">Click node to see connections.<br>Use Find Path for reasoning.</p>
             \\  </div>
             \\  <div id="stats"></div>
+            \\  <div id="tooltip"><span id="tooltipText"></span><div class="path" id="tooltipPath"></div></div>
             \\  <svg></svg>
             \\  <script>
             \\    const width = window.innerWidth, height = window.innerHeight;
             \\    const svg = d3.select("svg");
-            \\    
+            \\    let graphData = {nodes: [], links: []};
             \\    let simulation, link, node, linkLabel;
             \\    
             \\    function loadGraph() {
@@ -924,32 +943,27 @@ pub const KGServer = struct {
             \\        fetch('/api/graph').then(r => r.json()),
             \\        fetch('/api/stats').then(r => r.json())
             \\      ]).then(([graph, stats]) => {
+            \\        graphData = graph;
             \\        document.getElementById('stats').innerHTML = 
             \\          `<b>Entities:</b> ${stats.entities}<br><b>Relations:</b> ${stats.relations}<br><b>Triples:</b> ${stats.triples}`;
-            \\        
             \\        svg.selectAll("*").remove();
-            \\        
+            \\        hideTooltip();
             \\        if (graph.nodes.length === 0) return;
-            \\        
             \\        simulation = d3.forceSimulation(graph.nodes)
             \\          .force("link", d3.forceLink(graph.links).id(d => d.id).distance(150))
             \\          .force("charge", d3.forceManyBody().strength(-400))
             \\          .force("center", d3.forceCenter(width / 2, height / 2));
-            \\        
             \\        link = svg.append("g").selectAll("line")
             \\          .data(graph.links).enter().append("line").attr("class", "link");
-            \\        
             \\        linkLabel = svg.append("g").selectAll("text")
             \\          .data(graph.links).enter().append("text")
             \\          .attr("class", "link-label").text(d => d.label);
-            \\        
             \\        node = svg.append("g").selectAll("g")
             \\          .data(graph.nodes).enter().append("g").attr("class", "node")
+            \\          .on("click", (e, d) => highlightConnections(d.id))
             \\          .call(d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended));
-            \\        
             \\        node.append("circle").attr("r", 20).attr("class", d => "group-" + d.group);
             \\        node.append("text").attr("dy", 35).attr("text-anchor", "middle").text(d => d.id);
-            \\        
             \\        simulation.on("tick", () => {
             \\          link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
             \\              .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
@@ -959,26 +973,79 @@ pub const KGServer = struct {
             \\        });
             \\      });
             \\    }
-            \\    
+            \\    function highlightConnections(nodeId) {
+            \\      clearHighlight();
+            \\      const connected = new Set([nodeId]);
+            \\      const connectedLinks = [];
+            \\      graphData.links.forEach((l, i) => {
+            \\        const src = typeof l.source === 'object' ? l.source.id : l.source;
+            \\        const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+            \\        if (src === nodeId || tgt === nodeId) {
+            \\          connected.add(src); connected.add(tgt);
+            \\          connectedLinks.push({src, tgt, label: l.label, idx: i});
+            \\        }
+            \\      });
+            \\      node.classed("highlighted", d => d.id === nodeId);
+            \\      node.classed("dimmed", d => !connected.has(d.id));
+            \\      link.classed("highlighted", (d, i) => connectedLinks.some(c => c.idx === i));
+            \\      link.classed("dimmed", (d, i) => !connectedLinks.some(c => c.idx === i));
+            \\      linkLabel.classed("highlighted", (d, i) => connectedLinks.some(c => c.idx === i));
+            \\      linkLabel.classed("dimmed", (d, i) => !connectedLinks.some(c => c.idx === i));
+            \\      const outgoing = connectedLinks.filter(c => c.src === nodeId).map(c => `${c.label} -> ${c.tgt}`);
+            \\      const incoming = connectedLinks.filter(c => c.tgt === nodeId).map(c => `${c.src} -> ${c.label}`);
+            \\      showTooltip(`<b>${nodeId}</b>`, outgoing.length ? `Out: ${outgoing.join(', ')}` : incoming.length ? `In: ${incoming.join(', ')}` : 'No connections');
+            \\    }
+            \\    function clearHighlight() {
+            \\      node.classed("highlighted", false).classed("dimmed", false);
+            \\      link.classed("highlighted", false).classed("dimmed", false);
+            \\      linkLabel.classed("highlighted", false).classed("dimmed", false);
+            \\    }
+            \\    function showTooltip(title, path) {
+            \\      document.getElementById('tooltipText').innerHTML = title;
+            \\      document.getElementById('tooltipPath').innerHTML = path;
+            \\      document.getElementById('tooltip').classList.add('show');
+            \\    }
+            \\    function hideTooltip() { document.getElementById('tooltip').classList.remove('show'); }
+            \\    function findPath() {
+            \\      const from = document.getElementById('reasonFrom').value;
+            \\      const to = document.getElementById('reasonTo').value;
+            \\      if (!from || !to) return alert('Enter From and To entities');
+            \\      fetch(`/api/reason?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+            \\        .then(r => r.json()).then(data => {
+            \\          if (!data.found) { showTooltip('No path found', `Cannot reach "${to}" from "${from}"`); return; }
+            \\          const pathNodes = new Set([from]);
+            \\          const pathLinks = [];
+            \\          data.path.forEach(step => { pathNodes.add(step.entity); pathNodes.add(step.next); });
+            \\          graphData.links.forEach((l, i) => {
+            \\            const src = typeof l.source === 'object' ? l.source.id : l.source;
+            \\            const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+            \\            data.path.forEach(step => { if (src === step.entity && tgt === step.next) pathLinks.push(i); });
+            \\          });
+            \\          clearHighlight();
+            \\          node.classed("highlighted", d => pathNodes.has(d.id));
+            \\          node.classed("dimmed", d => !pathNodes.has(d.id));
+            \\          link.classed("highlighted", (d, i) => pathLinks.includes(i));
+            \\          link.classed("dimmed", (d, i) => !pathLinks.includes(i));
+            \\          linkLabel.classed("highlighted", (d, i) => pathLinks.includes(i));
+            \\          linkLabel.classed("dimmed", (d, i) => !pathLinks.includes(i));
+            \\          showTooltip(`Path found (${data.hops} hops)`, data.conclusion);
+            \\        });
+            \\    }
+            \\    svg.on("click", (e) => { if (e.target.tagName === 'svg') { clearHighlight(); hideTooltip(); } });
             \\    function dragstarted(event) { if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
             \\    function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
             \\    function dragended(event) { if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
-            \\    
             \\    function addTriple() {
             \\      const s = document.getElementById('subject').value;
             \\      const p = document.getElementById('predicate').value;
             \\      const o = document.getElementById('object').value;
             \\      if (!s || !p || !o) return alert('Fill all fields');
             \\      fetch('/api/add', {
-            \\        method: 'POST',
-            \\        headers: {'Content-Type': 'application/json'},
+            \\        method: 'POST', headers: {'Content-Type': 'application/json'},
             \\        body: JSON.stringify({subject: s, predicate: p, object: o})
-            \\      }).then(() => { loadGraph(); document.getElementById('subject').value = ''; document.getElementById('predicate').value = ''; document.getElementById('object').value = ''; });
+            \\      }).then(() => { loadGraph(); ['subject','predicate','object'].forEach(id => document.getElementById(id).value = ''); });
             \\    }
-            \\    
-            \\    function clearGraph() {
-            \\      if (confirm('Clear all data?')) fetch('/api/clear', {method: 'POST'}).then(loadGraph);
-            \\    }
+            \\    function clearGraph() { if (confirm('Clear all data?')) fetch('/api/clear', {method: 'POST'}).then(loadGraph); }
             \\    
             \\    loadGraph();
             \\  </script>
@@ -1017,8 +1084,30 @@ pub const KGServer = struct {
         });
     }
     
+    /// Load example data for demonstration
+    fn loadDefaultData(self: *KGServer) void {
+        // Greek philosophers knowledge graph
+        _ = self.kg.addTriple("Socrates", "is_a", "human") catch {};
+        _ = self.kg.addTriple("Plato", "is_a", "human") catch {};
+        _ = self.kg.addTriple("Aristotle", "is_a", "human") catch {};
+        _ = self.kg.addTriple("human", "is_mortal", "true") catch {};
+        _ = self.kg.addTriple("Socrates", "teacher_of", "Plato") catch {};
+        _ = self.kg.addTriple("Plato", "teacher_of", "Aristotle") catch {};
+        _ = self.kg.addTriple("Plato", "founded", "Academy") catch {};
+        _ = self.kg.addTriple("Aristotle", "founded", "Lyceum") catch {};
+        _ = self.kg.addTriple("Socrates", "born_in", "Athens") catch {};
+        _ = self.kg.addTriple("Plato", "born_in", "Athens") catch {};
+        _ = self.kg.addTriple("Athens", "is_a", "city") catch {};
+        _ = self.kg.addTriple("city", "is_a", "place") catch {};
+        
+        std.debug.print("Loaded 12 default triples (Greek philosophers)\n", .{});
+    }
+    
     /// Run server loop
     pub fn run(self: *KGServer) !void {
+        // Load default data for demonstration
+        self.loadDefaultData();
+        
         std.debug.print("\n", .{});
         std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
         std.debug.print("║         Trinity Knowledge Graph Server                       ║\n", .{});
