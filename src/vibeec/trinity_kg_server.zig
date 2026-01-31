@@ -197,6 +197,159 @@ pub const KnowledgeGraph = struct {
         };
     }
     
+    /// Path step in reasoning chain
+    pub const PathStep = struct {
+        entity: []const u8,
+        relation: []const u8,
+        next_entity: []const u8,
+    };
+    
+    /// Reasoning result
+    pub const ReasoningResult = struct {
+        found: bool,
+        path: []PathStep,
+        hops: usize,
+        
+        pub fn deinit(self: *ReasoningResult, allocator: Allocator) void {
+            allocator.free(self.path);
+        }
+    };
+    
+    /// Multi-hop reasoning: find path from entity to target value
+    /// Uses BFS to find shortest path
+    pub fn findPath(self: *KnowledgeGraph, from: []const u8, to: []const u8, max_hops: usize) !ReasoningResult {
+        const QueueItem = struct {
+            entity: []const u8,
+            path: std.ArrayList(PathStep),
+            depth: usize,
+        };
+        
+        var queue = std.ArrayList(QueueItem).init(self.allocator);
+        defer {
+            for (queue.items) |*item| {
+                item.path.deinit();
+            }
+            queue.deinit();
+        }
+        
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer visited.deinit();
+        
+        // Start BFS from 'from' entity
+        const initial_path = std.ArrayList(PathStep).init(self.allocator);
+        try queue.append(.{
+            .entity = from,
+            .path = initial_path,
+            .depth = 0,
+        });
+        try visited.put(from, {});
+        
+        while (queue.items.len > 0) {
+            const current = queue.orderedRemove(0);
+            defer current.path.deinit();
+            
+            // Check if we reached the target
+            if (mem.eql(u8, current.entity, to)) {
+                const result_path = try self.allocator.dupe(PathStep, current.path.items);
+                return .{
+                    .found = true,
+                    .path = result_path,
+                    .hops = current.depth,
+                };
+            }
+            
+            // Don't go deeper than max_hops
+            if (current.depth >= max_hops) continue;
+            
+            // Explore neighbors (objects of triples where current entity is subject)
+            for (self.triples.items) |triple| {
+                if (mem.eql(u8, triple.subject, current.entity)) {
+                    if (!visited.contains(triple.object)) {
+                        try visited.put(triple.object, {});
+                        
+                        var new_path = try current.path.clone();
+                        try new_path.append(.{
+                            .entity = triple.subject,
+                            .relation = triple.predicate,
+                            .next_entity = triple.object,
+                        });
+                        
+                        try queue.append(.{
+                            .entity = triple.object,
+                            .path = new_path,
+                            .depth = current.depth + 1,
+                        });
+                    }
+                }
+            }
+        }
+        
+        // No path found
+        return .{
+            .found = false,
+            .path = &[_]PathStep{},
+            .hops = 0,
+        };
+    }
+    
+    /// Check if a property holds for an entity (e.g., "Is Socrates mortal?")
+    pub fn checkProperty(self: *KnowledgeGraph, entity: []const u8, property: []const u8, max_hops: usize) !struct {
+        holds: bool,
+        path: []PathStep,
+        value: ?[]const u8,
+    } {
+        // First, try direct lookup
+        for (self.triples.items) |triple| {
+            if (mem.eql(u8, triple.subject, entity) and mem.eql(u8, triple.predicate, property)) {
+                var path = try self.allocator.alloc(PathStep, 1);
+                path[0] = .{
+                    .entity = triple.subject,
+                    .relation = triple.predicate,
+                    .next_entity = triple.object,
+                };
+                return .{
+                    .holds = true,
+                    .path = path,
+                    .value = triple.object,
+                };
+            }
+        }
+        
+        // Try multi-hop: find intermediate entities that have the property
+        for (self.triples.items) |triple| {
+            if (mem.eql(u8, triple.predicate, property)) {
+                // Found something with this property, try to reach it from entity
+                const result = try self.findPath(entity, triple.subject, max_hops - 1);
+                if (result.found) {
+                    // Extend path with the final property step
+                    var extended_path = try self.allocator.alloc(PathStep, result.path.len + 1);
+                    @memcpy(extended_path[0..result.path.len], result.path);
+                    extended_path[result.path.len] = .{
+                        .entity = triple.subject,
+                        .relation = triple.predicate,
+                        .next_entity = triple.object,
+                    };
+                    self.allocator.free(result.path);
+                    
+                    return .{
+                        .holds = true,
+                        .path = extended_path,
+                        .value = triple.object,
+                    };
+                }
+                if (result.path.len > 0) {
+                    self.allocator.free(result.path);
+                }
+            }
+        }
+        
+        return .{
+            .holds = false,
+            .path = &[_]PathStep{},
+            .value = null,
+        };
+    }
+    
     /// Clear all data
     pub fn clear(self: *KnowledgeGraph) void {
         for (self.triples.items) |triple| {
@@ -386,6 +539,8 @@ pub const KGServer = struct {
         // Route requests
         if (mem.startsWith(u8, target, "/api/add") and method == .POST) {
             try self.handleAdd(request, body);
+        } else if (mem.startsWith(u8, target, "/api/reason")) {
+            try self.handleReason(request, target);
         } else if (mem.startsWith(u8, target, "/api/query")) {
             try self.handleQuery(request, target);
         } else if (mem.startsWith(u8, target, "/api/stats")) {
@@ -467,6 +622,140 @@ pub const KGServer = struct {
         } else {
             try self.sendError(request, "Missing subject or object parameter");
         }
+    }
+    
+    /// Handle /api/reason - Multi-hop reasoning
+    /// Params: 
+    ///   - from, to, max_hops: Find path from entity to value
+    ///   - entity, property, max_hops: Check if property holds for entity
+    fn handleReason(self: *KGServer, request: *http.Server.Request, target: []const u8) !void {
+        // Parse max_hops (default 5)
+        var max_hops: usize = 5;
+        if (parseQueryParam(target, "max_hops")) |hops_str| {
+            max_hops = std.fmt.parseInt(usize, hops_str, 10) catch 5;
+        }
+        
+        // Mode 1: Find path from -> to
+        if (parseQueryParam(target, "from")) |from_raw| {
+            const from = try urlDecode(self.allocator, from_raw);
+            defer self.allocator.free(from);
+            
+            const to_raw = parseQueryParam(target, "to") orelse {
+                try self.sendError(request, "Missing 'to' parameter");
+                return;
+            };
+            const to = try urlDecode(self.allocator, to_raw);
+            defer self.allocator.free(to);
+            
+            const result = self.kg.findPath(from, to, max_hops) catch {
+                try self.sendError(request, "Reasoning failed");
+                return;
+            };
+            defer if (result.path.len > 0) self.allocator.free(result.path);
+            
+            if (result.found) {
+                // Build path JSON
+                var path_json = std.ArrayList(u8).init(self.allocator);
+                defer path_json.deinit();
+                
+                try path_json.appendSlice("[");
+                for (result.path, 0..) |step, i| {
+                    if (i > 0) try path_json.appendSlice(",");
+                    const step_json = try std.fmt.allocPrint(self.allocator,
+                        "{{\"entity\":\"{s}\",\"relation\":\"{s}\",\"next\":\"{s}\"}}",
+                        .{ step.entity, step.relation, step.next_entity });
+                    defer self.allocator.free(step_json);
+                    try path_json.appendSlice(step_json);
+                }
+                try path_json.appendSlice("]");
+                
+                // Build conclusion string
+                var conclusion = std.ArrayList(u8).init(self.allocator);
+                defer conclusion.deinit();
+                try conclusion.appendSlice(from);
+                for (result.path) |step| {
+                    try conclusion.appendSlice(" -> ");
+                    try conclusion.appendSlice(step.relation);
+                    try conclusion.appendSlice(" -> ");
+                    try conclusion.appendSlice(step.next_entity);
+                }
+                
+                const response = try std.fmt.allocPrint(self.allocator,
+                    "{{\"status\":\"ok\",\"found\":true,\"hops\":{d},\"path\":{s},\"conclusion\":\"{s}\"}}",
+                    .{ result.hops, path_json.items, conclusion.items });
+                defer self.allocator.free(response);
+                try self.sendJson(request, response);
+            } else {
+                const response = try std.fmt.allocPrint(self.allocator,
+                    "{{\"status\":\"ok\",\"found\":false,\"message\":\"No path from '{s}' to '{s}' within {d} hops\"}}",
+                    .{ from, to, max_hops });
+                defer self.allocator.free(response);
+                try self.sendJson(request, response);
+            }
+            return;
+        }
+        
+        // Mode 2: Check property (e.g., "Is Socrates mortal?")
+        if (parseQueryParam(target, "entity")) |entity_raw| {
+            const entity = try urlDecode(self.allocator, entity_raw);
+            defer self.allocator.free(entity);
+            
+            const property_raw = parseQueryParam(target, "property") orelse {
+                try self.sendError(request, "Missing 'property' parameter");
+                return;
+            };
+            const property = try urlDecode(self.allocator, property_raw);
+            defer self.allocator.free(property);
+            
+            const result = self.kg.checkProperty(entity, property, max_hops) catch {
+                try self.sendError(request, "Reasoning failed");
+                return;
+            };
+            defer if (result.path.len > 0) self.allocator.free(result.path);
+            
+            if (result.holds) {
+                // Build path JSON
+                var path_json = std.ArrayList(u8).init(self.allocator);
+                defer path_json.deinit();
+                
+                try path_json.appendSlice("[");
+                for (result.path, 0..) |step, i| {
+                    if (i > 0) try path_json.appendSlice(",");
+                    const step_json = try std.fmt.allocPrint(self.allocator,
+                        "{{\"entity\":\"{s}\",\"relation\":\"{s}\",\"next\":\"{s}\"}}",
+                        .{ step.entity, step.relation, step.next_entity });
+                    defer self.allocator.free(step_json);
+                    try path_json.appendSlice(step_json);
+                }
+                try path_json.appendSlice("]");
+                
+                // Build explanation
+                var explanation = std.ArrayList(u8).init(self.allocator);
+                defer explanation.deinit();
+                try explanation.appendSlice(entity);
+                for (result.path) |step| {
+                    try explanation.appendSlice(" -> ");
+                    try explanation.appendSlice(step.relation);
+                    try explanation.appendSlice(" -> ");
+                    try explanation.appendSlice(step.next_entity);
+                }
+                
+                const response = try std.fmt.allocPrint(self.allocator,
+                    "{{\"status\":\"ok\",\"holds\":true,\"value\":\"{s}\",\"hops\":{d},\"path\":{s},\"explanation\":\"{s}\"}}",
+                    .{ result.value.?, result.path.len, path_json.items, explanation.items });
+                defer self.allocator.free(response);
+                try self.sendJson(request, response);
+            } else {
+                const response = try std.fmt.allocPrint(self.allocator,
+                    "{{\"status\":\"ok\",\"holds\":false,\"message\":\"Cannot determine if '{s}' has property '{s}'\"}}",
+                    .{ entity, property });
+                defer self.allocator.free(response);
+                try self.sendJson(request, response);
+            }
+            return;
+        }
+        
+        try self.sendError(request, "Missing parameters. Use: from+to or entity+property");
     }
     
     fn handleStats(self: *KGServer, request: *http.Server.Request) !void {
@@ -684,4 +973,68 @@ test "parse JSON field" {
     try std.testing.expectEqualStrings("Socrates", parseJsonField(json, "subject").?);
     try std.testing.expectEqualStrings("is_a", parseJsonField(json, "predicate").?);
     try std.testing.expectEqualStrings("human", parseJsonField(json, "object").?);
+}
+
+test "multi-hop reasoning: find path" {
+    const allocator = std.testing.allocator;
+    var kg = KnowledgeGraph.init(allocator);
+    defer kg.deinit();
+    
+    // Build knowledge graph:
+    // Socrates -> is_a -> human -> is_mortal -> true
+    _ = try kg.addTriple("Socrates", "is_a", "human");
+    _ = try kg.addTriple("human", "is_mortal", "true");
+    _ = try kg.addTriple("Plato", "is_a", "human");
+    _ = try kg.addTriple("Aristotle", "is_a", "human");
+    
+    // Find path from Socrates to true
+    const result = try kg.findPath("Socrates", "true", 5);
+    defer if (result.path.len > 0) allocator.free(result.path);
+    
+    try std.testing.expect(result.found);
+    try std.testing.expectEqual(@as(usize, 2), result.hops);
+    try std.testing.expectEqual(@as(usize, 2), result.path.len);
+    
+    // First step: Socrates -> is_a -> human
+    try std.testing.expectEqualStrings("Socrates", result.path[0].entity);
+    try std.testing.expectEqualStrings("is_a", result.path[0].relation);
+    try std.testing.expectEqualStrings("human", result.path[0].next_entity);
+    
+    // Second step: human -> is_mortal -> true
+    try std.testing.expectEqualStrings("human", result.path[1].entity);
+    try std.testing.expectEqualStrings("is_mortal", result.path[1].relation);
+    try std.testing.expectEqualStrings("true", result.path[1].next_entity);
+}
+
+test "multi-hop reasoning: check property" {
+    const allocator = std.testing.allocator;
+    var kg = KnowledgeGraph.init(allocator);
+    defer kg.deinit();
+    
+    // Socrates -> is_a -> human -> is_mortal -> true
+    _ = try kg.addTriple("Socrates", "is_a", "human");
+    _ = try kg.addTriple("human", "is_mortal", "true");
+    
+    // Check: Is Socrates mortal?
+    const result = try kg.checkProperty("Socrates", "is_mortal", 5);
+    defer if (result.path.len > 0) allocator.free(result.path);
+    
+    try std.testing.expect(result.holds);
+    try std.testing.expectEqualStrings("true", result.value.?);
+    try std.testing.expectEqual(@as(usize, 2), result.path.len);
+}
+
+test "multi-hop reasoning: no path" {
+    const allocator = std.testing.allocator;
+    var kg = KnowledgeGraph.init(allocator);
+    defer kg.deinit();
+    
+    _ = try kg.addTriple("Socrates", "is_a", "human");
+    _ = try kg.addTriple("cat", "is_a", "animal");
+    
+    // No path from Socrates to animal
+    const result = try kg.findPath("Socrates", "animal", 5);
+    defer if (result.path.len > 0) allocator.free(result.path);
+    
+    try std.testing.expect(!result.found);
 }
