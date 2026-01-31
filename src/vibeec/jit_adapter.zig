@@ -42,6 +42,82 @@ pub const JITMode = enum {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COMPILATION TIER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Compilation tier levels (like V8/HotSpot)
+pub const CompilationTier = enum(u8) {
+    /// Tier 0: Bytecode interpreter (slowest, no compilation overhead)
+    Interpreter = 0,
+    /// Tier 1: JIT IR interpreter (medium speed, fast compilation)
+    JIT_IR = 1,
+    /// Tier 2: Native x86-64 code (fastest, slow compilation)
+    Native = 2,
+
+    pub fn name(self: CompilationTier) []const u8 {
+        return switch (self) {
+            .Interpreter => "Interpreter",
+            .JIT_IR => "JIT IR",
+            .Native => "Native",
+        };
+    }
+
+    pub fn next(self: CompilationTier) ?CompilationTier {
+        return switch (self) {
+            .Interpreter => .JIT_IR,
+            .JIT_IR => .Native,
+            .Native => null,
+        };
+    }
+};
+
+/// Function compilation state
+pub const FunctionTierState = struct {
+    address: u32,
+    current_tier: CompilationTier,
+    execution_count: u64,
+    tier_execution_counts: [3]u64, // Executions at each tier
+    total_time_ns: u64,
+    tier_times_ns: [3]u64, // Time spent at each tier
+    last_promotion_count: u64, // Execution count at last tier promotion
+
+    pub fn init(address: u32) FunctionTierState {
+        return .{
+            .address = address,
+            .current_tier = .Interpreter,
+            .execution_count = 0,
+            .tier_execution_counts = [_]u64{ 0, 0, 0 },
+            .total_time_ns = 0,
+            .tier_times_ns = [_]u64{ 0, 0, 0 },
+            .last_promotion_count = 0,
+        };
+    }
+
+    pub fn recordExecution(self: *FunctionTierState, time_ns: u64) void {
+        self.execution_count += 1;
+        self.total_time_ns += time_ns;
+        const tier_idx = @intFromEnum(self.current_tier);
+        self.tier_execution_counts[tier_idx] += 1;
+        self.tier_times_ns[tier_idx] += time_ns;
+    }
+
+    pub fn promote(self: *FunctionTierState) bool {
+        if (self.current_tier.next()) |next_tier| {
+            self.current_tier = next_tier;
+            self.last_promotion_count = self.execution_count;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn avgTimeAtTier(self: FunctionTierState, tier: CompilationTier) u64 {
+        const idx = @intFromEnum(tier);
+        if (self.tier_execution_counts[idx] == 0) return 0;
+        return self.tier_times_ns[idx] / self.tier_execution_counts[idx];
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ADAPTER CONFIG
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -322,6 +398,270 @@ pub const ProfilerStats = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TIERED COMPILER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Tiered compilation thresholds
+pub const TierThresholds = struct {
+    /// Executions before promoting Interpreter → JIT IR
+    tier1_threshold: u64 = 50,
+    /// Executions before promoting JIT IR → Native
+    tier2_threshold: u64 = 500,
+    /// Minimum time (ns) at current tier before promotion
+    min_tier_time_ns: u64 = 1000,
+};
+
+/// Tiered compilation statistics
+pub const TieredStats = struct {
+    functions_at_tier: [3]usize, // Count per tier
+    total_promotions: u64,
+    tier1_promotions: u64, // Interpreter → JIT IR
+    tier2_promotions: u64, // JIT IR → Native
+    total_compile_time_ns: u64,
+    tier1_compile_time_ns: u64,
+    tier2_compile_time_ns: u64,
+
+    pub fn init() TieredStats {
+        return .{
+            .functions_at_tier = [_]usize{ 0, 0, 0 },
+            .total_promotions = 0,
+            .tier1_promotions = 0,
+            .tier2_promotions = 0,
+            .total_compile_time_ns = 0,
+            .tier1_compile_time_ns = 0,
+            .tier2_compile_time_ns = 0,
+        };
+    }
+};
+
+/// Tiered Compiler - manages automatic tier promotion
+pub const TieredCompiler = struct {
+    allocator: Allocator,
+    /// Function states: address -> tier state
+    function_states: std.AutoHashMap(u32, FunctionTierState),
+    /// JIT IR cache: address -> compiled IR
+    jit_ir_cache: std.AutoHashMap(u32, []IRInstruction),
+    /// Native code cache: address -> executable
+    native_cache: std.AutoHashMap(u32, ExecutableCode),
+    /// Thresholds for tier promotion
+    thresholds: TierThresholds,
+    /// Statistics
+    stats: TieredStats,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .function_states = std.AutoHashMap(u32, FunctionTierState).init(allocator),
+            .jit_ir_cache = std.AutoHashMap(u32, []IRInstruction).init(allocator),
+            .native_cache = std.AutoHashMap(u32, ExecutableCode).init(allocator),
+            .thresholds = TierThresholds{},
+            .stats = TieredStats.init(),
+        };
+    }
+
+    pub fn initWithThresholds(allocator: Allocator, thresholds: TierThresholds) Self {
+        var compiler = Self.init(allocator);
+        compiler.thresholds = thresholds;
+        return compiler;
+    }
+
+    pub fn deinit(self: *Self) void {
+        // Free JIT IR cache
+        var ir_iter = self.jit_ir_cache.iterator();
+        while (ir_iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.jit_ir_cache.deinit();
+
+        // Free native cache
+        var native_iter = self.native_cache.iterator();
+        while (native_iter.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.native_cache.deinit();
+
+        self.function_states.deinit();
+    }
+
+    /// Get or create function state
+    pub fn getOrCreateState(self: *Self, address: u32) !*FunctionTierState {
+        const result = try self.function_states.getOrPut(address);
+        if (!result.found_existing) {
+            result.value_ptr.* = FunctionTierState.init(address);
+            self.stats.functions_at_tier[0] += 1;
+        }
+        return result.value_ptr;
+    }
+
+    /// Record function execution and check for promotion
+    pub fn recordExecution(self: *Self, address: u32, time_ns: u64) !?CompilationTier {
+        const state = try self.getOrCreateState(address);
+        state.recordExecution(time_ns);
+
+        // Check if should promote
+        const executions_at_tier = state.execution_count - state.last_promotion_count;
+
+        const should_promote = switch (state.current_tier) {
+            .Interpreter => executions_at_tier >= self.thresholds.tier1_threshold,
+            .JIT_IR => executions_at_tier >= self.thresholds.tier2_threshold,
+            .Native => false,
+        };
+
+        if (should_promote) {
+            return state.current_tier.next();
+        }
+        return null;
+    }
+
+    /// Promote function to next tier
+    pub fn promote(self: *Self, address: u32, ir: []const IRInstruction) !bool {
+        const state = self.function_states.getPtr(address) orelse return false;
+        const old_tier = state.current_tier;
+
+        if (!state.promote()) return false;
+
+        // Update stats
+        self.stats.functions_at_tier[@intFromEnum(old_tier)] -|= 1;
+        self.stats.functions_at_tier[@intFromEnum(state.current_tier)] += 1;
+        self.stats.total_promotions += 1;
+
+        const compile_start = std.time.nanoTimestamp();
+
+        switch (state.current_tier) {
+            .JIT_IR => {
+                // Copy IR to cache
+                const ir_copy = try self.allocator.dupe(IRInstruction, ir);
+                try self.jit_ir_cache.put(address, ir_copy);
+                self.stats.tier1_promotions += 1;
+
+                const compile_time: u64 = @intCast(@max(0, std.time.nanoTimestamp() - compile_start));
+                self.stats.tier1_compile_time_ns += compile_time;
+                self.stats.total_compile_time_ns += compile_time;
+            },
+            .Native => {
+                // Compile IR to native
+                var native_compiler = NativeCompiler.init(self.allocator);
+                if (native_compiler.compile(ir)) |machine_code| {
+                    defer self.allocator.free(machine_code);
+                    native_compiler.deinit();
+
+                    if (ExecutableCode.init(machine_code)) |executable| {
+                        try self.native_cache.put(address, executable);
+                        self.stats.tier2_promotions += 1;
+
+                        const compile_time: u64 = @intCast(@max(0, std.time.nanoTimestamp() - compile_start));
+                        self.stats.tier2_compile_time_ns += compile_time;
+                        self.stats.total_compile_time_ns += compile_time;
+                    } else |_| {
+                        native_compiler.deinit();
+                        return false;
+                    }
+                } else |_| {
+                    native_compiler.deinit();
+                    return false;
+                }
+            },
+            .Interpreter => unreachable,
+        }
+
+        return true;
+    }
+
+    /// Get current tier for function
+    pub fn getTier(self: *Self, address: u32) CompilationTier {
+        if (self.function_states.get(address)) |state| {
+            return state.current_tier;
+        }
+        return .Interpreter;
+    }
+
+    /// Execute function at appropriate tier
+    pub fn execute(self: *Self, address: u32, vm: *VM, ir: []const IRInstruction) !i64 {
+        const tier = self.getTier(address);
+        const exec_start = std.time.nanoTimestamp();
+
+        const result: i64 = switch (tier) {
+            .Interpreter => blk: {
+                const val = try vm.run();
+                break :blk val.toInt() orelse 0;
+            },
+            .JIT_IR => blk: {
+                // Execute via IR interpreter
+                const cached_ir = self.jit_ir_cache.get(address) orelse ir;
+                break :blk interpretIRCode(cached_ir);
+            },
+            .Native => blk: {
+                if (self.native_cache.get(address)) |executable| {
+                    break :blk executable.execute();
+                }
+                // Fallback to IR
+                break :blk interpretIRCode(ir);
+            },
+        };
+
+        const exec_time: u64 = @intCast(@max(0, std.time.nanoTimestamp() - exec_start));
+
+        // Record and check for promotion
+        if (try self.recordExecution(address, exec_time)) |next_tier| {
+            _ = next_tier;
+            // Promotion needed - caller should compile
+        }
+
+        return result;
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) TieredStats {
+        return self.stats;
+    }
+
+    /// Get function state
+    pub fn getFunctionState(self: *Self, address: u32) ?FunctionTierState {
+        return self.function_states.get(address);
+    }
+};
+
+/// Standalone IR interpreter for tiered compilation
+fn interpretIRCode(ir: []const IRInstruction) i64 {
+    var registers: [32]i64 = [_]i64{0} ** 32;
+    var pc: usize = 0;
+
+    while (pc < ir.len) {
+        const instr = ir[pc];
+        pc += 1;
+
+        switch (instr.opcode) {
+            .LOAD_CONST => {
+                registers[instr.dest] = instr.imm;
+            },
+            .ADD_INT => {
+                registers[instr.dest] = registers[instr.src1] + registers[instr.src2];
+            },
+            .SUB_INT => {
+                registers[instr.dest] = registers[instr.src1] - registers[instr.src2];
+            },
+            .MUL_INT => {
+                registers[instr.dest] = registers[instr.src1] * registers[instr.src2];
+            },
+            .DIV_INT => {
+                const b = registers[instr.src2];
+                if (b != 0) {
+                    registers[instr.dest] = @divTrunc(registers[instr.src1], b);
+                }
+            },
+            .RETURN => {
+                return registers[instr.dest];
+            },
+            else => {},
+        }
+    }
+
+    return registers[0];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // JIT ADAPTER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -343,6 +683,9 @@ pub const JITAdapter = struct {
 
     // Hot Path Profiler for automatic JIT
     profiler: HotPathProfiler,
+
+    // Tiered Compiler for automatic tier promotion
+    tiered_compiler: TieredCompiler,
 
     // Execution state
     is_recording: bool,
@@ -367,6 +710,7 @@ pub const JITAdapter = struct {
             .config = AdapterConfig{},
             .native_cache = std.AutoHashMap(u32, NativeCodeEntry).init(allocator),
             .profiler = HotPathProfiler.init(allocator),
+            .tiered_compiler = TieredCompiler.init(allocator),
             .is_recording = false,
             .current_trace_start = 0,
             .jit_instructions = 0,
@@ -396,6 +740,7 @@ pub const JITAdapter = struct {
         }
         self.native_cache.deinit();
         self.profiler.deinit();
+        self.tiered_compiler.deinit();
         self.vm.deinit();
         self.jit_compiler.deinit();
     }
@@ -403,6 +748,16 @@ pub const JITAdapter = struct {
     /// Get profiler statistics
     pub fn getProfilerStats(self: *Self) ProfilerStats {
         return self.profiler.getStats();
+    }
+
+    /// Get tiered compiler statistics
+    pub fn getTieredStats(self: *Self) TieredStats {
+        return self.tiered_compiler.getStats();
+    }
+
+    /// Get current tier for function
+    pub fn getFunctionTier(self: *Self, address: u32) CompilationTier {
+        return self.tiered_compiler.getTier(address);
     }
 
     /// Get profile for specific function
@@ -1704,5 +2059,245 @@ test "Benchmark: Hot Path Profiler automatic JIT" {
         std.debug.print("Speedup after JIT: {d:.1}x\n", .{speedup});
         std.debug.print("Total executions: {d}\n", .{stats.total_executions});
         std.debug.print("Compiled functions: {d}\n", .{stats.compiled_functions});
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIERED COMPILER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TieredCompiler basic initialization" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Initial state
+    const stats = compiler.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.functions_at_tier[0]);
+    try std.testing.expectEqual(@as(u64, 0), stats.total_promotions);
+}
+
+test "TieredCompiler function state tracking" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Create function state
+    const state = try compiler.getOrCreateState(0x100);
+    try std.testing.expectEqual(CompilationTier.Interpreter, state.current_tier);
+    try std.testing.expectEqual(@as(u64, 0), state.execution_count);
+
+    // Record executions
+    state.recordExecution(100);
+    state.recordExecution(200);
+    try std.testing.expectEqual(@as(u64, 2), state.execution_count);
+    try std.testing.expectEqual(@as(u64, 300), state.total_time_ns);
+}
+
+test "TieredCompiler tier promotion thresholds" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 10,
+    });
+    defer compiler.deinit();
+
+    const addr: u32 = 0x200;
+
+    // Execute 4 times - no promotion
+    for (0..4) |_| {
+        const next_tier = try compiler.recordExecution(addr, 100);
+        try std.testing.expect(next_tier == null);
+    }
+    try std.testing.expectEqual(CompilationTier.Interpreter, compiler.getTier(addr));
+
+    // 5th execution - should trigger tier1 promotion
+    const next_tier = try compiler.recordExecution(addr, 100);
+    try std.testing.expectEqual(CompilationTier.JIT_IR, next_tier.?);
+}
+
+test "TieredCompiler full promotion chain" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 3,
+        .tier2_threshold = 5,
+    });
+    defer compiler.deinit();
+
+    const addr: u32 = 0x300;
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Phase 1: Interpreter (0-2 executions)
+    for (0..2) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    try std.testing.expectEqual(CompilationTier.Interpreter, compiler.getTier(addr));
+
+    // Phase 2: Trigger tier1 promotion (3rd execution)
+    const tier1_trigger = try compiler.recordExecution(addr, 100);
+    try std.testing.expectEqual(CompilationTier.JIT_IR, tier1_trigger.?);
+
+    // Promote to JIT IR
+    const promoted1 = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted1);
+    try std.testing.expectEqual(CompilationTier.JIT_IR, compiler.getTier(addr));
+
+    // Phase 3: Execute at JIT IR tier (4-7 executions)
+    for (0..4) |_| {
+        _ = try compiler.recordExecution(addr, 50);
+    }
+
+    // Phase 4: Trigger tier2 promotion (8th execution at JIT_IR = 5 since promotion)
+    const tier2_trigger = try compiler.recordExecution(addr, 50);
+    try std.testing.expectEqual(CompilationTier.Native, tier2_trigger.?);
+
+    // Promote to Native
+    const promoted2 = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted2);
+    try std.testing.expectEqual(CompilationTier.Native, compiler.getTier(addr));
+
+    // Check stats
+    const stats = compiler.getStats();
+    try std.testing.expectEqual(@as(u64, 2), stats.total_promotions);
+    try std.testing.expectEqual(@as(u64, 1), stats.tier1_promotions);
+    try std.testing.expectEqual(@as(u64, 1), stats.tier2_promotions);
+}
+
+test "TieredCompiler IR execution" {
+    _ = std.testing.allocator; // Mark as used
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Test standalone IR interpreter
+    const result = interpretIRCode(&ir);
+    try std.testing.expectEqual(@as(i64, 15), result);
+}
+
+test "TieredCompiler integration with JITAdapter" {
+    const allocator = std.testing.allocator;
+
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Configure tiered compiler
+    adapter.tiered_compiler.thresholds.tier1_threshold = 3;
+    adapter.tiered_compiler.thresholds.tier2_threshold = 5;
+
+    // Simulate executions
+    for (0..10) |_| {
+        _ = try adapter.tiered_compiler.recordExecution(0, 100);
+    }
+
+    const stats = adapter.getTieredStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.functions_at_tier[0]); // Still at interpreter (no promotion called)
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Tiered Compiler Integration ===\n", .{});
+        std.debug.print("Functions at Interpreter: {d}\n", .{stats.functions_at_tier[0]});
+        std.debug.print("Functions at JIT IR: {d}\n", .{stats.functions_at_tier[1]});
+        std.debug.print("Functions at Native: {d}\n", .{stats.functions_at_tier[2]});
+    }
+}
+
+test "Benchmark: Tiered Compilation Pipeline" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 10,
+        .tier2_threshold = 50,
+    });
+    defer compiler.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 6 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0;
+    const iterations: usize = 100;
+
+    // Phase 1: Interpreter tier
+    var interpreter_time: u64 = 0;
+    for (0..9) |_| {
+        const start = std.time.nanoTimestamp();
+        const result = interpretIRCode(&ir);
+        const end = std.time.nanoTimestamp();
+        interpreter_time += @intCast(@max(0, end - start));
+        _ = try compiler.recordExecution(addr, @intCast(@max(0, end - start)));
+        try std.testing.expectEqual(@as(i64, 42), result);
+    }
+
+    // Trigger and perform tier1 promotion
+    _ = try compiler.recordExecution(addr, 100);
+    _ = try compiler.promote(addr, &ir);
+
+    // Phase 2: JIT IR tier
+    var jit_ir_time: u64 = 0;
+    for (0..40) |_| {
+        const start = std.time.nanoTimestamp();
+        const result = interpretIRCode(&ir);
+        const end = std.time.nanoTimestamp();
+        jit_ir_time += @intCast(@max(0, end - start));
+        _ = try compiler.recordExecution(addr, @intCast(@max(0, end - start)));
+        try std.testing.expectEqual(@as(i64, 42), result);
+    }
+
+    // Trigger and perform tier2 promotion
+    _ = try compiler.recordExecution(addr, 100);
+    _ = try compiler.promote(addr, &ir);
+
+    // Phase 3: Native tier
+    var native_time: u64 = 0;
+    if (compiler.native_cache.getPtr(addr)) |executable| {
+        for (0..iterations) |_| {
+            const start = std.time.nanoTimestamp();
+            const result = executable.call();
+            const end = std.time.nanoTimestamp();
+            native_time += @intCast(@max(0, end - start));
+            try std.testing.expectEqual(@as(i64, 42), result);
+        }
+    }
+
+    const stats = compiler.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Benchmark: Tiered Compilation Pipeline ===\n", .{});
+        std.debug.print("Interpreter (9 iters): {d} ns ({d:.2} ns/iter)\n", .{
+            interpreter_time,
+            @as(f64, @floatFromInt(interpreter_time)) / 9.0,
+        });
+        std.debug.print("JIT IR (40 iters): {d} ns ({d:.2} ns/iter)\n", .{
+            jit_ir_time,
+            @as(f64, @floatFromInt(jit_ir_time)) / 40.0,
+        });
+        std.debug.print("Native ({d} iters): {d} ns ({d:.2} ns/iter)\n", .{
+            iterations,
+            native_time,
+            @as(f64, @floatFromInt(native_time)) / @as(f64, @floatFromInt(iterations)),
+        });
+        std.debug.print("Tier promotions: {d} (T1: {d}, T2: {d})\n", .{
+            stats.total_promotions,
+            stats.tier1_promotions,
+            stats.tier2_promotions,
+        });
+        std.debug.print("Compile time: {d} ns (T1: {d}, T2: {d})\n", .{
+            stats.total_compile_time_ns,
+            stats.tier1_compile_time_ns,
+            stats.tier2_compile_time_ns,
+        });
     }
 }
