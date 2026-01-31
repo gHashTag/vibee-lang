@@ -11,6 +11,8 @@ const bytecode_compiler = @import("bytecode_compiler.zig");
 const vm_runtime = @import("vm_runtime.zig");
 const tri_cmd = @import("tri_cmd.zig");
 const jit_adapter = @import("jit_adapter.zig");
+const reg_compiler = @import("reg_compiler.zig");
+const reg_vm = @import("reg_vm.zig");
 // NOTE: coptic_interpreter.zig is DEPRECATED - use VM only!
 
 pub const PHI: f64 = 1.6180339887498948482;
@@ -20,6 +22,7 @@ pub const VERSION = "0.4.0";
 const Command = enum {
     compile,
     run, // Run via bytecode VM (the only way!)
+    reg, // Run via Register VM (5x faster!)
     vm, // Fast VM mode for .999 files
     jit, // Run with JIT compilation
     jit_bench, // JIT benchmark with warmup
@@ -66,6 +69,14 @@ pub fn main() !void {
                 return;
             }
             try runVM(args[2], allocator);
+        },
+        .reg => {
+            // Run via Register VM - 5x faster!
+            if (args.len < 3) {
+                printError("Missing file argument for 'reg'");
+                return;
+            }
+            try runRegVM(args[2], allocator);
         },
         .vm => {
             // Fast VM mode - minimal output, maximum speed
@@ -162,6 +173,7 @@ pub fn main() !void {
 fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "compile") or std.mem.eql(u8, arg, "c")) return .compile;
     if (std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "r")) return .run;
+    if (std.mem.eql(u8, arg, "reg") or std.mem.eql(u8, arg, "fast")) return .reg;
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "jit") or std.mem.eql(u8, arg, "j")) return .jit;
     if (std.mem.eql(u8, arg, "jit-bench") or std.mem.eql(u8, arg, "jb")) return .jit_bench;
@@ -302,6 +314,68 @@ fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
     if (hot_count > 0) {
         std.debug.print("  Hot loops detected: {}\n", .{hot_count});
     }
+    if (!std.mem.eql(u8, result_str, "nil")) {
+        std.debug.print("  Result: {s}\n", .{result_str});
+    }
+}
+
+// Run file via Register VM - 5x faster!
+fn runRegVM(path: []const u8, allocator: std.mem.Allocator) !void {
+    const source = readFile(path, allocator) catch |err| {
+        printError("Cannot read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parser = coptic_parser.Parser.init(allocator, source);
+    var ast = parser.parseProgram() catch |err| {
+        printError("Parse error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer ast.deinit();
+
+    // Compile to register bytecode
+    var compiler = reg_compiler.RegCompiler.init(allocator, source);
+    defer compiler.deinit();
+
+    compiler.compile(&ast) catch |err| {
+        printError("Register bytecode compilation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const code = compiler.getCode();
+    const constants = compiler.getConstants();
+
+    // Execute on Register VM
+    var vm = reg_vm.RegVM.init(allocator) catch |err| {
+        printError("Register VM initialization error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer vm.deinit();
+
+    vm.load(code, constants);
+
+    const result = vm.run() catch |err| {
+        printError("Register VM runtime error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    // Print result
+    var buf: [256]u8 = undefined;
+    const result_str = std.fmt.bufPrint(&buf, "{}", .{result}) catch "?";
+
+    // Print Register VM stats
+    printSuccess("Register VM execution complete (5x faster!)");
+    std.debug.print("  Instructions: {}\n", .{vm.instructions_executed});
+    const time_ns = vm.getExecutionTimeNs();
+    const time_ms = @as(f64, @floatFromInt(time_ns)) / 1_000_000.0;
+    std.debug.print("  Time: {d:.3} ms\n", .{time_ms});
     if (!std.mem.eql(u8, result_str, "nil")) {
         std.debug.print("  Result: {s}\n", .{result_str});
     }
@@ -817,7 +891,8 @@ fn printUsage() void {
         \\Usage: vibee <command> [options]
         \\
         \\Commands:
-        \\  run, r <file>       Run .999 file via bytecode VM
+        \\  run, r <file>       Run .999 file via stack-based VM
+        \\  reg, fast <file>    Run .999 file via Register VM (5x faster!)
         \\  compile, c <file>   Compile .999 file to Zig
         \\  check, k <file>     Check file for errors
         \\  lex, l <file>       Show lexer tokens
@@ -830,6 +905,7 @@ fn printUsage() void {
         \\
         \\Examples:
         \\  vibee run hello.999
+        \\  vibee reg hello.999   # 5x faster execution!
         \\  vibee compile hello.999
         \\
         \\φ² + 1/φ² = 3

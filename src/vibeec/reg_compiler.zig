@@ -15,18 +15,14 @@ const RegBytecodeEmitter = reg_bytecode.RegBytecodeEmitter;
 const bytecode = @import("bytecode.zig");
 const Value = bytecode.Value;
 const coptic_parser = @import("coptic_parser_real.zig");
+const coptic_lexer = @import("coptic_lexer.zig");
 const AstNode = coptic_parser.AstNode;
 const NodeKind = coptic_parser.NodeKind;
+const Token = coptic_lexer.Token;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REGISTER ALLOCATION
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// Register conventions:
-// R0  = accumulator / return value
-// R1-R13 = general purpose / temporaries
-// R14 = reserved (frame pointer)
-// R15 = reserved (stack pointer)
 
 pub const NUM_TEMP_REGS: u4 = 14; // R0-R13 available for allocation
 
@@ -37,15 +33,15 @@ pub const CompileError = error{
     TooManyLocals,
     TooManyConstants,
     JumpTooLarge,
-    RegisterSpill, // Out of registers
+    RegisterSpill,
 };
 
 const Local = struct {
     name: []const u8,
-    reg: u4, // Assigned register (or 0xFF if spilled to locals[])
+    reg: u4,
     depth: u32,
     spilled: bool,
-    local_idx: u16, // Index in locals[] if spilled
+    local_idx: u16,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -57,15 +53,12 @@ pub const RegCompiler = struct {
     emitter: RegBytecodeEmitter,
     source: []const u8,
 
-    // Variable tracking
     locals: std.ArrayList(Local),
     scope_depth: u32,
 
-    // Register allocation
     reg_in_use: [NUM_TEMP_REGS]bool,
-    next_local_idx: u16, // For spilled variables
+    next_local_idx: u16,
 
-    // Loop handling
     loop_start: ?u16,
     loop_end_patches: std.ArrayList(u16),
 
@@ -95,7 +88,6 @@ pub const RegCompiler = struct {
     // REGISTER ALLOCATION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /// Allocate a free register
     fn allocReg(self: *Self) CompileError!u4 {
         for (0..NUM_TEMP_REGS) |i| {
             if (!self.reg_in_use[i]) {
@@ -106,14 +98,12 @@ pub const RegCompiler = struct {
         return CompileError.RegisterSpill;
     }
 
-    /// Free a register
     fn freeReg(self: *Self, reg: u4) void {
         if (reg < NUM_TEMP_REGS) {
             self.reg_in_use[reg] = false;
         }
     }
 
-    /// Find local variable by name
     fn findLocal(self: *Self, name: []const u8) ?*Local {
         var i = self.locals.items.len;
         while (i > 0) {
@@ -125,11 +115,8 @@ pub const RegCompiler = struct {
         return null;
     }
 
-    /// Declare a new local variable
     fn declareLocal(self: *Self, name: []const u8) CompileError!u4 {
-        // Try to allocate a register
         const reg = self.allocReg() catch {
-            // Spill to locals array
             const idx = self.next_local_idx;
             self.next_local_idx += 1;
             try self.locals.append(.{
@@ -139,7 +126,7 @@ pub const RegCompiler = struct {
                 .spilled = true,
                 .local_idx = idx,
             });
-            return 0; // Will use locals[] instead
+            return 0;
         };
 
         try self.locals.append(.{
@@ -153,6 +140,10 @@ pub const RegCompiler = struct {
         return reg;
     }
 
+    fn getTokenText(self: *Self, token: Token) []const u8 {
+        return token.lexeme(self.source);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // COMPILATION
     // ═══════════════════════════════════════════════════════════════════════════
@@ -162,30 +153,28 @@ pub const RegCompiler = struct {
         try self.emitter.emit(.HALT);
     }
 
-    /// Compile expression, result goes to target register
-    /// Returns the register containing the result
     fn compileExpr(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         return switch (node.kind) {
             .program => try self.compileProgram(node, target),
             .block => try self.compileBlock(node, target),
-            .number => try self.compileNumber(node, target),
-            .string => try self.compileString(node, target),
-            .boolean => try self.compileBoolean(node, target),
+            .literal_int => try self.compileInt(node, target),
+            .literal_float => try self.compileFloat(node, target),
+            .literal_string => try self.compileString(node, target),
+            .literal_bool => try self.compileBool(node, target),
             .identifier => try self.compileIdentifier(node, target),
-            .binary_op => try self.compileBinaryOp(node, target),
-            .unary_op => try self.compileUnaryOp(node, target),
-            .assignment => try self.compileAssignment(node, target),
-            .var_decl => try self.compileVarDecl(node, target),
-            .if_stmt => try self.compileIf(node, target),
+            .binary_expr => try self.compileBinaryOp(node, target),
+            .unary_expr => try self.compileUnaryOp(node, target),
+            .var_decl, .let_decl => try self.compileVarDecl(node, target),
+            .if_expr => try self.compileIf(node, target),
             .while_stmt => try self.compileWhile(node, target),
             .for_stmt => try self.compileFor(node, target),
-            .func_call => try self.compileFuncCall(node, target),
-            else => target, // Unsupported - return target unchanged
+            .call_expr => try self.compileFuncCall(node, target),
+            else => target,
         };
     }
 
     fn compileProgram(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        for (node.children.items) |child| {
+        for (node.children.items) |*child| {
             _ = try self.compileExpr(child, target);
         }
         return target;
@@ -195,11 +184,10 @@ pub const RegCompiler = struct {
         self.scope_depth += 1;
         const locals_count = self.locals.items.len;
 
-        for (node.children.items) |child| {
+        for (node.children.items) |*child| {
             _ = try self.compileExpr(child, target);
         }
 
-        // Pop locals from this scope
         while (self.locals.items.len > locals_count) {
             const local = self.locals.pop();
             if (!local.spilled) {
@@ -211,61 +199,50 @@ pub const RegCompiler = struct {
         return target;
     }
 
-    fn compileNumber(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        if (node.value) |val| {
-            // Parse number from source
-            const num_str = self.source[val.start..val.end];
-            if (std.mem.indexOf(u8, num_str, ".")) |_| {
-                // Float
-                const f = std.fmt.parseFloat(f64, num_str) catch 0.0;
-                const idx = try self.emitter.addConstant(.{ .float_val = f });
-                try self.emitter.emitRI(.LOAD_CONST, target, idx);
-            } else {
-                // Integer
-                const i = std.fmt.parseInt(i64, num_str, 10) catch 0;
-                if (i >= 0 and i <= 65535) {
-                    // Small immediate
-                    try self.emitter.emitRI(.MOV_RI, target, @intCast(@as(u16, @truncate(@as(u64, @bitCast(i))))));
-                } else {
-                    // Use constant pool
-                    const idx = try self.emitter.addConstant(.{ .int_val = i });
-                    try self.emitter.emitRI(.LOAD_CONST, target, idx);
-                }
-            }
-        }
-        return target;
-    }
-
-    fn compileString(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        if (node.value) |val| {
-            const str = self.source[val.start + 1 .. val.end - 1]; // Remove quotes
-            const idx = try self.emitter.addConstant(.{ .string_val = str });
+    fn compileInt(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
+        const text = self.getTokenText(node.token);
+        const i = std.fmt.parseInt(i64, text, 10) catch 0;
+        if (i >= 0 and i <= 65535) {
+            try self.emitter.emitRI(.MOV_RI, target, @intCast(@as(u16, @truncate(@as(u64, @bitCast(i))))));
+        } else {
+            const idx = try self.emitter.addConstant(.{ .int_val = i });
             try self.emitter.emitRI(.LOAD_CONST, target, idx);
         }
         return target;
     }
 
-    fn compileBoolean(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        if (node.value) |val| {
-            const bool_str = self.source[val.start..val.end];
-            const b: u16 = if (std.mem.eql(u8, bool_str, "true")) 1 else 0;
-            try self.emitter.emitRI(.MOV_RI, target, b);
-        }
+    fn compileFloat(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
+        const text = self.getTokenText(node.token);
+        const f = std.fmt.parseFloat(f64, text) catch 0.0;
+        const idx = try self.emitter.addConstant(.{ .float_val = f });
+        try self.emitter.emitRI(.LOAD_CONST, target, idx);
+        return target;
+    }
+
+    fn compileString(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
+        const text = self.getTokenText(node.token);
+        // Remove quotes
+        const str = if (text.len >= 2) text[1 .. text.len - 1] else text;
+        const idx = try self.emitter.addConstant(.{ .string_val = str });
+        try self.emitter.emitRI(.LOAD_CONST, target, idx);
+        return target;
+    }
+
+    fn compileBool(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
+        const text = self.getTokenText(node.token);
+        const b: u16 = if (std.mem.eql(u8, text, "true")) 1 else 0;
+        try self.emitter.emitRI(.MOV_RI, target, b);
         return target;
     }
 
     fn compileIdentifier(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        if (node.value) |val| {
-            const name = self.source[val.start..val.end];
-            if (self.findLocal(name)) |local| {
-                if (local.spilled) {
-                    try self.emitter.emitRI(.LOAD_LOCAL, target, local.local_idx);
-                } else if (local.reg != target) {
-                    try self.emitter.emitRR(.MOV_RR, target, local.reg);
-                }
-                return target;
+        const name = self.getTokenText(node.token);
+        if (self.findLocal(name)) |local| {
+            if (local.spilled) {
+                try self.emitter.emitRI(.LOAD_LOCAL, target, local.local_idx);
+            } else if (local.reg != target) {
+                try self.emitter.emitRR(.MOV_RR, target, local.reg);
             }
-            // Undefined variable - could emit LOAD_GLOBAL here
         }
         return target;
     }
@@ -273,47 +250,38 @@ pub const RegCompiler = struct {
     fn compileBinaryOp(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         if (node.children.items.len < 2) return target;
 
-        const left = node.children.items[0];
-        const right = node.children.items[1];
+        const left = &node.children.items[0];
+        const right = &node.children.items[1];
 
-        // Compile left to target
         _ = try self.compileExpr(left, target);
 
-        // Allocate temp for right
         const right_reg = try self.allocReg();
         defer self.freeReg(right_reg);
 
         _ = try self.compileExpr(right, right_reg);
 
-        // Get operator
-        if (node.value) |val| {
-            const op = self.source[val.start..val.end];
+        const op = self.getTokenText(node.token);
 
-            if (std.mem.eql(u8, op, "+")) {
-                try self.emitter.emitRRR(.ADD_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "-")) {
-                try self.emitter.emitRRR(.SUB_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "*")) {
-                try self.emitter.emitRRR(.MUL_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "/")) {
-                try self.emitter.emitRRR(.DIV_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "<")) {
-                try self.emitter.emitRRR(.LT_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "<=")) {
-                try self.emitter.emitRRR(.LE_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, ">")) {
-                try self.emitter.emitRRR(.GT_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, ">=")) {
-                try self.emitter.emitRRR(.GE_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "==")) {
-                try self.emitter.emitRRR(.EQ_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "!=")) {
-                try self.emitter.emitRRR(.NE_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "and") or std.mem.eql(u8, op, "&&")) {
-                try self.emitter.emitRRR(.AND_RRR, target, target, right_reg);
-            } else if (std.mem.eql(u8, op, "or") or std.mem.eql(u8, op, "||")) {
-                try self.emitter.emitRRR(.OR_RRR, target, target, right_reg);
-            }
+        if (std.mem.eql(u8, op, "+")) {
+            try self.emitter.emitRRR(.ADD_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "-")) {
+            try self.emitter.emitRRR(.SUB_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "*")) {
+            try self.emitter.emitRRR(.MUL_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "/")) {
+            try self.emitter.emitRRR(.DIV_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "<")) {
+            try self.emitter.emitRRR(.LT_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "<=")) {
+            try self.emitter.emitRRR(.LE_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, ">")) {
+            try self.emitter.emitRRR(.GT_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, ">=")) {
+            try self.emitter.emitRRR(.GE_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "==")) {
+            try self.emitter.emitRRR(.EQ_RRR, target, target, right_reg);
+        } else if (std.mem.eql(u8, op, "!=")) {
+            try self.emitter.emitRRR(.NE_RRR, target, target, right_reg);
         }
 
         return target;
@@ -322,37 +290,13 @@ pub const RegCompiler = struct {
     fn compileUnaryOp(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         if (node.children.items.len < 1) return target;
 
-        _ = try self.compileExpr(node.children.items[0], target);
+        _ = try self.compileExpr(&node.children.items[0], target);
 
-        if (node.value) |val| {
-            const op = self.source[val.start..val.end];
-            if (std.mem.eql(u8, op, "-")) {
-                try self.emitter.emitRR(.NEG_RR, target, target);
-            } else if (std.mem.eql(u8, op, "not") or std.mem.eql(u8, op, "!")) {
-                try self.emitter.emitRR(.NOT_RR, target, target);
-            }
-        }
-
-        return target;
-    }
-
-    fn compileAssignment(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        if (node.children.items.len < 2) return target;
-
-        const name_node = node.children.items[0];
-        const value_node = node.children.items[1];
-
-        if (name_node.value) |val| {
-            const name = self.source[val.start..val.end];
-
-            if (self.findLocal(name)) |local| {
-                if (local.spilled) {
-                    _ = try self.compileExpr(value_node, target);
-                    try self.emitter.emitRI(.STORE_LOCAL, target, local.local_idx);
-                } else {
-                    _ = try self.compileExpr(value_node, local.reg);
-                }
-            }
+        const op = self.getTokenText(node.token);
+        if (std.mem.eql(u8, op, "-")) {
+            try self.emitter.emitRR(.NEG_RR, target, target);
+        } else if (std.mem.eql(u8, op, "!") or std.mem.eql(u8, op, "not")) {
+            try self.emitter.emitRR(.NOT_RR, target, target);
         }
 
         return target;
@@ -361,31 +305,27 @@ pub const RegCompiler = struct {
     fn compileVarDecl(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         if (node.children.items.len < 1) return target;
 
-        const name_node = node.children.items[0];
-        if (name_node.value) |val| {
-            const name = self.source[val.start..val.end];
-            const reg = try self.declareLocal(name);
+        const name_node = &node.children.items[0];
+        const name = self.getTokenText(name_node.token);
+        const reg = try self.declareLocal(name);
 
-            // If there's an initializer
-            if (node.children.items.len >= 2) {
-                const init_node = node.children.items[1];
-                const local = self.findLocal(name).?;
+        if (node.children.items.len >= 2) {
+            const init_node = &node.children.items[1];
+            const local = self.findLocal(name).?;
 
-                if (local.spilled) {
-                    _ = try self.compileExpr(init_node, target);
-                    try self.emitter.emitRI(.STORE_LOCAL, target, local.local_idx);
-                } else {
-                    _ = try self.compileExpr(init_node, reg);
-                }
+            if (local.spilled) {
+                _ = try self.compileExpr(init_node, target);
+                try self.emitter.emitRI(.STORE_LOCAL, target, local.local_idx);
             } else {
-                // Initialize to 0
-                const local = self.findLocal(name).?;
-                if (local.spilled) {
-                    try self.emitter.emitRI(.MOV_RI, target, 0);
-                    try self.emitter.emitRI(.STORE_LOCAL, target, local.local_idx);
-                } else {
-                    try self.emitter.emitRI(.MOV_RI, reg, 0);
-                }
+                _ = try self.compileExpr(init_node, reg);
+            }
+        } else {
+            const local = self.findLocal(name).?;
+            if (local.spilled) {
+                try self.emitter.emitRI(.MOV_RI, target, 0);
+                try self.emitter.emitRI(.STORE_LOCAL, target, local.local_idx);
+            } else {
+                try self.emitter.emitRI(.MOV_RI, reg, 0);
             }
         }
 
@@ -395,39 +335,30 @@ pub const RegCompiler = struct {
     fn compileIf(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         if (node.children.items.len < 2) return target;
 
-        const cond = node.children.items[0];
-        const then_branch = node.children.items[1];
+        const cond = &node.children.items[0];
+        const then_branch = &node.children.items[1];
 
-        // Compile condition to target
         _ = try self.compileExpr(cond, target);
 
-        // JZ_R target, else_addr
-        const jump_pos = self.emitter.currentPos() + 2; // Position of address
-        try self.emitter.emitRAddr(.JZ_R, target, 0); // Placeholder
+        const jump_pos = self.emitter.currentPos() + 2;
+        try self.emitter.emitRAddr(.JZ_R, target, 0);
 
-        // Compile then branch
         _ = try self.compileExpr(then_branch, target);
 
         if (node.children.items.len >= 3) {
-            // Has else branch
-            const else_branch = node.children.items[2];
+            const else_branch = &node.children.items[2];
 
-            // JMP end_addr
             const end_jump_pos = self.emitter.currentPos() + 1;
-            try self.emitter.emitAddr(.JMP, 0); // Placeholder
+            try self.emitter.emitAddr(.JMP, 0);
 
-            // Patch else jump
             const else_addr = self.emitter.currentPos();
             self.emitter.patchJump(jump_pos, else_addr);
 
-            // Compile else branch
             _ = try self.compileExpr(else_branch, target);
 
-            // Patch end jump
             const end_addr = self.emitter.currentPos();
             self.emitter.patchJump(end_jump_pos, end_addr);
         } else {
-            // No else - patch jump to here
             const end_addr = self.emitter.currentPos();
             self.emitter.patchJump(jump_pos, end_addr);
         }
@@ -438,34 +369,23 @@ pub const RegCompiler = struct {
     fn compileWhile(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
         if (node.children.items.len < 2) return target;
 
-        const cond = node.children.items[0];
-        const body = node.children.items[1];
+        const cond = &node.children.items[0];
+        const body = &node.children.items[1];
 
         const loop_start = self.emitter.currentPos();
         self.loop_start = loop_start;
 
-        // Compile condition
         _ = try self.compileExpr(cond, target);
 
-        // JZ_R target, end
         const exit_jump_pos = self.emitter.currentPos() + 2;
         try self.emitter.emitRAddr(.JZ_R, target, 0);
 
-        // Compile body
         _ = try self.compileExpr(body, target);
 
-        // JMP loop_start
         try self.emitter.emitAddr(.JMP, loop_start);
 
-        // Patch exit jump
         const end_addr = self.emitter.currentPos();
         self.emitter.patchJump(exit_jump_pos, end_addr);
-
-        // Patch break statements
-        for (self.loop_end_patches.items) |patch_pos| {
-            self.emitter.patchJump(patch_pos, end_addr);
-        }
-        self.loop_end_patches.clearRetainingCapacity();
 
         self.loop_start = null;
 
@@ -473,55 +393,40 @@ pub const RegCompiler = struct {
     }
 
     fn compileFor(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        // for i in range(n) { body }
-        // Simplified: expects 3 children: var_name, limit, body
         if (node.children.items.len < 3) return target;
 
         self.scope_depth += 1;
 
-        const var_node = node.children.items[0];
-        const limit_node = node.children.items[1];
-        const body = node.children.items[2];
+        const var_node = &node.children.items[0];
+        const limit_node = &node.children.items[1];
+        const body = &node.children.items[2];
 
-        // Declare loop variable
         var loop_reg: u4 = 0;
-        if (var_node.value) |val| {
-            const name = self.source[val.start..val.end];
-            loop_reg = try self.declareLocal(name);
-            // Initialize to 0
-            try self.emitter.emitRI(.MOV_RI, loop_reg, 0);
-        }
+        const name = self.getTokenText(var_node.token);
+        loop_reg = try self.declareLocal(name);
+        try self.emitter.emitRI(.MOV_RI, loop_reg, 0);
 
-        // Compile limit to a register
         const limit_reg = try self.allocReg();
         defer self.freeReg(limit_reg);
         _ = try self.compileExpr(limit_node, limit_reg);
 
-        // Loop start
         const loop_start = self.emitter.currentPos();
         self.loop_start = loop_start;
 
-        // Compare: CMP loop_reg, limit_reg
         try self.emitter.emitRR(.CMP_RR, loop_reg, limit_reg);
 
-        // JGE end (exit if loop_reg >= limit_reg)
         const exit_jump_pos = self.emitter.currentPos() + 1;
         try self.emitter.emitAddr(.JGE, 0);
 
-        // Compile body
         _ = try self.compileExpr(body, target);
 
-        // Increment loop variable
         try self.emitter.emitRR(.INC_R, loop_reg, 0);
 
-        // Jump back
         try self.emitter.emitAddr(.JMP, loop_start);
 
-        // Patch exit
         const end_addr = self.emitter.currentPos();
         self.emitter.patchJump(exit_jump_pos, end_addr);
 
-        // Clean up scope
         while (self.locals.items.len > 0 and self.locals.items[self.locals.items.len - 1].depth == self.scope_depth) {
             const local = self.locals.pop();
             if (!local.spilled) {
@@ -535,21 +440,17 @@ pub const RegCompiler = struct {
     }
 
     fn compileFuncCall(self: *Self, node: *const AstNode, target: u4) CompileError!u4 {
-        // For now, just handle print() as a native call
-        if (node.value) |val| {
-            const name = self.source[val.start..val.end];
+        const name = self.getTokenText(node.token);
 
-            if (std.mem.eql(u8, name, "print")) {
-                // Compile argument to R0
-                if (node.children.items.len > 0) {
-                    _ = try self.compileExpr(node.children.items[0], 0);
-                }
-                // CALL_NATIVE print (index 0)
-                try self.emitter.emitAddr(.CALL_NATIVE, 0);
+        if (std.mem.eql(u8, name, "print")) {
+            if (node.children.items.len > 0) {
+                _ = try self.compileExpr(&node.children.items[0], 0);
             }
+            try self.emitter.emitAddr(.CALL_NATIVE, 0); // print = native 0
         }
 
-        return target;
+        _ = target;
+        return 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

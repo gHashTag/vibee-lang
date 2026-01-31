@@ -84,6 +84,17 @@ pub const VMError = error{
     CallStackOverflow,
     OutOfMemory,
     IndexOutOfBounds,
+    UnknownNative,
+};
+
+// Native function IDs
+pub const NativeId = enum(u16) {
+    print = 0,
+    len = 1,
+    range = 2,
+    sqrt = 3,
+    sin = 4,
+    cos = 5,
 };
 
 pub const RegVM = struct {
@@ -564,6 +575,17 @@ pub const RegVM = struct {
                 continue;
             }
 
+            // CALL_NATIVE (0x4E)
+            if (op_byte == 0x4E) {
+                const native_id = unpackU16(code[ip], code[ip + 1]);
+                ip += 2;
+                // R0 contains the argument, result goes to R0
+                const arg = regs[0];
+                regs[0] = try self.callNative(native_id, arg);
+                self.instructions_executed += 1;
+                continue;
+            }
+
             // Unknown opcode
             return VMError.InvalidOpcode;
         }
@@ -585,6 +607,50 @@ pub const RegVM = struct {
         const time_ns = self.getExecutionTimeNs();
         if (time_ns == 0) return 0;
         return @as(f64, @floatFromInt(self.instructions_executed)) / (@as(f64, @floatFromInt(time_ns)) / 1_000_000_000.0);
+    }
+
+    /// Call native function by ID
+    fn callNative(self: *Self, native_id: u16, arg: Value) VMError!Value {
+        _ = self;
+        return switch (native_id) {
+            @intFromEnum(NativeId.print) => {
+                // Print the argument
+                switch (arg) {
+                    .nil => std.debug.print("nil\n", .{}),
+                    .bool_val => |v| std.debug.print("{}\n", .{v}),
+                    .int_val => |v| std.debug.print("{}\n", .{v}),
+                    .float_val => |v| std.debug.print("{d}\n", .{v}),
+                    .string_val => |v| std.debug.print("{s}\n", .{v}),
+                    .trit_val => |v| {
+                        const symbol: []const u8 = if (v > 0) "T" else if (v < 0) "F" else "U";
+                        std.debug.print("{s}\n", .{symbol});
+                    },
+                    .tryte_val => |v| std.debug.print("0t{d}\n", .{v}),
+                    else => std.debug.print("<value>\n", .{}),
+                }
+                return .{ .nil = {} };
+            },
+            @intFromEnum(NativeId.len) => {
+                return switch (arg) {
+                    .string_val => |v| .{ .int_val = @intCast(v.len) },
+                    .array_val => |v| .{ .int_val = @intCast(v.items.len) },
+                    else => .{ .int_val = 0 },
+                };
+            },
+            @intFromEnum(NativeId.sqrt) => {
+                const val = getFloat(arg);
+                return .{ .float_val = @sqrt(val) };
+            },
+            @intFromEnum(NativeId.sin) => {
+                const val = getFloat(arg);
+                return .{ .float_val = @sin(val) };
+            },
+            @intFromEnum(NativeId.cos) => {
+                const val = getFloat(arg);
+                return .{ .float_val = @cos(val) };
+            },
+            else => VMError.UnknownNative,
+        };
     }
 };
 
