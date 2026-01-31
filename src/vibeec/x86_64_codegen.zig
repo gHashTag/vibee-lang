@@ -2322,6 +2322,156 @@ pub const SIMDArrayOps = struct {
 
         return ExecutableCode.init(emitter.getCode());
     }
+
+    /// Generate unrolled vectorized code for: result[i] = a[i] + b[i]
+    /// Processes 8 elements per iteration (2x unrolled SIMD)
+    pub fn generateArrayAddUnrolled(self: *Self) !ExecutableCode {
+        var emitter = X86_64Emitter.init(self.allocator);
+        defer emitter.deinit();
+
+        try emitter.pushReg(.RBX);
+        try emitter.pushReg(.R12);
+        try emitter.pxor(.XMM0, .XMM0);
+        try emitter.movImm64(.R12, 0);
+
+        const loop_start = emitter.getCodePosition();
+
+        // Check if we have at least 8 elements left (2x unrolled)
+        try emitter.movRegReg(.RAX, .R12);
+        try emitter.addRegImm(.RAX, 8);
+        try emitter.cmpRegReg(.RAX, .RCX);
+        try emitter.code.append(0x77); // JA rel8
+        const ja_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // First 4 elements: XMM0 = a[i:i+4] + b[i:i+4]
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+        try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA6);
+        try emitter.movdquLoad(.XMM1, .RAX, 0);
+
+        try emitter.paddd(.XMM0, .XMM1);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+        try emitter.movdquStore(.RAX, 0, .XMM0);
+
+        // Second 4 elements (unrolled): XMM2 = a[i+4:i+8] + b[i+4:i+8]
+        // lea rax, [rdi + r12*4 + 16]
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x44);
+        try emitter.code.append(0xA7);
+        try emitter.code.append(0x10); // +16 offset
+        try emitter.movdquLoad(.XMM2, .RAX, 0);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x44);
+        try emitter.code.append(0xA6);
+        try emitter.code.append(0x10);
+        try emitter.movdquLoad(.XMM3, .RAX, 0);
+
+        try emitter.paddd(.XMM2, .XMM3);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x44);
+        try emitter.code.append(0xA2);
+        try emitter.code.append(0x10);
+        try emitter.movdquStore(.RAX, 0, .XMM2);
+
+        // i += 8
+        try emitter.addRegImm(.R12, 8);
+
+        try emitter.code.append(0xEB);
+        const jmp_back: i8 = @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(jmp_back));
+
+        const simd4_start = emitter.getCodePosition();
+        emitter.code.items[ja_offset] = @intCast(simd4_start - ja_offset - 1);
+
+        // Check for 4 remaining elements
+        try emitter.movRegReg(.RAX, .R12);
+        try emitter.addRegImm(.RAX, 4);
+        try emitter.cmpRegReg(.RAX, .RCX);
+        try emitter.code.append(0x77);
+        const ja_scalar = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Process 4 elements
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+        try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA6);
+        try emitter.movdquLoad(.XMM1, .RAX, 0);
+
+        try emitter.paddd(.XMM0, .XMM1);
+
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+        try emitter.movdquStore(.RAX, 0, .XMM0);
+
+        try emitter.addRegImm(.R12, 4);
+
+        const scalar_start = emitter.getCodePosition();
+        emitter.code.items[ja_scalar] = @intCast(scalar_start - ja_scalar - 1);
+
+        // Scalar loop for remainder
+        try emitter.cmpRegReg(.R12, .RCX);
+        try emitter.code.append(0x7D);
+        const jge_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x8B);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x03);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA6);
+
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x89);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+
+        try emitter.code.append(0x49);
+        try emitter.code.append(0xFF);
+        try emitter.code.append(0xC4);
+
+        try emitter.code.append(0xEB);
+        const scalar_back: i8 = @intCast(@as(i32, @intCast(scalar_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(scalar_back));
+
+        const done_pos = emitter.getCodePosition();
+        emitter.code.items[jge_offset] = @intCast(done_pos - jge_offset - 1);
+
+        try emitter.popReg(.R12);
+        try emitter.popReg(.RBX);
+        try emitter.ret();
+
+        return ExecutableCode.init(emitter.getCode());
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3460,6 +3610,46 @@ test "SIMDArrayOps: array_scale with 8 elements" {
     try std.testing.expectEqual(@as(i32, 24), result[7]);
 }
 
+test "SIMDArrayOps: array_add_unrolled with 16 elements" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec = try ops.generateArrayAddUnrolled();
+    defer exec.deinit();
+
+    var a align(16) = [16]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    var b align(16) = [16]i32{ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 };
+    var result align(16) = [16]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&a, &b, &result, 16);
+
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 15), result[4]);
+    try std.testing.expectEqual(@as(i32, 19), result[8]);
+    try std.testing.expectEqual(@as(i32, 26), result[15]);
+}
+
+test "SIMDArrayOps: array_add_unrolled with 17 elements (remainder)" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec = try ops.generateArrayAddUnrolled();
+    defer exec.deinit();
+
+    var a align(16) = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 } ++ [_]i32{0} ** 15;
+    var b align(16) = [_]i32{ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 } ++ [_]i32{0} ** 15;
+    var result align(16) = [_]i32{0} ** 32;
+
+    const func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&a, &b, &result, 17);
+
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 19), result[8]);
+    try std.testing.expectEqual(@as(i32, 26), result[15]);
+    try std.testing.expectEqual(@as(i32, 27), result[16]); // Scalar remainder
+}
+
 test "Benchmark: SIMD array_add vs scalar (16 elements)" {
     const allocator = std.testing.allocator;
     var ops = SIMDArrayOps.init(allocator);
@@ -3493,4 +3683,55 @@ test "Benchmark: SIMD array_add vs scalar (16 elements)" {
     // Verify results
     try std.testing.expectEqual(@as(i32, 11), result[0]);
     try std.testing.expectEqual(@as(i32, 26), result[15]);
+}
+
+test "Benchmark: SIMD vs SIMD+Unroll (64 elements)" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec_simd = try ops.generateArrayAdd();
+    defer exec_simd.deinit();
+
+    var exec_unrolled = try ops.generateArrayAddUnrolled();
+    defer exec_unrolled.deinit();
+
+    var a align(16) = [64]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64 };
+    var b align(16) = [64]i32{ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 };
+    var result align(16) = [64]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const func_simd: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec_simd.code.ptr);
+    const func_unrolled: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec_unrolled.code.ptr);
+
+    const iterations: usize = 100000;
+
+    // Benchmark SIMD only
+    const start_simd = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        func_simd(&a, &b, &result, 64);
+    }
+    const end_simd = std.time.nanoTimestamp();
+    const time_simd: u64 = @intCast(@max(0, end_simd - start_simd));
+    const per_iter_simd = @as(f64, @floatFromInt(time_simd)) / @as(f64, @floatFromInt(iterations));
+
+    // Benchmark SIMD + Unroll
+    const start_unrolled = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        func_unrolled(&a, &b, &result, 64);
+    }
+    const end_unrolled = std.time.nanoTimestamp();
+    const time_unrolled: u64 = @intCast(@max(0, end_unrolled - start_unrolled));
+    const per_iter_unrolled = @as(f64, @floatFromInt(time_unrolled)) / @as(f64, @floatFromInt(iterations));
+
+    const speedup = per_iter_simd / per_iter_unrolled;
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== SIMD vs SIMD+Unroll Benchmark (64 elements) ===\n", .{});
+        std.debug.print("SIMD only:    {d:.2} ns/iter ({d:.2} elements/ns)\n", .{ per_iter_simd, 64.0 / per_iter_simd });
+        std.debug.print("SIMD+Unroll:  {d:.2} ns/iter ({d:.2} elements/ns)\n", .{ per_iter_unrolled, 64.0 / per_iter_unrolled });
+        std.debug.print("Speedup:      {d:.2}x\n", .{speedup});
+    }
+
+    // Verify results
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 74), result[63]);
 }

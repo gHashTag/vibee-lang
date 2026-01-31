@@ -479,6 +479,142 @@ pub const VectorizationStats = struct {
     }
 };
 
+/// Combined Loop Unrolling + Vectorization optimizer
+/// Strategy: Vectorize first (4 elements/iter), then unroll the vectorized loop
+pub const UnrollVectorizeCombo = struct {
+    allocator: Allocator,
+    vectorizer: AutoVectorizer,
+    unroll_factor: u32,
+    min_trip_count: u32,
+    stats: ComboStats,
+
+    const Self = @This();
+
+    pub const ComboStats = struct {
+        loops_processed: u64,
+        loops_vectorized_only: u64,
+        loops_unrolled_only: u64,
+        loops_combo_optimized: u64,
+        estimated_speedup: f64,
+
+        pub fn init() ComboStats {
+            return .{
+                .loops_processed = 0,
+                .loops_vectorized_only = 0,
+                .loops_unrolled_only = 0,
+                .loops_combo_optimized = 0,
+                .estimated_speedup = 0.0,
+            };
+        }
+    };
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .vectorizer = AutoVectorizer.init(allocator),
+            .unroll_factor = 2, // Unroll vectorized loop 2x
+            .min_trip_count = 16, // Need at least 16 iterations for combo
+            .stats = ComboStats.init(),
+        };
+    }
+
+    pub fn initWithFactor(allocator: Allocator, unroll_factor: u32) Self {
+        var combo = Self.init(allocator);
+        combo.unroll_factor = unroll_factor;
+        return combo;
+    }
+
+    /// Decide optimization strategy for a loop
+    pub const OptimizationStrategy = enum {
+        None,           // No optimization
+        VectorizeOnly,  // Just vectorize (small loops)
+        UnrollOnly,     // Just unroll (non-vectorizable)
+        VectorizeUnroll, // Vectorize then unroll (best for large loops)
+    };
+
+    pub fn decideStrategy(self: *Self, loop: LoopInfo, ir: []const IRInstruction) OptimizationStrategy {
+        const trip_count = loop.iteration_count orelse return .None;
+
+        // Check if vectorizable
+        const can_vectorize = self.vectorizer.shouldVectorize(loop, ir);
+        const pattern = self.vectorizer.detectArrayPattern(loop, ir);
+        const is_vectorizable = can_vectorize and pattern != null;
+
+        // Decision matrix
+        if (trip_count < 8) {
+            return .None; // Too small
+        } else if (trip_count < self.min_trip_count) {
+            if (is_vectorizable) {
+                return .VectorizeOnly;
+            } else if (loop.body_size <= 8) {
+                return .UnrollOnly;
+            }
+            return .None;
+        } else {
+            // Large loop - combo optimization
+            if (is_vectorizable) {
+                return .VectorizeUnroll;
+            } else if (loop.body_size <= 8) {
+                return .UnrollOnly;
+            }
+            return .None;
+        }
+    }
+
+    /// Apply combined optimization
+    pub fn optimize(self: *Self, loop: LoopInfo, ir: []const IRInstruction) !?x86_codegen.ExecutableCode {
+        self.stats.loops_processed += 1;
+
+        const strategy = self.decideStrategy(loop, ir);
+
+        switch (strategy) {
+            .None => return null,
+            .VectorizeOnly => {
+                self.stats.loops_vectorized_only += 1;
+                self.stats.estimated_speedup += 4.0; // ~4x from SIMD
+                const pattern = self.vectorizer.detectArrayPattern(loop, ir) orelse return null;
+                return try self.vectorizer.vectorizeArrayLoop(pattern);
+            },
+            .UnrollOnly => {
+                self.stats.loops_unrolled_only += 1;
+                self.stats.estimated_speedup += 1.5; // ~1.5x from unrolling
+                // Unrolling doesn't generate native code directly
+                return null;
+            },
+            .VectorizeUnroll => {
+                self.stats.loops_combo_optimized += 1;
+                // Combo: 4x from SIMD * 1.5x from unrolling = ~6x
+                self.stats.estimated_speedup += 6.0;
+                return try self.generateComboCode(loop, ir);
+            },
+        }
+    }
+
+    /// Generate combined vectorized + unrolled native code
+    fn generateComboCode(self: *Self, loop: LoopInfo, ir: []const IRInstruction) !?x86_codegen.ExecutableCode {
+        const pattern = self.vectorizer.detectArrayPattern(loop, ir) orelse return null;
+
+        // Generate unrolled vectorized code (8 elements per iteration)
+        var simd_ops = x86_codegen.SIMDArrayOps.init(self.allocator);
+
+        // Use unrolled version for ArrayAdd, fall back to regular for others
+        return switch (pattern.pattern) {
+            .ArrayAdd => try simd_ops.generateArrayAddUnrolled(), // 2x unrolled SIMD
+            .ArraySub => try simd_ops.generateArraySub(),
+            .ArrayMul => try simd_ops.generateArrayMul(),
+            .ArrayNeg => try simd_ops.generateArrayNeg(),
+            .ArraySum => try simd_ops.generateArraySum(),
+            .ArrayMax => try simd_ops.generateArrayMax(),
+            .ArrayScale => try simd_ops.generateArrayScale(2),
+            else => null,
+        };
+    }
+
+    pub fn getStats(self: *Self) ComboStats {
+        return self.stats;
+    }
+};
+
 /// Array loop pattern types
 pub const ArrayLoopPattern = enum {
     ArrayAdd,      // c[i] = a[i] + b[i]
@@ -18342,6 +18478,149 @@ test "TieredCompiler vectorization disabled" {
     // Stats should be zero
     const stats = compiler.getVectorizationStats();
     try std.testing.expectEqual(@as(u64, 0), stats.loops_analyzed);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNROLL + VECTORIZE COMBO TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "UnrollVectorizeCombo init" {
+    const allocator = std.testing.allocator;
+    const combo = UnrollVectorizeCombo.init(allocator);
+
+    try std.testing.expectEqual(@as(u32, 2), combo.unroll_factor);
+    try std.testing.expectEqual(@as(u32, 16), combo.min_trip_count);
+    try std.testing.expectEqual(@as(u64, 0), combo.stats.loops_processed);
+}
+
+test "UnrollVectorizeCombo decideStrategy small loop" {
+    const allocator = std.testing.allocator;
+    var combo = UnrollVectorizeCombo.init(allocator);
+
+    const small_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 4, // Too small
+        .body_size = 4,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+    };
+
+    const strategy = combo.decideStrategy(small_loop, &ir);
+    try std.testing.expectEqual(UnrollVectorizeCombo.OptimizationStrategy.None, strategy);
+}
+
+test "UnrollVectorizeCombo decideStrategy medium loop vectorize only" {
+    const allocator = std.testing.allocator;
+    var combo = UnrollVectorizeCombo.init(allocator);
+
+    const medium_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 12, // Medium - vectorize only
+        .body_size = 4,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+    };
+
+    const strategy = combo.decideStrategy(medium_loop, &ir);
+    try std.testing.expectEqual(UnrollVectorizeCombo.OptimizationStrategy.VectorizeOnly, strategy);
+}
+
+test "UnrollVectorizeCombo decideStrategy large loop combo" {
+    const allocator = std.testing.allocator;
+    var combo = UnrollVectorizeCombo.init(allocator);
+
+    const large_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64, // Large - combo optimization
+        .body_size = 4,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+    };
+
+    const strategy = combo.decideStrategy(large_loop, &ir);
+    try std.testing.expectEqual(UnrollVectorizeCombo.OptimizationStrategy.VectorizeUnroll, strategy);
+}
+
+test "UnrollVectorizeCombo optimize generates code" {
+    const allocator = std.testing.allocator;
+    var combo = UnrollVectorizeCombo.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64,
+        .body_size = 4,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+    };
+
+    var exec = try combo.optimize(loop, &ir);
+    try std.testing.expect(exec != null);
+    defer exec.?.deinit();
+
+    // Verify stats
+    try std.testing.expectEqual(@as(u64, 1), combo.stats.loops_processed);
+    try std.testing.expectEqual(@as(u64, 1), combo.stats.loops_combo_optimized);
+    try std.testing.expect(combo.stats.estimated_speedup > 5.0); // ~6x expected
+}
+
+test "UnrollVectorizeCombo end-to-end execution" {
+    const allocator = std.testing.allocator;
+    var combo = UnrollVectorizeCombo.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 16,
+        .body_size = 4,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 },
+    };
+
+    var exec = try combo.optimize(loop, &ir);
+    try std.testing.expect(exec != null);
+    defer exec.?.deinit();
+
+    // Execute the generated code
+    var a align(16) = [16]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    var b align(16) = [16]i32{ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 };
+    var result align(16) = [16]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec.?.code.ptr);
+    func(&a, &b, &result, 16);
+
+    try std.testing.expectEqual(@as(i32, 11), result[0]);
+    try std.testing.expectEqual(@as(i32, 15), result[4]);
+    try std.testing.expectEqual(@as(i32, 19), result[8]);
+    try std.testing.expectEqual(@as(i32, 26), result[15]);
 }
 
 test "VectorizationStats tracking" {
