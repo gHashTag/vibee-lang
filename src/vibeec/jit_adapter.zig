@@ -398,6 +398,321 @@ pub const ProfilerStats = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-VECTORIZATION HEURISTICS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Vectorization cost estimation
+pub const VectorizationCost = struct {
+    scalar_cycles: u64,
+    vector_cycles: u64,
+    setup_overhead: u64,
+    memory_bandwidth_util: f32,
+    register_pressure: u32,
+
+    pub fn expectedSpeedup(self: VectorizationCost) f32 {
+        if (self.vector_cycles == 0) return 0.0;
+        const total_vector = self.vector_cycles + self.setup_overhead;
+        return @as(f32, @floatFromInt(self.scalar_cycles)) / @as(f32, @floatFromInt(total_vector));
+    }
+
+    pub fn isProfitable(self: VectorizationCost) bool {
+        return self.expectedSpeedup() >= 1.5; // MIN_SPEEDUP_THRESHOLD
+    }
+};
+
+/// Dependency analysis result
+pub const DependencyInfo = struct {
+    has_loop_carried: bool,
+    has_reduction: bool,
+    can_parallelize: bool,
+    dependency_distance: u32,
+
+    pub fn allowsVectorization(self: DependencyInfo) bool {
+        return !self.has_loop_carried or self.has_reduction or self.dependency_distance >= 4;
+    }
+};
+
+/// Vectorization decision with reasoning
+pub const VectorizationDecision = struct {
+    should_vectorize: bool,
+    vector_width: u32,
+    unroll_factor: u32,
+    reason: []const u8,
+    confidence: f32,
+};
+
+/// Cost model for vectorization decisions
+pub const VectorizationCostModel = struct {
+    /// Hardware features
+    simd_width: u32 = 128, // SSE default
+    has_avx: bool = false,
+    has_avx512: bool = false,
+    num_vector_regs: u32 = 16,
+    cache_line_size: u32 = 64,
+
+    /// Heuristic weights
+    trip_count_weight: f32 = 0.30,
+    memory_access_weight: f32 = 0.25,
+    dependency_weight: f32 = 0.25,
+    register_pressure_weight: f32 = 0.20,
+
+    /// Thresholds
+    min_trip_count: u32 = 8,
+    max_body_size: u32 = 32,
+    overhead_cycles: u64 = 20,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return .{};
+    }
+
+    pub fn initWithAVX() Self {
+        return .{
+            .simd_width = 256,
+            .has_avx = true,
+            .num_vector_regs = 16,
+        };
+    }
+
+    pub fn initWithAVX512() Self {
+        return .{
+            .simd_width = 512,
+            .has_avx = true,
+            .has_avx512 = true,
+            .num_vector_regs = 32,
+        };
+    }
+
+    /// Estimate cost for scalar execution
+    pub fn estimateScalarCost(self: *const Self, loop: LoopInfo, ir: []const IRInstruction) VectorizationCost {
+        _ = self;
+        const trip_count = loop.iteration_count orelse 100; // Assume 100 if unknown
+        const body_size = loop.body_size;
+
+        // Count instruction types
+        var load_count: u32 = 0;
+        var store_count: u32 = 0;
+        var arith_count: u32 = 0;
+
+        const body_start = loop.start_idx;
+        const body_end = @min(loop.end_idx, ir.len);
+
+        for (ir[body_start..body_end]) |instr| {
+            switch (instr.opcode) {
+                .LOAD_LOCAL, .LOAD_GLOBAL, .LOAD_CONST => load_count += 1,
+                .STORE_LOCAL, .STORE_GLOBAL => store_count += 1,
+                .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT,
+                .ADD_FLOAT, .SUB_FLOAT, .MUL_FLOAT, .DIV_FLOAT => arith_count += 1,
+                else => {},
+            }
+        }
+
+        // Simple cycle estimation: 1 cycle per arith, 3 cycles per load, 2 cycles per store
+        const cycles_per_iter = arith_count + load_count * 3 + store_count * 2 + @as(u32, @intCast(body_size));
+        const total_cycles = @as(u64, trip_count) * @as(u64, cycles_per_iter);
+
+        return .{
+            .scalar_cycles = total_cycles,
+            .vector_cycles = 0,
+            .setup_overhead = 0,
+            .memory_bandwidth_util = @as(f32, @floatFromInt(load_count + store_count)) / @as(f32, @floatFromInt(body_size + 1)),
+            .register_pressure = arith_count + load_count,
+        };
+    }
+
+    /// Estimate cost for vectorized execution
+    pub fn estimateVectorCost(self: *const Self, loop: LoopInfo, ir: []const IRInstruction, vector_width: u32) VectorizationCost {
+        const scalar_cost = self.estimateScalarCost(loop, ir);
+
+        // Vector width in elements (assuming 32-bit elements)
+        const elements_per_vector = vector_width / 32;
+        const trip_count = loop.iteration_count orelse 100;
+
+        // Vectorized iterations (used for remainder calculation)
+        const remainder_iters = trip_count % elements_per_vector;
+
+        // Vector cycles: reduced by vector width, but with some overhead
+        const vector_cycles = (scalar_cost.scalar_cycles / @as(u64, elements_per_vector)) + 
+                             @as(u64, remainder_iters) * (scalar_cost.scalar_cycles / @as(u64, trip_count));
+
+        // Setup overhead for vector operations
+        const setup = self.overhead_cycles + @as(u64, if (remainder_iters > 0) 10 else 0);
+
+        // Register pressure increases with vectorization
+        const reg_pressure = scalar_cost.register_pressure * 2;
+
+        return .{
+            .scalar_cycles = scalar_cost.scalar_cycles,
+            .vector_cycles = vector_cycles,
+            .setup_overhead = setup,
+            .memory_bandwidth_util = scalar_cost.memory_bandwidth_util,
+            .register_pressure = @min(reg_pressure, self.num_vector_regs),
+        };
+    }
+
+    /// Analyze dependencies in loop body
+    pub fn analyzeDependencies(self: *const Self, loop: LoopInfo, ir: []const IRInstruction) DependencyInfo {
+        _ = self;
+        var has_loop_carried = false;
+        var has_reduction = false;
+        var can_parallelize = true;
+
+        const body_start = loop.start_idx;
+        const body_end = @min(loop.end_idx, ir.len);
+
+        // Track which registers are written and read
+        var written: u32 = 0;
+        var read_after_write: u32 = 0;
+
+        for (ir[body_start..body_end]) |instr| {
+            const dest_mask = @as(u32, 1) << @intCast(instr.dest & 31);
+            const src1_mask = @as(u32, 1) << @intCast(instr.src1 & 31);
+            const src2_mask = @as(u32, 1) << @intCast(instr.src2 & 31);
+
+            // Check for read-after-write (potential dependency)
+            if ((written & src1_mask) != 0 or (written & src2_mask) != 0) {
+                read_after_write |= dest_mask;
+            }
+
+            // Detect reduction patterns (accumulator)
+            if (instr.opcode == .ADD_INT or instr.opcode == .ADD_FLOAT or
+                instr.opcode == .MUL_INT or instr.opcode == .MUL_FLOAT)
+            {
+                if (instr.dest == instr.src1 or instr.dest == instr.src2) {
+                    has_reduction = true;
+                }
+            }
+
+            written |= dest_mask;
+        }
+
+        // Loop-carried dependency if same register read and written across iterations
+        has_loop_carried = @popCount(read_after_write) > 0 and !has_reduction;
+        can_parallelize = !has_loop_carried or has_reduction;
+
+        return .{
+            .has_loop_carried = has_loop_carried,
+            .has_reduction = has_reduction,
+            .can_parallelize = can_parallelize,
+            .dependency_distance = if (has_loop_carried) 1 else 0,
+        };
+    }
+
+    /// Select optimal vector width based on loop characteristics
+    pub fn selectVectorWidth(self: *const Self, loop: LoopInfo, deps: DependencyInfo) u32 {
+        // Start with maximum available width
+        var width: u32 = self.simd_width;
+
+        // Reduce width if trip count is small
+        const trip_count = loop.iteration_count orelse 100;
+        if (trip_count < 16 and width > 128) {
+            width = 128; // Use SSE for small loops
+        }
+
+        // Reduce width if high register pressure
+        if (deps.has_reduction and width > 256) {
+            width = 256; // Reductions work better with smaller vectors
+        }
+
+        // Ensure we have enough iterations for vectorization
+        const elements = width / 32;
+        if (trip_count < elements * 2) {
+            width = 128; // Fall back to SSE
+        }
+
+        return width;
+    }
+
+    /// Make final vectorization decision
+    pub fn makeDecision(self: *const Self, loop: LoopInfo, ir: []const IRInstruction) VectorizationDecision {
+        // Check basic requirements
+        const trip_count = loop.iteration_count orelse 100;
+        if (trip_count < self.min_trip_count) {
+            return .{
+                .should_vectorize = false,
+                .vector_width = 0,
+                .unroll_factor = 1,
+                .reason = "Trip count too small",
+                .confidence = 0.9,
+            };
+        }
+
+        if (loop.body_size > self.max_body_size) {
+            return .{
+                .should_vectorize = false,
+                .vector_width = 0,
+                .unroll_factor = 1,
+                .reason = "Loop body too large",
+                .confidence = 0.9,
+            };
+        }
+
+        // Analyze dependencies
+        const deps = self.analyzeDependencies(loop, ir);
+        if (!deps.allowsVectorization()) {
+            return .{
+                .should_vectorize = false,
+                .vector_width = 0,
+                .unroll_factor = 1,
+                .reason = "Loop-carried dependencies prevent vectorization",
+                .confidence = 0.85,
+            };
+        }
+
+        // Select vector width
+        const vector_width = self.selectVectorWidth(loop, deps);
+
+        // Estimate costs
+        const cost = self.estimateVectorCost(loop, ir, vector_width);
+
+        if (!cost.isProfitable()) {
+            return .{
+                .should_vectorize = false,
+                .vector_width = 0,
+                .unroll_factor = 1,
+                .reason = "Vectorization not profitable",
+                .confidence = 0.7,
+            };
+        }
+
+        // Calculate confidence based on heuristics
+        var confidence: f32 = 0.5;
+
+        // Trip count heuristic
+        if (loop.iteration_count != null) {
+            confidence += self.trip_count_weight;
+        }
+
+        // Memory access heuristic (contiguous is better)
+        if (cost.memory_bandwidth_util > 0.3) {
+            confidence += self.memory_access_weight;
+        }
+
+        // Dependency heuristic
+        if (!deps.has_loop_carried) {
+            confidence += self.dependency_weight;
+        }
+
+        // Register pressure heuristic
+        if (cost.register_pressure < self.num_vector_regs / 2) {
+            confidence += self.register_pressure_weight;
+        }
+
+        // Determine unroll factor
+        const unroll = if (deps.has_reduction) @as(u32, 2) else @as(u32, 4);
+
+        return .{
+            .should_vectorize = true,
+            .vector_width = vector_width,
+            .unroll_factor = unroll,
+            .reason = "Vectorization profitable",
+            .confidence = @min(confidence, 0.95),
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // LOOP UNROLLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -16934,4 +17249,227 @@ test "BasicBlock init and instructionCount" {
     try std.testing.expectEqual(@as(usize, 6), block.instructionCount());
     try std.testing.expect(!block.is_entry);
     try std.testing.expect(!block.is_exit);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-VECTORIZATION HEURISTICS TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "VectorizationCostModel init" {
+    const model = VectorizationCostModel.init();
+    try std.testing.expectEqual(@as(u32, 128), model.simd_width);
+    try std.testing.expect(!model.has_avx);
+    try std.testing.expect(!model.has_avx512);
+}
+
+test "VectorizationCostModel initWithAVX" {
+    const model = VectorizationCostModel.initWithAVX();
+    try std.testing.expectEqual(@as(u32, 256), model.simd_width);
+    try std.testing.expect(model.has_avx);
+    try std.testing.expect(!model.has_avx512);
+}
+
+test "VectorizationCostModel initWithAVX512" {
+    const model = VectorizationCostModel.initWithAVX512();
+    try std.testing.expectEqual(@as(u32, 512), model.simd_width);
+    try std.testing.expect(model.has_avx);
+    try std.testing.expect(model.has_avx512);
+    try std.testing.expectEqual(@as(u32, 32), model.num_vector_regs);
+}
+
+test "VectorizationCost expectedSpeedup" {
+    const cost = VectorizationCost{
+        .scalar_cycles = 1000,
+        .vector_cycles = 250,
+        .setup_overhead = 50,
+        .memory_bandwidth_util = 0.5,
+        .register_pressure = 8,
+    };
+    // Speedup = 1000 / (250 + 50) = 3.33x
+    const speedup = cost.expectedSpeedup();
+    try std.testing.expect(speedup > 3.0 and speedup < 3.5);
+    try std.testing.expect(cost.isProfitable());
+}
+
+test "VectorizationCost not profitable" {
+    const cost = VectorizationCost{
+        .scalar_cycles = 100,
+        .vector_cycles = 80,
+        .setup_overhead = 30,
+        .memory_bandwidth_util = 0.2,
+        .register_pressure = 4,
+    };
+    // Speedup = 100 / (80 + 30) = 0.91x (not profitable)
+    try std.testing.expect(!cost.isProfitable());
+}
+
+test "DependencyInfo allowsVectorization" {
+    // No dependencies - allows vectorization
+    const no_deps = DependencyInfo{
+        .has_loop_carried = false,
+        .has_reduction = false,
+        .can_parallelize = true,
+        .dependency_distance = 0,
+    };
+    try std.testing.expect(no_deps.allowsVectorization());
+
+    // Reduction - allows vectorization
+    const reduction = DependencyInfo{
+        .has_loop_carried = true,
+        .has_reduction = true,
+        .can_parallelize = true,
+        .dependency_distance = 1,
+    };
+    try std.testing.expect(reduction.allowsVectorization());
+
+    // Loop-carried without reduction - blocks vectorization
+    const loop_carried = DependencyInfo{
+        .has_loop_carried = true,
+        .has_reduction = false,
+        .can_parallelize = false,
+        .dependency_distance = 1,
+    };
+    try std.testing.expect(!loop_carried.allowsVectorization());
+
+    // Large dependency distance - allows vectorization
+    const large_dist = DependencyInfo{
+        .has_loop_carried = true,
+        .has_reduction = false,
+        .can_parallelize = false,
+        .dependency_distance = 4,
+    };
+    try std.testing.expect(large_dist.allowsVectorization());
+}
+
+test "VectorizationCostModel makeDecision small trip count" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 5,
+        .iteration_count = 4, // Too small
+        .body_size = 5,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 1, .src1 = 1, .src2 = 0, .imm = 1 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -4 },
+    };
+
+    const decision = model.makeDecision(loop, &ir);
+    try std.testing.expect(!decision.should_vectorize);
+    try std.testing.expect(std.mem.eql(u8, decision.reason, "Trip count too small"));
+}
+
+test "VectorizationCostModel makeDecision large body" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 50,
+        .iteration_count = 100,
+        .body_size = 50, // Too large
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const decision = model.makeDecision(loop, &ir);
+    try std.testing.expect(!decision.should_vectorize);
+    try std.testing.expect(std.mem.eql(u8, decision.reason, "Loop body too large"));
+}
+
+test "VectorizationCostModel makeDecision profitable" {
+    const model = VectorizationCostModel.initWithAVX();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 10,
+        .iteration_count = 64, // Good trip count
+        .body_size = 10,
+    };
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 1, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .STORE_LOCAL, .dest = 2, .src1 = 2, .src2 = 0, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 3, .src2 = 0, .imm = 1 },
+        .{ .opcode = .CMP_LT_INT, .dest = 0, .src1 = 3, .src2 = 0, .imm = 64 },
+        .{ .opcode = .JUMP_IF_NOT_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = -6 },
+        .{ .opcode = .DUP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .POP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -9 },
+    };
+
+    const decision = model.makeDecision(loop, &ir);
+    try std.testing.expect(decision.should_vectorize);
+    try std.testing.expect(decision.vector_width >= 128);
+    try std.testing.expect(decision.confidence > 0.5);
+}
+
+test "VectorizationCostModel selectVectorWidth" {
+    const model = VectorizationCostModel.initWithAVX512();
+
+    // Large loop - use full width
+    const large_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 10,
+        .iteration_count = 256,
+        .body_size = 10,
+    };
+    const no_deps = DependencyInfo{
+        .has_loop_carried = false,
+        .has_reduction = false,
+        .can_parallelize = true,
+        .dependency_distance = 0,
+    };
+    const width_large = model.selectVectorWidth(large_loop, no_deps);
+    try std.testing.expectEqual(@as(u32, 512), width_large);
+
+    // Small loop - reduce width
+    const small_loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 5,
+        .iteration_count = 12,
+        .body_size = 5,
+    };
+    const width_small = model.selectVectorWidth(small_loop, no_deps);
+    try std.testing.expectEqual(@as(u32, 128), width_small);
+
+    // Reduction - prefer smaller width
+    const reduction_deps = DependencyInfo{
+        .has_loop_carried = true,
+        .has_reduction = true,
+        .can_parallelize = true,
+        .dependency_distance = 1,
+    };
+    const width_reduction = model.selectVectorWidth(large_loop, reduction_deps);
+    try std.testing.expectEqual(@as(u32, 256), width_reduction);
+}
+
+test "VectorizationCostModel analyzeDependencies reduction" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 3,
+        .iteration_count = 100,
+        .body_size = 3,
+    };
+
+    // sum += arr[i] pattern (reduction)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 2, .imm = 0 }, // tmp = arr[i]
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, // sum = sum + tmp (reduction!)
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 },
+    };
+
+    const deps = model.analyzeDependencies(loop, &ir);
+    try std.testing.expect(deps.has_reduction);
+    try std.testing.expect(deps.can_parallelize);
 }
