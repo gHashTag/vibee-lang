@@ -253,7 +253,36 @@ pub const KnowledgeGraph = struct {
     }
     
     /// Query: given subject and predicate, find object
+    /// Query: given subject and predicate, find object
+    /// NOW USES φ-INDEX FOR O(1) RECALL
     pub fn queryObject(self: *KnowledgeGraph, subject: []const u8, predicate: []const u8) ?struct { name: []const u8, similarity: f32 } {
+        const subject_phi = phiHash(subject);
+        
+        // O(1) φ-index lookup instead of O(n) scan
+        if (self.phi_index.get(subject_phi)) |indices| {
+            var best_match: ?[]const u8 = null;
+            var best_sim: f32 = -1.0;
+            
+            // Only scan indexed triples (much smaller set)
+            for (indices.items) |idx| {
+                const triple = self.triples.items[idx];
+                if (mem.eql(u8, triple.predicate, predicate) and 
+                    triple.subject_phi_hash == subject_phi) {
+                    // Sacred similarity based on φ-distance
+                    const sim: f32 = @floatCast(sacredSimilarity(subject_phi, triple.subject_phi_hash));
+                    if (sim > best_sim) {
+                        best_sim = sim;
+                        best_match = triple.object;
+                    }
+                }
+            }
+            
+            if (best_match) |obj| {
+                return .{ .name = obj, .similarity = best_sim };
+            }
+        }
+        
+        // Fallback to legacy embedding search if φ-index miss
         const query_emb = computeEmbedding(subject);
         var best_match: ?[]const u8 = null;
         var best_sim: f32 = -1.0;
@@ -275,7 +304,33 @@ pub const KnowledgeGraph = struct {
     }
     
     /// Query: given object and predicate, find subject
+    /// NOW USES φ-INDEX FOR O(1) RECALL
     pub fn querySubject(self: *KnowledgeGraph, object: []const u8, predicate: []const u8) ?struct { name: []const u8, similarity: f32 } {
+        const object_phi = phiHash(object);
+        
+        // O(1) φ-index lookup instead of O(n) scan
+        if (self.phi_index.get(object_phi)) |indices| {
+            var best_match: ?[]const u8 = null;
+            var best_sim: f32 = -1.0;
+            
+            for (indices.items) |idx| {
+                const triple = self.triples.items[idx];
+                if (mem.eql(u8, triple.predicate, predicate) and 
+                    triple.object_phi_hash == object_phi) {
+                    const sim: f32 = @floatCast(sacredSimilarity(object_phi, triple.object_phi_hash));
+                    if (sim > best_sim) {
+                        best_sim = sim;
+                        best_match = triple.subject;
+                    }
+                }
+            }
+            
+            if (best_match) |subj| {
+                return .{ .name = subj, .similarity = best_sim };
+            }
+        }
+        
+        // Fallback to legacy embedding search
         const query_emb = computeEmbedding(object);
         var best_match: ?[]const u8 = null;
         var best_sim: f32 = -1.0;
@@ -325,9 +380,12 @@ pub const KnowledgeGraph = struct {
     
     /// Multi-hop reasoning: find path from entity to target value
     /// Uses BFS to find shortest path
+    /// Find path using φ-indexed BFS
+    /// O(1) neighbor lookup via φ-hash instead of O(n) scan
     pub fn findPath(self: *KnowledgeGraph, from: []const u8, to: []const u8, max_hops: usize) !ReasoningResult {
         const QueueItem = struct {
             entity: []const u8,
+            entity_phi: i64,
             path: std.ArrayList(PathStep),
             depth: usize,
         };
@@ -340,24 +398,28 @@ pub const KnowledgeGraph = struct {
             queue.deinit();
         }
         
-        var visited = std.StringHashMap(void).init(self.allocator);
+        var visited = std.AutoHashMap(i64, void).init(self.allocator);
         defer visited.deinit();
+        
+        const from_phi = phiHash(from);
+        const to_phi = phiHash(to);
         
         // Start BFS from 'from' entity
         const initial_path = std.ArrayList(PathStep).init(self.allocator);
         try queue.append(.{
             .entity = from,
+            .entity_phi = from_phi,
             .path = initial_path,
             .depth = 0,
         });
-        try visited.put(from, {});
+        try visited.put(from_phi, {});
         
         while (queue.items.len > 0) {
             const current = queue.orderedRemove(0);
             defer current.path.deinit();
             
-            // Check if we reached the target
-            if (mem.eql(u8, current.entity, to)) {
+            // Check if we reached the target (φ-hash comparison)
+            if (current.entity_phi == to_phi or mem.eql(u8, current.entity, to)) {
                 const result_path = try self.allocator.dupe(PathStep, current.path.items);
                 return .{
                     .found = true,
@@ -369,24 +431,29 @@ pub const KnowledgeGraph = struct {
             // Don't go deeper than max_hops
             if (current.depth >= max_hops) continue;
             
-            // Explore neighbors (objects of triples where current entity is subject)
-            for (self.triples.items) |triple| {
-                if (mem.eql(u8, triple.subject, current.entity)) {
-                    if (!visited.contains(triple.object)) {
-                        try visited.put(triple.object, {});
-                        
-                        var new_path = try current.path.clone();
-                        try new_path.append(.{
-                            .entity = triple.subject,
-                            .relation = triple.predicate,
-                            .next_entity = triple.object,
-                        });
-                        
-                        try queue.append(.{
-                            .entity = triple.object,
-                            .path = new_path,
-                            .depth = current.depth + 1,
-                        });
+            // O(1) φ-index lookup for neighbors
+            if (self.phi_index.get(current.entity_phi)) |indices| {
+                for (indices.items) |idx| {
+                    const triple = self.triples.items[idx];
+                    // Only follow outgoing edges (subject matches)
+                    if (triple.subject_phi_hash == current.entity_phi) {
+                        if (!visited.contains(triple.object_phi_hash)) {
+                            try visited.put(triple.object_phi_hash, {});
+                            
+                            var new_path = try current.path.clone();
+                            try new_path.append(.{
+                                .entity = triple.subject,
+                                .relation = triple.predicate,
+                                .next_entity = triple.object,
+                            });
+                            
+                            try queue.append(.{
+                                .entity = triple.object,
+                                .entity_phi = triple.object_phi_hash,
+                                .path = new_path,
+                                .depth = current.depth + 1,
+                            });
+                        }
                     }
                 }
             }
