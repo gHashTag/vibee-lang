@@ -1564,6 +1564,151 @@ pub const StrengthReducer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COPY PROPAGATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Copy Propagator - replaces uses of copied registers with the original
+/// If r1 = copy(r0), then uses of r1 are replaced with r0
+pub const CopyPropagator = struct {
+    allocator: Allocator,
+    /// Statistics
+    copies_propagated: usize = 0,
+    copies_eliminated: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .copies_propagated = 0,
+            .copies_eliminated = 0,
+        };
+    }
+
+    /// Optimize IR by propagating copies
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Track copy relationships: copy_of[dest] = source
+        // If r1 = copy(r0), then copy_of[1] = 0
+        var copy_of: [32]?u8 = [_]?u8{null} ** 32;
+
+        // First pass: identify copies and propagate through uses
+        for (ir) |instr| {
+            var new_instr = instr;
+
+            // Replace source registers with their originals if they are copies
+            const src1_orig = self.resolveRegister(instr.src1, &copy_of);
+            const src2_orig = self.resolveRegister(instr.src2, &copy_of);
+
+            if (src1_orig != instr.src1 or src2_orig != instr.src2) {
+                new_instr.src1 = src1_orig;
+                new_instr.src2 = src2_orig;
+                self.copies_propagated += 1;
+            }
+
+            switch (new_instr.opcode) {
+                .LOAD_LOCAL => {
+                    // This is a copy: dest = src1
+                    // Check if it's a register-to-register copy (not memory load)
+                    if (new_instr.imm == 0 and new_instr.src1 < 32) {
+                        // Record the copy relationship
+                        copy_of[new_instr.dest] = src1_orig;
+
+                        // If dest == resolved src, this copy is useless
+                        if (new_instr.dest == src1_orig) {
+                            self.copies_eliminated += 1;
+                            continue; // Skip this instruction
+                        }
+                    } else {
+                        // Memory load - invalidate dest
+                        copy_of[new_instr.dest] = null;
+                    }
+                    try result.append(new_instr);
+                },
+
+                .LOAD_CONST => {
+                    // Constant load - not a copy, invalidate any copy relationship
+                    // Also invalidate any copies that point to this register
+                    self.invalidateCopiesOf(new_instr.dest, &copy_of);
+                    copy_of[new_instr.dest] = null;
+                    try result.append(new_instr);
+                },
+
+                .STORE_LOCAL, .STORE_GLOBAL => {
+                    // Store doesn't change register copies
+                    try result.append(new_instr);
+                },
+
+                // Instructions that write to dest invalidate copy relationships
+                .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT, .MOD_INT,
+                .NEG_INT, .INC_INT, .DEC_INT,
+                .SHL, .SHR, .LEA,
+                .AND, .OR, .XOR, .BAND, .BOR, .BXOR, .BNOT,
+                .CMP_LT_INT, .CMP_LE_INT, .CMP_GT_INT, .CMP_GE_INT, .CMP_EQ_INT, .CMP_NE_INT => {
+                    // Invalidate any copies that point to this register
+                    self.invalidateCopiesOf(new_instr.dest, &copy_of);
+                    copy_of[new_instr.dest] = null;
+                    try result.append(new_instr);
+                },
+
+                // Control flow - invalidate all copies (conservative)
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK => {
+                    for (&copy_of) |*c| c.* = null;
+                    try result.append(new_instr);
+                },
+
+                else => {
+                    // Unknown instruction - invalidate dest if applicable
+                    if (new_instr.dest < 32) {
+                        copy_of[new_instr.dest] = null;
+                    }
+                    try result.append(new_instr);
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Invalidate all copies that point to a given register
+    fn invalidateCopiesOf(self: *Self, reg: u8, copy_of: *[32]?u8) void {
+        _ = self;
+        for (copy_of, 0..) |c, i| {
+            if (c) |orig| {
+                if (orig == reg) {
+                    copy_of[i] = null;
+                }
+            }
+        }
+    }
+
+    /// Resolve a register to its original (follow copy chain)
+    fn resolveRegister(self: *Self, reg: u8, copy_of: *[32]?u8) u8 {
+        _ = self;
+        var current = reg;
+        var depth: usize = 0;
+        while (copy_of[current]) |orig| {
+            current = orig;
+            depth += 1;
+            if (depth > 32) break; // Prevent infinite loops
+        }
+        return current;
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { propagated: usize, eliminated: usize } {
+        return .{
+            .propagated = self.copies_propagated,
+            .eliminated = self.copies_eliminated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1619,6 +1764,8 @@ pub const TieredCompiler = struct {
     dce: DeadCodeEliminator,
     /// Strength reducer
     strength_reducer: StrengthReducer,
+    /// Copy propagator
+    copy_propagator: CopyPropagator,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -1627,6 +1774,8 @@ pub const TieredCompiler = struct {
     enable_dce: bool,
     /// Enable strength reduction
     enable_strength_reduction: bool,
+    /// Enable copy propagation
+    enable_copy_propagation: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -1643,10 +1792,12 @@ pub const TieredCompiler = struct {
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
             .strength_reducer = StrengthReducer.init(allocator),
+            .copy_propagator = CopyPropagator.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
             .enable_strength_reduction = true,
+            .enable_copy_propagation = true,
             .stats = TieredStats.init(),
         };
     }
@@ -1731,6 +1882,12 @@ pub const TieredCompiler = struct {
                     optimized_ir = reduced;
                 }
 
+                if (self.enable_copy_propagation) {
+                    const propagated = try self.copy_propagator.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = propagated;
+                }
+
                 if (self.enable_folding) {
                     const folded = try self.constant_folder.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -1765,6 +1922,12 @@ pub const TieredCompiler = struct {
                         const reduced = try self.strength_reducer.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = reduced;
+                    }
+
+                    if (self.enable_copy_propagation) {
+                        const propagated = try self.copy_propagator.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = propagated;
                     }
 
                     if (self.enable_folding) {
@@ -4989,6 +5152,98 @@ test "StrengthReducer x | x = x" {
 
     const stats = reducer.getStats();
     try std.testing.expectEqual(@as(usize, 1), stats.algebraic);
+}
+
+test "CopyPropagator basic propagation" {
+    const allocator = std.testing.allocator;
+
+    // IR: r0 = 5, r1 = copy(r0), r2 = r1 + r1
+    // After propagation: r2 = r0 + r0
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r1 = copy(r0)
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 1, .src2 = 1, .imm = 0 }, // r2 = r1 + r1
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var propagator = CopyPropagator.init(allocator);
+    const optimized = try propagator.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // ADD should now use r0 instead of r1
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[2].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[2].src1); // r0
+    try std.testing.expectEqual(@as(u8, 0), optimized[2].src2); // r0
+
+    const stats = propagator.getStats();
+    try std.testing.expect(stats.propagated > 0);
+}
+
+test "CopyPropagator eliminate useless copy" {
+    const allocator = std.testing.allocator;
+
+    // IR: r0 = 5, r0 = copy(r0) - useless copy
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // r0 = copy(r0) - useless!
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var propagator = CopyPropagator.init(allocator);
+    const optimized = try propagator.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Useless copy should be eliminated
+    try std.testing.expectEqual(@as(usize, 2), optimized.len); // 3 -> 2 instructions
+
+    const stats = propagator.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
+test "CopyPropagator chain propagation" {
+    const allocator = std.testing.allocator;
+
+    // IR: r0 = 5, r1 = copy(r0), r2 = copy(r1), r3 = r2 + r2
+    // After propagation: r3 = r0 + r0
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r1 = copy(r0)
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 1, .src2 = 0, .imm = 0 }, // r2 = copy(r1)
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 2, .src2 = 2, .imm = 0 }, // r3 = r2 + r2
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var propagator = CopyPropagator.init(allocator);
+    const optimized = try propagator.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // ADD should now use r0 (through chain r2 -> r1 -> r0)
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[3].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[3].src1); // r0
+    try std.testing.expectEqual(@as(u8, 0), optimized[3].src2); // r0
+}
+
+test "CopyPropagator invalidation on write" {
+    const allocator = std.testing.allocator;
+
+    // IR: r0 = 5, r1 = copy(r0), r0 = 10, r2 = r1 + r1
+    // r1 should NOT be propagated to r0 because r0 was overwritten
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r1 = copy(r0)
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 }, // r0 = 10 (invalidates copy)
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 1, .src2 = 1, .imm = 0 }, // r2 = r1 + r1
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var propagator = CopyPropagator.init(allocator);
+    const optimized = try propagator.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // ADD should still use r1 (copy was invalidated)
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[3].opcode);
+    try std.testing.expectEqual(@as(u8, 1), optimized[3].src1); // r1 (not r0!)
+    try std.testing.expectEqual(@as(u8, 1), optimized[3].src2); // r1
 }
 
 test "Benchmark: Strength reduction effect" {
