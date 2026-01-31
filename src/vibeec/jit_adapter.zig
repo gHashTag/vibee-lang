@@ -1131,8 +1131,10 @@ pub const StrengthReducer = struct {
     reductions: usize = 0,
     mul_to_shift: usize = 0,
     mul_to_lea: usize = 0,
+    mul_to_add: usize = 0,
     div_to_shift: usize = 0,
     identity_removed: usize = 0,
+    algebraic_simplified: usize = 0,
 
     const Self = @This();
 
@@ -1142,8 +1144,10 @@ pub const StrengthReducer = struct {
             .reductions = 0,
             .mul_to_shift = 0,
             .mul_to_lea = 0,
+            .mul_to_add = 0,
             .div_to_shift = 0,
             .identity_removed = 0,
+            .algebraic_simplified = 0,
         };
     }
 
@@ -1224,8 +1228,21 @@ pub const StrengthReducer = struct {
                             self.reductions += 1;
                             self.identity_removed += 1;
                             continue;
+                        } else if (c == 2) {
+                            // x * 2 = x + x (ADD is often faster than SHL)
+                            try result.append(.{
+                                .opcode = .ADD_INT,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = instr.src1,
+                                .imm = 0,
+                            });
+                            reg_constants[instr.dest] = if (src1_const) |v| v * 2 else null;
+                            self.reductions += 1;
+                            self.mul_to_add += 1;
+                            continue;
                         } else if (isPowerOf2(c)) |shift| {
-                            // x * 2^n = x << n
+                            // x * 2^n = x << n (for n > 1)
                             try result.append(.{
                                 .opcode = .SHL,
                                 .dest = instr.dest,
@@ -1280,6 +1297,19 @@ pub const StrengthReducer = struct {
                             reg_constants[instr.dest] = src2_const;
                             self.reductions += 1;
                             self.identity_removed += 1;
+                            continue;
+                        } else if (c == 2) {
+                            // 2 * x = x + x
+                            try result.append(.{
+                                .opcode = .ADD_INT,
+                                .dest = instr.dest,
+                                .src1 = instr.src2,
+                                .src2 = instr.src2,
+                                .imm = 0,
+                            });
+                            reg_constants[instr.dest] = if (src2_const) |v| v * 2 else null;
+                            self.reductions += 1;
+                            self.mul_to_add += 1;
                             continue;
                         } else if (isPowerOf2(c)) |shift| {
                             try result.append(.{
@@ -1401,6 +1431,21 @@ pub const StrengthReducer = struct {
                 },
 
                 .SUB_INT => {
+                    // x - x = 0
+                    if (instr.src1 == instr.src2) {
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = 0,
+                        });
+                        reg_constants[instr.dest] = 0;
+                        self.reductions += 1;
+                        self.algebraic_simplified += 1;
+                        continue;
+                    }
+
                     // x - 0 = x
                     const src2_const = reg_constants[instr.src2];
 
@@ -1431,6 +1476,67 @@ pub const StrengthReducer = struct {
                     try result.append(instr);
                 },
 
+                .XOR, .BXOR => {
+                    // x ^ x = 0
+                    if (instr.src1 == instr.src2) {
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = 0,
+                        });
+                        reg_constants[instr.dest] = 0;
+                        self.reductions += 1;
+                        self.algebraic_simplified += 1;
+                        continue;
+                    }
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .AND, .BAND => {
+                    // x & x = x
+                    if (instr.src1 == instr.src2) {
+                        if (instr.dest != instr.src1) {
+                            try result.append(.{
+                                .opcode = .LOAD_LOCAL,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = 0,
+                                .imm = 0,
+                            });
+                        }
+                        reg_constants[instr.dest] = reg_constants[instr.src1];
+                        self.reductions += 1;
+                        self.algebraic_simplified += 1;
+                        continue;
+                    }
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                .OR, .BOR => {
+                    // x | x = x
+                    if (instr.src1 == instr.src2) {
+                        if (instr.dest != instr.src1) {
+                            try result.append(.{
+                                .opcode = .LOAD_LOCAL,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = 0,
+                                .imm = 0,
+                            });
+                        }
+                        reg_constants[instr.dest] = reg_constants[instr.src1];
+                        self.reductions += 1;
+                        self.algebraic_simplified += 1;
+                        continue;
+                    }
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
                 else => {
                     if (instr.dest < 32) {
                         reg_constants[instr.dest] = null;
@@ -1444,13 +1550,15 @@ pub const StrengthReducer = struct {
     }
 
     /// Get statistics
-    pub fn getStats(self: *Self) struct { reductions: usize, mul_to_shift: usize, mul_to_lea: usize, div_to_shift: usize, identity: usize } {
+    pub fn getStats(self: *Self) struct { reductions: usize, mul_to_shift: usize, mul_to_lea: usize, mul_to_add: usize, div_to_shift: usize, identity: usize, algebraic: usize } {
         return .{
             .reductions = self.reductions,
             .mul_to_shift = self.mul_to_shift,
             .mul_to_lea = self.mul_to_lea,
+            .mul_to_add = self.mul_to_add,
             .div_to_shift = self.div_to_shift,
             .identity = self.identity_removed,
+            .algebraic = self.algebraic_simplified,
         };
     }
 };
@@ -4770,6 +4878,117 @@ test "StrengthReducer mul by 9 to LEA" {
 
     const stats = reducer.getStats();
     try std.testing.expectEqual(@as(usize, 1), stats.mul_to_lea);
+}
+
+test "StrengthReducer mul by 2 to ADD" {
+    const allocator = std.testing.allocator;
+
+    // IR: x * 2 (should become x + x)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have ADD_INT instead of MUL_INT
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[2].opcode);
+    try std.testing.expectEqual(optimized[2].src1, optimized[2].src2); // x + x
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.mul_to_add);
+}
+
+test "StrengthReducer x - x = 0" {
+    const allocator = std.testing.allocator;
+
+    // IR: x - x = 0
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .SUB_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r0 - r0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LOAD_CONST 0 instead of SUB_INT
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 0), optimized[1].imm);
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.algebraic);
+}
+
+test "StrengthReducer x ^ x = 0" {
+    const allocator = std.testing.allocator;
+
+    // IR: x ^ x = 0
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .XOR, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r0 ^ r0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LOAD_CONST 0 instead of XOR
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 0), optimized[1].imm);
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.algebraic);
+}
+
+test "StrengthReducer x & x = x" {
+    const allocator = std.testing.allocator;
+
+    // IR: x & x = x
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .AND, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r0 & r0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LOAD_LOCAL (copy) instead of AND
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[1].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[1].src1); // copy from r0
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.algebraic);
+}
+
+test "StrengthReducer x | x = x" {
+    const allocator = std.testing.allocator;
+
+    // IR: x | x = x
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .OR, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r0 | r0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LOAD_LOCAL (copy) instead of OR
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[1].opcode);
+    try std.testing.expectEqual(@as(u8, 0), optimized[1].src1); // copy from r0
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.algebraic);
 }
 
 test "Benchmark: Strength reduction effect" {
