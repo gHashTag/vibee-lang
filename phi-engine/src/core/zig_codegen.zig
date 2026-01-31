@@ -34,7 +34,7 @@ pub const CodeBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = .empty,
+            .buffer = .{},
             .indent = 0,
         };
     }
@@ -1510,7 +1510,7 @@ pub const ZigCodeGen = struct {
             try self.builder.writeLine("added_count += 1;");
             self.builder.decIndent();
             try self.builder.writeLine("}");
-            try self.builder.writeFmt("return VBTResult{{ .success = true, .message = \"Added {} files\" }};\n", .{"added_count"});
+            try self.builder.writeLine("return VBTResult{ .success = true, .message = \"Added files\" };");
             self.builder.decIndent();
             try self.builder.writeLine("}");
             return true;
