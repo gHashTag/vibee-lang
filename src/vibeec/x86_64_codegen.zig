@@ -178,6 +178,53 @@ pub const X86_64Emitter = struct {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SHIFT OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// shl reg, imm8 (shift left by immediate)
+    pub fn shlRegImm(self: *Self, dst: Reg64, imm: u8) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xC1); // SHL r/m64, imm8
+        try self.code.append(0xE0 | (dst_val & 0x7)); // ModR/M: /4 for SHL
+        try self.code.append(imm & 0x3F); // Shift amount (masked to 6 bits)
+    }
+
+    /// shr reg, imm8 (shift right logical by immediate)
+    pub fn shrRegImm(self: *Self, dst: Reg64, imm: u8) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xC1); // SHR r/m64, imm8
+        try self.code.append(0xE8 | (dst_val & 0x7)); // ModR/M: /5 for SHR
+        try self.code.append(imm & 0x3F); // Shift amount (masked to 6 bits)
+    }
+
+    /// sar reg, imm8 (shift right arithmetic by immediate)
+    pub fn sarRegImm(self: *Self, dst: Reg64, imm: u8) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xC1); // SAR r/m64, imm8
+        try self.code.append(0xF8 | (dst_val & 0x7)); // ModR/M: /7 for SAR
+        try self.code.append(imm & 0x3F); // Shift amount (masked to 6 bits)
+    }
+
+    /// shl reg, cl (shift left by CL register)
+    pub fn shlRegCL(self: *Self, dst: Reg64) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xD3); // SHL r/m64, CL
+        try self.code.append(0xE0 | (dst_val & 0x7)); // ModR/M: /4 for SHL
+    }
+
+    /// shr reg, cl (shift right logical by CL register)
+    pub fn shrRegCL(self: *Self, dst: Reg64) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xD3); // SHR r/m64, CL
+        try self.code.append(0xE8 | (dst_val & 0x7)); // ModR/M: /5 for SHR
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // MEMORY OPERATIONS (for local variables)
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -522,6 +569,37 @@ pub const NativeCompiler = struct {
                 try self.emitter.decReg(dst);
             },
 
+            .SHL => {
+                const dst = irRegToX86(instr.dest);
+                const src = irRegToX86(instr.src1);
+                if (dst != src) try self.emitter.movRegReg(dst, src);
+                // Use immediate shift if imm is set, otherwise use CL register
+                if (instr.imm != 0) {
+                    try self.emitter.shlRegImm(dst, @intCast(instr.imm & 0x3F));
+                } else {
+                    // Move src2 to RCX for variable shift
+                    const shift_src = irRegToX86(instr.src2);
+                    try self.emitter.movRegReg(.RCX, shift_src);
+                    try self.emitter.shlRegCL(dst);
+                }
+            },
+
+            .SHR => {
+                const dst = irRegToX86(instr.dest);
+                const src = irRegToX86(instr.src1);
+                if (dst != src) try self.emitter.movRegReg(dst, src);
+                // Use immediate shift if imm is set, otherwise use CL register
+                if (instr.imm != 0) {
+                    // Use SAR for signed right shift (arithmetic)
+                    try self.emitter.sarRegImm(dst, @intCast(instr.imm & 0x3F));
+                } else {
+                    // Move src2 to RCX for variable shift
+                    const shift_src = irRegToX86(instr.src2);
+                    try self.emitter.movRegReg(.RCX, shift_src);
+                    try self.emitter.shrRegCL(dst);
+                }
+            },
+
             .CMP_LT_INT => {
                 const dst = irRegToX86(instr.dest);
                 const src1 = irRegToX86(instr.src1);
@@ -853,5 +931,122 @@ test "Benchmark: native code vs IR interpreter" {
             native_time,
             @as(f64, @floatFromInt(native_time)) / @as(f64, @floatFromInt(iterations)),
         });
+    }
+}
+
+test "Execute native code: 5 << 3 = 40 (SHL immediate)" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate: return 5 << 3
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .SHL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 }, // 5 << 3 = 40
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    const result = exec.call();
+    try std.testing.expectEqual(@as(i64, 40), result);
+}
+
+test "Execute native code: 64 >> 2 = 16 (SHR immediate)" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate: return 64 >> 2
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 64 },
+        .{ .opcode = .SHR, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 }, // 64 >> 2 = 16
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    const result = exec.call();
+    try std.testing.expectEqual(@as(i64, 16), result);
+}
+
+test "Benchmark: native SHL vs MUL (strength reduction)" {
+    const allocator = std.testing.allocator;
+
+    // IR with MUL: 5 * 8
+    const ir_mul = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 8 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // IR with SHL: 5 << 3 (equivalent to 5 * 8)
+    const ir_shl = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .SHL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Compile MUL version
+    var compiler_mul = NativeCompiler.init(allocator);
+    defer compiler_mul.deinit();
+    const code_mul = try compiler_mul.compile(&ir_mul);
+    defer allocator.free(code_mul);
+    var exec_mul = try ExecutableCode.init(code_mul);
+    defer exec_mul.deinit();
+
+    // Compile SHL version
+    var compiler_shl = NativeCompiler.init(allocator);
+    defer compiler_shl.deinit();
+    const code_shl = try compiler_shl.compile(&ir_shl);
+    defer allocator.free(code_shl);
+    var exec_shl = try ExecutableCode.init(code_shl);
+    defer exec_shl.deinit();
+
+    const iterations: usize = 100000;
+
+    // Benchmark MUL
+    const mul_start = std.time.nanoTimestamp();
+    var mul_result: i64 = 0;
+    for (0..iterations) |_| {
+        mul_result = exec_mul.call();
+    }
+    const mul_end = std.time.nanoTimestamp();
+    const mul_time: u64 = @intCast(@max(0, mul_end - mul_start));
+
+    // Benchmark SHL
+    const shl_start = std.time.nanoTimestamp();
+    var shl_result: i64 = 0;
+    for (0..iterations) |_| {
+        shl_result = exec_shl.call();
+    }
+    const shl_end = std.time.nanoTimestamp();
+    const shl_time: u64 = @intCast(@max(0, shl_end - shl_start));
+
+    // Both should produce same result: 40
+    try std.testing.expectEqual(@as(i64, 40), mul_result);
+    try std.testing.expectEqual(@as(i64, 40), shl_result);
+
+    if (@import("builtin").mode == .Debug) {
+        const mul_per_iter = @as(f64, @floatFromInt(mul_time)) / @as(f64, @floatFromInt(iterations));
+        const shl_per_iter = @as(f64, @floatFromInt(shl_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Native SHL vs MUL Benchmark ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("MUL (imul): {d:.2} ns/iter\n", .{mul_per_iter});
+        std.debug.print("SHL (shl):  {d:.2} ns/iter\n", .{shl_per_iter});
+        std.debug.print("Code size: MUL={d} bytes, SHL={d} bytes\n", .{ code_mul.len, code_shl.len });
+        if (mul_per_iter > shl_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{mul_per_iter / shl_per_iter});
+        }
     }
 }
