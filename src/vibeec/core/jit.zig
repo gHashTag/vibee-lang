@@ -688,6 +688,37 @@ pub const JitCompiler = struct {
         try self.encoder.code.append(0x24); // SIB: r12
     }
 
+    /// Peek TOS into rax without popping (read [r12-8])
+    fn emitVPeek(self: *Self) !void {
+        // mov rax, [r12-8]
+        try self.encoder.code.append(0x49); // REX.WB
+        try self.encoder.code.append(0x8B); // MOV r64, r/m64
+        try self.encoder.code.append(0x44); // ModR/M: rax, [r12+disp8]
+        try self.encoder.code.append(0x24); // SIB: r12
+        try self.encoder.code.append(0xF8); // disp8 = -8
+    }
+
+    /// Peek TOS-1 into rbx without popping (read [r12-16])
+    fn emitVPeekRbx(self: *Self) !void {
+        // mov rbx, [r12-16]
+        try self.encoder.code.append(0x49); // REX.WB
+        try self.encoder.code.append(0x8B); // MOV r64, r/m64
+        try self.encoder.code.append(0x5C); // ModR/M: rbx, [r12+disp8]
+        try self.encoder.code.append(0x24); // SIB: r12
+        try self.encoder.code.append(0xF0); // disp8 = -16
+    }
+
+    /// Drop top N elements from value stack (sub r12, N*8)
+    fn emitVDrop(self: *Self, count: u8) !void {
+        if (count == 0) return;
+        const bytes: u8 = count * 8;
+        // sub r12, bytes
+        try self.encoder.code.append(0x49); // REX.WB
+        try self.encoder.code.append(0x83); // SUB r/m64, imm8
+        try self.encoder.code.append(0xEC); // ModR/M: r12
+        try self.encoder.code.append(bytes);
+    }
+
     /// Load local variable from frame base (r13) + idx*8 into rax
     fn emitLoadLocal(self: *Self, idx: u16) !void {
         const offset: i32 = @as(i32, @intCast(idx)) * 8;
@@ -882,10 +913,11 @@ pub const JitCompiler = struct {
                 },
 
                 .dup => {
-                    // Duplicate top of stack
-                    try self.emitVPop();
-                    try self.emitVPush();
-                    try self.emitVPush();
+                    // Duplicate top of stack (optimized: peek + push)
+                    // Old: pop, push, push = 1 read + 2 writes
+                    // New: peek, push = 1 read + 1 write
+                    try self.emitVPeek(); // read TOS into rax without pop
+                    try self.emitVPush(); // push copy
                 },
 
                 .pop => {
