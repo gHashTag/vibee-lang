@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const posix = std.posix;
+const mem = std.mem;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BYTECODE TYPES (локальные определения для независимости)
@@ -94,7 +96,7 @@ pub const Reg = enum(u4) {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CODE BUFFER
+// CODE BUFFER (обычный, без исполнения)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub const CodeBuffer = struct {
@@ -164,6 +166,259 @@ pub const CodeBuffer = struct {
 
     pub fn getCode(self: *const Self) []const u8 {
         return self.data[0..self.pos];
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTABLE BUFFER (с поддержкой mmap/mprotect)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ExecutableBuffer = struct {
+    /// Указатель на исполняемую память
+    memory: []align(mem.page_size) u8,
+    /// Текущая позиция записи
+    pos: usize,
+    /// Размер буфера
+    size: usize,
+    /// Флаг: память сделана исполняемой
+    is_executable: bool,
+
+    const Self = @This();
+
+    /// Создать буфер исполняемой памяти
+    pub fn init(size: usize) !Self {
+        // Выровнять размер по странице
+        const page_size = mem.page_size;
+        const aligned_size = ((size + page_size - 1) / page_size) * page_size;
+
+        // Выделить память через mmap с правами RW
+        const memory = try posix.mmap(
+            null,
+            aligned_size,
+            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            -1,
+            0,
+        );
+
+        return Self{
+            .memory = memory,
+            .pos = 0,
+            .size = aligned_size,
+            .is_executable = false,
+        };
+    }
+
+    /// Освободить память
+    pub fn deinit(self: *Self) void {
+        posix.munmap(self.memory);
+    }
+
+    /// Записать байт
+    pub fn emit(self: *Self, byte: u8) void {
+        if (self.pos < self.size) {
+            self.memory[self.pos] = byte;
+            self.pos += 1;
+        }
+    }
+
+    /// Записать несколько байт
+    pub fn emitBytes(self: *Self, bytes: []const u8) void {
+        for (bytes) |b| self.emit(b);
+    }
+
+    /// Записать 32-битное значение (little-endian)
+    pub fn emitI32(self: *Self, value: i32) void {
+        const bytes: [4]u8 = @bitCast(value);
+        self.emitBytes(&bytes);
+    }
+
+    /// Записать 64-битное значение (little-endian)
+    pub fn emitI64(self: *Self, value: i64) void {
+        const bytes: [8]u8 = @bitCast(value);
+        self.emitBytes(&bytes);
+    }
+
+    /// Сделать память исполняемой (и убрать право записи)
+    pub fn makeExecutable(self: *Self) !void {
+        try posix.mprotect(self.memory, posix.PROT.READ | posix.PROT.EXEC);
+        self.is_executable = true;
+    }
+
+    /// Сделать память записываемой (и убрать право исполнения)
+    pub fn makeWritable(self: *Self) !void {
+        try posix.mprotect(self.memory, posix.PROT.READ | posix.PROT.WRITE);
+        self.is_executable = false;
+    }
+
+    /// Получить указатель на функцию
+    pub fn getFunction(self: *const Self, comptime T: type) T {
+        return @ptrCast(self.memory.ptr);
+    }
+
+    /// Получить указатель на функцию по смещению
+    pub fn getFunctionAt(self: *const Self, comptime T: type, offset: usize) T {
+        return @ptrCast(self.memory.ptr + offset);
+    }
+
+    /// Текущий размер кода
+    pub fn codeSize(self: *const Self) usize {
+        return self.pos;
+    }
+
+    /// Сбросить позицию (для повторного использования)
+    pub fn reset(self: *Self) void {
+        self.pos = 0;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JIT FUNCTION TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Функция без аргументов, возвращающая i64
+pub const JitFn0 = *const fn () callconv(.C) i64;
+
+/// Функция с одним аргументом i64, возвращающая i64
+pub const JitFn1 = *const fn (i64) callconv(.C) i64;
+
+/// Функция с двумя аргументами i64, возвращающая i64
+pub const JitFn2 = *const fn (i64, i64) callconv(.C) i64;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTABLE JIT COMPILER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ExecutableJIT = struct {
+    buf: ExecutableBuffer,
+
+    const Self = @This();
+
+    pub fn init(size: usize) !Self {
+        return Self{
+            .buf = try ExecutableBuffer.init(size),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.buf.deinit();
+    }
+
+    /// Сгенерировать функцию, возвращающую константу
+    pub fn emitReturnConstant(self: *Self, value: i64) !JitFn0 {
+        // mov rax, imm64
+        self.buf.emit(0x48); // REX.W
+        self.buf.emit(0xB8); // mov rax, imm64
+        self.buf.emitI64(value);
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn0);
+    }
+
+    /// Сгенерировать функцию сложения двух аргументов
+    /// rdi = arg1, rsi = arg2 (System V AMD64 ABI)
+    pub fn emitAdd(self: *Self) !JitFn2 {
+        // mov rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x89);
+        self.buf.emit(0xF8); // mov rax, rdi
+
+        // add rax, rsi
+        self.buf.emit(0x48);
+        self.buf.emit(0x01);
+        self.buf.emit(0xF0); // add rax, rsi
+
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn2);
+    }
+
+    /// Сгенерировать функцию вычитания
+    pub fn emitSub(self: *Self) !JitFn2 {
+        // mov rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x89);
+        self.buf.emit(0xF8);
+
+        // sub rax, rsi
+        self.buf.emit(0x48);
+        self.buf.emit(0x29);
+        self.buf.emit(0xF0);
+
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn2);
+    }
+
+    /// Сгенерировать функцию умножения
+    pub fn emitMul(self: *Self) !JitFn2 {
+        // mov rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x89);
+        self.buf.emit(0xF8);
+
+        // imul rax, rsi
+        self.buf.emit(0x48);
+        self.buf.emit(0x0F);
+        self.buf.emit(0xAF);
+        self.buf.emit(0xC6);
+
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn2);
+    }
+
+    /// Сгенерировать функцию удвоения аргумента
+    pub fn emitDouble(self: *Self) !JitFn1 {
+        // mov rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x89);
+        self.buf.emit(0xF8);
+
+        // add rax, rax (удвоение)
+        self.buf.emit(0x48);
+        self.buf.emit(0x01);
+        self.buf.emit(0xC0);
+
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn1);
+    }
+
+    /// Сгенерировать функцию квадрата
+    pub fn emitSquare(self: *Self) !JitFn1 {
+        // mov rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x89);
+        self.buf.emit(0xF8);
+
+        // imul rax, rdi
+        self.buf.emit(0x48);
+        self.buf.emit(0x0F);
+        self.buf.emit(0xAF);
+        self.buf.emit(0xC7);
+
+        // ret
+        self.buf.emit(0xC3);
+
+        try self.buf.makeExecutable();
+        return self.buf.getFunction(JitFn1);
+    }
+
+    /// Сбросить буфер для новой функции
+    pub fn reset(self: *Self) !void {
+        try self.buf.makeWritable();
+        self.buf.reset();
     }
 };
 
@@ -858,4 +1113,233 @@ test "adaptive jit" {
     const stats = ajit.getStats();
     try std.testing.expectEqual(@as(u64, 99), stats.interpreted);
     try std.testing.expectEqual(@as(u64, 1), stats.jit);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ТЕСТЫ ИСПОЛНЯЕМОГО JIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "executable buffer init/deinit" {
+    var buf = try ExecutableBuffer.init(4096);
+    defer buf.deinit();
+
+    try std.testing.expect(buf.size >= 4096);
+    try std.testing.expectEqual(@as(usize, 0), buf.pos);
+    try std.testing.expect(!buf.is_executable);
+}
+
+test "executable jit return constant" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const fn_42 = try jit.emitReturnConstant(42);
+    const result = fn_42();
+
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "executable jit return phoenix" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    // PHOENIX = 999
+    const fn_phoenix = try jit.emitReturnConstant(999);
+    const result = fn_phoenix();
+
+    try std.testing.expectEqual(@as(i64, 999), result);
+}
+
+test "executable jit add" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const add_fn = try jit.emitAdd();
+    const result = add_fn(10, 20);
+
+    try std.testing.expectEqual(@as(i64, 30), result);
+}
+
+test "executable jit sub" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const sub_fn = try jit.emitSub();
+    const result = sub_fn(50, 20);
+
+    try std.testing.expectEqual(@as(i64, 30), result);
+}
+
+test "executable jit mul" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const mul_fn = try jit.emitMul();
+    const result = mul_fn(6, 7);
+
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "executable jit double" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const double_fn = try jit.emitDouble();
+    const result = double_fn(21);
+
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "executable jit square" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const square_fn = try jit.emitSquare();
+    const result = square_fn(7);
+
+    try std.testing.expectEqual(@as(i64, 49), result);
+}
+
+test "executable jit golden identity" {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    // φ² + 1/φ² = 3
+    // Проверим: 3 * 3 = 9
+    const mul_fn = try jit.emitMul();
+    const result = mul_fn(3, 3);
+
+    try std.testing.expectEqual(@as(i64, 9), result);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// БЕНЧМАРК: ИНТЕРПРЕТАТОР vs JIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const BenchmarkResult = struct {
+    interpreter_ns: u64,
+    jit_ns: u64,
+    speedup: f64,
+    iterations: u64,
+};
+
+/// Простой интерпретатор для сравнения
+fn interpretAdd(a: i64, b: i64) i64 {
+    return a + b;
+}
+
+fn interpretMul(a: i64, b: i64) i64 {
+    return a * b;
+}
+
+fn interpretFibonacci(n: i64) i64 {
+    if (n <= 1) return n;
+    var a: i64 = 0;
+    var b: i64 = 1;
+    var i: i64 = 2;
+    while (i <= n) : (i += 1) {
+        const tmp = a + b;
+        a = b;
+        b = tmp;
+    }
+    return b;
+}
+
+/// Запустить бенчмарк сложения
+pub fn benchmarkAdd(iterations: u64) !BenchmarkResult {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const add_fn = try jit.emitAdd();
+
+    // Бенчмарк интерпретатора
+    var timer = std.time.Timer.start() catch unreachable;
+    var sum_interp: i64 = 0;
+    var i: u64 = 0;
+    while (i < iterations) : (i += 1) {
+        sum_interp += interpretAdd(@intCast(i), @intCast(i + 1));
+    }
+    const interp_ns = timer.read();
+
+    // Бенчмарк JIT
+    timer.reset();
+    var sum_jit: i64 = 0;
+    i = 0;
+    while (i < iterations) : (i += 1) {
+        sum_jit += add_fn(@intCast(i), @intCast(i + 1));
+    }
+    const jit_ns = timer.read();
+
+    // Проверка корректности
+    if (sum_interp != sum_jit) {
+        return error.ResultMismatch;
+    }
+
+    const speedup = @as(f64, @floatFromInt(interp_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    return BenchmarkResult{
+        .interpreter_ns = interp_ns,
+        .jit_ns = jit_ns,
+        .speedup = speedup,
+        .iterations = iterations,
+    };
+}
+
+/// Запустить бенчмарк умножения
+pub fn benchmarkMul(iterations: u64) !BenchmarkResult {
+    var jit = try ExecutableJIT.init(4096);
+    defer jit.deinit();
+
+    const mul_fn = try jit.emitMul();
+
+    // Бенчмарк интерпретатора
+    var timer = std.time.Timer.start() catch unreachable;
+    var sum_interp: i64 = 0;
+    var i: u64 = 0;
+    while (i < iterations) : (i += 1) {
+        sum_interp +%= interpretMul(@intCast(i % 100), @intCast((i + 1) % 100));
+    }
+    const interp_ns = timer.read();
+
+    // Бенчмарк JIT
+    timer.reset();
+    var sum_jit: i64 = 0;
+    i = 0;
+    while (i < iterations) : (i += 1) {
+        sum_jit +%= mul_fn(@intCast(i % 100), @intCast((i + 1) % 100));
+    }
+    const jit_ns = timer.read();
+
+    if (sum_interp != sum_jit) {
+        return error.ResultMismatch;
+    }
+
+    const speedup = @as(f64, @floatFromInt(interp_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    return BenchmarkResult{
+        .interpreter_ns = interp_ns,
+        .jit_ns = jit_ns,
+        .speedup = speedup,
+        .iterations = iterations,
+    };
+}
+
+/// Вывести результаты бенчмарка
+pub fn printBenchmarkResults(name: []const u8, result: BenchmarkResult) void {
+    const stdout = std.io.getStdOut().writer();
+    stdout.print("\n{s}:\n", .{name}) catch {};
+    stdout.print("  Интерпретатор: {d} ns ({d:.2} ms)\n", .{ result.interpreter_ns, @as(f64, @floatFromInt(result.interpreter_ns)) / 1_000_000.0 }) catch {};
+    stdout.print("  JIT:           {d} ns ({d:.2} ms)\n", .{ result.jit_ns, @as(f64, @floatFromInt(result.jit_ns)) / 1_000_000.0 }) catch {};
+    stdout.print("  Ускорение:     {d:.2}x\n", .{result.speedup}) catch {};
+    stdout.print("  Итераций:      {d}\n", .{result.iterations}) catch {};
+}
+
+test "benchmark add" {
+    const result = try benchmarkAdd(100_000);
+    // JIT должен быть быстрее (или примерно равен из-за оптимизаций компилятора)
+    try std.testing.expect(result.speedup > 0.5);
+}
+
+test "benchmark mul" {
+    const result = try benchmarkMul(100_000);
+    try std.testing.expect(result.speedup > 0.5);
 }
