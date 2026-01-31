@@ -11717,6 +11717,146 @@ test "Бенчмарк: нативный код vs интерпретатор" {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// END-TO-END OPTIMIZATION PIPELINE BENCHMARK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Benchmark: Full Optimization Pipeline (Array Add)" {
+    const allocator = std.testing.allocator;
+
+    // Test data: 64 element arrays
+    var a align(16) = [64]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64 };
+    var b align(16) = [64]i32{ 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 };
+    var result_scalar align(16) = [64]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    var result_simd align(16) = [64]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    var result_combo align(16) = [64]i32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const iterations: usize = 100000;
+
+    // 1. Scalar baseline (no SIMD)
+    const scalar_start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        for (0..64) |i| {
+            result_scalar[i] = a[i] + b[i];
+        }
+    }
+    const scalar_end = std.time.nanoTimestamp();
+    const scalar_time: u64 = @intCast(@max(0, scalar_end - scalar_start));
+
+    // 2. SIMD vectorized (SSE - 4 elements per instruction)
+    var simd_ops = x86_codegen.SIMDArrayOps.initWithSSE(allocator);
+    var exec_simd = try simd_ops.generateArrayAdd();
+    defer exec_simd.deinit();
+
+    const simd_func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec_simd.code.ptr);
+
+    const simd_start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        simd_func(&a, &b, &result_simd, 64);
+    }
+    const simd_end = std.time.nanoTimestamp();
+    const simd_time: u64 = @intCast(@max(0, simd_end - simd_start));
+
+    // 3. Combo optimized (SIMD + Unroll)
+    var exec_combo = try simd_ops.generateArrayAddUnrolled();
+    defer exec_combo.deinit();
+
+    const combo_func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec_combo.code.ptr);
+
+    const combo_start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        combo_func(&a, &b, &result_combo, 64);
+    }
+    const combo_end = std.time.nanoTimestamp();
+    const combo_time: u64 = @intCast(@max(0, combo_end - combo_start));
+
+    // Verify results
+    try std.testing.expectEqual(@as(i32, 11), result_scalar[0]);
+    try std.testing.expectEqual(@as(i32, 11), result_simd[0]);
+    try std.testing.expectEqual(@as(i32, 11), result_combo[0]);
+    try std.testing.expectEqual(@as(i32, 74), result_scalar[63]);
+    try std.testing.expectEqual(@as(i32, 74), result_simd[63]);
+    try std.testing.expectEqual(@as(i32, 74), result_combo[63]);
+
+    // Calculate speedups
+    const scalar_per_iter = @as(f64, @floatFromInt(scalar_time)) / @as(f64, @floatFromInt(iterations));
+    const simd_per_iter = @as(f64, @floatFromInt(simd_time)) / @as(f64, @floatFromInt(iterations));
+    const combo_per_iter = @as(f64, @floatFromInt(combo_time)) / @as(f64, @floatFromInt(iterations));
+
+    const simd_speedup = scalar_per_iter / simd_per_iter;
+    const combo_speedup = scalar_per_iter / combo_per_iter;
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n", .{});
+        std.debug.print("╔══════════════════════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║     END-TO-END OPTIMIZATION PIPELINE BENCHMARK (64 elements)    ║\n", .{});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ Iterations: {d:>10}                                           ║\n", .{iterations});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ Scalar (baseline):  {d:>8.2} ns/iter  ({d:>6.2} elem/ns)  1.00x   ║\n", .{ scalar_per_iter, 64.0 / scalar_per_iter });
+        std.debug.print("║ SIMD (SSE):         {d:>8.2} ns/iter  ({d:>6.2} elem/ns)  {d:>5.2}x  ║\n", .{ simd_per_iter, 64.0 / simd_per_iter, simd_speedup });
+        std.debug.print("║ Combo (SIMD+Unroll):{d:>8.2} ns/iter  ({d:>6.2} elem/ns)  {d:>5.2}x  ║\n", .{ combo_per_iter, 64.0 / combo_per_iter, combo_speedup });
+        std.debug.print("╚══════════════════════════════════════════════════════════════════╝\n", .{});
+    }
+
+    // Verify SIMD is faster than scalar
+    try std.testing.expect(simd_speedup > 1.5);
+}
+
+test "Benchmark: TieredCompiler Full Pipeline" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // IR representing: for i in 0..64: c[i] = a[i] + b[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // load b[i]
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 }, // add
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // store c[i]
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i++
+        .{ .opcode = .CMP_LT_INT, .dest = 4, .src1 = 0, .src2 = 5, .imm = 64 }, // i < 64
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -6 }, // loop back
+    };
+
+    // Apply vectorization
+    const vectorized = try compiler.vectorizeLoops(&ir);
+    defer allocator.free(vectorized);
+
+    // Apply combo optimization
+    const combo_result = try compiler.applyComboOptimization(&ir);
+    if (combo_result.native_code) |*exec| {
+        var mutable_exec = exec.*;
+        defer mutable_exec.deinit();
+    }
+
+    // Get stats
+    const vec_stats = compiler.getVectorizationStats();
+    const combo_stats = compiler.getComboStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n", .{});
+        std.debug.print("╔══════════════════════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║           TIERED COMPILER OPTIMIZATION STATS                    ║\n", .{});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ Vectorization:                                                   ║\n", .{});
+        std.debug.print("║   Loops analyzed:    {d:>5}                                       ║\n", .{vec_stats.loops_analyzed});
+        std.debug.print("║   Loops vectorized:  {d:>5}                                       ║\n", .{vec_stats.loops_vectorized});
+        std.debug.print("║   Avg speedup:       {d:>5.2}x                                     ║\n", .{vec_stats.averageSpeedup()});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ Combo Optimization:                                              ║\n", .{});
+        std.debug.print("║   Loops processed:   {d:>5}                                       ║\n", .{combo_stats.loops_processed});
+        std.debug.print("║   Vectorize only:    {d:>5}                                       ║\n", .{combo_stats.loops_vectorized_only});
+        std.debug.print("║   Combo optimized:   {d:>5}                                       ║\n", .{combo_stats.loops_combo_optimized});
+        std.debug.print("║   Est. speedup:      {d:>5.2}x                                     ║\n", .{combo_stats.estimated_speedup});
+        std.debug.print("╚══════════════════════════════════════════════════════════════════╝\n", .{});
+    }
+
+    // Verify optimization was applied
+    try std.testing.expect(vec_stats.loops_analyzed > 0 or combo_stats.loops_processed > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // HOT PATH PROFILER TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
