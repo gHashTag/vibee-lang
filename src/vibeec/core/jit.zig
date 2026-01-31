@@ -1273,6 +1273,7 @@ pub const JitExecutor = struct {
     exec_mem: ?ExecutableMemory,
     value_stack: []u64, // Separate value stack
     globals: []u64, // Global variables
+    cached_hash: u64, // Hash of last compiled bytecode (for caching)
     allocator: std.mem.Allocator,
 
     const Self = @This();
@@ -1285,6 +1286,7 @@ pub const JitExecutor = struct {
             .exec_mem = null,
             .value_stack = allocator.alloc(u64, VALUE_STACK_SLOTS) catch &[_]u64{},
             .globals = allocator.alloc(u64, GLOBAL_SLOTS) catch &[_]u64{},
+            .cached_hash = 0,
             .allocator = allocator,
         };
     }
@@ -1302,8 +1304,46 @@ pub const JitExecutor = struct {
         self.compiler.deinit();
     }
 
+    /// Compute hash of bytecode and constants for caching
+    fn computeHash(bytecode: []const u8, constants: []const Value) u64 {
+        var hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+        const prime: u64 = 0x100000001b3; // FNV-1a prime
+
+        // Hash bytecode
+        for (bytecode) |b| {
+            hash ^= b;
+            hash *%= prime;
+        }
+
+        // Hash constants
+        for (constants) |c| {
+            const bytes: [8]u8 = @bitCast(c.bits);
+            for (bytes) |b| {
+                hash ^= b;
+                hash *%= prime;
+            }
+        }
+
+        // Include lengths
+        hash ^= @as(u64, @intCast(bytecode.len));
+        hash *%= prime;
+        hash ^= @as(u64, @intCast(constants.len));
+        hash *%= prime;
+
+        return hash;
+    }
+
     /// Compile bytecode and prepare for execution
+    /// Uses caching: if bytecode hash matches previous compilation, skip recompilation
     pub fn compile(self: *Self, bytecode: []const u8, constants: []const Value) !void {
+        // Check cache
+        const hash = computeHash(bytecode, constants);
+        if (hash == self.cached_hash and self.exec_mem != null) {
+            // Cache hit - skip compilation
+            return;
+        }
+
+        // Cache miss - need to compile
         // Free previous executable memory if any
         if (self.exec_mem) |*mem| {
             mem.free();
@@ -1321,6 +1361,7 @@ pub const JitExecutor = struct {
         try exec_mem.copyAndProtect(machine_code);
 
         self.exec_mem = exec_mem;
+        self.cached_hash = hash; // Save hash for caching
     }
 
     /// Execute compiled code and return result
@@ -2678,4 +2719,87 @@ test "Benchmark VM vs JIT loop" {
     try std.testing.expectEqual(@as(i64, 0), vm_result);
     try std.testing.expectEqual(@as(i64, 0), jit_result);
     try std.testing.expect(speedup > 1.0);
+}
+
+test "JIT caching verification" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.add),
+        @intFromEnum(Opcode.halt),
+    };
+
+    // First run - compiles
+    const result1 = try executor.run(&bytecode, &constants);
+    const hash1 = executor.cached_hash;
+
+    // Second run - should use cache (same hash)
+    const result2 = try executor.run(&bytecode, &constants);
+    const hash2 = executor.cached_hash;
+
+    // Results should be same
+    try std.testing.expectEqual(result1, result2);
+    // Hash should be same (cache hit)
+    try std.testing.expectEqual(hash1, hash2);
+
+    // Different bytecode - should recompile
+    const bytecode2 = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.halt),
+    };
+    _ = try executor.run(&bytecode2, &constants);
+    const hash3 = executor.cached_hash;
+
+    // Hash should be different
+    try std.testing.expect(hash3 != hash1);
+}
+
+test "Benchmark JIT with caching" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const iterations: u32 = 10000;
+
+    const constants = [_]Value{
+        Value.int(1),
+        Value.int(2),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.add),
+        @intFromEnum(Opcode.halt),
+    };
+
+    // First run compiles
+    _ = try executor.run(&bytecode, &constants);
+
+    // Benchmark cached runs
+    const start = std.time.nanoTimestamp();
+    var result: i64 = 0;
+    for (0..iterations) |_| {
+        result = try executor.run(&bytecode, &constants);
+    }
+    const end = std.time.nanoTimestamp();
+    const diff = end - start;
+    const ns: u64 = if (diff > 0) @intCast(diff) else 1;
+
+    const val = Value{ .bits = @bitCast(result) };
+
+    std.debug.print("\n=== BENCHMARK: JIT with Caching ===\n", .{});
+    std.debug.print("Iterations: {}\n", .{iterations});
+    std.debug.print("Total: {} ns, Per iter: {} ns\n", .{ ns, ns / iterations });
+    std.debug.print("Result: {}\n", .{val.asInt()});
+
+    try std.testing.expectEqual(@as(i64, 3), val.asInt());
+    // With caching, should be very fast (< 100ns per iter)
+    try std.testing.expect(ns / iterations < 1000);
 }
