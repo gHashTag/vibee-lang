@@ -4479,6 +4479,31 @@ pub const PeepholeOptimizer = struct {
                     i += 2;
                     continue;
                 }
+
+                // Pattern: ADD r, 0 -> remove (identity)
+                if (curr.opcode == .ADD_INT and next.opcode == .LOAD_CONST and
+                    curr.src2 == next.dest and next.imm == 0)
+                {
+                    // Check if the LOAD_CONST 0 is only used by this ADD
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 1;
+                    // Keep the ADD but it will be optimized elsewhere
+                }
+
+                // Pattern: SUB r, r -> replace with LOAD_CONST 0
+                if (curr.opcode == .SUB_INT and curr.src1 == curr.src2) {
+                    try result.append(.{
+                        .opcode = .LOAD_CONST,
+                        .dest = curr.dest,
+                        .src1 = 0,
+                        .src2 = 0,
+                        .imm = 0,
+                    });
+                    self.patterns_matched += 1;
+                    self.instructions_eliminated += 1;
+                    i += 1;
+                    continue;
+                }
             }
 
             // No pattern matched, keep instruction
@@ -12039,6 +12064,29 @@ test "PeepholeOptimizer no match different registers" {
 
     const stats = peephole.getStats();
     try std.testing.expectEqual(@as(usize, 0), stats.patterns);
+}
+
+test "PeepholeOptimizer SUB r, r -> 0" {
+    const allocator = std.testing.allocator;
+
+    // IR: SUB r1, r0, r0 -> LOAD_CONST r1, 0
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .SUB_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r1 = r0 - r0 = 0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const optimized = try peephole.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // SUB r0, r0 should become LOAD_CONST 0
+    try std.testing.expectEqual(@as(usize, 3), optimized.len);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[1].opcode);
+    try std.testing.expectEqual(@as(i64, 0), optimized[1].imm);
+
+    const stats = peephole.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.patterns);
 }
 
 test "CSEOptimizer basic elimination" {

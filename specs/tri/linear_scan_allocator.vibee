@@ -1,0 +1,174 @@
+# Linear Scan Register Allocator
+# Based on Poletto & Sarkar (1999) "Linear Scan Register Allocation"
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+
+name: linear_scan_allocator
+version: "1.0.0"
+language: zig
+module: linear_scan_allocator
+
+description: |
+  Linear Scan Register Allocator for x86-64 JIT compilation.
+  Time complexity: O(n log n) where n = number of intervals.
+  Space complexity: O(n) for interval storage.
+  
+  Algorithm:
+  1. Compute live intervals for each virtual register
+  2. Sort intervals by start position
+  3. Scan intervals left-to-right, assigning physical registers
+  4. Spill to stack when no registers available (using furthest-next-use heuristic)
+
+types:
+  # Live interval for a virtual register
+  LiveInterval:
+    fields:
+      vreg: Int           # Virtual register number
+      start: Int          # First use position (instruction index)
+      end: Int            # Last use position
+      phys_reg: Option<Int>  # Assigned physical register (null if spilled)
+      spill_slot: Option<Int>  # Stack slot if spilled
+      is_fixed: Bool      # True if register is pre-colored (e.g., function args)
+      weight: Float       # Spill weight (higher = less likely to spill)
+
+  # Physical register state
+  PhysRegState:
+    fields:
+      reg_id: Int         # Physical register ID (0-7 for R8-R15)
+      current_interval: Option<Int>  # Currently assigned interval index
+      is_reserved: Bool   # True if reserved (RSP, RBP, temp regs)
+
+  # Allocator configuration
+  AllocatorConfig:
+    fields:
+      num_phys_regs: Int  # Number of allocatable registers (default: 6)
+      spill_temp_reg: Int # Temp register for spill code (R15)
+      spill_temp_reg2: Int # Second temp register (R14)
+      enable_coalescing: Bool  # Enable move coalescing
+      enable_splitting: Bool   # Enable interval splitting
+
+  # Allocation result
+  AllocationResult:
+    fields:
+      reg_mapping: List<Option<Int>>  # vreg -> phys_reg (null if spilled)
+      spill_slots: List<Option<Int>>  # vreg -> stack offset (null if not spilled)
+      spill_stack_size: Int           # Total stack space for spills
+      moves_inserted: Int             # Number of move instructions added
+      spills_count: Int               # Number of spilled registers
+      reloads_count: Int              # Number of reload instructions
+
+  # Use position for spill heuristics
+  UsePosition:
+    fields:
+      pos: Int            # Instruction position
+      is_def: Bool        # True if definition, false if use
+      is_fixed: Bool      # True if must be in register (not memory)
+
+behaviors:
+  # Compute live intervals from IR instructions
+  - name: compute_live_intervals
+    given: Array of IR instructions
+    when: Analyzing liveness
+    then: Returns sorted array of LiveInterval by start position
+
+  # Main allocation algorithm
+  - name: allocate_registers
+    given: Sorted live intervals and allocator config
+    when: Performing linear scan
+    then: Returns AllocationResult with register assignments
+
+  # Expire old intervals (free registers)
+  - name: expire_old_intervals
+    given: Current position and active intervals
+    when: Scanning past interval end points
+    then: Removes expired intervals from active set, frees registers
+
+  # Spill at interval (when no free registers)
+  - name: spill_at_interval
+    given: Current interval and active intervals
+    when: No free physical registers available
+    then: Spills interval with furthest next use, assigns freed register
+
+  # Assign spill slot
+  - name: assign_spill_slot
+    given: Virtual register to spill
+    when: Register must be stored to stack
+    then: Returns stack offset for spill slot (8-byte aligned)
+
+  # Try allocate free register
+  - name: try_allocate_free_reg
+    given: Current interval and free register set
+    when: Attempting allocation without spilling
+    then: Returns physical register or null if none available
+
+  # Compute spill weight
+  - name: compute_spill_weight
+    given: Live interval with use positions
+    when: Determining spill priority
+    then: Returns weight (loop depth * use count / interval length)
+
+  # Build interference graph (optional, for better allocation)
+  - name: build_interference
+    given: Live intervals
+    when: Two intervals overlap
+    then: Records interference between virtual registers
+
+tests:
+  - name: test_simple_allocation
+    description: Allocate 3 registers without spilling
+    input:
+      intervals:
+        - vreg: 0, start: 0, end: 5
+        - vreg: 1, start: 2, end: 8
+        - vreg: 2, start: 6, end: 10
+    expected:
+      spills_count: 0
+      all_assigned: true
+
+  - name: test_spill_required
+    description: Force spill when more vregs than phys regs
+    input:
+      intervals:
+        - vreg: 0, start: 0, end: 10
+        - vreg: 1, start: 1, end: 10
+        - vreg: 2, start: 2, end: 10
+        - vreg: 3, start: 3, end: 10
+        - vreg: 4, start: 4, end: 10
+        - vreg: 5, start: 5, end: 10
+        - vreg: 6, start: 6, end: 10
+        - vreg: 7, start: 7, end: 10
+      num_phys_regs: 6
+    expected:
+      spills_count: 2
+      spill_stack_size: 16
+
+  - name: test_interval_expiry
+    description: Reuse register after interval expires
+    input:
+      intervals:
+        - vreg: 0, start: 0, end: 3
+        - vreg: 1, start: 5, end: 8
+    expected:
+      same_phys_reg: true
+      spills_count: 0
+
+  - name: test_fixed_registers
+    description: Respect pre-colored registers (function args)
+    input:
+      intervals:
+        - vreg: 0, start: 0, end: 5, is_fixed: true, phys_reg: 0
+        - vreg: 1, start: 0, end: 5
+    expected:
+      vreg_0_phys: 0
+      vreg_1_phys: not 0
+
+constants:
+  # x86-64 allocatable registers (R8-R13, excluding R14/R15 for temps)
+  NUM_ALLOCATABLE_REGS: 6
+  SPILL_TEMP_REG: 7      # R15
+  SPILL_TEMP_REG2: 6     # R14
+  STACK_SLOT_SIZE: 8     # 8 bytes per spill slot
+  
+  # Spill weight constants
+  LOOP_WEIGHT_MULTIPLIER: 10.0
+  DEF_USE_WEIGHT: 1.0
+  FIXED_USE_WEIGHT: 100.0  # High weight for must-be-in-register uses

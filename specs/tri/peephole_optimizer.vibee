@@ -1,0 +1,161 @@
+# Peephole Optimizer for x86-64 Native Code
+# Pattern-based local optimization on machine code sequences
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+
+name: peephole_optimizer
+version: "1.0.0"
+language: zig
+module: peephole_optimizer
+
+description: |
+  Peephole Optimizer for x86-64 machine code.
+  Scans small windows (2-4 instructions) and replaces inefficient patterns.
+  
+  Categories:
+  1. Identity elimination (add 0, mul 1, shl 0)
+  2. Zero propagation (mul 0 → xor)
+  3. Strength reduction (mul 2 → shl 1)
+  4. Redundant move elimination (mov rax, rax)
+  5. Dead store elimination (store then overwrite)
+  6. Algebraic simplification (sub x, x → xor)
+
+types:
+  # Peephole pattern
+  PeepholePattern:
+    fields:
+      name: String
+      window_size: Int        # Number of instructions to match
+      match_fn: String        # Function name for matching
+      replace_fn: String      # Function name for replacement
+      priority: Int           # Higher = apply first
+      stats_count: Int        # How many times applied
+
+  # Optimizer configuration
+  PeepholeConfig:
+    fields:
+      enable_identity: Bool       # add 0, mul 1, etc.
+      enable_zero_prop: Bool      # mul 0 → 0
+      enable_strength: Bool       # mul 2 → shl 1
+      enable_mov_elim: Bool       # mov rax, rax
+      enable_dead_store: Bool     # redundant stores
+      enable_algebraic: Bool      # sub x, x → 0
+      max_passes: Int             # Maximum optimization passes
+
+  # Optimization statistics
+  PeepholeStats:
+    fields:
+      identity_eliminated: Int
+      zero_propagated: Int
+      strength_reduced: Int
+      moves_eliminated: Int
+      dead_stores_removed: Int
+      algebraic_simplified: Int
+      total_patterns_applied: Int
+      bytes_saved: Int
+      passes_run: Int
+
+behaviors:
+  # Main optimization entry point
+  - name: optimize
+    given: Array of IR instructions
+    when: Peephole optimization requested
+    then: Returns optimized IR with patterns applied
+
+  # Identity elimination patterns
+  - name: eliminate_identity
+    given: Instruction with identity operand
+    when: add x, 0 OR sub x, 0 OR mul x, 1 OR shl x, 0 OR shr x, 0
+    then: Remove instruction or replace with mov
+
+  # Zero propagation
+  - name: propagate_zero
+    given: Instruction producing zero
+    when: mul x, 0 OR and x, 0 OR xor x, x
+    then: Replace with xor reg, reg (smaller encoding)
+
+  # Strength reduction
+  - name: reduce_strength
+    given: Multiply by power of 2
+    when: mul x, 2^n
+    then: Replace with shl x, n
+
+  # Redundant move elimination
+  - name: eliminate_redundant_mov
+    given: Move instruction
+    when: mov rax, rax (same src and dst)
+    then: Remove instruction
+
+  # Dead store elimination
+  - name: eliminate_dead_store
+    given: Two consecutive stores to same location
+    when: store [addr], x; store [addr], y
+    then: Remove first store
+
+  # Algebraic simplification
+  - name: simplify_algebraic
+    given: Algebraic identity
+    when: sub x, x OR xor x, x
+    then: Replace with xor reg, reg (produces 0)
+
+  # Consecutive mov optimization
+  - name: optimize_consecutive_mov
+    given: Two mov instructions
+    when: mov rax, rbx; mov rbx, rax
+    then: Replace with single xchg or eliminate if dead
+
+  # Constant folding at IR level
+  - name: fold_constants
+    given: Operation on two constants
+    when: Both operands are LOAD_CONST
+    then: Compute result and replace with single LOAD_CONST
+
+tests:
+  - name: test_identity_add_zero
+    description: add rax, 0 should be eliminated
+    input:
+      - LOAD_CONST r0, 42
+      - ADD_INT r1, r0, 0
+      - RETURN r1
+    expected:
+      - LOAD_CONST r0, 42
+      - RETURN r0
+
+  - name: test_mul_by_two
+    description: mul rax, 2 should become shl rax, 1
+    input:
+      - LOAD_CONST r0, 10
+      - LOAD_CONST r1, 2
+      - MUL_INT r2, r0, r1
+    expected:
+      - LOAD_CONST r0, 10
+      - SHL r2, r0, 1
+
+  - name: test_mul_by_zero
+    description: mul rax, 0 should become xor rax, rax
+    input:
+      - LOAD_CONST r0, 42
+      - LOAD_CONST r1, 0
+      - MUL_INT r2, r0, r1
+    expected:
+      - LOAD_CONST r2, 0
+
+  - name: test_sub_self
+    description: sub rax, rax should become xor rax, rax
+    input:
+      - LOAD_CONST r0, 42
+      - SUB_INT r1, r0, r0
+    expected:
+      - LOAD_CONST r1, 0
+
+constants:
+  # Pattern priorities (higher = apply first)
+  PRIORITY_ZERO_PROP: 100      # mul 0 first (eliminates more)
+  PRIORITY_IDENTITY: 90        # add 0, mul 1
+  PRIORITY_STRENGTH: 80        # mul 2 → shl
+  PRIORITY_ALGEBRAIC: 70       # sub x, x
+  PRIORITY_MOV_ELIM: 60        # mov rax, rax
+  PRIORITY_DEAD_STORE: 50      # dead stores
+  
+  # Limits
+  MAX_WINDOW_SIZE: 4           # Maximum instructions to look ahead
+  MAX_PASSES: 3                # Maximum optimization passes
