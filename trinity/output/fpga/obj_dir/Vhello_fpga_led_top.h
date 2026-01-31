@@ -5,37 +5,29 @@
 // The class here is then constructed to instantiate the design.
 // See the Verilator manual for examples.
 
-#ifndef VERILATED_VBITNET_SIMD_CORE_TOP_H_
-#define VERILATED_VBITNET_SIMD_CORE_TOP_H_  // guard
+#ifndef VERILATED_VHELLO_FPGA_LED_TOP_H_
+#define VERILATED_VHELLO_FPGA_LED_TOP_H_  // guard
 
 #include "verilated.h"
 
-class Vbitnet_simd_core_top__Syms;
-class Vbitnet_simd_core_top___024root;
+class Vhello_fpga_led_top__Syms;
+class Vhello_fpga_led_top___024root;
 class VerilatedVcdC;
 
 // This class is the main interface to the Verilated model
-class alignas(VL_CACHE_LINE_BYTES) Vbitnet_simd_core_top VL_NOT_FINAL : public VerilatedModel {
+class alignas(VL_CACHE_LINE_BYTES) Vhello_fpga_led_top VL_NOT_FINAL : public VerilatedModel {
   private:
     // Symbol table holding complete model state (owned by this class)
-    Vbitnet_simd_core_top__Syms* const vlSymsp;
+    Vhello_fpga_led_top__Syms* const vlSymsp;
 
   public:
-
-    // CONSTEXPR CAPABILITIES
-    // Verilated with --trace?
-    static constexpr bool traceCapable = true;
 
     // PORTS
     // The application code writes and reads these signals to
     // propagate new values into/out from the Verilated model.
     VL_IN8(&clk,0,0);
     VL_IN8(&rst_n,0,0);
-    VL_IN8(&valid_in,0,0);
-    VL_OUT8(&valid_out,0,0);
-    VL_OUT8(&ready,0,0);
-    VL_IN(&data_in,31,0);
-    VL_OUT(&data_out,31,0);
+    VL_OUT8(&led,3,0);
 
     // CELLS
     // Public to allow access to /* verilator public */ items.
@@ -43,19 +35,19 @@ class alignas(VL_CACHE_LINE_BYTES) Vbitnet_simd_core_top VL_NOT_FINAL : public V
 
     // Root instance pointer to allow access to model internals,
     // including inlined /* verilator public_flat_* */ items.
-    Vbitnet_simd_core_top___024root* const rootp;
+    Vhello_fpga_led_top___024root* const rootp;
 
     // CONSTRUCTORS
     /// Construct the model; called by application code
     /// If contextp is null, then the model will use the default global context
     /// If name is "", then makes a wrapper with a
     /// single model invisible with respect to DPI scope names.
-    explicit Vbitnet_simd_core_top(VerilatedContext* contextp, const char* name = "TOP");
-    explicit Vbitnet_simd_core_top(const char* name = "TOP");
+    explicit Vhello_fpga_led_top(VerilatedContext* contextp, const char* name = "TOP");
+    explicit Vhello_fpga_led_top(const char* name = "TOP");
     /// Destroy the model; called (often implicitly) by application code
-    virtual ~Vbitnet_simd_core_top();
+    virtual ~Vhello_fpga_led_top();
   private:
-    VL_UNCOPYABLE(Vbitnet_simd_core_top);  ///< Copying not allowed
+    VL_UNCOPYABLE(Vhello_fpga_led_top);  ///< Copying not allowed
 
   public:
     // API METHODS
@@ -73,7 +65,7 @@ class alignas(VL_CACHE_LINE_BYTES) Vbitnet_simd_core_top VL_NOT_FINAL : public V
     /// Returns time at next time slot. Aborts if !eventsPending()
     uint64_t nextTimeSlot();
     /// Trace signals in the model; called by application code
-    void trace(VerilatedTraceBaseC* tfp, int levels, int options = 0) { contextp()->trace(tfp, levels, options); }
+    void trace(VerilatedVcdC* tfp, int levels, int options = 0);
     /// Retrieve name of this model instance (as passed to constructor).
     const char* name() const;
 
@@ -88,9 +80,6 @@ class alignas(VL_CACHE_LINE_BYTES) Vbitnet_simd_core_top VL_NOT_FINAL : public V
     /// Re-allocate necessary resources. Called after cloning.
     void atClone() const;
     std::unique_ptr<VerilatedTraceConfig> traceConfig() const override final;
-  private:
-    // Internal functions - trace registration
-    void traceBaseModel(VerilatedTraceBaseC* tfp, int levels, int options);
 };
 
 #endif  // guard

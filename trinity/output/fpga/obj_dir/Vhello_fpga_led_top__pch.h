@@ -3,10 +3,11 @@
 //
 // Internal details; most user sources do not need this header,
 // unless using verilator public meta comments.
-// Suggest use Vbitnet_simd_core_top.h instead.
+// Suggest use Vhello_fpga_led_top.h instead.
 
-#ifndef VERILATED_VBITNET_SIMD_CORE_TOP__PCH_H_
-#define VERILATED_VBITNET_SIMD_CORE_TOP__PCH_H_  // guard
+
+#ifndef VERILATED_VHELLO_FPGA_LED_TOP__PCH_H_
+#define VERILATED_VHELLO_FPGA_LED_TOP__PCH_H_  // guard
 
 // GCC and Clang only will precompile headers (PCH) for the first header.
 // So, make sure this is the one and only PCH.
@@ -19,9 +20,7 @@
 
 #include "verilated.h"
 
-#include "Vbitnet_simd_core_top__Syms.h"
-#include "Vbitnet_simd_core_top.h"
-
-// Additional include files added using '--compiler-include'
+#include "Vhello_fpga_led_top__Syms.h"
+#include "Vhello_fpga_led_top.h"
 
 #endif  // guard
