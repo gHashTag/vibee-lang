@@ -1,0 +1,113 @@
+name: register_vm
+version: "1.0.0"
+language: zig
+module: register_vm
+
+# Register-based VM Architecture
+# 16 general-purpose registers (R0-R15)
+# R0 = accumulator (implicit destination for many ops)
+# R14 = frame pointer (FP)
+# R15 = stack pointer (SP) - for call stack only
+
+types:
+  Register:
+    description: "16 general-purpose registers"
+    fields:
+      index: Int
+    constraints:
+      - "0 <= index <= 15"
+
+  RegOpcode:
+    description: "Register-based opcodes"
+    variants:
+      # Data movement (0x00-0x0F)
+      - MOV_RR: "Rd = Rs"
+      - MOV_RI: "Rd = immediate"
+      - MOV_RM: "Rd = memory[addr]"
+      - MOV_MR: "memory[addr] = Rs"
+      - LOAD_CONST: "Rd = constants[idx]"
+      - LOAD_LOCAL: "Rd = locals[idx]"
+      - STORE_LOCAL: "locals[idx] = Rs"
+      
+      # Arithmetic (0x10-0x1F) - 3-address format
+      - ADD_RRR: "Rd = Rs1 + Rs2"
+      - SUB_RRR: "Rd = Rs1 - Rs2"
+      - MUL_RRR: "Rd = Rs1 * Rs2"
+      - DIV_RRR: "Rd = Rs1 / Rs2"
+      - ADD_RRI: "Rd = Rs + imm"
+      - SUB_RRI: "Rd = Rs - imm"
+      - INC_R: "Rd = Rd + 1"
+      - DEC_R: "Rd = Rd - 1"
+      
+      # Comparison (0x20-0x2F)
+      - CMP_RR: "flags = Rs1 cmp Rs2"
+      - CMP_RI: "flags = Rs cmp imm"
+      - LT_RRR: "Rd = Rs1 < Rs2"
+      - LE_RRR: "Rd = Rs1 <= Rs2"
+      - GT_RRR: "Rd = Rs1 > Rs2"
+      - GE_RRR: "Rd = Rs1 >= Rs2"
+      - EQ_RRR: "Rd = Rs1 == Rs2"
+      
+      # Control flow (0x40-0x4F)
+      - JMP: "ip = addr"
+      - JZ_R: "if Rs == 0 then ip = addr"
+      - JNZ_R: "if Rs != 0 then ip = addr"
+      - JLT: "if flags.lt then ip = addr"
+      - JLE: "if flags.le then ip = addr"
+      - CALL: "push return_addr, ip = addr"
+      - RET: "ip = pop return_addr"
+      - HALT: "stop execution"
+
+  InstructionFormat:
+    description: "Instruction encoding formats"
+    variants:
+      - RRR: "3 registers: op Rd Rs1 Rs2 (4 bytes)"
+      - RRI: "2 regs + immediate: op Rd Rs imm16 (5 bytes)"
+      - RI: "1 reg + immediate: op Rd imm16 (4 bytes)"
+      - R: "1 register: op Rd (2 bytes)"
+      - I: "immediate only: op imm16 (3 bytes)"
+
+  RegisterVM:
+    description: "Register-based virtual machine state"
+    fields:
+      registers: List<Value>
+      locals: List<Value>
+      call_stack: List<CallFrame>
+      code: List<Int>
+      constants: List<Value>
+      ip: Int
+      fp: Int
+      flags: Int
+
+behaviors:
+  - name: execute_add_rrr
+    given: "ADD_RRR instruction with Rd, Rs1, Rs2"
+    when: "VM executes instruction"
+    then: "registers[Rd] = registers[Rs1] + registers[Rs2], ip += 4"
+
+  - name: execute_load_local
+    given: "LOAD_LOCAL instruction with Rd, local_idx"
+    when: "VM executes instruction"
+    then: "registers[Rd] = locals[local_idx], ip += 4"
+
+  - name: execute_cmp_jlt
+    given: "CMP_RR followed by JLT"
+    when: "VM executes comparison and conditional jump"
+    then: "Compare Rs1 and Rs2, jump if Rs1 < Rs2"
+
+  - name: loop_optimization
+    given: "for i in range(n) loop"
+    when: "Compiled to register bytecode"
+    then: "Uses INC_R + CMP_RR + JLT pattern (3 instructions vs 7 stack ops)"
+
+# Performance Analysis
+# Stack-based loop: LOAD i, PUSH 1, ADD, STORE i, LOAD i, LOAD n, LT, JZ = 8 ops
+# Register-based:   INC R0, CMP R0 R1, JLT = 3 ops
+# Expected speedup: 2-3x for tight loops
+
+# Instruction Encoding (little-endian):
+# RRR format: [opcode:8][Rd:4|Rs1:4][Rs2:4|0:4] = 3 bytes
+# RRI format: [opcode:8][Rd:4|Rs:4][imm:16] = 4 bytes
+# RI format:  [opcode:8][Rd:4|0:4][imm:16] = 4 bytes
+# R format:   [opcode:8][Rd:4|0:4] = 2 bytes
+# I format:   [opcode:8][imm:16] = 3 bytes
