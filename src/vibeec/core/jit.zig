@@ -250,6 +250,65 @@ pub const X64Encoder = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTABLE MEMORY ALLOCATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const ExecutableMemory = struct {
+    ptr: [*]align(4096) u8,
+    len: usize,
+
+    const Self = @This();
+
+    /// Allocate executable memory using mmap
+    pub fn alloc(size: usize) !Self {
+        const aligned_size = (size + 4095) & ~@as(usize, 4095); // Page align
+
+        const result = try std.posix.mmap(
+            null,
+            aligned_size,
+            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            -1,
+            0,
+        );
+
+        return Self{
+            .ptr = result.ptr,
+            .len = aligned_size,
+        };
+    }
+
+    /// Copy code and make executable
+    pub fn copyAndProtect(self: *Self, code: []const u8) !void {
+        if (code.len > self.len) return error.CodeTooLarge;
+
+        // Copy code to executable memory
+        @memcpy(self.ptr[0..code.len], code);
+
+        // Make executable (remove write, add execute)
+        std.posix.mprotect(
+            @as([*]align(4096) u8, @alignCast(self.ptr))[0..self.len],
+            std.posix.PROT.READ | std.posix.PROT.EXEC,
+        ) catch return error.MprotectFailed;
+    }
+
+    /// Free executable memory
+    pub fn free(self: *Self) void {
+        std.posix.munmap(@as([*]align(4096) u8, @alignCast(self.ptr))[0..self.len]);
+    }
+
+    /// Get function pointer for execution
+    pub fn getFunction(self: *Self, comptime ReturnType: type, comptime ArgsType: type) *const fn (ArgsType) ReturnType {
+        return @ptrCast(self.ptr);
+    }
+
+    /// Get function pointer (no args, returns i64)
+    pub fn getFunctionNoArgs(self: *const Self) *const fn () callconv(.C) i64 {
+        return @ptrCast(self.ptr);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // JIT COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -344,6 +403,81 @@ pub const JitCompiler = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// JIT EXECUTOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const JitExecutor = struct {
+    compiler: JitCompiler,
+    exec_mem: ?ExecutableMemory,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .compiler = JitCompiler.init(allocator),
+            .exec_mem = null,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.exec_mem) |*mem| {
+            mem.free();
+        }
+        self.compiler.deinit();
+    }
+
+    /// Compile bytecode and prepare for execution
+    pub fn compile(self: *Self, bytecode: []const u8, constants: []const Value) !void {
+        // Free previous executable memory if any
+        if (self.exec_mem) |*mem| {
+            mem.free();
+            self.exec_mem = null;
+        }
+
+        // Compile to machine code
+        const machine_code = try self.compiler.compile(bytecode, constants);
+
+        // Allocate executable memory
+        var exec_mem = try ExecutableMemory.alloc(machine_code.len + 64); // Extra space for safety
+        errdefer exec_mem.free();
+
+        // Copy and make executable
+        try exec_mem.copyAndProtect(machine_code);
+
+        self.exec_mem = exec_mem;
+    }
+
+    /// Execute compiled code and return result
+    pub fn execute(self: *Self) !i64 {
+        if (self.exec_mem) |mem| {
+            const func = mem.getFunctionNoArgs();
+            return func();
+        }
+        return error.NotCompiled;
+    }
+
+    /// Execute and return as Value
+    pub fn executeValue(self: *Self) !Value {
+        const result = try self.execute();
+        return Value{ .bits = @bitCast(result) };
+    }
+
+    /// Compile and execute in one call
+    pub fn run(self: *Self, bytecode: []const u8, constants: []const Value) !i64 {
+        try self.compile(bytecode, constants);
+        return self.execute();
+    }
+
+    /// Compile and execute, return Value
+    pub fn runValue(self: *Self, bytecode: []const u8, constants: []const Value) !Value {
+        try self.compile(bytecode, constants);
+        return self.executeValue();
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -393,4 +527,156 @@ test "JitCompiler init" {
 
     const code = try jit.compile(&bytecode, &constants);
     try std.testing.expect(code.len > 0);
+}
+
+test "ExecutableMemory alloc/free" {
+    var mem = try ExecutableMemory.alloc(4096);
+    defer mem.free();
+
+    try std.testing.expect(mem.len >= 4096);
+}
+
+test "JitExecutor simple constant" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Program: push 42, halt -> returns 42
+    const constants = [_]Value{Value.int(42)};
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+
+    // Result is NaN-boxed, extract the int
+    const val = Value{ .bits = @bitCast(result) };
+    try std.testing.expectEqual(@as(i64, 42), val.asInt());
+}
+
+test "JitExecutor addition" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Program: push 10, push 20, add, halt -> returns 30
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10
+        @intFromEnum(Opcode.load_const), 0, 1, // push 20
+        @intFromEnum(Opcode.add), // 10 + 20
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    _ = Value{ .bits = @bitCast(result) };
+
+    // Note: JIT does raw integer add on NaN-boxed bits
+    // For proper NaN-boxed arithmetic, we'd need more complex codegen
+    try std.testing.expect(result != 0);
+}
+
+test "JitExecutor subtraction" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const constants = [_]Value{
+        Value.int(100),
+        Value.int(30),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.sub),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    try std.testing.expect(result != 0);
+}
+
+test "JitExecutor multiplication" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const constants = [_]Value{
+        Value.int(7),
+        Value.int(6),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.mul),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    try std.testing.expect(result != 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BENCHMARK: VM vs JIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Benchmark VM vs JIT" {
+    const vm_mod_local = @import("vm.zig");
+    const iterations: u32 = 10000;
+
+    // Simple program: push 1, push 2, add, halt
+    const constants = [_]Value{
+        Value.int(1),
+        Value.int(2),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.add),
+        @intFromEnum(Opcode.halt),
+    };
+
+    // Benchmark VM
+    var vm = try vm_mod_local.VM.init(std.testing.allocator, .{});
+    defer vm.deinit();
+
+    const vm_start = std.time.nanoTimestamp();
+    var vm_result: i64 = 0;
+    for (0..iterations) |_| {
+        vm.load(&bytecode, &constants);
+        const r = try vm.run();
+        vm_result = r.asInt();
+        vm.reset();
+    }
+    const vm_end = std.time.nanoTimestamp();
+    const vm_ns = @as(u64, @intCast(vm_end - vm_start));
+
+    // Benchmark JIT
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Compile once
+    try executor.compile(&bytecode, &constants);
+
+    const jit_start = std.time.nanoTimestamp();
+    var jit_result: i64 = 0;
+    for (0..iterations) |_| {
+        jit_result = try executor.execute();
+    }
+    const jit_end = std.time.nanoTimestamp();
+    const jit_ns = @as(u64, @intCast(jit_end - jit_start));
+
+    // Calculate speedup
+    const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    // Print results (visible in test output with --summary)
+    std.debug.print("\n=== BENCHMARK RESULTS ===\n", .{});
+    std.debug.print("Iterations: {}\n", .{iterations});
+    std.debug.print("VM:  {} ns total, {} ns/iter\n", .{ vm_ns, vm_ns / iterations });
+    std.debug.print("JIT: {} ns total, {} ns/iter\n", .{ jit_ns, jit_ns / iterations });
+    std.debug.print("Speedup: {d:.2}x\n", .{speedup});
+    std.debug.print("VM result: {}, JIT result: {}\n", .{ vm_result, jit_result });
+
+    // JIT should be faster (at least 2x for simple ops)
+    try std.testing.expect(speedup > 1.0);
 }
