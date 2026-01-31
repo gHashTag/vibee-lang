@@ -1,0 +1,79 @@
+name: jit_vectorization_integration
+version: "1.0.0"
+language: zig
+module: jit_vectorization_integration
+
+description: |
+  Integration of Auto-Vectorization into TieredCompiler JIT pipeline.
+  Adds vectorization as an optimization pass with cost-based decisions.
+
+types:
+  VectorizationPass:
+    fields:
+      cost_model: VectorizationCostModel
+      enabled: Bool
+      stats: VectorizationStats
+    description: Vectorization optimization pass for JIT
+
+  VectorizationStats:
+    fields:
+      loops_analyzed: Int
+      loops_vectorized: Int
+      loops_rejected: Int
+      total_speedup_estimate: Float
+      simd_instructions_generated: Int
+    description: Statistics for vectorization pass
+
+  SIMDInstruction:
+    fields:
+      opcode: String
+      vector_width: Int
+      dest: Int
+      src1: Int
+      src2: Int
+    description: Generated SIMD instruction
+
+behaviors:
+  - name: integrate_vectorization_pass
+    given: TieredCompiler with optimization pipeline
+    when: Adding vectorization to JIT_IR or Native tier
+    then: Vectorization pass runs after loop unrolling
+
+  - name: vectorize_loop
+    given: Loop detected by LoopUnroller
+    when: VectorizationCostModel decides to vectorize
+    then: Generate SIMD instructions for loop body
+
+  - name: generate_simd_ir
+    given: Scalar loop body and vector width
+    when: Transforming to SIMD
+    then: Replace scalar ops with vector ops (VADD, VMUL, etc.)
+
+  - name: emit_simd_epilogue
+    given: Vectorized loop with remainder iterations
+    when: Trip count not divisible by vector width
+    then: Generate scalar epilogue for remaining elements
+
+  - name: collect_vectorization_stats
+    given: Completed vectorization pass
+    when: Updating JIT statistics
+    then: Record loops analyzed, vectorized, rejected
+
+integration_points:
+  - location: TieredCompiler.init
+    action: Add vectorization_pass field
+    
+  - location: TieredCompiler optimization pipeline
+    action: Insert vectorization after loop_unroller.optimize
+    
+  - location: JITDashboard
+    action: Display vectorization statistics
+
+simd_opcodes:
+  - VADD_INT: Vector add integers (4x i32)
+  - VSUB_INT: Vector subtract integers
+  - VMUL_INT: Vector multiply integers
+  - VLOAD: Vector load from memory
+  - VSTORE: Vector store to memory
+  - VREDUCE_ADD: Horizontal sum reduction
+  - VREDUCE_MAX: Horizontal max reduction

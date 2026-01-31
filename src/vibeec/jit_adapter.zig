@@ -441,6 +441,44 @@ pub const VectorizationDecision = struct {
     confidence: f32,
 };
 
+/// Vectorization statistics
+pub const VectorizationStats = struct {
+    loops_analyzed: u64,
+    loops_vectorized: u64,
+    loops_rejected: u64,
+    simd_instructions_generated: u64,
+    estimated_speedup_total: f64,
+
+    pub fn init() VectorizationStats {
+        return .{
+            .loops_analyzed = 0,
+            .loops_vectorized = 0,
+            .loops_rejected = 0,
+            .simd_instructions_generated = 0,
+            .estimated_speedup_total = 0.0,
+        };
+    }
+
+    pub fn recordAnalysis(self: *VectorizationStats, decision: VectorizationDecision) void {
+        self.loops_analyzed += 1;
+        if (decision.should_vectorize) {
+            self.loops_vectorized += 1;
+        } else {
+            self.loops_rejected += 1;
+        }
+    }
+
+    pub fn recordSIMDGeneration(self: *VectorizationStats, count: u64, speedup: f64) void {
+        self.simd_instructions_generated += count;
+        self.estimated_speedup_total += speedup;
+    }
+
+    pub fn averageSpeedup(self: VectorizationStats) f64 {
+        if (self.loops_vectorized == 0) return 1.0;
+        return self.estimated_speedup_total / @as(f64, @floatFromInt(self.loops_vectorized));
+    }
+};
+
 /// Cost model for vectorization decisions
 pub const VectorizationCostModel = struct {
     /// Hardware features
@@ -8601,6 +8639,12 @@ pub const TieredCompiler = struct {
     thresholds: TierThresholds,
     /// Loop unroller for optimization
     loop_unroller: LoopUnroller,
+    /// Vectorization cost model for auto-vectorization
+    vectorization_model: VectorizationCostModel,
+    /// Enable auto-vectorization
+    enable_vectorization: bool,
+    /// Vectorization statistics
+    vectorization_stats: VectorizationStats,
     /// Constant folder for optimization
     constant_folder: ConstantFolder,
     /// Dead code eliminator
@@ -8724,6 +8768,9 @@ pub const TieredCompiler = struct {
             .native_cache = std.AutoHashMap(u32, ExecutableCode).init(allocator),
             .thresholds = TierThresholds{},
             .loop_unroller = LoopUnroller.init(allocator),
+            .vectorization_model = VectorizationCostModel.initWithAVX(),
+            .enable_vectorization = true,
+            .vectorization_stats = VectorizationStats.init(),
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
             .dse = DeadStoreEliminator.init(allocator),
@@ -8904,6 +8951,173 @@ pub const TieredCompiler = struct {
     /// Get profile data for analysis
     pub fn getProfileData(self: *Self) *ProfileData {
         return &self.profile_data;
+    }
+
+    /// Get vectorization statistics
+    pub fn getVectorizationStats(self: *Self) VectorizationStats {
+        return self.vectorization_stats;
+    }
+
+    /// Vectorize loops in IR based on cost model decisions
+    pub fn vectorizeLoops(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (!self.enable_vectorization) {
+            return self.allocator.dupe(IRInstruction, ir);
+        }
+
+        // Detect loops
+        const loops = try self.loop_unroller.detectLoops(ir);
+        defer self.allocator.free(loops);
+
+        if (loops.len == 0) {
+            return self.allocator.dupe(IRInstruction, ir);
+        }
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var processed_until: usize = 0;
+
+        for (loops) |loop| {
+            // Make vectorization decision
+            const decision = self.vectorization_model.makeDecision(loop, ir);
+            self.vectorization_stats.recordAnalysis(decision);
+
+            // Copy instructions before loop
+            for (ir[processed_until..loop.start_idx]) |instr| {
+                try result.append(instr);
+            }
+
+            if (decision.should_vectorize) {
+                // Generate vectorized loop
+                const vectorized = try self.generateVectorizedLoop(ir, loop, decision);
+                defer self.allocator.free(vectorized);
+
+                for (vectorized) |instr| {
+                    try result.append(instr);
+                }
+
+                const cost = self.vectorization_model.estimateVectorCost(loop, ir, decision.vector_width);
+                self.vectorization_stats.recordSIMDGeneration(
+                    @intCast(vectorized.len),
+                    cost.expectedSpeedup(),
+                );
+            } else {
+                // Keep original loop
+                for (ir[loop.start_idx .. loop.end_idx + 1]) |instr| {
+                    try result.append(instr);
+                }
+            }
+
+            processed_until = loop.end_idx + 1;
+        }
+
+        // Copy remaining instructions
+        for (ir[processed_until..]) |instr| {
+            try result.append(instr);
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Generate vectorized version of a loop
+    fn generateVectorizedLoop(self: *Self, ir: []const IRInstruction, loop: LoopInfo, decision: VectorizationDecision) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        const trip_count = loop.iteration_count orelse 100;
+        const vector_width = decision.vector_width / 32; // Elements per vector
+        const vector_iters = trip_count / vector_width;
+        const remainder = trip_count % vector_width;
+
+        // Vectorized loop header
+        try result.append(.{
+            .opcode = .LOAD_CONST,
+            .dest = 15, // Loop counter register
+            .src1 = 0,
+            .src2 = 0,
+            .imm = 0,
+        });
+
+        // Vector loop body - transform scalar ops to SIMD
+        const body_start = loop.start_idx;
+        const body_end = loop.end_idx;
+
+        for (ir[body_start..body_end]) |instr| {
+            const vectorized_instr = self.scalarToSIMD(instr);
+            try result.append(vectorized_instr);
+        }
+
+        // Loop back for vector iterations
+        try result.append(.{
+            .opcode = .ADD_INT,
+            .dest = 15,
+            .src1 = 15,
+            .src2 = 0,
+            .imm = @intCast(vector_width),
+        });
+
+        try result.append(.{
+            .opcode = .CMP_LT_INT,
+            .dest = 14,
+            .src1 = 15,
+            .src2 = 0,
+            .imm = @intCast(vector_iters * vector_width),
+        });
+
+        try result.append(.{
+            .opcode = .JUMP_IF_NOT_ZERO,
+            .dest = 0,
+            .src1 = 14,
+            .src2 = 0,
+            .imm = -@as(i32, @intCast(result.items.len - 1)),
+        });
+
+        // Scalar epilogue for remainder
+        if (remainder > 0) {
+            for (ir[body_start..body_end]) |instr| {
+                if (instr.opcode != .LOOP_BACK) {
+                    try result.append(instr);
+                }
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Convert scalar instruction to SIMD equivalent
+    fn scalarToSIMD(self: *Self, instr: IRInstruction) IRInstruction {
+        _ = self;
+        return switch (instr.opcode) {
+            .ADD_INT => .{
+                .opcode = .TRYTE_ADD, // Use as SIMD placeholder
+                .dest = instr.dest,
+                .src1 = instr.src1,
+                .src2 = instr.src2,
+                .imm = instr.imm | 0x1000, // Mark as vectorized
+            },
+            .MUL_INT => .{
+                .opcode = .TRYTE_MUL, // Use as SIMD placeholder
+                .dest = instr.dest,
+                .src1 = instr.src1,
+                .src2 = instr.src2,
+                .imm = instr.imm | 0x1000,
+            },
+            .LOAD_LOCAL => .{
+                .opcode = .LOAD_LOCAL,
+                .dest = instr.dest,
+                .src1 = instr.src1,
+                .src2 = instr.src2,
+                .imm = instr.imm | 0x2000, // Mark as vector load
+            },
+            .STORE_LOCAL => .{
+                .opcode = .STORE_LOCAL,
+                .dest = instr.dest,
+                .src1 = instr.src1,
+                .src2 = instr.src2,
+                .imm = instr.imm | 0x2000, // Mark as vector store
+            },
+            else => instr, // Keep other instructions as-is
+        };
     }
 
     /// Get trace JIT manager
@@ -9323,6 +9537,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = unrolled;
                 }
 
+                // Auto-vectorization pass (after loop unrolling)
+                if (self.enable_vectorization) {
+                    const vectorized = try self.vectorizeLoops(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = vectorized;
+                }
+
                 if (self.enable_peephole) {
                     const peeped = try self.peephole.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -9422,6 +9643,13 @@ pub const TieredCompiler = struct {
                         const unrolled = try self.loop_unroller.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = unrolled;
+                    }
+
+                    // Auto-vectorization pass (after loop unrolling)
+                    if (self.enable_vectorization) {
+                        const vectorized = try self.vectorizeLoops(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = vectorized;
                     }
 
                     if (self.enable_peephole) {
@@ -17472,4 +17700,153 @@ test "VectorizationCostModel analyzeDependencies reduction" {
     const deps = model.analyzeDependencies(loop, &ir);
     try std.testing.expect(deps.has_reduction);
     try std.testing.expect(deps.can_parallelize);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JIT VECTORIZATION INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TieredCompiler has vectorization enabled by default" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_vectorization);
+    try std.testing.expectEqual(@as(u32, 256), compiler.vectorization_model.simd_width);
+    try std.testing.expect(compiler.vectorization_model.has_avx);
+}
+
+test "TieredCompiler vectorizeLoops with no loops" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const result = try compiler.vectorizeLoops(&ir);
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, result[0].opcode);
+}
+
+test "TieredCompiler vectorizeLoops with vectorizable loop" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Simple loop: for i in 0..64: sum += arr[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // sum = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 64 }, // limit = 64
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 }, // tmp = arr[i]
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 2, .imm = 0 }, // sum += tmp
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 3, .src2 = 0, .imm = 1 }, // i++
+        .{ .opcode = .CMP_LT_INT, .dest = 4, .src1 = 3, .src2 = 1, .imm = 0 }, // i < limit
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -4 }, // back to load
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const result = try compiler.vectorizeLoops(&ir);
+    defer allocator.free(result);
+
+    // Should have analyzed the loop
+    const stats = compiler.getVectorizationStats();
+    try std.testing.expect(stats.loops_analyzed >= 1);
+}
+
+test "TieredCompiler vectorization disabled" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    compiler.enable_vectorization = false;
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 },
+    };
+
+    const result = try compiler.vectorizeLoops(&ir);
+    defer allocator.free(result);
+
+    // Should return original IR unchanged
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+
+    // Stats should be zero
+    const stats = compiler.getVectorizationStats();
+    try std.testing.expectEqual(@as(u64, 0), stats.loops_analyzed);
+}
+
+test "VectorizationStats tracking" {
+    var stats = VectorizationStats.init();
+
+    // Record some decisions
+    stats.recordAnalysis(.{
+        .should_vectorize = true,
+        .vector_width = 256,
+        .unroll_factor = 4,
+        .reason = "Profitable",
+        .confidence = 0.9,
+    });
+
+    stats.recordAnalysis(.{
+        .should_vectorize = false,
+        .vector_width = 0,
+        .unroll_factor = 1,
+        .reason = "Too small",
+        .confidence = 0.8,
+    });
+
+    stats.recordSIMDGeneration(10, 3.5);
+
+    try std.testing.expectEqual(@as(u64, 2), stats.loops_analyzed);
+    try std.testing.expectEqual(@as(u64, 1), stats.loops_vectorized);
+    try std.testing.expectEqual(@as(u64, 1), stats.loops_rejected);
+    try std.testing.expectEqual(@as(u64, 10), stats.simd_instructions_generated);
+    try std.testing.expect(stats.averageSpeedup() > 3.0);
+}
+
+test "TieredCompiler scalarToSIMD transformation" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Test ADD_INT -> TRYTE_ADD (SIMD placeholder)
+    const add_instr = IRInstruction{
+        .opcode = .ADD_INT,
+        .dest = 0,
+        .src1 = 1,
+        .src2 = 2,
+        .imm = 0,
+    };
+    const simd_add = compiler.scalarToSIMD(add_instr);
+    try std.testing.expectEqual(jit.IROpcode.TRYTE_ADD, simd_add.opcode);
+    try std.testing.expect((simd_add.imm & 0x1000) != 0); // Vectorized flag
+
+    // Test MUL_INT -> TRYTE_MUL (SIMD placeholder)
+    const mul_instr = IRInstruction{
+        .opcode = .MUL_INT,
+        .dest = 0,
+        .src1 = 1,
+        .src2 = 2,
+        .imm = 0,
+    };
+    const simd_mul = compiler.scalarToSIMD(mul_instr);
+    try std.testing.expectEqual(jit.IROpcode.TRYTE_MUL, simd_mul.opcode);
+
+    // Test LOAD_LOCAL -> vector load marker
+    const load_instr = IRInstruction{
+        .opcode = .LOAD_LOCAL,
+        .dest = 0,
+        .src1 = 1,
+        .src2 = 0,
+        .imm = 0,
+    };
+    const simd_load = compiler.scalarToSIMD(load_instr);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, simd_load.opcode);
+    try std.testing.expect((simd_load.imm & 0x2000) != 0); // Vector load flag
 }
