@@ -562,6 +562,188 @@ pub const LoopUnroller = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONSTANT FOLDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Constant Folder - evaluates constant expressions at compile time
+pub const ConstantFolder = struct {
+    allocator: Allocator,
+    /// Statistics
+    constants_folded: usize = 0,
+    instructions_eliminated: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .constants_folded = 0,
+            .instructions_eliminated = 0,
+        };
+    }
+
+    /// Optimize IR by folding constant expressions
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Track constant values in registers
+        var reg_constants: [32]?i64 = [_]?i64{null} ** 32;
+
+        for (ir) |instr| {
+            switch (instr.opcode) {
+                .LOAD_CONST => {
+                    // Track this register as constant
+                    reg_constants[instr.dest] = instr.imm;
+                    try result.append(instr);
+                },
+
+                .ADD_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        // Both operands are constants - fold!
+                        const folded_value = a.? + b.?;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .SUB_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value = a.? - b.?;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .MUL_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null) {
+                        const folded_value = a.? * b.?;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .DIV_INT => {
+                    const a = reg_constants[instr.src1];
+                    const b = reg_constants[instr.src2];
+                    if (a != null and b != null and b.? != 0) {
+                        const folded_value = @divTrunc(a.?, b.?);
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                .NEG_INT => {
+                    const a = reg_constants[instr.src1];
+                    if (a != null) {
+                        const folded_value = -a.?;
+                        reg_constants[instr.dest] = folded_value;
+                        try result.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = folded_value,
+                        });
+                        self.constants_folded += 1;
+                        self.instructions_eliminated += 1;
+                    } else {
+                        reg_constants[instr.dest] = null;
+                        try result.append(instr);
+                    }
+                },
+
+                // Instructions that invalidate register constants
+                .STORE_LOCAL, .STORE_GLOBAL => {
+                    try result.append(instr);
+                },
+
+                .LOAD_LOCAL, .LOAD_GLOBAL => {
+                    reg_constants[instr.dest] = null;
+                    try result.append(instr);
+                },
+
+                // Control flow invalidates all constants (conservative)
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK => {
+                    for (&reg_constants) |*c| c.* = null;
+                    try result.append(instr);
+                },
+
+                else => {
+                    // Unknown instruction - invalidate dest and pass through
+                    if (instr.dest < 32) {
+                        reg_constants[instr.dest] = null;
+                    }
+                    try result.append(instr);
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { folded: usize, eliminated: usize } {
+        return .{
+            .folded = self.constants_folded,
+            .eliminated = self.instructions_eliminated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -611,8 +793,12 @@ pub const TieredCompiler = struct {
     thresholds: TierThresholds,
     /// Loop unroller for optimization
     loop_unroller: LoopUnroller,
+    /// Constant folder for optimization
+    constant_folder: ConstantFolder,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
+    /// Enable constant folding optimization
+    enable_folding: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -626,7 +812,9 @@ pub const TieredCompiler = struct {
             .native_cache = std.AutoHashMap(u32, ExecutableCode).init(allocator),
             .thresholds = TierThresholds{},
             .loop_unroller = LoopUnroller.init(allocator),
+            .constant_folder = ConstantFolder.init(allocator),
             .enable_unrolling = true,
+            .enable_folding = true,
             .stats = TieredStats.init(),
         };
     }
@@ -701,11 +889,21 @@ pub const TieredCompiler = struct {
 
         switch (state.current_tier) {
             .JIT_IR => {
-                // Optimize IR with loop unrolling if enabled
-                const optimized_ir = if (self.enable_unrolling)
-                    try self.loop_unroller.optimize(ir)
-                else
-                    try self.allocator.dupe(IRInstruction, ir);
+                // Apply optimizations: constant folding then loop unrolling
+                var optimized_ir = try self.allocator.dupe(IRInstruction, ir);
+                errdefer self.allocator.free(optimized_ir);
+
+                if (self.enable_folding) {
+                    const folded = try self.constant_folder.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = folded;
+                }
+
+                if (self.enable_unrolling) {
+                    const unrolled = try self.loop_unroller.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = unrolled;
+                }
 
                 try self.jit_ir_cache.put(address, optimized_ir);
                 self.stats.tier1_promotions += 1;
@@ -717,11 +915,21 @@ pub const TieredCompiler = struct {
             .Native => {
                 // Get optimized IR from cache or optimize now
                 const optimized_ir = self.jit_ir_cache.get(address) orelse blk: {
-                    if (self.enable_unrolling) {
-                        break :blk try self.loop_unroller.optimize(ir);
-                    } else {
-                        break :blk try self.allocator.dupe(IRInstruction, ir);
+                    var opt_ir = try self.allocator.dupe(IRInstruction, ir);
+
+                    if (self.enable_folding) {
+                        const folded = try self.constant_folder.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = folded;
                     }
+
+                    if (self.enable_unrolling) {
+                        const unrolled = try self.loop_unroller.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = unrolled;
+                    }
+
+                    break :blk opt_ir;
                 };
                 defer if (self.jit_ir_cache.get(address) == null) self.allocator.free(optimized_ir);
 
@@ -3182,6 +3390,184 @@ test "Benchmark: Loop unrolling effect" {
         std.debug.print("Loops detected: {d}, unrolled: {d}\n", .{ stats.detected, stats.unrolled });
         if (loop_per_iter > unrolled_per_iter) {
             std.debug.print("Speedup: {d:.2}x\n", .{loop_per_iter / unrolled_per_iter});
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONSTANT FOLDER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ConstantFolder fold addition" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 5, r1 = 3, r2 = r0 + r1 -> should fold to r2 = 8
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Should have: LOAD_CONST 5, LOAD_CONST 3, LOAD_CONST 8, RETURN
+    try std.testing.expectEqual(@as(usize, 4), optimized.len);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_CONST, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 8), optimized[2].imm);
+
+    const stats = folder.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.folded);
+}
+
+test "ConstantFolder fold multiplication" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 7, r1 = 6, r2 = r0 * r1 -> should fold to r2 = 42
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 6 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    try std.testing.expectEqual(@as(i64, 42), optimized[2].imm);
+}
+
+test "ConstantFolder chain folding" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 2, r1 = 3, r2 = r0 + r1, r3 = 7, r4 = r2 * r3
+    // Should fold to: r2 = 5, r4 = 35
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 3, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .MUL_INT, .dest = 4, .src1 = 2, .src2 = 3, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 4, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // r2 should be folded to 5
+    try std.testing.expectEqual(@as(i64, 5), optimized[2].imm);
+    // r4 should be folded to 35
+    try std.testing.expectEqual(@as(i64, 35), optimized[4].imm);
+
+    const stats = folder.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.folded);
+}
+
+test "ConstantFolder no folding for non-constants" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = load_local, r1 = 5, r2 = r0 + r1 -> cannot fold
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // ADD_INT should remain (not folded)
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[2].opcode);
+
+    const stats = folder.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.folded);
+}
+
+test "ConstantFolder division by zero protection" {
+    const allocator = std.testing.allocator;
+
+    var folder = ConstantFolder.init(allocator);
+
+    // IR: r0 = 10, r1 = 0, r2 = r0 / r1 -> should NOT fold (div by zero)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .DIV_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try folder.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // DIV_INT should remain (not folded due to div by zero)
+    try std.testing.expectEqual(jit.IROpcode.DIV_INT, optimized[2].opcode);
+}
+
+test "Benchmark: Constant folding effect" {
+    const allocator = std.testing.allocator;
+
+    // IR without folding: (2 + 3) * (4 + 5) = 5 * 9 = 45
+    const unfolded_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 3, .src1 = 0, .src2 = 0, .imm = 4 },
+        .{ .opcode = .LOAD_CONST, .dest = 4, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 5, .src1 = 3, .src2 = 4, .imm = 0 },
+        .{ .opcode = .MUL_INT, .dest = 6, .src1 = 2, .src2 = 5, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 6, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var folder = ConstantFolder.init(allocator);
+    const folded_ir = try folder.optimize(&unfolded_ir);
+    defer allocator.free(folded_ir);
+
+    const iterations: usize = 10000;
+
+    // Benchmark unfolded
+    const unfolded_start = std.time.nanoTimestamp();
+    var unfolded_result: i64 = 0;
+    for (0..iterations) |_| {
+        unfolded_result = interpretIRCode(&unfolded_ir);
+    }
+    const unfolded_end = std.time.nanoTimestamp();
+    const unfolded_time: u64 = @intCast(@max(0, unfolded_end - unfolded_start));
+
+    // Benchmark folded
+    const folded_start = std.time.nanoTimestamp();
+    var folded_result: i64 = 0;
+    for (0..iterations) |_| {
+        folded_result = interpretIRCode(folded_ir);
+    }
+    const folded_end = std.time.nanoTimestamp();
+    const folded_time: u64 = @intCast(@max(0, folded_end - folded_start));
+
+    // Both should produce same result
+    try std.testing.expectEqual(@as(i64, 45), unfolded_result);
+    try std.testing.expectEqual(@as(i64, 45), folded_result);
+
+    const stats = folder.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        const unfolded_per_iter = @as(f64, @floatFromInt(unfolded_time)) / @as(f64, @floatFromInt(iterations));
+        const folded_per_iter = @as(f64, @floatFromInt(folded_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Constant Folding Benchmark ===\n", .{});
+        std.debug.print("Unfolded: {d:.2} ns/iter ({d} instructions)\n", .{ unfolded_per_iter, unfolded_ir.len });
+        std.debug.print("Folded: {d:.2} ns/iter ({d} instructions)\n", .{ folded_per_iter, folded_ir.len });
+        std.debug.print("Constants folded: {d}\n", .{stats.folded});
+        if (unfolded_per_iter > folded_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{unfolded_per_iter / folded_per_iter});
         }
     }
 }
