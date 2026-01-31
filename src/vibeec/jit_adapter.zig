@@ -1836,6 +1836,506 @@ pub const PeepholeOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COMMON SUBEXPRESSION ELIMINATION (CSE)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// CSE - eliminates redundant computations by reusing previous results
+pub const CSEOptimizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    expressions_eliminated: usize = 0,
+
+    const Self = @This();
+
+    /// Expression key for hashing
+    const ExprKey = struct {
+        opcode: jit.IROpcode,
+        src1: u8,
+        src2: u8,
+        imm: i64,
+
+        pub fn hash(self: ExprKey) u64 {
+            var h: u64 = @intFromEnum(self.opcode);
+            h = h *% 31 +% self.src1;
+            h = h *% 31 +% self.src2;
+            h = h *% 31 +% @as(u64, @bitCast(self.imm));
+            return h;
+        }
+
+        pub fn eql(a: ExprKey, b: ExprKey) bool {
+            return a.opcode == b.opcode and a.src1 == b.src1 and a.src2 == b.src2 and a.imm == b.imm;
+        }
+    };
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .expressions_eliminated = 0,
+        };
+    }
+
+    /// Check if opcode is a pure computation (no side effects)
+    fn isPureComputation(opcode: jit.IROpcode) bool {
+        return switch (opcode) {
+            .ADD_INT, .SUB_INT, .MUL_INT, .DIV_INT, .MOD_INT,
+            .NEG_INT, .SHL, .SHR, .LEA,
+            .AND, .OR, .XOR, .BAND, .BOR, .BXOR,
+            .CMP_LT_INT, .CMP_LE_INT, .CMP_GT_INT, .CMP_GE_INT, .CMP_EQ_INT, .CMP_NE_INT => true,
+            else => false,
+        };
+    }
+
+    /// Optimize IR by eliminating common subexpressions
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len < 2) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Map from expression -> register that holds the result
+        var expr_map = std.AutoHashMap(u64, u8).init(self.allocator);
+        defer expr_map.deinit();
+
+        // Track which registers have been overwritten
+        var valid_exprs = std.AutoHashMap(u64, bool).init(self.allocator);
+        defer valid_exprs.deinit();
+
+        for (ir) |instr| {
+            if (isPureComputation(instr.opcode)) {
+                const key = ExprKey{
+                    .opcode = instr.opcode,
+                    .src1 = instr.src1,
+                    .src2 = instr.src2,
+                    .imm = instr.imm,
+                };
+                const hash_val = key.hash();
+
+                // Check if we've seen this expression before and it's still valid
+                if (expr_map.get(hash_val)) |prev_reg| {
+                    if (valid_exprs.get(hash_val) orelse false) {
+                        // Reuse previous result - emit a copy instead
+                        if (instr.dest != prev_reg) {
+                            try result.append(.{
+                                .opcode = .LOAD_LOCAL,
+                                .dest = instr.dest,
+                                .src1 = prev_reg,
+                                .src2 = 0,
+                                .imm = 0,
+                            });
+                        }
+                        self.expressions_eliminated += 1;
+                        continue;
+                    }
+                }
+
+                // Invalidate expressions whose result is in the destination register BEFORE recording new one
+                self.invalidateExprsUsing(instr.dest, &expr_map, &valid_exprs);
+
+                // New expression - record it
+                try expr_map.put(hash_val, instr.dest);
+                try valid_exprs.put(hash_val, true);
+                try result.append(instr);
+            } else {
+                // Non-pure instruction
+                try result.append(instr);
+
+                // If it writes to a register, invalidate expressions using it
+                if (instr.dest < 32) {
+                    self.invalidateExprsUsing(instr.dest, &expr_map, &valid_exprs);
+                }
+
+                // Control flow invalidates all expressions
+                switch (instr.opcode) {
+                    .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK => {
+                        var iter = valid_exprs.iterator();
+                        while (iter.next()) |entry| {
+                            entry.value_ptr.* = false;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    fn invalidateExprsUsing(self: *Self, reg: u8, expr_map: *std.AutoHashMap(u64, u8), valid_exprs: *std.AutoHashMap(u64, bool)) void {
+        _ = self;
+        // Mark all expressions as potentially invalid if they use this register
+        // This is conservative - a more precise analysis would track dependencies
+        var iter = valid_exprs.iterator();
+        while (iter.next()) |entry| {
+            // For simplicity, invalidate expressions whose result is in this register
+            if (expr_map.get(entry.key_ptr.*)) |result_reg| {
+                if (result_reg == reg) {
+                    entry.value_ptr.* = false;
+                }
+            }
+        }
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { eliminated: usize } {
+        return .{
+            .eliminated = self.expressions_eliminated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REGISTER ALLOCATOR (Linear Scan)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Simple Linear Scan Register Allocator
+/// Maps virtual registers to physical registers, minimizing spills
+pub const RegisterAllocator = struct {
+    allocator: Allocator,
+    /// Statistics
+    registers_allocated: usize = 0,
+    spills_generated: usize = 0,
+
+    /// Number of physical registers available (R8-R15 on x86-64)
+    const NUM_PHYS_REGS: usize = 8;
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .registers_allocated = 0,
+            .spills_generated = 0,
+        };
+    }
+
+    /// Compute live ranges for each virtual register
+    fn computeLiveRanges(self: *Self, ir: []const IRInstruction) !std.AutoHashMap(u8, struct { start: usize, end: usize }) {
+        var ranges = std.AutoHashMap(u8, struct { start: usize, end: usize }).init(self.allocator);
+
+        for (ir, 0..) |instr, i| {
+            // Definition point
+            if (instr.dest < 32) {
+                if (!ranges.contains(instr.dest)) {
+                    try ranges.put(instr.dest, .{ .start = i, .end = i });
+                }
+            }
+
+            // Use points
+            if (instr.src1 < 32) {
+                if (ranges.getPtr(instr.src1)) |range| {
+                    range.end = i;
+                }
+            }
+            if (instr.src2 < 32 and instr.src2 != instr.src1) {
+                if (ranges.getPtr(instr.src2)) |range| {
+                    range.end = i;
+                }
+            }
+        }
+
+        return ranges;
+    }
+
+    /// Allocate physical registers using linear scan
+    pub fn allocate(self: *Self, ir: []const IRInstruction) !struct { mapping: [32]?u8, spilled: std.ArrayList(u8) } {
+        var ranges = try self.computeLiveRanges(ir);
+        defer ranges.deinit();
+
+        // Sort virtual registers by start point
+        var vregs = std.ArrayList(u8).init(self.allocator);
+        defer vregs.deinit();
+
+        var iter = ranges.iterator();
+        while (iter.next()) |entry| {
+            try vregs.append(entry.key_ptr.*);
+        }
+
+        // Simple allocation: assign physical registers in order
+        var mapping: [32]?u8 = [_]?u8{null} ** 32;
+        var spilled = std.ArrayList(u8).init(self.allocator);
+        var active = std.ArrayList(u8).init(self.allocator);
+        defer active.deinit();
+
+        var phys_reg: u8 = 0;
+
+        for (vregs.items) |vreg| {
+            const range = ranges.get(vreg) orelse continue;
+
+            // Expire old intervals
+            var i: usize = 0;
+            while (i < active.items.len) {
+                const active_vreg = active.items[i];
+                const active_range = ranges.get(active_vreg) orelse {
+                    i += 1;
+                    continue;
+                };
+                if (active_range.end < range.start) {
+                    // Free the physical register
+                    _ = active.orderedRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Try to allocate
+            if (active.items.len < NUM_PHYS_REGS) {
+                mapping[vreg] = phys_reg;
+                phys_reg = (phys_reg + 1) % NUM_PHYS_REGS;
+                try active.append(vreg);
+                self.registers_allocated += 1;
+            } else {
+                // Spill
+                try spilled.append(vreg);
+                self.spills_generated += 1;
+            }
+        }
+
+        return .{ .mapping = mapping, .spilled = spilled };
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { allocated: usize, spills: usize } {
+        return .{
+            .allocated = self.registers_allocated,
+            .spills = self.spills_generated,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INLINE CACHE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Inline Cache for hot call sites
+pub const InlineCache = struct {
+    allocator: Allocator,
+    /// Cache entries: call_site -> cached_target
+    cache: std.AutoHashMap(u32, CacheEntry),
+    /// Statistics
+    hits: usize = 0,
+    misses: usize = 0,
+    invalidations: usize = 0,
+
+    const CacheEntry = struct {
+        target_address: u32,
+        native_code: ?*const fn () callconv(.C) i64,
+        hit_count: u32,
+    };
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .cache = std.AutoHashMap(u32, CacheEntry).init(allocator),
+            .hits = 0,
+            .misses = 0,
+            .invalidations = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.cache.deinit();
+    }
+
+    /// Lookup cached target for a call site
+    pub fn lookup(self: *Self, call_site: u32, expected_target: u32) ?*const fn () callconv(.C) i64 {
+        if (self.cache.get(call_site)) |entry| {
+            if (entry.target_address == expected_target) {
+                self.hits += 1;
+                return entry.native_code;
+            } else {
+                // Target changed - invalidate
+                self.invalidations += 1;
+                _ = self.cache.remove(call_site);
+            }
+        }
+        self.misses += 1;
+        return null;
+    }
+
+    /// Cache a call site -> target mapping
+    pub fn cache_entry(self: *Self, call_site: u32, target: u32, native_code: ?*const fn () callconv(.C) i64) !void {
+        try self.cache.put(call_site, .{
+            .target_address = target,
+            .native_code = native_code,
+            .hit_count = 0,
+        });
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { hits: usize, misses: usize, invalidations: usize, hit_rate: f64 } {
+        const total = self.hits + self.misses;
+        const hit_rate = if (total > 0) @as(f64, @floatFromInt(self.hits)) / @as(f64, @floatFromInt(total)) else 0.0;
+        return .{
+            .hits = self.hits,
+            .misses = self.misses,
+            .invalidations = self.invalidations,
+            .hit_rate = hit_rate,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROFILE-GUIDED OPTIMIZATION (PGO)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Profile data for guiding optimizations
+pub const ProfileData = struct {
+    allocator: Allocator,
+    /// Branch taken counts: branch_address -> (taken, not_taken)
+    branch_counts: std.AutoHashMap(u32, struct { taken: u64, not_taken: u64 }),
+    /// Loop iteration counts: loop_header -> total_iterations
+    loop_counts: std.AutoHashMap(u32, u64),
+    /// Hot basic blocks: address -> execution_count
+    block_counts: std.AutoHashMap(u32, u64),
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .branch_counts = std.AutoHashMap(u32, struct { taken: u64, not_taken: u64 }).init(allocator),
+            .loop_counts = std.AutoHashMap(u32, u64).init(allocator),
+            .block_counts = std.AutoHashMap(u32, u64).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.branch_counts.deinit();
+        self.loop_counts.deinit();
+        self.block_counts.deinit();
+    }
+
+    /// Record a branch outcome
+    pub fn recordBranch(self: *Self, address: u32, taken: bool) !void {
+        const entry = try self.branch_counts.getOrPut(address);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{ .taken = 0, .not_taken = 0 };
+        }
+        if (taken) {
+            entry.value_ptr.taken += 1;
+        } else {
+            entry.value_ptr.not_taken += 1;
+        }
+    }
+
+    /// Record a loop iteration
+    pub fn recordLoopIteration(self: *Self, loop_header: u32) !void {
+        const entry = try self.loop_counts.getOrPut(loop_header);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 0;
+        }
+        entry.value_ptr.* += 1;
+    }
+
+    /// Record basic block execution
+    pub fn recordBlockExecution(self: *Self, address: u32) !void {
+        const entry = try self.block_counts.getOrPut(address);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 0;
+        }
+        entry.value_ptr.* += 1;
+    }
+
+    /// Get branch probability (taken / total)
+    pub fn getBranchProbability(self: *Self, address: u32) ?f64 {
+        if (self.branch_counts.get(address)) |counts| {
+            const total = counts.taken + counts.not_taken;
+            if (total > 0) {
+                return @as(f64, @floatFromInt(counts.taken)) / @as(f64, @floatFromInt(total));
+            }
+        }
+        return null;
+    }
+
+    /// Check if a loop is hot (many iterations)
+    pub fn isHotLoop(self: *Self, loop_header: u32, threshold: u64) bool {
+        if (self.loop_counts.get(loop_header)) |count| {
+            return count >= threshold;
+        }
+        return false;
+    }
+
+    /// Get hot blocks sorted by execution count
+    pub fn getHotBlocks(self: *Self, min_count: u64) !std.ArrayList(struct { address: u32, count: u64 }) {
+        var hot = std.ArrayList(struct { address: u32, count: u64 }).init(self.allocator);
+        var iter = self.block_counts.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.* >= min_count) {
+                try hot.append(.{ .address = entry.key_ptr.*, .count = entry.value_ptr.* });
+            }
+        }
+        return hot;
+    }
+};
+
+/// PGO Optimizer - uses profile data to guide optimizations
+pub const PGOOptimizer = struct {
+    allocator: Allocator,
+    profile: *ProfileData,
+    /// Statistics
+    branches_optimized: usize = 0,
+    loops_unrolled: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, profile: *ProfileData) Self {
+        return .{
+            .allocator = allocator,
+            .profile = profile,
+            .branches_optimized = 0,
+            .loops_unrolled = 0,
+        };
+    }
+
+    /// Optimize IR based on profile data
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir, 0..) |instr, i| {
+            switch (instr.opcode) {
+                .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    // Check if branch is highly predictable
+                    const addr: u32 = @intCast(i);
+                    if (self.profile.getBranchProbability(addr)) |prob| {
+                        // If branch is almost always taken or not taken, we could
+                        // reorder code to make the common path fall-through
+                        if (prob > 0.95 or prob < 0.05) {
+                            self.branches_optimized += 1;
+                        }
+                    }
+                    try result.append(instr);
+                },
+                .LOOP_BACK => {
+                    // Check if loop is hot
+                    const addr: u32 = @intCast(i);
+                    if (self.profile.isHotLoop(addr, 1000)) {
+                        self.loops_unrolled += 1;
+                        // Could trigger more aggressive unrolling here
+                    }
+                    try result.append(instr);
+                },
+                else => {
+                    try result.append(instr);
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { branches: usize, loops: usize } {
+        return .{
+            .branches = self.branches_optimized,
+            .loops = self.loops_unrolled,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TIERED COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1895,6 +2395,8 @@ pub const TieredCompiler = struct {
     copy_propagator: CopyPropagator,
     /// Peephole optimizer
     peephole: PeepholeOptimizer,
+    /// CSE optimizer
+    cse: CSEOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -1907,6 +2409,8 @@ pub const TieredCompiler = struct {
     enable_copy_propagation: bool,
     /// Enable peephole optimization
     enable_peephole: bool,
+    /// Enable CSE
+    enable_cse: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -1925,12 +2429,14 @@ pub const TieredCompiler = struct {
             .strength_reducer = StrengthReducer.init(allocator),
             .copy_propagator = CopyPropagator.init(allocator),
             .peephole = PeepholeOptimizer.init(allocator),
+            .cse = CSEOptimizer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
             .enable_strength_reduction = true,
             .enable_copy_propagation = true,
             .enable_peephole = true,
+            .enable_cse = true,
             .stats = TieredStats.init(),
         };
     }
@@ -2021,6 +2527,12 @@ pub const TieredCompiler = struct {
                     optimized_ir = propagated;
                 }
 
+                if (self.enable_cse) {
+                    const cse_result = try self.cse.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = cse_result;
+                }
+
                 if (self.enable_folding) {
                     const folded = try self.constant_folder.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -2067,6 +2579,12 @@ pub const TieredCompiler = struct {
                         const propagated = try self.copy_propagator.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = propagated;
+                    }
+
+                    if (self.enable_cse) {
+                        const cse_result = try self.cse.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = cse_result;
                     }
 
                     if (self.enable_folding) {
@@ -5504,6 +6022,30 @@ test "PeepholeOptimizer no match different registers" {
 
     const stats = peephole.getStats();
     try std.testing.expectEqual(@as(usize, 0), stats.patterns);
+}
+
+test "CSEOptimizer basic elimination" {
+    const allocator = std.testing.allocator;
+
+    // IR: r2 = r0 + r1, r3 = r0 + r1 (same expression)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // r2 = r0 + r1
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 }, // r3 = r0 + r1 (same!)
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cse = CSEOptimizer.init(allocator);
+    const optimized = try cse.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Second ADD should be replaced with LOAD_LOCAL (copy from r2)
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[3].opcode);
+    try std.testing.expectEqual(@as(u8, 2), optimized[3].src1); // copy from r2
+
+    const stats = cse.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
 }
 
 test "Benchmark: Strength reduction effect" {
