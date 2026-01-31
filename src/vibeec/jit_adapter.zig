@@ -2531,24 +2531,38 @@ pub const InlineCandidate = struct {
 /// 3. It has no side effects (no stores, calls, etc.)
 pub const LICMOptimizer = struct {
     allocator: Allocator,
+    /// CFG for dominator analysis (optional, improves safety)
+    cfg: ?*CFG = null,
+    /// Dominator tree for safety checks (optional)
+    dom_tree: ?*DominatorTree = null,
     /// Statistics
     loops_analyzed: usize = 0,
     instructions_hoisted: usize = 0,
     iterations_saved: usize = 0,
+    unsafe_hoists_prevented: usize = 0,
 
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
+            .cfg = null,
+            .dom_tree = null,
             .loops_analyzed = 0,
             .instructions_hoisted = 0,
             .iterations_saved = 0,
+            .unsafe_hoists_prevented = 0,
         };
     }
 
+    /// Set CFG and dominator tree for enhanced safety checks
+    pub fn setDominatorInfo(self: *Self, cfg: *CFG, dom_tree: *DominatorTree) void {
+        self.cfg = cfg;
+        self.dom_tree = dom_tree;
+    }
+
     /// Check if an instruction has side effects (cannot be moved)
-    fn hasSideEffects(instr: IRInstruction) bool {
+    pub fn hasSideEffects(instr: IRInstruction) bool {
         return switch (instr.opcode) {
             .STORE_LOCAL, .STORE_GLOBAL, .CALL, .TAIL_CALL, .RETURN,
             .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK,
@@ -2588,6 +2602,51 @@ pub const LICMOptimizer = struct {
         return true;
     }
 
+    /// Check if preheader dominates all loop exits (safe to hoist)
+    /// This ensures hoisted code will execute on all paths through the loop
+    fn preheaderDominatesLoopExits(self: *Self, loop: LoopInfo) bool {
+        // If no dominator info, assume safe (backward compatible)
+        const cfg = self.cfg orelse return true;
+        const dom_tree = self.dom_tree orelse return true;
+
+        // Find preheader block (block containing instruction before loop start)
+        const preheader_block = if (loop.start_idx > 0)
+            cfg.instr_to_block.get(loop.start_idx - 1)
+        else
+            cfg.entry_block;
+
+        const preheader = preheader_block orelse return true;
+
+        // Find loop header block
+        const header_block = cfg.instr_to_block.get(loop.start_idx) orelse return true;
+
+        // Preheader must dominate loop header for safe hoisting
+        if (!dom_tree.dominates(preheader, header_block)) {
+            return false;
+        }
+
+        // Check that preheader dominates all blocks that can exit the loop
+        // (blocks with successors outside the loop)
+        for (cfg.blocks.items) |block| {
+            // Check if block is in loop
+            if (block.start_idx >= loop.start_idx and block.end_idx <= loop.end_idx) {
+                // Check if block has exit edges
+                for (block.successors.items) |succ| {
+                    const succ_block = cfg.getBlock(succ) orelse continue;
+                    // If successor is outside loop, this is an exit
+                    if (succ_block.start_idx < loop.start_idx or succ_block.start_idx > loop.end_idx) {
+                        // Preheader must dominate this exit path
+                        if (!dom_tree.dominates(preheader, block.id)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
     /// Check if it's safe to hoist an instruction (no dependencies broken)
     fn canHoist(self: *Self, ir: []const IRInstruction, loop: LoopInfo, instr_idx: usize) bool {
         const instr = ir[instr_idx];
@@ -2602,6 +2661,13 @@ pub const LICMOptimizer = struct {
             if (other.src1 == instr.dest or other.src2 == instr.dest) {
                 return false;
             }
+        }
+
+        // NEW: Dominator-based safety check
+        // Ensure preheader dominates all loop exits
+        if (!self.preheaderDominatesLoopExits(loop)) {
+            self.unsafe_hoists_prevented += 1;
+            return false;
         }
 
         return true;
@@ -2676,12 +2742,19 @@ pub const LICMOptimizer = struct {
         return result.toOwnedSlice();
     }
 
+    /// Optimize with CFG/dominator analysis for enhanced safety
+    pub fn optimizeWithDomInfo(self: *Self, ir: []const IRInstruction, cfg: *CFG, dom_tree: *DominatorTree) ![]IRInstruction {
+        self.setDominatorInfo(cfg, dom_tree);
+        return self.optimize(ir);
+    }
+
     /// Get statistics
-    pub fn getStats(self: *Self) struct { loops: usize, hoisted: usize, saved: usize } {
+    pub fn getStats(self: *Self) struct { loops: usize, hoisted: usize, saved: usize, prevented: usize } {
         return .{
             .loops = self.loops_analyzed,
             .hoisted = self.instructions_hoisted,
             .saved = self.iterations_saved,
+            .prevented = self.unsafe_hoists_prevented,
         };
     }
 };
@@ -4005,6 +4078,15 @@ pub const TieredCompiler = struct {
 
                 // LICM - hoist loop-invariant code (before loop unrolling)
                 if (self.enable_licm) {
+                    // Use dominator info if CFG analysis is enabled
+                    if (self.enable_cfg_analysis) {
+                        try self.buildCFGAnalysis(optimized_ir);
+                        if (self.cfg) |*cfg| {
+                            if (self.dom_tree) |*dt| {
+                                self.licm.setDominatorInfo(cfg, dt);
+                            }
+                        }
+                    }
                     const licm_result = try self.licm.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
                     optimized_ir = licm_result;
@@ -9152,6 +9234,84 @@ test "LICMOptimizer no loops" {
 
     // Output should be same as input
     try std.testing.expectEqual(ir.len, optimized.len);
+}
+
+test "LICMOptimizer with dominator info" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    // Simple loop with invariant code
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 100 }, // invariant
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // loop body
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Build CFG and dominator tree
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+    try cfg.build(&ir);
+
+    var dom_tree = DominatorTree.init(allocator);
+    defer dom_tree.deinit();
+    try dom_tree.build(&cfg);
+
+    // Optimize with dominator info
+    const optimized = try licm.optimizeWithDomInfo(&ir, &cfg, &dom_tree);
+    defer allocator.free(optimized);
+
+    const stats = licm.getStats();
+
+    // Should have analyzed loops
+    try std.testing.expect(stats.loops >= 1);
+}
+
+test "LICMOptimizer setDominatorInfo" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    // Initially no dominator info
+    try std.testing.expectEqual(@as(?*CFG, null), licm.cfg);
+    try std.testing.expectEqual(@as(?*DominatorTree, null), licm.dom_tree);
+
+    // Build CFG and dominator tree
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+    try cfg.build(&ir);
+
+    var dom_tree = DominatorTree.init(allocator);
+    defer dom_tree.deinit();
+    try dom_tree.build(&cfg);
+
+    // Set dominator info
+    licm.setDominatorInfo(&cfg, &dom_tree);
+
+    // Now should have dominator info
+    try std.testing.expect(licm.cfg != null);
+    try std.testing.expect(licm.dom_tree != null);
+}
+
+test "LICMOptimizer stats include prevented" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    const stats = licm.getStats();
+
+    // Initially all stats are zero
+    try std.testing.expectEqual(@as(usize, 0), stats.loops);
+    try std.testing.expectEqual(@as(usize, 0), stats.hoisted);
+    try std.testing.expectEqual(@as(usize, 0), stats.saved);
+    try std.testing.expectEqual(@as(usize, 0), stats.prevented);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
