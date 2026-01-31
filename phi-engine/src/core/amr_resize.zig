@@ -66,11 +66,9 @@ pub fn amrInit(config: AMRConfig) AMRState {
 
 /// Refine mesh to next level
 /// O(1) operation using golden ratio
-pub fn amrRefine(state: AMRState) !AMRState {
-    const level_val = @intFromEnum(state.level);
-    const max_level_val = @intFromEnum(state.config.max_depth);
-
-    if (level_val >= max_level_val) {
+pub fn amrRefine(state: *AMRState) !void {
+    // Check depth constraints first
+    if (state.level == state.config.max_depth) {
         return error.MeshAlreadyMaxDepth;
     }
 
@@ -79,38 +77,43 @@ pub fn amrRefine(state: AMRState) !AMRState {
     const current_size = state.bounds.x_max - state.bounds.x_min;
     const new_size = current_size / state.config.refinement_factor;
 
+    // Calculate center of current bounds
     const center_x = (state.bounds.x_min + state.bounds.x_max) / 2.0;
     const center_y = (state.bounds.y_min + state.bounds.y_max) / 2.0;
 
-    const new_bounds = MeshBounds{
+    // Update state fields directly (Mutation!)
+    state.bounds = MeshBounds{
         .x_min = center_x - new_size / 2.0,
         .x_max = center_x + new_size / 2.0,
         .y_min = center_y - new_size / 2.0,
         .y_max = center_y + new_size / 2.0,
     };
 
-    // Note: @enumFromInt might take 1 arg in Zig 0.15
-    // If it errors, use std.meta.intToEnum instead
-    return .{
-        .level = @enumFromInt(level_val + 1),
-        .bounds = new_bounds,
-        .config = state.config,
+    // Determine next level using switch (Safe & Idiomatic Zig)
+    // Maps: coarse -> medium, medium -> fine, fine -> ultra_fine
+    state.level = switch (state.level) {
+        MeshLevel.coarse => MeshLevel.medium,
+        MeshLevel.medium => MeshLevel.fine,
+        MeshLevel.fine => MeshLevel.ultra_fine,
+        MeshLevel.ultra_fine => return error.MeshAlreadyMaxDepth,
     };
 }
 
 /// Check if mesh needs refinement
 /// Uses phi-based threshold
 pub fn amrNeedsRefinement(state: AMRState) bool {
+    // Simple heuristic: if level is not max, needs refinement
+    // (In real AMR, this would check error indicator)
     const level_val = @intFromEnum(state.level);
     const max_level_val = @intFromEnum(state.config.max_depth);
 
-    // Simple heuristic: if level is not max, needs refinement
     return level_val < max_level_val;
 }
 
 /// Coarsen mesh to previous level
 /// Inverse of refinement
-pub fn amrCoarsen(state: AMRState) !AMRState {
+pub fn amrCoarsen(state: *AMRState) !void {
+    // Check level constraints first
     if (state.level == MeshLevel.coarse) {
         return error.MeshAlreadyCoarsest;
     }
@@ -119,25 +122,27 @@ pub fn amrCoarsen(state: AMRState) !AMRState {
     const current_size = state.bounds.x_max - state.bounds.x_min;
     const new_size = current_size * state.config.refinement_factor;
 
-    const new_bounds = MeshBounds{
+    // Update state fields directly (Mutation!)
+    state.bounds = MeshBounds{
         .x_min = 0.0,
         .x_max = new_size,
         .y_min = 0.0,
         .y_max = new_size,
     };
 
-    const level_val = @intFromEnum(state.level);
-
-    return .{
-        .level = @enumFromInt(level_val - 1),
-        .bounds = new_bounds,
-        .config = state.config,
+    // Determine previous level using switch
+    // Maps: medium -> coarse, fine -> medium, ultra_fine -> fine
+    state.level = switch (state.level) {
+        MeshLevel.ultra_fine => MeshLevel.fine,
+        MeshLevel.fine => MeshLevel.medium,
+        MeshLevel.medium => MeshLevel.coarse,
+        MeshLevel.coarse => return error.MeshAlreadyCoarsest,
     };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════════════╗
-// ║                          TESTS                                                ║
-// ╚═════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                          TESTS                                                         ║
+// ╚═══════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 test "AMR Resize: initialize" {
     const config = AMRConfig{
@@ -159,7 +164,7 @@ test "AMR Resize: refine once" {
     };
 
     var state = amrInit(config);
-    state = try amrRefine(state);
+    try amrRefine(&state);
 
     try std.testing.expectEqual(MeshLevel.medium, state.level);
     try std.testing.expectApproxEqAbs(@as(f64, 50.0), state.bounds.x_max, 0.001);
@@ -173,8 +178,8 @@ test "AMR Resize: refine twice" {
     };
 
     var state = amrInit(config);
-    state = try amrRefine(state);
-    state = try amrRefine(state);
+    try amrRefine(&state);
+    try amrRefine(&state);
 
     try std.testing.expectEqual(MeshLevel.fine, state.level);
     try std.testing.expectApproxEqAbs(@as(f64, 25.0), state.bounds.x_max, 0.001);
@@ -190,7 +195,7 @@ test "AMR Resize: max depth error" {
     var state = amrInit(config);
     state.level = MeshLevel.fine; // Force max depth
 
-    const result = amrRefine(state);
+    const result = amrRefine(&state);
     try std.testing.expectError(error.MeshAlreadyMaxDepth, result);
 }
 
@@ -204,7 +209,7 @@ test "AMR Resize: coarsen" {
     var state = amrInit(config);
     state.level = MeshLevel.medium; // Set to medium
 
-    state = try amrCoarsen(state);
+    try amrCoarsen(&state);
 
     try std.testing.expectEqual(MeshLevel.coarse, state.level);
     try std.testing.expectApproxEqAbs(@as(f64, 100.0), state.bounds.x_max, 0.001);
@@ -219,7 +224,7 @@ test "AMR Resize: coarsen error" {
 
     var state = amrInit(config);
 
-    const result = amrCoarsen(state);
+    const result = amrCoarsen(&state);
     try std.testing.expectError(error.MeshAlreadyCoarsest, result);
 }
 

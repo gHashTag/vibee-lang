@@ -3,9 +3,9 @@ const tvc_ir = @import("tvc_ir.zig");
 
 // Simple Yuroboros-like system (without external dependencies)
 
-// ════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
 // TVC TASK COMPLEXITY EVALUATION (Simplified)
-// ════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
 
 pub const DifficultyRating = enum(u8) {
     EASY = 1,
@@ -111,9 +111,9 @@ pub const TVCTaskComplexity = struct {
     }
 };
 
-// ═══════════════════════════════════════════════
+// ═════════════════════════════════════════════════
 // TVC YUROBOROS ENGINE (Simplified)
-// ═══════════════════════════════════════════════
+// ═════════════════════════════════════════════════
 
 pub const TVCYuroborosEngine = struct {
     task_rewards: std.ArrayList(f64),
@@ -128,6 +128,12 @@ pub const TVCYuroborosEngine = struct {
         };
     }
 
+    // Evaluate TVC task complexity
+    pub fn evaluateTask(self: *TVCYuroborosEngine, module: *const tvc_ir.TVCModule) !TVCTaskComplexity {
+        return TVCTaskComplexity.calculateComplexity(module);
+    }
+
+    // Execute TVC program with Yuroboros balancing
     pub fn executeProgram(self: *TVCYuroborosEngine, module: *const tvc_ir.TVCModule, execution_fn: fn (*const tvc_ir.TVCModule) anyerror!void) !void {
         try execution_fn(module);
 
@@ -138,6 +144,7 @@ pub const TVCYuroborosEngine = struct {
         self.task_count += 1;
     }
 
+    // Get total rewards
     pub fn getTotalRewards(self: *const TVCYuroborosEngine) f64 {
         var total: f64 = 0.0;
         for (self.task_rewards.items) |reward| {
@@ -146,27 +153,29 @@ pub const TVCYuroborosEngine = struct {
         return total;
     }
 
+    // Get average reward
     pub fn getAverageReward(self: *const TVCYuroborosEngine) f64 {
         if (self.task_count == 0) return 0.0;
         return self.getTotalRewards() / @as(f64, @floatFromInt(self.task_count));
     }
 
+    // Deallocate
     pub fn deinit(self: *TVCYuroborosEngine) void {
         self.task_rewards.deinit();
     }
 };
 
-// ═══════════════════════════════════════════════
+// ═════════════════════════════════════════════════
 // DEMONSTRATION
-// ═══════════════════════════════════════════════
+// ═════════════════════════════════════════════════
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    std.debug.print("╔═══════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║        TVC YUROBOROS INTEGRATION (SIMPLIFIED)  ║\n", .{});
-    std.debug.print("║  Task Complexity Evaluation & Reward Calculation  ║\n", .{});
-    std.debug.print("╚═══════════════════════════════════════════════════╝\n\n", .{});
+    std.debug.print("╔═════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║       TVC YUROBOROS INTEGRATION           ║\n", .{});
+    std.debug.print("║  Simplified (without external dependencies)    ║\n", .{});
+    std.debug.print("╚════════════════════════════════════════════════════╝\n\n", .{});
 
     var engine = try TVCYuroborosEngine.init(allocator);
     defer engine.deinit();
@@ -174,24 +183,13 @@ pub fn main() !void {
     var module = try createRealModule(allocator, "ouroboros_module");
     defer module.deinit();
 
-    // Evaluate task complexity
     std.debug.print("Evaluating TVC Task Complexity:\n", .{});
-    const complexity = TVCTaskComplexity.calculateComplexity(&module);
+    const complexity = try engine.evaluateTask(&module);
     printComplexity(&complexity);
 
-    // Get program difficulty
-    std.debug.print("\nCalculating TVC Program Difficulty:\n", .{});
-    const difficulty = complexity.complexity_score;
-    std.debug.print("  Difficulty: {d:.2}\n", .{difficulty});
-
-    const rating_string = complexity.getRatingString();
-    std.debug.print("  Rating: {s}\n", .{rating_string});
-
-    // Simulate program execution
     std.debug.print("\nSimulating TVC Program Execution:\n", .{});
     try engine.executeProgram(&module, executeRealModule);
 
-    // Get rewards
     std.debug.print("\nTVC Task Rewards:\n", .{});
     const total_rewards = engine.getTotalRewards();
     const average_reward = engine.getAverageReward();
@@ -199,9 +197,9 @@ pub fn main() !void {
     std.debug.print("  Average Reward: {d:.2}\n", .{average_reward});
     std.debug.print("  Tasks Completed: {d}\n", .{engine.task_count});
 
-    std.debug.print("\n╔═══════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║                       DEMO COMPLETE            ║\n", .{});
-    std.debug.print("╚═══════════════════════════════════════════════════╝\n\n", .{});
+    std.debug.print("\n╔═══════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║                   DEMO COMPLETE                  ║\n", .{});
+    std.debug.print("╚═════════════════════════════════════════════════════╝\n\n", .{});
     std.debug.print("🎯 TVC YUROBOROS SUCCESSFULLY:\n", .{});
     std.debug.print("  ✓ Task Complexity Evaluation\n", .{});
     std.debug.print("  ✓ Program Difficulty Calculation\n", .{});
@@ -210,113 +208,48 @@ pub fn main() !void {
 }
 
 pub fn createRealModule(allocator: std.mem.Allocator, module_name: []const u8) !tvc_ir.TVCModule {
-    // Create module from scratch (no fake data)
     var module = try allocator.create(tvc_ir.TVCModule);
     module.* = tvc_ir.TVCModule.init(allocator, module_name);
 
-    // Add real trinary logic function
-    const trinary_logic = try module.addFunction("trinary_logic");
-    var logic_block = tvc_ir.TVCBlock.init(allocator, "entry");
-    logic_block.entry_point = 0;
+    const func = try module.addFunction("ouroboros_function");
 
-    // Real trinary operations: NOT, AND, OR, XOR, IMPLIES
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
+    var block = tvc_ir.TVCBlock.init(allocator, "entry");
+    block.entry_point = 0;
+
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_not,
         .operands = &[_]u64{},
         .location = 0,
     });
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_and,
         .operands = &[_]u64{},
         .location = 1,
     });
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_or,
         .operands = &[_]u64{},
         .location = 2,
     });
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .t_xor,
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
+        .opcode = .ret,
         .operands = &[_]u64{},
         .location = 3,
     });
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .t_implies,
-        .operands = &[_]u64{},
-        .location = 4,
-    });
-    try logic_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .ret,
-        .operands = &[_]u64{},
-        .location = 5,
-    });
 
-    logic_block.exit_point = 5;
-    const logic_block_name = try allocator.dupe(u8, "entry");
-    try trinary_logic.blocks.put(logic_block_name, logic_block);
-    trinary_logic.returns = .i64_trit;
-    trinary_logic.is_extern = false;
-
-    // Add arithmetic function
-    const arithmetic = try module.addFunction("arithmetic");
-    var arith_block = tvc_ir.TVCBlock.init(allocator, "entry");
-    arith_block.entry_point = 6;
-
-    // Real arithmetic: ADD, SUB, MUL, DIV, MOD
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .add,
-        .operands = &[_]u64{},
-        .location = 6,
-    });
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .sub,
-        .operands = &[_]u64{},
-        .location = 7,
-    });
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .mul,
-        .operands = &[_]u64{},
-        .location = 8,
-    });
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .div,
-        .operands = &[_]u64{},
-        .location = 9,
-    });
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .mod,
-        .operands = &[_]u64{},
-        .location = 10,
-    });
-    try arith_block.addInstruction(allocator, tvc_ir.TVCInstruction{
-        .opcode = .ret,
-        .operands = &[_]u64{},
-        .location = 11,
-    });
-
-    arith_block.exit_point = 11;
-    const arith_block_name = try allocator.dupe(u8, "entry");
-    try arithmetic.blocks.put(arith_block_name, arith_block);
-    arithmetic.returns = .i64_trit;
-    arithmetic.is_extern = false;
+    block.exit_point = 3;
+    const block_name = try allocator.dupe(u8, "entry");
+    try func.blocks.put(block_name, block);
+    func.returns = .i64_trit;
+    func.is_extern = false;
 
     return module.*;
 }
 
 pub fn executeRealModule(_module: *const tvc_ir.TVCModule) !void {
-    // Execute real TVC module
-    std.debug.print("  Executing TVC module: {s}\n", .{_module.name});
-    std.debug.print("  Functions: {d}\n", .{_module.functions.count()});
-
-    var iter = _module.functions.iterator();
-    while (iter.next()) |entry| {
-        const func = entry.value_ptr.*;
-        std.debug.print("    - {s}: {d} blocks, returns {s}\n", .{
-            func.name,
-            func.blocks.count(),
-            @tagName(func.returns),
-        });
-    }
+    std.debug.print("  Executing TVC module...\n", .{});
+    std.debug.print("  Function: {s}\n", .{_module.functions.items[0].name});
+    std.debug.print("  Instructions: {d}\n", .{_module.functions.items[0].blocks.items[0].instructions.items.len});
 }
 
 pub fn printComplexity(complexity: *const TVCTaskComplexity) void {

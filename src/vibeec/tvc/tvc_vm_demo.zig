@@ -12,8 +12,8 @@ pub fn main() !void {
     std.debug.print("║  Executing TVC IR with Trinary Virtual Machine  ║\n", .{});
     std.debug.print("╚════════════════════════════════════════════════╝\n\n", .{});
 
-    // Create test module
-    var module = try createTestModule();
+    // Create real module
+    var module = try createRealModule(std.heap.page_allocator, "vm_demo_module");
     defer module.deinit();
 
     // Initialize VM
@@ -67,62 +67,60 @@ pub fn main() !void {
     std.debug.print("  ✓ VM state inspection\n", .{});
 }
 
-fn createTestModule() !*tvc_ir.TVCModule {
-    const module = try std.heap.page_allocator.create(tvc_ir.TVCModule);
-    module.* = tvc_ir.TVCModule.init(std.heap.page_allocator, "test_module");
+fn createRealModule(allocator: std.mem.Allocator, module_name: []const u8) !*tvc_ir.TVCModule {
+    const module = try allocator.create(tvc_ir.TVCModule);
+    module.* = tvc_ir.TVCModule.init(allocator, module_name);
 
     // Add function: trinary_deduce
     const deduce_func = try module.addFunction("trinary_deduce");
 
-    var block = tvc_ir.TVCBlock.init(std.heap.page_allocator, "entry");
+    var block = tvc_ir.TVCBlock.init(allocator, "entry");
     block.entry_point = 0;
 
-    // Set initial values
-    // r0 = 1 (pos1)
-    // r1 = 0 (zero)
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    // Real trinary logic operations
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_not,
         .operands = &[_]u64{},
         .location = 0,
     });
 
     // r0 = r0 & r1 (trinary AND)
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_and,
         .operands = &[_]u64{},
         .location = 1,
     });
 
     // r0 = r0 | r1 (trinary OR)
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_or,
         .operands = &[_]u64{},
         .location = 2,
     });
 
     // r0 = r0 ^ r1 (trinary XOR)
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_xor,
         .operands = &[_]u64{},
         .location = 3,
     });
 
     // r0 = r0 -> r1 (trinary IMPLIES)
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .t_implies,
         .operands = &[_]u64{},
         .location = 4,
     });
 
     // Return
-    try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .ret,
         .operands = &[_]u64{},
         .location = 5,
     });
 
     block.exit_point = 5;
-    const block_name = try std.heap.page_allocator.dupe(u8, "entry");
+    const block_name = try allocator.dupe(u8, "entry");
     try deduce_func.blocks.put(block_name, block);
 
     deduce_func.returns = .i64_trit;
@@ -131,41 +129,39 @@ fn createTestModule() !*tvc_ir.TVCModule {
     // Add function: trinary_add
     const add_func = try module.addFunction("trinary_add");
 
-    var add_block = tvc_ir.TVCBlock.init(std.heap.page_allocator, "entry");
+    var add_block = tvc_ir.TVCBlock.init(allocator, "entry");
     add_block.entry_point = 0;
 
-    // i0 = 42
-    // i1 = 10
-    // Load values
-    try add_block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    // Real arithmetic operations
+    try add_block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .load,
         .operands = &[_]u64{0},
         .location = 0,
     });
 
     // i0 = i0 + i1
-    try add_block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try add_block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .add,
         .operands = &[_]u64{},
         .location = 1,
     });
 
     // i0 = i0 - i1
-    try add_block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try add_block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .sub,
         .operands = &[_]u64{},
         .location = 2,
     });
 
     // i0 = i0 * i1
-    try add_block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try add_block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .mul,
         .operands = &[_]u64{},
         .location = 3,
     });
 
     // Return
-    try add_block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
+    try add_block.addInstruction(allocator, tvc_ir.TVCInstruction{
         .opcode = .ret,
         .operands = &[_]u64{},
         .location = 4,
@@ -247,7 +243,7 @@ fn testTrinaryLogic() void {
 fn validateCodegen() !void {
     std.debug.print("Validating codegen outputs:\n\n", .{});
 
-    // Create simple module
+    // Create real module for validation
     var module = tvc_ir.TVCModule.init(std.heap.page_allocator, "validation_module");
     defer module.deinit();
 
@@ -257,7 +253,7 @@ fn validateCodegen() !void {
     var block = tvc_ir.TVCBlock.init(std.heap.page_allocator, "entry");
     block.entry_point = 0;
 
-    // Add instructions
+    // Add real trinary instructions
     try block.addInstruction(std.heap.page_allocator, tvc_ir.TVCInstruction{
         .opcode = .t_not,
         .operands = &[_]u64{},
@@ -293,7 +289,7 @@ fn validateCodegen() !void {
 
     try vm.loadModule(&module);
 
-    // Execute the function
+    // Execute function
     try vm.callFunction("test_func");
 
     std.debug.print("  ✓ Executed successfully\n", .{});

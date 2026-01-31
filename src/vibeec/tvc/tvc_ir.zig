@@ -227,8 +227,8 @@ pub const CompileResult = struct {
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *CompileResult) void {
-        self.allocator.free(self.binary_code);
-        self.allocator.free(self.ternary_code);
+        if (self.binary_code.len > 0) self.allocator.free(self.binary_code);
+        if (self.ternary_code.len > 0) self.allocator.free(self.ternary_code);
     }
 };
 
@@ -261,21 +261,40 @@ pub const TVCCompiler = struct {
             .allocator = allocator,
         };
 
+        // Count total instructions
+        var total_instructions: u32 = 0;
+        var func_iter = self.module.functions.iterator();
+        while (func_iter.next()) |entry| {
+            var block_iter = entry.value_ptr.blocks.iterator();
+            while (block_iter.next()) |block_entry| {
+                total_instructions += @intCast(block_entry.value_ptr.instructions.items.len);
+            }
+        }
+
         // Select code generator based on target
         switch (self.target) {
             .binary_x86_64, .binary_arm64, .binary_wasm => {
                 result.binary_code = try self.generateBinaryCode(allocator);
+                result.metadata.code_size = @intCast(result.binary_code.len);
             },
             .ternary_trit_cpu, .ternary_qubit_hybrid => {
                 result.ternary_code = try self.generateTernaryCode(allocator);
+                result.metadata.code_size = @intCast(result.ternary_code.len);
             },
         }
 
+        // Calculate source hash (simple hash of module name)
+        var hash: [32]u8 = [_]u8{0} ** 32;
+        for (self.module.name, 0..) |c, i| {
+            if (i >= 32) break;
+            hash[i] = @as(u8, @truncate(@as(usize, @intCast(c))));
+        }
+
         result.metadata = CompileMetadata{
-            .source_hash = [1]u8{0} ** 32,
+            .source_hash = hash,
             .target = self.target,
-            .instructions_count = 0,
-            .code_size = 0,
+            .instructions_count = total_instructions,
+            .code_size = result.metadata.code_size,
             .timestamp = std.time.timestamp(),
         };
 
@@ -283,16 +302,33 @@ pub const TVCCompiler = struct {
     }
 
     fn generateBinaryCode(self: *TVCCompiler, allocator: std.mem.Allocator) ![]const u8 {
-        _ = self;
-        _ = allocator;
-        // TODO: Implement binary code generation
-        return "binary_placeholder";
+        const BinaryEmitter = @import("binary_codegen.zig").BinaryEmitter;
+        const BinaryTarget = @import("binary_codegen.zig").BinaryTarget;
+
+        // Map TargetArch to BinaryTarget
+        const binary_target = switch (self.target) {
+            .binary_x86_64 => BinaryTarget.x86_64,
+            .binary_arm64 => BinaryTarget.arm64,
+            .binary_wasm => BinaryTarget.wasm,
+            else => unreachable,
+        };
+
+        var emitter = BinaryEmitter.init(allocator, binary_target);
+        return try emitter.emitModule(self.module);
     }
 
     fn generateTernaryCode(self: *TVCCompiler, allocator: std.mem.Allocator) ![]const u8 {
-        _ = self;
-        _ = allocator;
-        // TODO: Implement ternary code generation
-        return "ternary_placeholder";
+        const TernaryEmitter = @import("ternary_codegen.zig").TernaryEmitter;
+        const TernaryTarget = @import("ternary_codegen.zig").TernaryTarget;
+
+        // Map TargetArch to TernaryTarget
+        const ternary_target = switch (self.target) {
+            .ternary_trit_cpu => TernaryTarget.trit_cpu,
+            .ternary_qubit_hybrid => TernaryTarget.qubit_hybrid,
+            else => unreachable,
+        };
+
+        var emitter = TernaryEmitter.init(allocator, ternary_target);
+        return try emitter.emitModule(self.module);
     }
 };
