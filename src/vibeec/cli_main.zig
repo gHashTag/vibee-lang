@@ -125,7 +125,7 @@ pub fn main() !void {
         },
         .tri_fmt => {
             // .tri format operations
-            try tri_cmd.runTriCommand(allocator, args[2..]);
+            _ = try tri_cmd.runTriCommand(allocator, args[2..]);
         },
         .version => printVersion(),
         .help => printUsage(),
