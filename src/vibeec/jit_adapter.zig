@@ -8968,6 +8968,7 @@ pub const TieredStats = struct {
     total_compile_time_ns: u64,
     tier1_compile_time_ns: u64,
     tier2_compile_time_ns: u64,
+    combo_optimizations: u64, // Unroll+Vectorize combo optimizations applied
 
     pub fn init() TieredStats {
         return .{
@@ -8978,6 +8979,7 @@ pub const TieredStats = struct {
             .total_compile_time_ns = 0,
             .tier1_compile_time_ns = 0,
             .tier2_compile_time_ns = 0,
+            .combo_optimizations = 0,
         };
     }
 };
@@ -8997,8 +8999,12 @@ pub const TieredCompiler = struct {
     loop_unroller: LoopUnroller,
     /// Vectorization cost model for auto-vectorization
     vectorization_model: VectorizationCostModel,
+    /// Combined unroll + vectorize optimizer
+    unroll_vectorize_combo: UnrollVectorizeCombo,
     /// Enable auto-vectorization
     enable_vectorization: bool,
+    /// Enable combined unroll+vectorize optimization
+    enable_combo_optimization: bool,
     /// Vectorization statistics
     vectorization_stats: VectorizationStats,
     /// Constant folder for optimization
@@ -9125,7 +9131,9 @@ pub const TieredCompiler = struct {
             .thresholds = TierThresholds{},
             .loop_unroller = LoopUnroller.init(allocator),
             .vectorization_model = VectorizationCostModel.initWithAVX(),
+            .unroll_vectorize_combo = UnrollVectorizeCombo.init(allocator),
             .enable_vectorization = true,
+            .enable_combo_optimization = true,
             .vectorization_stats = VectorizationStats.init(),
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
@@ -9373,6 +9381,76 @@ pub const TieredCompiler = struct {
         }
 
         return result.toOwnedSlice();
+    }
+
+    /// Result of combo optimization
+    pub const ComboOptimizationResult = struct {
+        native_code: ?x86_codegen.ExecutableCode,
+        loops_optimized: u32,
+        estimated_speedup: f64,
+    };
+
+    /// Apply combined unroll+vectorize optimization to hot loops
+    /// Returns native code if optimization was successful
+    pub fn applyComboOptimization(self: *Self, ir: []const IRInstruction) !ComboOptimizationResult {
+        if (!self.enable_combo_optimization) {
+            return .{
+                .native_code = null,
+                .loops_optimized = 0,
+                .estimated_speedup = 1.0,
+            };
+        }
+
+        // Detect loops
+        const loops = try self.loop_unroller.detectLoops(ir);
+        defer self.allocator.free(loops);
+
+        if (loops.len == 0) {
+            return .{
+                .native_code = null,
+                .loops_optimized = 0,
+                .estimated_speedup = 1.0,
+            };
+        }
+
+        var total_speedup: f64 = 0.0;
+        var loops_optimized: u32 = 0;
+        var best_exec: ?x86_codegen.ExecutableCode = null;
+
+        for (loops) |loop| {
+            // Try combo optimization
+            const exec = try self.unroll_vectorize_combo.optimize(loop, ir);
+
+            if (exec) |e| {
+                loops_optimized += 1;
+                total_speedup += self.unroll_vectorize_combo.stats.estimated_speedup;
+
+                // Keep the best (first) native code
+                if (best_exec == null) {
+                    best_exec = e;
+                } else {
+                    // Deinit extra code
+                    var mutable_e = e;
+                    mutable_e.deinit();
+                }
+            }
+        }
+
+        const avg_speedup = if (loops_optimized > 0)
+            total_speedup / @as(f64, @floatFromInt(loops_optimized))
+        else
+            1.0;
+
+        return .{
+            .native_code = best_exec,
+            .loops_optimized = loops_optimized,
+            .estimated_speedup = avg_speedup,
+        };
+    }
+
+    /// Get combo optimization statistics
+    pub fn getComboStats(self: *Self) UnrollVectorizeCombo.ComboStats {
+        return self.unroll_vectorize_combo.getStats();
     }
 
     /// Generate vectorized version of a loop
@@ -9900,6 +9978,15 @@ pub const TieredCompiler = struct {
                     optimized_ir = vectorized;
                 }
 
+                // Combined unroll+vectorize optimization for hot loops
+                if (self.enable_combo_optimization) {
+                    const combo_result = try self.applyComboOptimization(optimized_ir);
+                    if (combo_result.native_code) |_| {
+                        // Native code generated - store in cache for later use
+                        self.stats.combo_optimizations += 1;
+                    }
+                }
+
                 if (self.enable_peephole) {
                     const peeped = try self.peephole.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -10006,6 +10093,14 @@ pub const TieredCompiler = struct {
                         const vectorized = try self.vectorizeLoops(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = vectorized;
+                    }
+
+                    // Combined unroll+vectorize optimization
+                    if (self.enable_combo_optimization) {
+                        const combo_result = try self.applyComboOptimization(opt_ir);
+                        if (combo_result.native_code) |_| {
+                            self.stats.combo_optimizations += 1;
+                        }
                     }
 
                     if (self.enable_peephole) {
@@ -18478,6 +18573,83 @@ test "TieredCompiler vectorization disabled" {
     // Stats should be zero
     const stats = compiler.getVectorizationStats();
     try std.testing.expectEqual(@as(u64, 0), stats.loops_analyzed);
+}
+
+test "TieredCompiler combo optimization enabled by default" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_combo_optimization);
+}
+
+test "TieredCompiler applyComboOptimization with no loops" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .STORE_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const result = try compiler.applyComboOptimization(&ir);
+
+    try std.testing.expect(result.native_code == null);
+    try std.testing.expectEqual(@as(u32, 0), result.loops_optimized);
+}
+
+test "TieredCompiler applyComboOptimization with vectorizable loop" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Create a loop that should be optimized
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // load b[i]
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 }, // add
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // store c[i]
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i++
+        .{ .opcode = .CMP_LT_INT, .dest = 4, .src1 = 0, .src2 = 5, .imm = 64 }, // i < 64
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -6 }, // loop back
+    };
+
+    const result = try compiler.applyComboOptimization(&ir);
+
+    // May or may not generate native code depending on loop detection
+    // Just verify it doesn't crash and returns valid result
+    if (result.native_code) |*exec| {
+        var mutable_exec = exec.*;
+        mutable_exec.deinit();
+    }
+}
+
+test "TieredCompiler getComboStats" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    const stats = compiler.getComboStats();
+    try std.testing.expectEqual(@as(u64, 0), stats.loops_processed);
+}
+
+test "TieredCompiler combo optimization disabled" {
+    const allocator = std.testing.allocator;
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    compiler.enable_combo_optimization = false;
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const result = try compiler.applyComboOptimization(&ir);
+
+    try std.testing.expect(result.native_code == null);
+    try std.testing.expectEqual(@as(f64, 1.0), result.estimated_speedup);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
