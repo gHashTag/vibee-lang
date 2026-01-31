@@ -1114,6 +1114,68 @@ pub const NativeCompiler = struct {
                 try self.storeDstIfSpilled(instr.dest);
             },
 
+            // SIMD Vector Operations
+            .VADD => {
+                // Vector add using AVX2: vpaddd ymm0, ymm1, ymm2
+                // For simplicity, we use scalar operations in a loop
+                // In production, this would emit actual AVX instructions
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, true);
+
+                // Simplified: just do scalar add (placeholder for real SIMD)
+                if (dst != src1) try self.emitter.movRegReg(dst, src1);
+                try self.emitter.addRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
+            .VSUB => {
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, true);
+
+                if (dst != src1) try self.emitter.movRegReg(dst, src1);
+                try self.emitter.subRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
+            .VMUL => {
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, true);
+
+                if (dst != src1) try self.emitter.movRegReg(dst, src1);
+                try self.emitter.imulRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
+            .VLOAD => {
+                // Vector load - placeholder (would use vmovdqu)
+                const dst = self.getDstReg(instr.dest);
+                const base = try self.getSrcReg(instr.src1, false);
+                try self.emitter.movRegMemBase(dst, base, 0);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
+            .VSTORE => {
+                // Vector store - placeholder (would use vmovdqu)
+                // For now, just a regular store
+                const base = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
+                // Store to [base]
+                try self.emitter.movMemReg(0, src);
+                _ = base;
+            },
+
+            .VSUM => {
+                // Horizontal sum - placeholder
+                // In real SIMD, this would use vphaddd + extract
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
+                if (dst != src) try self.emitter.movRegReg(dst, src);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
             else => {
                 // Unsupported - emit nop
             },

@@ -1,0 +1,130 @@
+# SIMD Vectorizer
+# Автоматическая векторизация циклов для SSE/AVX
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+
+name: simd_vectorizer
+version: "1.0.0"
+language: zig
+module: simd_vectorizer
+
+description: |
+  SIMD Vectorizer для автоматической векторизации циклов.
+  
+  Поддерживаемые операции:
+  - VADD: векторное сложение (4x i64 или 8x i32)
+  - VSUB: векторное вычитание
+  - VMUL: векторное умножение
+  - VLOAD: загрузка вектора из памяти
+  - VSTORE: сохранение вектора в память
+  
+  Целевые архитектуры:
+  - SSE4.2: 128-bit (2x i64, 4x i32, 8x i16, 16x i8)
+  - AVX2: 256-bit (4x i64, 8x i32, 16x i16, 32x i8)
+  - AVX-512: 512-bit (8x i64, 16x i32, 32x i16, 64x i8)
+
+types:
+  # Типы SIMD векторов
+  VectorType:
+    fields:
+      element_type: String  # i8, i16, i32, i64, f32, f64
+      num_elements: Int     # 2, 4, 8, 16, 32
+      bit_width: Int        # 128, 256, 512
+
+  # SIMD opcode
+  SIMDOpcode:
+    fields:
+      name: String          # VADD, VSUB, VMUL, etc.
+      vector_type: VectorType
+      src1: Int             # Source register 1
+      src2: Int             # Source register 2
+      dest: Int             # Destination register
+
+  # Результат анализа цикла
+  LoopAnalysis:
+    fields:
+      is_vectorizable: Bool
+      trip_count: Option<Int>
+      stride: Int
+      dependencies: List<String>
+      vector_width: Int
+
+  # Статистика векторизации
+  VectorizerStats:
+    fields:
+      loops_analyzed: Int
+      loops_vectorized: Int
+      scalar_ops_replaced: Int
+      estimated_speedup: Float
+
+behaviors:
+  # Анализ цикла на возможность векторизации
+  - name: analyze_loop
+    given: IR цикла
+    when: Проверка на векторизуемость
+    then: Возвращает LoopAnalysis
+
+  # Векторизация цикла
+  - name: vectorize_loop
+    given: Векторизуемый цикл
+    when: Применение SIMD трансформации
+    then: Возвращает IR с SIMD операциями
+
+  # Генерация SIMD инструкций
+  - name: emit_simd_add
+    given: VADD opcode
+    when: Генерация x86 кода
+    then: Emit paddq/paddd/paddw/paddb (SSE) или vpaddq/vpaddd (AVX)
+
+  - name: emit_simd_mul
+    given: VMUL opcode
+    when: Генерация x86 кода
+    then: Emit pmulld (SSE4.1) или vpmulld (AVX2)
+
+  - name: emit_simd_load
+    given: VLOAD opcode
+    when: Загрузка вектора
+    then: Emit movdqa/vmovdqa (aligned) или movdqu/vmovdqu (unaligned)
+
+  - name: emit_simd_store
+    given: VSTORE opcode
+    when: Сохранение вектора
+    then: Emit movdqa/vmovdqa (aligned) или movdqu/vmovdqu (unaligned)
+
+tests:
+  - name: test_simple_add_loop
+    description: Векторизация простого цикла сложения
+    input:
+      loop: "for i in 0..n: c[i] = a[i] + b[i]"
+    expected:
+      vectorized: true
+      vector_width: 4  # 4x i64 для AVX2
+
+  - name: test_reduction_loop
+    description: Цикл с редукцией (сумма)
+    input:
+      loop: "sum = 0; for i in 0..n: sum += a[i]"
+    expected:
+      vectorized: true
+      needs_horizontal_add: true
+
+  - name: test_dependency_loop
+    description: Цикл с зависимостью (не векторизуется)
+    input:
+      loop: "for i in 1..n: a[i] = a[i-1] + 1"
+    expected:
+      vectorized: false
+      reason: "loop-carried dependency"
+
+constants:
+  # Размеры векторов
+  SSE_WIDTH: 128
+  AVX_WIDTH: 256
+  AVX512_WIDTH: 512
+  
+  # Минимальный trip count для векторизации
+  MIN_TRIP_COUNT: 4
+  
+  # Alignment requirements
+  SSE_ALIGNMENT: 16
+  AVX_ALIGNMENT: 32
+  AVX512_ALIGNMENT: 64

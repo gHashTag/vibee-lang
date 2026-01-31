@@ -741,6 +741,220 @@ pub const LoopUnroller = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SIMD VECTORIZER
+// Автоматическая векторизация циклов для SSE/AVX
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// SIMD Vector width (number of i64 elements)
+pub const SIMD_WIDTH: usize = 4; // AVX2: 256-bit = 4x i64
+
+/// SIMD Vectorizer - автоматическая векторизация циклов
+pub const SIMDVectorizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    loops_analyzed: usize = 0,
+    loops_vectorized: usize = 0,
+    scalar_ops_replaced: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+        };
+    }
+
+    /// Анализ цикла на возможность векторизации
+    pub fn analyzeLoop(self: *Self, ir: []const IRInstruction, loop_start: usize, loop_end: usize) ?VectorizationInfo {
+        self.loops_analyzed += 1;
+
+        if (loop_end <= loop_start or loop_end - loop_start < 2) {
+            return null;
+        }
+
+        var has_array_access = false;
+        var has_simple_arithmetic = false;
+        var has_dependency = false;
+        var array_stride: i64 = 0;
+
+        // Анализируем тело цикла
+        for (ir[loop_start..loop_end]) |instr| {
+            switch (instr.opcode) {
+                // Простые арифметические операции - векторизуемы
+                .ADD_INT, .SUB_INT, .MUL_INT => {
+                    has_simple_arithmetic = true;
+                },
+                // Загрузка/сохранение - проверяем stride
+                .LOAD_LOCAL, .STORE_LOCAL => {
+                    has_array_access = true;
+                    // Простая эвристика: если есть последовательный доступ
+                    if (array_stride == 0) {
+                        array_stride = 1;
+                    }
+                },
+                // Зависимости между итерациями - не векторизуем
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    // Условные переходы внутри цикла - сложно векторизовать
+                    if (instr.imm < 0) {
+                        has_dependency = true;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Проверяем условия векторизации
+        if (!has_simple_arithmetic or has_dependency) {
+            return null;
+        }
+
+        self.loops_vectorized += 1;
+
+        return VectorizationInfo{
+            .loop_start = loop_start,
+            .loop_end = loop_end,
+            .vector_width = SIMD_WIDTH,
+            .has_array_access = has_array_access,
+            .stride = array_stride,
+        };
+    }
+
+    /// Векторизация цикла
+    pub fn vectorizeLoop(self: *Self, ir: []const IRInstruction, info: VectorizationInfo) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Пролог: код до цикла
+        for (ir[0..info.loop_start]) |instr| {
+            try result.append(instr);
+        }
+
+        // Векторизованное тело цикла
+        for (ir[info.loop_start..info.loop_end]) |instr| {
+            switch (instr.opcode) {
+                .ADD_INT => {
+                    // Заменяем скалярное сложение на векторное
+                    try result.append(.{
+                        .opcode = .VADD,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = instr.src2,
+                        .imm = @intCast(info.vector_width),
+                    });
+                    self.scalar_ops_replaced += 1;
+                },
+                .SUB_INT => {
+                    try result.append(.{
+                        .opcode = .VSUB,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = instr.src2,
+                        .imm = @intCast(info.vector_width),
+                    });
+                    self.scalar_ops_replaced += 1;
+                },
+                .MUL_INT => {
+                    try result.append(.{
+                        .opcode = .VMUL,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = instr.src2,
+                        .imm = @intCast(info.vector_width),
+                    });
+                    self.scalar_ops_replaced += 1;
+                },
+                .LOAD_LOCAL => {
+                    // Векторная загрузка
+                    try result.append(.{
+                        .opcode = .VLOAD,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = 0,
+                        .imm = @intCast(info.vector_width),
+                    });
+                    self.scalar_ops_replaced += 1;
+                },
+                .STORE_LOCAL => {
+                    // Векторное сохранение
+                    try result.append(.{
+                        .opcode = .VSTORE,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = 0,
+                        .imm = @intCast(info.vector_width),
+                    });
+                    self.scalar_ops_replaced += 1;
+                },
+                else => {
+                    // Остальные инструкции оставляем как есть
+                    try result.append(instr);
+                },
+            }
+        }
+
+        // Эпилог: код после цикла
+        for (ir[info.loop_end..]) |instr| {
+            try result.append(instr);
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Оптимизация IR с автоматической векторизацией
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        // Ищем циклы (простая эвристика: backward jumps)
+        var loop_start: ?usize = null;
+        var loop_end: ?usize = null;
+
+        for (ir, 0..) |instr, i| {
+            if (instr.opcode == .JUMP and instr.imm < 0) {
+                // Backward jump - конец цикла
+                loop_end = i;
+                // Начало цикла - куда прыгаем
+                const target: usize = @intCast(@as(i64, @intCast(i)) + instr.imm);
+                loop_start = target;
+                break;
+            }
+        }
+
+        if (loop_start == null or loop_end == null) {
+            // Нет циклов
+            return self.allocator.dupe(IRInstruction, ir);
+        }
+
+        // Анализируем цикл
+        if (self.analyzeLoop(ir, loop_start.?, loop_end.?)) |info| {
+            return self.vectorizeLoop(ir, info);
+        }
+
+        // Не удалось векторизовать
+        return self.allocator.dupe(IRInstruction, ir);
+    }
+
+    /// Получить статистику
+    pub fn getStats(self: *const Self) struct {
+        analyzed: usize,
+        vectorized: usize,
+        replaced: usize,
+    } {
+        return .{
+            .analyzed = self.loops_analyzed,
+            .vectorized = self.loops_vectorized,
+            .replaced = self.scalar_ops_replaced,
+        };
+    }
+};
+
+/// Информация о векторизации цикла
+pub const VectorizationInfo = struct {
+    loop_start: usize,
+    loop_end: usize,
+    vector_width: usize,
+    has_array_access: bool,
+    stride: i64,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TRACE-BASED JIT COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 

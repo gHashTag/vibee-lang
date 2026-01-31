@@ -195,6 +195,14 @@ pub const IROpcode = enum(u8) {
     CALL_METHOD, // dest = call method on object (imm = method_id, src1 = object_reg, src2 = expected_type)
                  // Uses Inline Cache for fast dispatch
 
+    // SIMD Vector Operations (AVX2: 256-bit = 4x i64)
+    VADD,        // dest = src1 + src2 (vector add, imm = vector_width)
+    VSUB,        // dest = src1 - src2 (vector sub, imm = vector_width)
+    VMUL,        // dest = src1 * src2 (vector mul, imm = vector_width)
+    VLOAD,       // dest = load vector from memory (src1 = base, imm = vector_width)
+    VSTORE,      // store vector to memory (dest = base, src1 = value, imm = vector_width)
+    VSUM,        // dest = horizontal sum of vector (src1 = vector, imm = vector_width)
+
     // Return
     RETURN,
 };
