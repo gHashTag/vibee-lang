@@ -465,8 +465,9 @@ pub const JitCompiler = struct {
     // Halt patches - jumps to epilogue
     halt_patches: std.ArrayList(HaltPatch),
 
-    // Optimization: track if last op was comparison (for jump fusion)
-    last_was_cmp: bool,
+    // Optimization: track last comparison type for jump fusion
+    // 0 = none, 1 = eq, 2 = ne, 3 = lt, 4 = le, 5 = gt, 6 = ge
+    last_cmp_type: u8,
 
     const Self = @This();
 
@@ -476,7 +477,7 @@ pub const JitCompiler = struct {
             .allocator = allocator,
             .labels = std.AutoHashMap(u32, u32).init(allocator),
             .patches = std.ArrayList(JumpPatch).init(allocator),
-            .last_was_cmp = false,
+            .last_cmp_type = 0,
             .call_patches = std.ArrayList(CallPatch).init(allocator),
             .halt_patches = std.ArrayList(HaltPatch).init(allocator),
         };
@@ -871,7 +872,7 @@ pub const JitCompiler = struct {
         self.patches.clearRetainingCapacity();
         self.call_patches.clearRetainingCapacity();
         self.halt_patches.clearRetainingCapacity();
-        self.last_was_cmp = false;
+        self.last_cmp_type = 0;
 
         // Prologue - save callee-saved registers
         try self.encoder.push(.rbp);
@@ -990,8 +991,17 @@ pub const JitCompiler = struct {
                     try self.emitExtractInt();
                     try self.emitExtractIntRbx();
                     try self.encoder.cmpReg(.rax, .rbx);
-                    try self.emitSetBoolLt(); // Set rax to NaN-boxed bool based on LT
+                    // Check for fusion with jump
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            self.last_cmp_type = 3; // lt
+                            continue;
+                        }
+                    }
+                    try self.emitSetBoolLt();
                     try self.emitVPush();
+                    self.last_cmp_type = 0;
                 },
 
                 .le => {
@@ -1000,8 +1010,16 @@ pub const JitCompiler = struct {
                     try self.emitExtractInt();
                     try self.emitExtractIntRbx();
                     try self.encoder.cmpReg(.rax, .rbx);
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            self.last_cmp_type = 4; // le
+                            continue;
+                        }
+                    }
                     try self.emitSetBoolLe();
                     try self.emitVPush();
+                    self.last_cmp_type = 0;
                 },
 
                 .gt => {
@@ -1010,8 +1028,16 @@ pub const JitCompiler = struct {
                     try self.emitExtractInt();
                     try self.emitExtractIntRbx();
                     try self.encoder.cmpReg(.rax, .rbx);
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            self.last_cmp_type = 5; // gt
+                            continue;
+                        }
+                    }
                     try self.emitSetBoolGt();
                     try self.emitVPush();
+                    self.last_cmp_type = 0;
                 },
 
                 .ge => {
@@ -1020,8 +1046,16 @@ pub const JitCompiler = struct {
                     try self.emitExtractInt();
                     try self.emitExtractIntRbx();
                     try self.encoder.cmpReg(.rax, .rbx);
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            self.last_cmp_type = 6; // ge
+                            continue;
+                        }
+                    }
                     try self.emitSetBoolGe();
                     try self.emitVPush();
+                    self.last_cmp_type = 0;
                 },
 
                 .eq => {
@@ -1033,14 +1067,29 @@ pub const JitCompiler = struct {
                     if (ip < bytecode.len) {
                         const next_op: Opcode = @enumFromInt(bytecode[ip]);
                         if (next_op == .jump_if or next_op == .jump_if_not) {
-                            // Don't push result - jump will use flags directly
-                            self.last_was_cmp = true;
-                            continue; // Skip to next opcode
+                            self.last_cmp_type = 1; // eq
+                            continue;
                         }
                     }
                     try self.emitSetBoolEq();
                     try self.emitVPush();
-                    self.last_was_cmp = false;
+                    self.last_cmp_type = 0;
+                },
+
+                .ne => {
+                    try self.emitVPopRbx();
+                    try self.emitVPop();
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            self.last_cmp_type = 2; // ne
+                            continue;
+                        }
+                    }
+                    try self.emitSetBoolNe();
+                    try self.emitVPush();
+                    self.last_cmp_type = 0;
                 },
 
                 // Jump opcodes
@@ -1061,12 +1110,21 @@ pub const JitCompiler = struct {
                         @as(u32, bytecode[ip + 3]);
                     ip += 4;
 
-                    if (self.last_was_cmp) {
-                        // Fused: previous cmp set flags, use JE (jump if equal)
-                        // jump_if after eq means "jump if values were equal"
+                    if (self.last_cmp_type != 0) {
+                        // Fused: previous cmp set flags, emit appropriate conditional jump
+                        // jump_if means "jump if comparison was true"
                         try self.encoder.code.append(0x0F);
-                        try self.encoder.code.append(0x84); // JE rel32
-                        self.last_was_cmp = false;
+                        const jcc: u8 = switch (self.last_cmp_type) {
+                            1 => 0x84, // eq -> JE
+                            2 => 0x85, // ne -> JNE
+                            3 => 0x8C, // lt -> JL
+                            4 => 0x8E, // le -> JLE
+                            5 => 0x8F, // gt -> JG
+                            6 => 0x8D, // ge -> JGE
+                            else => 0x85, // default JNZ
+                        };
+                        try self.encoder.code.append(jcc);
+                        self.last_cmp_type = 0;
                     } else {
                         // Normal: pop condition and test
                         try self.emitVPop();
@@ -1085,11 +1143,21 @@ pub const JitCompiler = struct {
                         @as(u32, bytecode[ip + 3]);
                     ip += 4;
 
-                    if (self.last_was_cmp) {
-                        // Fused: previous cmp set flags, use JNE (jump if not equal)
+                    if (self.last_cmp_type != 0) {
+                        // Fused: previous cmp set flags, emit opposite conditional jump
+                        // jump_if_not means "jump if comparison was false"
                         try self.encoder.code.append(0x0F);
-                        try self.encoder.code.append(0x85); // JNE rel32
-                        self.last_was_cmp = false;
+                        const jcc: u8 = switch (self.last_cmp_type) {
+                            1 => 0x85, // eq -> JNE (not equal)
+                            2 => 0x84, // ne -> JE (equal)
+                            3 => 0x8D, // lt -> JGE (not less)
+                            4 => 0x8F, // le -> JG (not less or equal)
+                            5 => 0x8E, // gt -> JLE (not greater)
+                            6 => 0x8C, // ge -> JL (not greater or equal)
+                            else => 0x84, // default JZ
+                        };
+                        try self.encoder.code.append(jcc);
+                        self.last_cmp_type = 0;
                     } else {
                         // Normal: pop condition and test
                         try self.emitVPop();
@@ -1284,6 +1352,18 @@ pub const JitCompiler = struct {
     fn emitSetBoolEq(self: *Self) !void {
         try self.encoder.code.append(0x0F);
         try self.encoder.code.append(0x94); // SETE al
+        try self.encoder.code.append(0xC0);
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
+    }
+
+    fn emitSetBoolNe(self: *Self) !void {
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x95); // SETNE al
         try self.encoder.code.append(0xC0);
         try self.encoder.code.append(0x48);
         try self.encoder.code.append(0x0F);
@@ -2122,6 +2202,80 @@ test "JitExecutor nested loops" {
         @intFromEnum(Opcode.sub), // outer-- (16)
         @intFromEnum(Opcode.jump), 0, 0, 0, 3, // back to outer_loop (17-21)
         @intFromEnum(Opcode.halt), // (22)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 0), val.asInt());
+}
+
+test "JitExecutor loop with lt comparison" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Loop while i < 5, count iterations
+    // i = 0; count = 0; while (i < 5) { count++; i++; } return count;
+    // Expected: 5
+
+    const constants = [_]Value{
+        Value.int(0), // initial i and count
+        Value.int(5), // limit
+        Value.int(1), // increment
+    };
+
+    const bytecode = [_]u8{
+        // i = 0
+        @intFromEnum(Opcode.load_const), 0, 0, // push 0 (0-2)
+        // loop at 3: check i < 5
+        @intFromEnum(Opcode.dup), // copy i (3)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 5 (4-6)
+        @intFromEnum(Opcode.lt), // i < 5? (7)
+        @intFromEnum(Opcode.jump_if_not), 0, 0, 0, 22, // exit if not (8-12)
+        // i++
+        @intFromEnum(Opcode.load_const), 0, 2, // push 1 (13-15)
+        @intFromEnum(Opcode.add), // i + 1 (16)
+        @intFromEnum(Opcode.jump), 0, 0, 0, 3, // back to loop (17-21)
+        // end at 22
+        @intFromEnum(Opcode.halt), // return i (22)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 5), val.asInt());
+}
+
+test "JitExecutor loop with gt comparison" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Loop while i > 0, decrement
+    // i = 5; while (i > 0) { i--; } return i;
+    // Expected: 0
+
+    const constants = [_]Value{
+        Value.int(5), // initial i
+        Value.int(0), // comparison
+        Value.int(1), // decrement
+    };
+
+    const bytecode = [_]u8{
+        // i = 5
+        @intFromEnum(Opcode.load_const), 0, 0, // push 5 (0-2)
+        // loop at 3: check i > 0
+        @intFromEnum(Opcode.dup), // copy i (3)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 0 (4-6)
+        @intFromEnum(Opcode.gt), // i > 0? (7)
+        @intFromEnum(Opcode.jump_if_not), 0, 0, 0, 22, // exit if not (8-12)
+        // i--
+        @intFromEnum(Opcode.load_const), 0, 2, // push 1 (13-15)
+        @intFromEnum(Opcode.sub), // i - 1 (16)
+        @intFromEnum(Opcode.jump), 0, 0, 0, 3, // back to loop (17-21)
+        // end at 22
+        @intFromEnum(Opcode.halt), // return i (22)
     };
 
     const result = try executor.run(&bytecode, &constants);
