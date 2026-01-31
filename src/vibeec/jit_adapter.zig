@@ -5566,3 +5566,137 @@ test "Benchmark: Strength reduction effect" {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTEGRATION BENCHMARK - Full Optimization Pipeline
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "Integration Benchmark: Full optimization pipeline" {
+    const allocator = std.testing.allocator;
+
+    // Complex IR simulating: result = ((a * 2) + (b * 3)) * ((c / 4) + (d * 5))
+    // With redundant operations and optimization opportunities
+    const complex_ir = [_]IRInstruction{
+        // Load constants
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 }, // a = 10
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 }, // b = 20
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 64 }, // c = 64
+        .{ .opcode = .LOAD_CONST, .dest = 3, .src1 = 0, .src2 = 0, .imm = 8 }, // d = 8
+
+        // a * 2 (should become a + a)
+        .{ .opcode = .LOAD_CONST, .dest = 4, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .MUL_INT, .dest = 5, .src1 = 0, .src2 = 4, .imm = 0 }, // r5 = a * 2 = 20
+
+        // b * 3 (should become LEA)
+        .{ .opcode = .LOAD_CONST, .dest = 6, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .MUL_INT, .dest = 7, .src1 = 1, .src2 = 6, .imm = 0 }, // r7 = b * 3 = 60
+
+        // (a*2) + (b*3)
+        .{ .opcode = .ADD_INT, .dest = 8, .src1 = 5, .src2 = 7, .imm = 0 }, // r8 = 20 + 60 = 80
+
+        // c / 4 (should become c >> 2)
+        .{ .opcode = .LOAD_CONST, .dest = 9, .src1 = 0, .src2 = 0, .imm = 4 },
+        .{ .opcode = .DIV_INT, .dest = 10, .src1 = 2, .src2 = 9, .imm = 0 }, // r10 = c / 4 = 16
+
+        // d * 5 (should become LEA)
+        .{ .opcode = .LOAD_CONST, .dest = 11, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .MUL_INT, .dest = 12, .src1 = 3, .src2 = 11, .imm = 0 }, // r12 = d * 5 = 40
+
+        // (c/4) + (d*5)
+        .{ .opcode = .ADD_INT, .dest = 13, .src1 = 10, .src2 = 12, .imm = 0 }, // r13 = 16 + 40 = 56
+
+        // Final: ((a*2)+(b*3)) * ((c/4)+(d*5))
+        .{ .opcode = .MUL_INT, .dest = 14, .src1 = 8, .src2 = 13, .imm = 0 }, // r14 = 80 * 56 = 4480
+
+        .{ .opcode = .RETURN, .dest = 14, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const original_len = complex_ir.len;
+
+    // Apply all optimizations in sequence
+    var strength_reducer = StrengthReducer.init(allocator);
+    const after_strength = try strength_reducer.optimize(&complex_ir);
+    defer allocator.free(after_strength);
+
+    var copy_propagator = CopyPropagator.init(allocator);
+    const after_copy = try copy_propagator.optimize(after_strength);
+    defer allocator.free(after_copy);
+
+    var constant_folder = ConstantFolder.init(allocator);
+    const after_fold = try constant_folder.optimize(after_copy);
+    defer allocator.free(after_fold);
+
+    var dce = DeadCodeEliminator.init(allocator);
+    const after_dce = try dce.optimize(after_fold);
+    defer allocator.free(after_dce);
+
+    var peephole = PeepholeOptimizer.init(allocator);
+    const fully_optimized = try peephole.optimize(after_dce);
+    defer allocator.free(fully_optimized);
+
+    const optimized_len = fully_optimized.len;
+
+    // Benchmark
+    const iterations: usize = 10000;
+
+    // Original
+    const orig_start = std.time.nanoTimestamp();
+    var orig_result: i64 = 0;
+    for (0..iterations) |_| {
+        orig_result = interpretIRCode(&complex_ir);
+    }
+    const orig_end = std.time.nanoTimestamp();
+    const orig_time: u64 = @intCast(@max(0, orig_end - orig_start));
+
+    // Optimized
+    const opt_start = std.time.nanoTimestamp();
+    var opt_result: i64 = 0;
+    for (0..iterations) |_| {
+        opt_result = interpretIRCode(fully_optimized);
+    }
+    const opt_end = std.time.nanoTimestamp();
+    const opt_time: u64 = @intCast(@max(0, opt_end - opt_start));
+
+    // Verify correctness: ((10*2)+(20*3)) * ((64/4)+(8*5)) = (20+60) * (16+40) = 80 * 56 = 4480
+    try std.testing.expectEqual(@as(i64, 4480), orig_result);
+    try std.testing.expectEqual(@as(i64, 4480), opt_result);
+
+    // Get stats
+    const sr_stats = strength_reducer.getStats();
+    const cp_stats = copy_propagator.getStats();
+    const cf_stats = constant_folder.getStats();
+    const dce_stats = dce.getStats();
+    const ph_stats = peephole.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        const orig_per_iter = @as(f64, @floatFromInt(orig_time)) / @as(f64, @floatFromInt(iterations));
+        const opt_per_iter = @as(f64, @floatFromInt(opt_time)) / @as(f64, @floatFromInt(iterations));
+        const reduction_pct = 100.0 * (1.0 - @as(f64, @floatFromInt(optimized_len)) / @as(f64, @floatFromInt(original_len)));
+
+        std.debug.print("\n", .{});
+        std.debug.print("╔══════════════════════════════════════════════════════════════════╗\n", .{});
+        std.debug.print("║       INTEGRATION BENCHMARK: Full Optimization Pipeline         ║\n", .{});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ INSTRUCTION COUNT:                                               ║\n", .{});
+        std.debug.print("║   Original:  {d:3} instructions                                   ║\n", .{original_len});
+        std.debug.print("║   Optimized: {d:3} instructions                                   ║\n", .{optimized_len});
+        std.debug.print("║   Reduction: {d:5.1}%                                              ║\n", .{reduction_pct});
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ EXECUTION TIME:                                                  ║\n", .{});
+        std.debug.print("║   Original:  {d:6.2} ns/iter                                      ║\n", .{orig_per_iter});
+        std.debug.print("║   Optimized: {d:6.2} ns/iter                                      ║\n", .{opt_per_iter});
+        if (orig_per_iter > opt_per_iter) {
+            std.debug.print("║   Speedup:   {d:5.2}x                                             ║\n", .{orig_per_iter / opt_per_iter});
+        }
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ OPTIMIZER CONTRIBUTIONS:                                         ║\n", .{});
+        std.debug.print("║   StrengthReducer: {d:2} reductions (mul->shift:{d}, mul->lea:{d})    ║\n", .{ sr_stats.reductions, sr_stats.mul_to_shift, sr_stats.mul_to_lea });
+        std.debug.print("║   CopyPropagator:  {d:2} propagated, {d} eliminated                  ║\n", .{ cp_stats.propagated, cp_stats.eliminated });
+        std.debug.print("║   ConstantFolder:  {d:2} folded                                      ║\n", .{cf_stats.folded});
+        std.debug.print("║   DeadCodeElim:    {d:2} eliminated                                  ║\n", .{dce_stats.eliminated});
+        std.debug.print("║   PeepholeOpt:     {d:2} patterns, {d} eliminated                    ║\n", .{ ph_stats.patterns, ph_stats.eliminated });
+        std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
+        std.debug.print("║ RESULT: {d} (correct: 4480)                                     ║\n", .{opt_result});
+        std.debug.print("╚══════════════════════════════════════════════════════════════════╝\n", .{});
+    }
+}
