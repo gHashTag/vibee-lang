@@ -482,7 +482,10 @@ pub const VectorizationStats = struct {
 /// Array loop pattern types
 pub const ArrayLoopPattern = enum {
     ArrayAdd,      // c[i] = a[i] + b[i]
+    ArraySub,      // c[i] = a[i] - b[i]
     ArrayMul,      // c[i] = a[i] * b[i]
+    ArrayScale,    // c[i] = a[i] * const
+    ArrayNeg,      // c[i] = -a[i]
     ArraySum,      // sum += a[i]
     ArrayMax,      // max = max(max, a[i])
     ArrayMin,      // min = min(min, a[i])
@@ -528,7 +531,11 @@ pub const AutoVectorizer = struct {
         var has_load = false;
         var has_store = false;
         var has_add = false;
+        var has_sub = false;
         var has_mul = false;
+        var has_neg = false;
+        var has_const_load = false;
+        var load_count: u32 = 0;
         var load_reg: u8 = 0;
         var store_reg: u8 = 0;
         var accumulator_reg: u8 = 0;
@@ -538,7 +545,11 @@ pub const AutoVectorizer = struct {
             switch (instr.opcode) {
                 .LOAD_LOCAL, .LOAD_GLOBAL => {
                     has_load = true;
+                    load_count += 1;
                     load_reg = instr.src1;
+                },
+                .LOAD_CONST => {
+                    has_const_load = true;
                 },
                 .STORE_LOCAL, .STORE_GLOBAL => {
                     has_store = true;
@@ -552,23 +563,53 @@ pub const AutoVectorizer = struct {
                         accumulator_reg = instr.dest;
                     }
                 },
+                .SUB_INT, .SUB_FLOAT => {
+                    has_sub = true;
+                },
                 .MUL_INT, .MUL_FLOAT => {
                     has_mul = true;
+                    // Check for scale pattern: result = val * const
+                    if (instr.dest == instr.src1 or instr.dest == instr.src2) {
+                        is_reduction = true;
+                        accumulator_reg = instr.dest;
+                    }
+                },
+                .NEG_INT, .NEG_FLOAT => {
+                    has_neg = true;
                 },
                 else => {},
             }
         }
 
-        // Determine pattern
+        // Determine pattern with priority order
         var pattern: ArrayLoopPattern = .Unknown;
 
-        if (has_load and has_store and has_add and !is_reduction) {
+        // c[i] = -a[i] (negation)
+        if (has_load and has_store and has_neg and !has_add and !has_sub and !has_mul) {
+            pattern = .ArrayNeg;
+        }
+        // c[i] = a[i] - b[i] (subtraction)
+        else if (has_load and has_store and has_sub and !is_reduction and load_count >= 2) {
+            pattern = .ArraySub;
+        }
+        // c[i] = a[i] + b[i] (addition)
+        else if (has_load and has_store and has_add and !is_reduction and load_count >= 2) {
             pattern = .ArrayAdd;
-        } else if (has_load and has_store and has_mul and !is_reduction) {
+        }
+        // c[i] = a[i] * const (scale)
+        else if (has_load and has_store and has_mul and has_const_load and !is_reduction) {
+            pattern = .ArrayScale;
+        }
+        // c[i] = a[i] * b[i] (element-wise multiply)
+        else if (has_load and has_store and has_mul and !is_reduction and load_count >= 2) {
             pattern = .ArrayMul;
-        } else if (has_load and has_add and is_reduction and !has_mul) {
+        }
+        // sum += a[i] (reduction sum)
+        else if (has_load and has_add and is_reduction and !has_mul) {
             pattern = .ArraySum;
-        } else if (has_load and has_mul and has_add and is_reduction) {
+        }
+        // dot += a[i] * b[i] (dot product)
+        else if (has_load and has_mul and has_add and is_reduction) {
             pattern = .ArrayDot;
         }
 
@@ -581,7 +622,7 @@ pub const AutoVectorizer = struct {
             .stride = 4, // Assume i32
             .element_size = 4,
             .iteration_count = loop.iteration_count,
-            .has_second_array = has_mul or (has_add and has_store),
+            .has_second_array = (load_count >= 2) or has_const_load,
             .second_base_reg = 0,
             .result_reg = if (is_reduction) accumulator_reg else store_reg,
         };
@@ -612,9 +653,12 @@ pub const AutoVectorizer = struct {
 
         const exec = switch (loop_info.pattern) {
             .ArrayAdd => try simd_ops.generateArrayAdd(),
+            .ArraySub => try simd_ops.generateArraySub(),
             .ArrayMul => try simd_ops.generateArrayMul(),
+            .ArrayNeg => try simd_ops.generateArrayNeg(),
             .ArraySum => try simd_ops.generateArraySum(),
             .ArrayMax => try simd_ops.generateArrayMax(),
+            .ArrayScale => try simd_ops.generateArrayScale(2), // Default scale factor
             else => return null,
         };
 
@@ -18031,6 +18075,77 @@ test "AutoVectorizer detectArrayPattern ArrayDot" {
     const pattern = vectorizer.detectArrayPattern(loop, &ir);
     try std.testing.expect(pattern != null);
     try std.testing.expectEqual(ArrayLoopPattern.ArrayDot, pattern.?.pattern);
+}
+
+test "AutoVectorizer detectArrayPattern ArraySub" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64,
+        .body_size = 4,
+    };
+
+    // Pattern: c[i] = a[i] - b[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // load b[i]
+        .{ .opcode = .SUB_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },     // sub
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // store c[i]
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArraySub, pattern.?.pattern);
+}
+
+test "AutoVectorizer detectArrayPattern ArrayNeg" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 3,
+        .iteration_count = 64,
+        .body_size = 3,
+    };
+
+    // Pattern: c[i] = -a[i]
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .NEG_INT, .dest = 2, .src1 = 1, .src2 = 0, .imm = 0 },     // negate
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 2, .src2 = 0, .imm = 0 }, // store c[i]
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArrayNeg, pattern.?.pattern);
+}
+
+test "AutoVectorizer detectArrayPattern ArrayScale" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64,
+        .body_size = 4,
+    };
+
+    // Pattern: c[i] = a[i] * const
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // load a[i]
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 5 },  // load const 5
+        .{ .opcode = .MUL_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 },     // mul
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // store c[i]
+    };
+
+    const pattern = vectorizer.detectArrayPattern(loop, &ir);
+    try std.testing.expect(pattern != null);
+    try std.testing.expectEqual(ArrayLoopPattern.ArrayScale, pattern.?.pattern);
 }
 
 test "AutoVectorizer shouldVectorize" {

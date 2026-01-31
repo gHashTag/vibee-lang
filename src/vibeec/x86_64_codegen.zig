@@ -1749,6 +1749,102 @@ pub const SIMDArrayOps = struct {
         return ExecutableCode.init(emitter.getCode());
     }
 
+    /// Generate code for: result[i] = a[i] - b[i] for all i
+    pub fn generateArraySub(self: *Self) !ExecutableCode {
+        var emitter = X86_64Emitter.init(self.allocator);
+        defer emitter.deinit();
+
+        try emitter.pushReg(.RBX);
+        try emitter.pushReg(.R12);
+        try emitter.pxor(.XMM0, .XMM0);
+        try emitter.movImm64(.R12, 0);
+
+        const loop_start = emitter.getCodePosition();
+
+        // Check if we have at least 4 elements left
+        try emitter.movRegReg(.RAX, .R12);
+        try emitter.addRegImm(.RAX, 4);
+        try emitter.cmpRegReg(.RAX, .RCX);
+        try emitter.code.append(0x77); // JA rel8
+        const ja_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i:i+4] into XMM0
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+        try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+        // Load b[i:i+4] into XMM1
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA6);
+        try emitter.movdquLoad(.XMM1, .RAX, 0);
+
+        // XMM0 = XMM0 - XMM1 (PSUBD)
+        try emitter.psubd(.XMM0, .XMM1);
+
+        // Store result[i:i+4]
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+        try emitter.movdquStore(.RAX, 0, .XMM0);
+
+        try emitter.addRegImm(.R12, 4);
+
+        try emitter.code.append(0xEB);
+        const jmp_back: i8 = @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(jmp_back));
+
+        const scalar_start = emitter.getCodePosition();
+        emitter.code.items[ja_offset] = @intCast(scalar_start - ja_offset - 1);
+
+        // Scalar loop for remainder
+        try emitter.cmpRegReg(.R12, .RCX);
+        try emitter.code.append(0x7D);
+        const jge_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i]
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x8B);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+
+        // Sub b[i]: sub eax, [rsi + r12*4]
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x2B);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA6);
+
+        // Store result[i]
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x89);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+
+        // i++
+        try emitter.code.append(0x49);
+        try emitter.code.append(0xFF);
+        try emitter.code.append(0xC4);
+
+        try emitter.code.append(0xEB);
+        const scalar_back: i8 = @intCast(@as(i32, @intCast(scalar_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(scalar_back));
+
+        const done_pos = emitter.getCodePosition();
+        emitter.code.items[jge_offset] = @intCast(done_pos - jge_offset - 1);
+
+        try emitter.popReg(.R12);
+        try emitter.popReg(.RBX);
+        try emitter.ret();
+
+        return ExecutableCode.init(emitter.getCode());
+    }
+
     /// Generate code for: result[i] = a[i] * b[i] for all i
     pub fn generateArrayMul(self: *Self) !ExecutableCode {
         var emitter = X86_64Emitter.init(self.allocator);
@@ -2026,6 +2122,196 @@ pub const SIMDArrayOps = struct {
         try emitter.code.append(0xEB);
         const scalar_back: i8 = @intCast(@as(i32, @intCast(scalar_start + 16)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
         try emitter.code.append(@bitCast(scalar_back));
+
+        const done_pos = emitter.getCodePosition();
+        emitter.code.items[jge_offset] = @intCast(done_pos - jge_offset - 1);
+
+        try emitter.popReg(.R12);
+        try emitter.popReg(.RBX);
+        try emitter.ret();
+
+        return ExecutableCode.init(emitter.getCode());
+    }
+
+    /// Generate code for: result[i] = -a[i] for all i (negation)
+    pub fn generateArrayNeg(self: *Self) !ExecutableCode {
+        var emitter = X86_64Emitter.init(self.allocator);
+        defer emitter.deinit();
+
+        try emitter.pushReg(.RBX);
+        try emitter.pushReg(.R12);
+
+        // Zero register for subtraction (0 - x = -x)
+        try emitter.pxor(.XMM2, .XMM2);
+        try emitter.movImm64(.R12, 0);
+
+        const loop_start = emitter.getCodePosition();
+
+        // Check if we have at least 4 elements left
+        try emitter.movRegReg(.RAX, .R12);
+        try emitter.addRegImm(.RAX, 4);
+        try emitter.cmpRegReg(.RAX, .RSI); // RSI = length
+        try emitter.code.append(0x77); // JA rel8
+        const ja_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i:i+4] into XMM0
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7); // [rdi + r12*4]
+        try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+        // XMM1 = 0 - XMM0 (negate via PSUBD)
+        try emitter.movdqa(.XMM1, .XMM2); // XMM1 = 0
+        try emitter.psubd(.XMM1, .XMM0);  // XMM1 = 0 - XMM0
+
+        // Store result[i:i+4]
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2); // [rdx + r12*4]
+        try emitter.movdquStore(.RAX, 0, .XMM1);
+
+        try emitter.addRegImm(.R12, 4);
+
+        try emitter.code.append(0xEB);
+        const jmp_back: i8 = @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(jmp_back));
+
+        const scalar_start = emitter.getCodePosition();
+        emitter.code.items[ja_offset] = @intCast(scalar_start - ja_offset - 1);
+
+        // Scalar loop for remainder
+        try emitter.cmpRegReg(.R12, .RSI);
+        try emitter.code.append(0x7D);
+        const jge_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i]: mov eax, [rdi + r12*4]
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x8B);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+
+        // Negate: neg eax
+        try emitter.code.append(0xF7);
+        try emitter.code.append(0xD8);
+
+        // Store result[i]: mov [rdx + r12*4], eax
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x89);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+
+        // i++
+        try emitter.code.append(0x49);
+        try emitter.code.append(0xFF);
+        try emitter.code.append(0xC4);
+
+        try emitter.code.append(0xEB);
+        const scalar_back2: i8 = @intCast(@as(i32, @intCast(scalar_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(scalar_back2));
+
+        const done_pos = emitter.getCodePosition();
+        emitter.code.items[jge_offset] = @intCast(done_pos - jge_offset - 1);
+
+        try emitter.popReg(.R12);
+        try emitter.popReg(.RBX);
+        try emitter.ret();
+
+        return ExecutableCode.init(emitter.getCode());
+    }
+
+    /// Generate code for: result[i] = a[i] * scale for all i (scalar multiply)
+    pub fn generateArrayScale(self: *Self, scale: i32) !ExecutableCode {
+        var emitter = X86_64Emitter.init(self.allocator);
+        defer emitter.deinit();
+
+        try emitter.pushReg(.RBX);
+        try emitter.pushReg(.R12);
+
+        // Load scale into XMM2 and broadcast
+        try emitter.movImm64(.RAX, @bitCast(@as(i64, scale)));
+        try emitter.code.append(0x66);
+        try emitter.code.append(0x0F);
+        try emitter.code.append(0x6E);
+        try emitter.code.append(0xD0); // movd xmm2, eax
+        try emitter.code.append(0x66);
+        try emitter.code.append(0x0F);
+        try emitter.code.append(0x70);
+        try emitter.code.append(0xD2);
+        try emitter.code.append(0x00); // pshufd xmm2, xmm2, 0
+
+        try emitter.movImm64(.R12, 0);
+
+        const loop_start = emitter.getCodePosition();
+
+        try emitter.movRegReg(.RAX, .R12);
+        try emitter.addRegImm(.RAX, 4);
+        try emitter.cmpRegReg(.RAX, .RSI);
+        try emitter.code.append(0x77);
+        const ja_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i:i+4]
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+        try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+        // XMM0 = XMM0 * XMM2 (PMULLD)
+        try emitter.pmulld(.XMM0, .XMM2);
+
+        // Store result
+        try emitter.code.append(0x4A);
+        try emitter.code.append(0x8D);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+        try emitter.movdquStore(.RAX, 0, .XMM0);
+
+        try emitter.addRegImm(.R12, 4);
+
+        try emitter.code.append(0xEB);
+        const jmp_back: i8 = @intCast(@as(i32, @intCast(loop_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(jmp_back));
+
+        const scalar_start = emitter.getCodePosition();
+        emitter.code.items[ja_offset] = @intCast(scalar_start - ja_offset - 1);
+
+        // Scalar loop
+        try emitter.cmpRegReg(.R12, .RSI);
+        try emitter.code.append(0x7D);
+        const jge_offset = emitter.getCodePosition();
+        try emitter.code.append(0x00);
+
+        // Load a[i]
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x8B);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA7);
+
+        // imul eax, scale: 69 C0 xx xx xx xx
+        try emitter.code.append(0x69);
+        try emitter.code.append(0xC0);
+        const scale_bytes: [4]u8 = @bitCast(scale);
+        try emitter.code.appendSlice(&scale_bytes);
+
+        // Store result
+        try emitter.code.append(0x42);
+        try emitter.code.append(0x89);
+        try emitter.code.append(0x04);
+        try emitter.code.append(0xA2);
+
+        // i++
+        try emitter.code.append(0x49);
+        try emitter.code.append(0xFF);
+        try emitter.code.append(0xC4);
+
+        try emitter.code.append(0xEB);
+        const scalar_back2: i8 = @intCast(@as(i32, @intCast(scalar_start)) - @as(i32, @intCast(emitter.getCodePosition())) - 1);
+        try emitter.code.append(@bitCast(scalar_back2));
 
         const done_pos = emitter.getCodePosition();
         emitter.code.items[jge_offset] = @intCast(done_pos - jge_offset - 1);
@@ -3114,6 +3400,64 @@ test "SIMDArrayOps: array_max with 8 elements" {
     const max = func(&a, 8);
 
     try std.testing.expectEqual(@as(i32, 9), max);
+}
+
+test "SIMDArrayOps: array_sub with 8 elements" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec = try ops.generateArraySub();
+    defer exec.deinit();
+
+    var a align(16) = [8]i32{ 10, 20, 30, 40, 50, 60, 70, 80 };
+    var b align(16) = [8]i32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var result align(16) = [8]i32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    const func: *const fn ([*]i32, [*]i32, [*]i32, usize) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&a, &b, &result, 8);
+
+    try std.testing.expectEqual(@as(i32, 9), result[0]);
+    try std.testing.expectEqual(@as(i32, 18), result[1]);
+    try std.testing.expectEqual(@as(i32, 72), result[7]);
+}
+
+test "SIMDArrayOps: array_neg with 8 elements" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec = try ops.generateArrayNeg();
+    defer exec.deinit();
+
+    var a align(16) = [8]i32{ 1, -2, 3, -4, 5, -6, 7, -8 };
+    var result align(16) = [8]i32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    // generateArrayNeg uses: RDI=a, RSI=length, RDX=result
+    const func: *const fn ([*]i32, usize, [*]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&a, 8, &result);
+
+    try std.testing.expectEqual(@as(i32, -1), result[0]);
+    try std.testing.expectEqual(@as(i32, 2), result[1]);
+    try std.testing.expectEqual(@as(i32, -3), result[2]);
+    try std.testing.expectEqual(@as(i32, 8), result[7]);
+}
+
+test "SIMDArrayOps: array_scale with 8 elements" {
+    const allocator = std.testing.allocator;
+    var ops = SIMDArrayOps.init(allocator);
+
+    var exec = try ops.generateArrayScale(3);
+    defer exec.deinit();
+
+    var a align(16) = [8]i32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var result align(16) = [8]i32{ 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    // generateArrayScale uses: RDI=a, RSI=length, RDX=result
+    const func: *const fn ([*]i32, usize, [*]i32) callconv(.C) void = @ptrCast(exec.code.ptr);
+    func(&a, 8, &result);
+
+    try std.testing.expectEqual(@as(i32, 3), result[0]);
+    try std.testing.expectEqual(@as(i32, 6), result[1]);
+    try std.testing.expectEqual(@as(i32, 24), result[7]);
 }
 
 test "Benchmark: SIMD array_add vs scalar (16 elements)" {
