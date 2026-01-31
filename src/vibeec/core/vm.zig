@@ -41,6 +41,19 @@ pub const Opcode = enum(u8) {
     mod = 0x24,
     neg = 0x25,
 
+    // Float Arithmetic (explicit)
+    fadd = 0x26,
+    fsub = 0x27,
+    fmul = 0x28,
+    fdiv = 0x29,
+
+    // Float Comparison
+    flt = 0x2A,
+    fle = 0x2B,
+    fgt = 0x2C,
+    fge = 0x2D,
+    feq = 0x2E,
+
     // Comparison
     eq = 0x30,
     ne = 0x31,
@@ -286,6 +299,61 @@ pub const VM = struct {
                     const b = try self.pop();
                     const a = try self.pop();
                     try self.push(Value.div(a, b));
+                },
+
+                // Float arithmetic (explicit)
+                .fadd => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.float(a.asFloat() + b.asFloat()));
+                },
+
+                .fsub => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.float(a.asFloat() - b.asFloat()));
+                },
+
+                .fmul => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.float(a.asFloat() * b.asFloat()));
+                },
+
+                .fdiv => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.float(a.asFloat() / b.asFloat()));
+                },
+
+                .flt => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.boolean(a.asFloat() < b.asFloat()));
+                },
+
+                .fle => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.boolean(a.asFloat() <= b.asFloat()));
+                },
+
+                .fgt => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.boolean(a.asFloat() > b.asFloat()));
+                },
+
+                .fge => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.boolean(a.asFloat() >= b.asFloat()));
+                },
+
+                .feq => {
+                    const b = try self.pop();
+                    const a = try self.pop();
+                    try self.push(Value.boolean(a.asFloat() == b.asFloat()));
                 },
 
                 .mod => {

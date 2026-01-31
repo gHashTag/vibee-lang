@@ -288,7 +288,7 @@ pub const X64Encoder = struct {
         try self.code.append(0xF2);
         try self.code.append(0x0F);
         try self.code.append(0x10);
-        try self.modrm(3, @intFromEnum(dst), @intFromEnum(src));
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
     }
 
     // ADDSD xmm, xmm
@@ -296,7 +296,7 @@ pub const X64Encoder = struct {
         try self.code.append(0xF2);
         try self.code.append(0x0F);
         try self.code.append(0x58);
-        try self.modrm(3, @intFromEnum(dst), @intFromEnum(src));
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
     }
 
     // SUBSD xmm, xmm
@@ -304,7 +304,7 @@ pub const X64Encoder = struct {
         try self.code.append(0xF2);
         try self.code.append(0x0F);
         try self.code.append(0x5C);
-        try self.modrm(3, @intFromEnum(dst), @intFromEnum(src));
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
     }
 
     // MULSD xmm, xmm
@@ -312,7 +312,7 @@ pub const X64Encoder = struct {
         try self.code.append(0xF2);
         try self.code.append(0x0F);
         try self.code.append(0x59);
-        try self.modrm(3, @intFromEnum(dst), @intFromEnum(src));
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
     }
 
     // DIVSD xmm, xmm
@@ -320,7 +320,45 @@ pub const X64Encoder = struct {
         try self.code.append(0xF2);
         try self.code.append(0x0F);
         try self.code.append(0x5E);
-        try self.modrm(3, @intFromEnum(dst), @intFromEnum(src));
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
+    }
+
+    // MOVQ xmm, r64 (move quadword from GPR to XMM)
+    pub fn movqToXmm(self: *Self, dst: XmmReg, src: Reg64) !void {
+        try self.code.append(0x66);
+        const src_val: u8 = @intFromEnum(src);
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.rex(true, dst_val >= 8, false, src_val >= 8);
+        try self.code.append(0x0F);
+        try self.code.append(0x6E); // MOVQ xmm, r/m64
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    // MOVQ r64, xmm (move quadword from XMM to GPR)
+    pub fn movqFromXmm(self: *Self, dst: Reg64, src: XmmReg) !void {
+        try self.code.append(0x66);
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+        try self.rex(true, src_val >= 8, false, dst_val >= 8);
+        try self.code.append(0x0F);
+        try self.code.append(0x7E); // MOVQ r/m64, xmm
+        try self.code.append(0xC0 | ((src_val & 0x7) << 3) | (dst_val & 0x7));
+    }
+
+    // UCOMISD xmm, xmm (unordered compare scalar double)
+    pub fn ucomisdReg(self: *Self, a: XmmReg, b: XmmReg) !void {
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x2E);
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(a)) << 3) | @as(u8, @intFromEnum(b)));
+    }
+
+    // SQRTSD xmm, xmm (square root)
+    pub fn sqrtsdReg(self: *Self, dst: XmmReg, src: XmmReg) !void {
+        try self.code.append(0xF2);
+        try self.code.append(0x0F);
+        try self.code.append(0x51);
+        try self.code.append(0xC0 | (@as(u8, @intFromEnum(dst)) << 3) | @as(u8, @intFromEnum(src)));
     }
 };
 
@@ -489,6 +527,89 @@ pub const JitCompiler = struct {
         try self.encoder.orReg(.rax, .rcx);
     }
 
+    /// Float add: pop two floats, add, push result
+    /// Floats are stored directly as IEEE 754, no extraction needed
+    fn emitFloatAdd(self: *Self) !void {
+        try self.encoder.pop(.rbx); // b
+        try self.encoder.pop(.rax); // a
+        // Move to XMM registers
+        try self.encoder.movqToXmm(.xmm0, .rax);
+        try self.encoder.movqToXmm(.xmm1, .rbx);
+        // Add
+        try self.encoder.addsdReg(.xmm0, .xmm1);
+        // Move back to GPR
+        try self.encoder.movqFromXmm(.rax, .xmm0);
+        try self.encoder.push(.rax);
+    }
+
+    fn emitFloatSub(self: *Self) !void {
+        try self.encoder.pop(.rbx);
+        try self.encoder.pop(.rax);
+        try self.encoder.movqToXmm(.xmm0, .rax);
+        try self.encoder.movqToXmm(.xmm1, .rbx);
+        try self.encoder.subsdReg(.xmm0, .xmm1);
+        try self.encoder.movqFromXmm(.rax, .xmm0);
+        try self.encoder.push(.rax);
+    }
+
+    fn emitFloatMul(self: *Self) !void {
+        try self.encoder.pop(.rbx);
+        try self.encoder.pop(.rax);
+        try self.encoder.movqToXmm(.xmm0, .rax);
+        try self.encoder.movqToXmm(.xmm1, .rbx);
+        try self.encoder.mulsdReg(.xmm0, .xmm1);
+        try self.encoder.movqFromXmm(.rax, .xmm0);
+        try self.encoder.push(.rax);
+    }
+
+    fn emitFloatDiv(self: *Self) !void {
+        try self.encoder.pop(.rbx);
+        try self.encoder.pop(.rax);
+        try self.encoder.movqToXmm(.xmm0, .rax);
+        try self.encoder.movqToXmm(.xmm1, .rbx);
+        try self.encoder.divsdReg(.xmm0, .xmm1);
+        try self.encoder.movqFromXmm(.rax, .xmm0);
+        try self.encoder.push(.rax);
+    }
+
+    /// Check if value in rax is a float (not a tagged NaN)
+    /// Sets ZF if NOT float (is tagged)
+    fn emitIsFloat(self: *Self) !void {
+        // mov rcx, QNAN
+        try self.encoder.movImm64(.rcx, QNAN);
+        // and rcx, rax
+        try self.encoder.andReg(.rcx, .rax);
+        // cmp rcx, QNAN
+        try self.encoder.movImm64(.rdx, QNAN);
+        try self.encoder.cmpReg(.rcx, .rdx);
+        // ZF=1 if tagged (not float), ZF=0 if float
+    }
+
+    /// Float comparison: pop two floats, compare, push NaN-boxed bool
+    /// setcc_opcode: 0x92=SETB, 0x96=SETBE, 0x97=SETA, 0x93=SETAE, 0x94=SETE
+    fn emitFloatCmp(self: *Self, setcc_opcode: u8) !void {
+        try self.encoder.pop(.rbx); // b
+        try self.encoder.pop(.rax); // a
+        // Move to XMM
+        try self.encoder.movqToXmm(.xmm0, .rax);
+        try self.encoder.movqToXmm(.xmm1, .rbx);
+        // UCOMISD xmm0, xmm1
+        try self.encoder.ucomisdReg(.xmm0, .xmm1);
+        // SETcc al
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(setcc_opcode);
+        try self.encoder.code.append(0xC0); // al
+        // MOVZX rax, al
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        // OR with QNAN_BOOL
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
+        try self.encoder.push(.rax);
+    }
+
     /// Compile bytecode to x86-64 machine code
     pub fn compile(self: *Self, bytecode: []const u8, constants: []const Value) ![]const u8 {
         self.encoder.clear();
@@ -570,6 +691,19 @@ pub const JitCompiler = struct {
                     try self.emitPackInt();
                     try self.encoder.push(.rax);
                 },
+
+                // Float arithmetic (explicit opcodes)
+                .fadd => try self.emitFloatAdd(),
+                .fsub => try self.emitFloatSub(),
+                .fmul => try self.emitFloatMul(),
+                .fdiv => try self.emitFloatDiv(),
+
+                // Float comparison
+                .flt => try self.emitFloatCmp(0x92), // SETB (below, for unordered compare)
+                .fle => try self.emitFloatCmp(0x96), // SETBE
+                .fgt => try self.emitFloatCmp(0x97), // SETA (above)
+                .fge => try self.emitFloatCmp(0x93), // SETAE
+                .feq => try self.emitFloatCmp(0x94), // SETE
 
                 // Comparison opcodes
                 .lt => {
@@ -1114,6 +1248,126 @@ test "JitExecutor comparison EQ" {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FLOAT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "JitExecutor float add" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 3.14 + 2.86 = 6.0
+    const constants = [_]Value{
+        Value.float(3.14),
+        Value.float(2.86),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.fadd),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), val.asFloat(), 0.0001);
+}
+
+test "JitExecutor float mul" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 2.5 * 4.0 = 10.0
+    const constants = [_]Value{
+        Value.float(2.5),
+        Value.float(4.0),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.fmul),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), val.asFloat(), 0.0001);
+}
+
+test "JitExecutor float div" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 10.0 / 4.0 = 2.5
+    const constants = [_]Value{
+        Value.float(10.0),
+        Value.float(4.0),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.fdiv),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), val.asFloat(), 0.0001);
+}
+
+test "JitExecutor float comparison" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 3.14 < 4.0 = true
+    const constants = [_]Value{
+        Value.float(3.14),
+        Value.float(4.0),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.flt),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isBool());
+    try std.testing.expect(val.asBool() == true);
+}
+
+test "JitExecutor PHI calculation" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // PHI * PHI ≈ 2.618
+    const phi = value.PHI;
+    const constants = [_]Value{
+        Value.float(phi),
+        Value.float(phi),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.fmul),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isFloat());
+    try std.testing.expectApproxEqAbs(value.PHI_SQ, val.asFloat(), 0.0001);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // BENCHMARK: VM vs JIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1181,6 +1435,65 @@ test "Benchmark VM vs JIT simple" {
     // Verify correctness
     try std.testing.expectEqual(@as(i64, 3), vm_result);
     try std.testing.expectEqual(@as(i64, 3), jit_result);
+    try std.testing.expect(speedup > 1.0);
+}
+
+test "Benchmark VM vs JIT float" {
+    const vm_mod_local = @import("vm.zig");
+    const iterations: u32 = 10000;
+
+    // Float: PHI * PHI
+    const constants = [_]Value{
+        Value.float(value.PHI),
+        Value.float(value.PHI),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.fmul),
+        @intFromEnum(Opcode.halt),
+    };
+
+    // Benchmark VM
+    var vm = try vm_mod_local.VM.init(std.testing.allocator, .{});
+    defer vm.deinit();
+
+    const vm_start = std.time.nanoTimestamp();
+    var vm_result: f64 = 0;
+    for (0..iterations) |_| {
+        vm.load(&bytecode, &constants);
+        const r = try vm.run();
+        vm_result = r.asFloat();
+        vm.reset();
+    }
+    const vm_end = std.time.nanoTimestamp();
+    const vm_ns = @as(u64, @intCast(vm_end - vm_start));
+
+    // Benchmark JIT
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    try executor.compile(&bytecode, &constants);
+
+    const jit_start = std.time.nanoTimestamp();
+    var jit_result_raw: i64 = 0;
+    for (0..iterations) |_| {
+        jit_result_raw = try executor.execute();
+    }
+    const jit_end = std.time.nanoTimestamp();
+    const jit_ns = @as(u64, @intCast(jit_end - jit_start));
+
+    const jit_val = Value{ .bits = @bitCast(jit_result_raw) };
+    const jit_result = jit_val.asFloat();
+
+    const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    std.debug.print("\n=== BENCHMARK: Float (PHI * PHI) ===\n", .{});
+    std.debug.print("VM:  {} ns/iter | JIT: {} ns/iter | Speedup: {d:.2}x\n", .{ vm_ns / iterations, jit_ns / iterations, speedup });
+    std.debug.print("VM result: {d:.6}, JIT result: {d:.6}\n", .{ vm_result, jit_result });
+
+    try std.testing.expectApproxEqAbs(value.PHI_SQ, vm_result, 0.0001);
+    try std.testing.expectApproxEqAbs(value.PHI_SQ, jit_result, 0.0001);
     try std.testing.expect(speedup > 1.0);
 }
 
