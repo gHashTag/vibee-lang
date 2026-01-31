@@ -1,0 +1,246 @@
+# BitNet FPGA Core Specification
+# Based on TerEffic architecture (arXiv:2502.16473)
+# Ternary Neural Network Accelerator for LLM Inference
+#
+# Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
+# Golden Identity: φ² + 1/φ² = 3
+
+name: bitnet_core
+version: "1.0.0"
+language: varlog
+module: bitnet_core
+
+description: |
+  BitNet FPGA accelerator core for ternary LLM inference.
+  Implements Ternary Matrix Multiplication (TMat) without multipliers.
+  Weights: {-1, 0, +1} encoded as 2-bit values.
+  Activations: 8-bit signed integers.
+  
+  Key optimizations:
+  - Pre-computed negation: store both x and -x
+  - 1.6-bit compression: 5 ternary weights per 8 bits
+  - Parallel MAC units for high throughput
+
+constants:
+  WEIGHT_WIDTH: 2        # 2 bits per ternary weight: 00=0, 01=+1, 10=-1
+  ACTIVATION_WIDTH: 8    # 8-bit signed activations
+  ACCUMULATOR_WIDTH: 32  # 32-bit accumulator for MAC
+  PARALLEL_MACS: 16      # Number of parallel MAC units
+  VECTOR_SIZE: 64        # Input vector size per cycle
+  PHOENIX: 999           # Sacred constant
+
+types:
+  TernaryWeight:
+    description: "Ternary weight value {-1, 0, +1}"
+    fields:
+      value: Int
+    width: 2
+    encoding:
+      zero: "2'b00"
+      plus_one: "2'b01"
+      minus_one: "2'b10"
+      reserved: "2'b11"
+
+  Activation:
+    description: "8-bit signed activation value"
+    fields:
+      value: Int
+    width: 8
+    signed: true
+
+  Accumulator:
+    description: "32-bit signed accumulator for MAC results"
+    fields:
+      value: Int
+    width: 32
+    signed: true
+
+  WeightVector:
+    description: "Vector of ternary weights for parallel processing"
+    fields:
+      weights: List<TernaryWeight>
+    size: PARALLEL_MACS
+
+  ActivationVector:
+    description: "Vector of activations for parallel processing"
+    fields:
+      activations: List<Activation>
+      negations: List<Activation>  # Pre-computed -x values
+    size: PARALLEL_MACS
+
+  MACResult:
+    description: "Result from MAC unit"
+    fields:
+      sum: Accumulator
+      valid: Bool
+
+ports:
+  inputs:
+    clk:
+      width: 1
+      description: "System clock (100 MHz target)"
+    rst_n:
+      width: 1
+      description: "Active-low reset"
+    weights_in:
+      width: 32  # 16 weights × 2 bits
+      description: "Packed ternary weights input"
+    activations_in:
+      width: 128  # 16 activations × 8 bits
+      description: "Packed activations input"
+    start:
+      width: 1
+      description: "Start computation signal"
+    
+  outputs:
+    result:
+      width: 32
+      description: "Accumulated MAC result"
+    done:
+      width: 1
+      description: "Computation complete flag"
+    busy:
+      width: 1
+      description: "Core is processing"
+
+behaviors:
+  - name: ternary_mac
+    description: "Single Ternary Multiply-Accumulate operation"
+    given: "Weight w ∈ {-1, 0, +1} and activation x (8-bit signed)"
+    when: "MAC operation requested"
+    then: |
+      if w == +1: accumulator += x
+      if w == -1: accumulator += (-x)  // Use pre-computed negation
+      if w ==  0: accumulator += 0     // No operation
+    implementation: |
+      // Ternary MAC without multiplier - just MUX and adder
+      wire [7:0] mac_input;
+      assign mac_input = (weight == 2'b01) ? activation :
+                         (weight == 2'b10) ? negation :
+                         8'b0;
+      
+      always @(posedge clk) begin
+        if (enable)
+          accumulator <= accumulator + {{24{mac_input[7]}}, mac_input};
+      end
+
+  - name: parallel_mac_array
+    description: "16 parallel MAC units for high throughput"
+    given: "16 weights and 16 activations"
+    when: "Parallel computation cycle"
+    then: "All 16 MACs execute simultaneously, results summed"
+    implementation: |
+      // Generate 16 parallel MAC units
+      genvar i;
+      generate
+        for (i = 0; i < 16; i = i + 1) begin : mac_array
+          ternary_mac mac_inst (
+            .clk(clk),
+            .weight(weights_in[i*2 +: 2]),
+            .activation(activations_in[i*8 +: 8]),
+            .negation(negations[i*8 +: 8]),
+            .accumulator(partial_sums[i])
+          );
+        end
+      endgenerate
+      
+      // Reduction tree to sum all partial results
+      assign result = partial_sums[0] + partial_sums[1] + ... + partial_sums[15];
+
+  - name: weight_decoder
+    description: "Decode compressed weights (1.6-bit encoding)"
+    given: "8-bit packed value containing 5 ternary weights"
+    when: "Weight fetch from memory"
+    then: "Unpack to 5 individual 2-bit ternary values"
+    implementation: |
+      // 3^5 = 243 possible combinations fit in 8 bits
+      // LUT-based decoder for fast unpacking
+      reg [9:0] unpacked_weights;  // 5 weights × 2 bits
+      
+      always @(*) begin
+        case (encoded_byte)
+          8'd0:   unpacked_weights = 10'b00_00_00_00_00;  // 0,0,0,0,0
+          8'd1:   unpacked_weights = 10'b00_00_00_00_01;  // 0,0,0,0,+1
+          8'd2:   unpacked_weights = 10'b00_00_00_00_10;  // 0,0,0,0,-1
+          // ... 243 entries total
+          default: unpacked_weights = 10'b00_00_00_00_00;
+        endcase
+      end
+
+  - name: precompute_negation
+    description: "Pre-compute negation of activations"
+    given: "Input activation vector"
+    when: "New activations loaded"
+    then: "Store both x and -x for each activation"
+    implementation: |
+      // Compute negation once, use multiple times
+      always @(posedge clk) begin
+        if (load_activations) begin
+          for (int i = 0; i < 16; i++) begin
+            activations_reg[i] <= activations_in[i*8 +: 8];
+            negations_reg[i] <= -activations_in[i*8 +: 8];
+          end
+        end
+      end
+
+  - name: state_machine
+    description: "Control FSM for BitNet core"
+    given: "Start signal and input data"
+    when: "Processing requested"
+    then: "Execute MAC operations, signal completion"
+    states:
+      - IDLE: "Waiting for start signal"
+      - LOAD: "Loading weights and activations"
+      - COMPUTE: "Executing parallel MACs"
+      - OUTPUT: "Result ready, signal done"
+
+testbench:
+  name: bitnet_core_tb
+  description: "Testbench for BitNet core verification"
+  test_cases:
+    - name: "all_zeros"
+      weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      activations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+      expected_result: 0
+      
+    - name: "all_plus_one"
+      weights: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      activations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+      expected_result: 136  # Sum of 1..16
+      
+    - name: "all_minus_one"
+      weights: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+      activations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+      expected_result: -136
+      
+    - name: "mixed_weights"
+      weights: [1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1, -1, 0, 1]
+      activations: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+      expected_result: 10  # 6×10 - 5×10 + 5×0 = 10
+
+synthesis:
+  target: "Xilinx Artix-7 XC7A35T"
+  clock_frequency: "100 MHz"
+  estimated_resources:
+    LUTs: 2000
+    FFs: 1500
+    BRAMs: 0
+    DSPs: 0  # No DSPs needed - ternary ops use LUTs only!
+  
+  power_estimate: "< 1W"
+  throughput: "1.6 GOPS (16 MACs × 100 MHz)"
+
+references:
+  - title: "TerEffic: Highly Efficient Ternary LLM Inference on FPGA"
+    arxiv: "2502.16473"
+    authors: "Yin et al."
+    year: 2025
+    
+  - title: "The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits"
+    arxiv: "2402.17764"
+    authors: "Microsoft Research"
+    year: 2024
+    
+  - title: "Ternary-NanoCore"
+    github: "zahidaof/Ternary-NanoCore"
+    description: "Reference implementation for Artix-7"

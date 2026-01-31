@@ -1,0 +1,178 @@
+# BitNet Ternary MAC Unit Specification
+# Single Multiply-Accumulate unit for ternary weights
+#
+# Key insight: No multipliers needed!
+# w ∈ {-1, 0, +1} means:
+#   w = +1: result += x
+#   w = -1: result -= x (use pre-computed -x)
+#   w =  0: result += 0 (no-op)
+
+name: bitnet_mac
+version: "1.0.0"
+language: varlog
+module: bitnet_mac
+
+description: |
+  Single Ternary MAC unit - the building block of BitNet accelerator.
+  Eliminates multipliers by using ternary weight encoding.
+  
+  Performance: 1 MAC per clock cycle at 100 MHz = 100 MOPS
+  Resources: ~50 LUTs, 0 DSPs
+
+constants:
+  WEIGHT_WIDTH: 2
+  ACTIVATION_WIDTH: 8
+  ACCUMULATOR_WIDTH: 32
+
+types:
+  TernaryWeight:
+    description: "2-bit ternary weight encoding"
+    width: 2
+    encoding:
+      ZERO: "2'b00"
+      PLUS_ONE: "2'b01"
+      MINUS_ONE: "2'b10"
+
+  SignedActivation:
+    description: "8-bit signed activation"
+    width: 8
+    signed: true
+
+  SignedAccumulator:
+    description: "32-bit signed accumulator"
+    width: 32
+    signed: true
+
+ports:
+  inputs:
+    clk:
+      width: 1
+      description: "System clock"
+    rst_n:
+      width: 1
+      description: "Active-low reset"
+    weight:
+      width: 2
+      description: "Ternary weight {00=0, 01=+1, 10=-1}"
+    activation:
+      width: 8
+      description: "8-bit signed activation"
+    enable:
+      width: 1
+      description: "Enable MAC operation"
+    clear:
+      width: 1
+      description: "Clear accumulator"
+    
+  outputs:
+    accumulator:
+      width: 32
+      description: "32-bit signed accumulated result"
+    overflow:
+      width: 1
+      description: "Overflow flag"
+
+behaviors:
+  - name: ternary_mac_operation
+    description: "Core MAC operation without multiplier"
+    given: "Weight w and activation x"
+    when: "Enable signal is high"
+    then: |
+      Based on weight encoding:
+      - 2'b00 (zero):      accumulator unchanged
+      - 2'b01 (plus_one):  accumulator += sign_extend(activation)
+      - 2'b10 (minus_one): accumulator -= sign_extend(activation)
+      - 2'b11 (reserved):  accumulator unchanged
+
+  - name: accumulator_clear
+    description: "Clear accumulator to zero"
+    given: "Clear signal"
+    when: "Clear is high"
+    then: "Accumulator set to 0"
+
+  - name: overflow_detection
+    description: "Detect accumulator overflow"
+    given: "MAC operation result"
+    when: "Result exceeds 32-bit signed range"
+    then: "Set overflow flag"
+
+implementation: |
+  // Pre-compute negation of activation (2's complement)
+  wire signed [8:0] neg_activation = -$signed({activation[7], activation});
+  
+  // Select operand based on weight
+  wire signed [8:0] mac_operand;
+  assign mac_operand = (weight == 2'b01) ? $signed({activation[7], activation}) :
+                       (weight == 2'b10) ? neg_activation :
+                       9'sd0;
+  
+  // Sign-extend to 32 bits
+  wire signed [31:0] operand_extended = {{23{mac_operand[8]}}, mac_operand};
+  
+  // Accumulator register
+  reg signed [31:0] acc_reg;
+  wire signed [32:0] next_acc = acc_reg + operand_extended;
+  
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+      acc_reg <= 32'sd0;
+    else if (clear)
+      acc_reg <= 32'sd0;
+    else if (enable)
+      acc_reg <= next_acc[31:0];
+  end
+  
+  assign accumulator = acc_reg;
+  assign overflow = (next_acc[32] != next_acc[31]) & enable;
+
+testbench:
+  name: bitnet_mac_tb
+  test_cases:
+    - name: "zero_weight"
+      description: "Weight=0 should not change accumulator"
+      weight: "2'b00"
+      activation: "8'd100"
+      initial_acc: "32'd50"
+      expected_acc: "32'd50"
+      
+    - name: "plus_one_weight"
+      description: "Weight=+1 should add activation"
+      weight: "2'b01"
+      activation: "8'd10"
+      initial_acc: "32'd100"
+      expected_acc: "32'd110"
+      
+    - name: "minus_one_weight"
+      description: "Weight=-1 should subtract activation"
+      weight: "2'b10"
+      activation: "8'd10"
+      initial_acc: "32'd100"
+      expected_acc: "32'd90"
+      
+    - name: "negative_activation"
+      description: "Handle negative activation correctly"
+      weight: "2'b01"
+      activation: "8'hF6"  # -10 in 2's complement
+      initial_acc: "32'd100"
+      expected_acc: "32'd90"
+      
+    - name: "accumulate_sequence"
+      description: "Multiple MACs in sequence"
+      sequence:
+        - weight: "2'b01"
+          activation: "8'd5"
+        - weight: "2'b10"
+          activation: "8'd3"
+        - weight: "2'b01"
+          activation: "8'd7"
+      initial_acc: "32'd0"
+      expected_acc: "32'd9"  # 0 + 5 - 3 + 7 = 9
+
+synthesis:
+  target: "Xilinx Artix-7"
+  clock: "100 MHz"
+  resources:
+    LUTs: 50
+    FFs: 40
+    DSPs: 0
+  latency: "1 cycle"
