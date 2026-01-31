@@ -23,6 +23,7 @@ RUN addgroup -g 1001 -S app && \
 WORKDIR /app
 COPY --from=builder /build/trinity-kg-server .
 COPY trinity-kg-ui.html .
+COPY trinity-stars-ui.html .
 
 # Data directory for persistence
 RUN mkdir -p /app/data && chown -R app:app /app
