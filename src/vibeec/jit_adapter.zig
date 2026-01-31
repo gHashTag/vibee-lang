@@ -2453,6 +2453,389 @@ pub const RecompilationQueue = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ON-STACK REPLACEMENT (OSR)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// OSR trigger type
+pub const OSRTrigger = enum(u8) {
+    /// Loop iteration count threshold
+    loop_iteration,
+    /// Back edge count threshold
+    back_edge,
+    /// Explicit OSR request
+    explicit,
+    /// Hot path detection
+    hot_path,
+};
+
+/// Stack slot mapping for OSR
+pub const StackSlotMapping = struct {
+    interp_slot: u32,
+    compiled_slot: u32,
+};
+
+/// State mapping for OSR - maps interpreter state to compiled state
+pub const OSRStateMap = struct {
+    /// Register mappings: interpreter reg -> compiled reg
+    register_map: [256]u8,
+    /// Which registers need to be transferred
+    live_registers: [4]u64, // 256 bits
+    /// Stack slot mappings
+    stack_map: std.ArrayList(StackSlotMapping),
+    /// Number of live registers
+    live_count: u8,
+
+    pub fn init(allocator: Allocator) OSRStateMap {
+        return .{
+            .register_map = [_]u8{0} ** 256,
+            .live_registers = [_]u64{0} ** 4,
+            .stack_map = std.ArrayList(StackSlotMapping).init(allocator),
+            .live_count = 0,
+        };
+    }
+
+    pub fn deinit(self: *OSRStateMap) void {
+        self.stack_map.deinit();
+    }
+
+    pub fn addRegisterMapping(self: *OSRStateMap, interp_reg: u8, compiled_reg: u8) void {
+        self.register_map[interp_reg] = compiled_reg;
+        const word_idx = interp_reg / 64;
+        const bit_idx: u6 = @intCast(interp_reg % 64);
+        self.live_registers[word_idx] |= (@as(u64, 1) << bit_idx);
+        self.live_count += 1;
+    }
+
+    pub fn addStackMapping(self: *OSRStateMap, interp_slot: u32, compiled_slot: u32) !void {
+        try self.stack_map.append(.{ .interp_slot = interp_slot, .compiled_slot = compiled_slot });
+    }
+
+    pub fn isLive(self: *const OSRStateMap, reg: u8) bool {
+        const word_idx = reg / 64;
+        const bit_idx: u6 = @intCast(reg % 64);
+        return (self.live_registers[word_idx] & (@as(u64, 1) << bit_idx)) != 0;
+    }
+
+    pub fn getCompiledReg(self: *const OSRStateMap, interp_reg: u8) u8 {
+        return self.register_map[interp_reg];
+    }
+};
+
+/// OSR entry point - a location where OSR can occur
+pub const OSREntryPoint = struct {
+    /// Unique ID
+    id: u32,
+    /// Bytecode address of the loop header
+    bytecode_addr: u32,
+    /// Compiled code entry address
+    compiled_addr: u32,
+    /// Loop info for this entry point
+    loop_start: usize,
+    loop_end: usize,
+    /// State mapping for transfer
+    state_map: OSRStateMap,
+    /// Trigger type
+    trigger: OSRTrigger,
+    /// Iteration threshold for triggering OSR
+    iteration_threshold: u32,
+    /// Current iteration count
+    current_iterations: u32,
+    /// Is this entry point active?
+    is_active: bool,
+    /// Has compiled code ready?
+    is_compiled: bool,
+    /// Statistics
+    osr_entries: u64,
+    osr_exits: u64,
+
+    pub fn init(allocator: Allocator, id: u32, bytecode_addr: u32, loop_start: usize, loop_end: usize) OSREntryPoint {
+        return .{
+            .id = id,
+            .bytecode_addr = bytecode_addr,
+            .compiled_addr = 0,
+            .loop_start = loop_start,
+            .loop_end = loop_end,
+            .state_map = OSRStateMap.init(allocator),
+            .trigger = .loop_iteration,
+            .iteration_threshold = 100,
+            .current_iterations = 0,
+            .is_active = true,
+            .is_compiled = false,
+            .osr_entries = 0,
+            .osr_exits = 0,
+        };
+    }
+
+    pub fn deinit(self: *OSREntryPoint) void {
+        self.state_map.deinit();
+    }
+
+    pub fn recordIteration(self: *OSREntryPoint) bool {
+        self.current_iterations += 1;
+        return self.current_iterations >= self.iteration_threshold;
+    }
+
+    pub fn resetIterations(self: *OSREntryPoint) void {
+        self.current_iterations = 0;
+    }
+
+    pub fn markCompiled(self: *OSREntryPoint, compiled_addr: u32) void {
+        self.compiled_addr = compiled_addr;
+        self.is_compiled = true;
+    }
+
+    pub fn recordEntry(self: *OSREntryPoint) void {
+        self.osr_entries += 1;
+    }
+
+    pub fn recordExit(self: *OSREntryPoint) void {
+        self.osr_exits += 1;
+    }
+};
+
+/// OSR compilation request
+pub const OSRCompilationRequest = struct {
+    entry_point_id: u32,
+    bytecode_addr: u32,
+    loop_start: usize,
+    loop_end: usize,
+    priority: u8,
+};
+
+/// OSR Manager - manages on-stack replacement
+pub const OSRManager = struct {
+    allocator: Allocator,
+    /// Entry points by bytecode address
+    entry_points: std.AutoHashMap(u32, OSREntryPoint),
+    /// Entry points by ID
+    entry_by_id: std.AutoHashMap(u32, u32),
+    /// Next entry point ID
+    next_id: u32,
+    /// Pending OSR compilations
+    pending_compilations: std.ArrayList(OSRCompilationRequest),
+    /// Default iteration threshold
+    default_threshold: u32,
+    /// Statistics
+    total_osr_entries: usize = 0,
+    total_osr_exits: usize = 0,
+    compilations_triggered: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .entry_points = std.AutoHashMap(u32, OSREntryPoint).init(allocator),
+            .entry_by_id = std.AutoHashMap(u32, u32).init(allocator),
+            .next_id = 0,
+            .pending_compilations = std.ArrayList(OSRCompilationRequest).init(allocator),
+            .default_threshold = 100,
+            .total_osr_entries = 0,
+            .total_osr_exits = 0,
+            .compilations_triggered = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.entry_points.valueIterator();
+        while (iter.next()) |ep| {
+            ep.deinit();
+        }
+        self.entry_points.deinit();
+        self.entry_by_id.deinit();
+        self.pending_compilations.deinit();
+    }
+
+    /// Create an OSR entry point for a loop
+    pub fn createEntryPoint(self: *Self, bytecode_addr: u32, loop_start: usize, loop_end: usize) !u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        var entry = OSREntryPoint.init(self.allocator, id, bytecode_addr, loop_start, loop_end);
+        entry.iteration_threshold = self.default_threshold;
+
+        try self.entry_points.put(bytecode_addr, entry);
+        try self.entry_by_id.put(id, bytecode_addr);
+
+        return id;
+    }
+
+    /// Record a loop iteration, returns true if OSR should trigger
+    pub fn recordIteration(self: *Self, bytecode_addr: u32) bool {
+        if (self.entry_points.getPtr(bytecode_addr)) |entry| {
+            if (!entry.is_active) return false;
+
+            if (entry.recordIteration()) {
+                if (!entry.is_compiled) {
+                    // Queue compilation
+                    self.pending_compilations.append(.{
+                        .entry_point_id = entry.id,
+                        .bytecode_addr = bytecode_addr,
+                        .loop_start = entry.loop_start,
+                        .loop_end = entry.loop_end,
+                        .priority = 5,
+                    }) catch {};
+                    self.compilations_triggered += 1;
+                }
+                return entry.is_compiled;
+            }
+        }
+        return false;
+    }
+
+    /// Perform OSR entry - transfer state and jump to compiled code
+    pub fn performOSREntry(self: *Self, bytecode_addr: u32, registers: *SavedRegisterState) ?u32 {
+        const entry = self.entry_points.getPtr(bytecode_addr) orelse return null;
+
+        if (!entry.is_active or !entry.is_compiled) return null;
+
+        // Transfer register state using state map
+        for (0..256) |i| {
+            const reg: u8 = @intCast(i);
+            if (entry.state_map.isLive(reg)) {
+                if (registers.get(reg)) |value| {
+                    const compiled_reg = entry.state_map.getCompiledReg(reg);
+                    registers.save(compiled_reg, value);
+                }
+            }
+        }
+
+        entry.recordEntry();
+        self.total_osr_entries += 1;
+
+        return entry.compiled_addr;
+    }
+
+    /// Perform OSR exit - transfer state back to interpreter
+    pub fn performOSRExit(self: *Self, bytecode_addr: u32) void {
+        if (self.entry_points.getPtr(bytecode_addr)) |entry| {
+            entry.recordExit();
+            entry.resetIterations();
+            self.total_osr_exits += 1;
+        }
+    }
+
+    /// Mark entry point as compiled
+    pub fn markCompiled(self: *Self, bytecode_addr: u32, compiled_addr: u32) void {
+        if (self.entry_points.getPtr(bytecode_addr)) |entry| {
+            entry.markCompiled(compiled_addr);
+        }
+    }
+
+    /// Add register mapping for an entry point
+    pub fn addRegisterMapping(self: *Self, bytecode_addr: u32, interp_reg: u8, compiled_reg: u8) void {
+        if (self.entry_points.getPtr(bytecode_addr)) |entry| {
+            entry.state_map.addRegisterMapping(interp_reg, compiled_reg);
+        }
+    }
+
+    /// Get pending compilations
+    pub fn getPendingCompilations(self: *Self) []OSRCompilationRequest {
+        return self.pending_compilations.toOwnedSlice() catch return &[_]OSRCompilationRequest{};
+    }
+
+    /// Get entry point by address
+    pub fn getEntryPoint(self: *Self, bytecode_addr: u32) ?*OSREntryPoint {
+        return self.entry_points.getPtr(bytecode_addr);
+    }
+
+    /// Check if address has an active OSR entry point
+    pub fn hasActiveEntryPoint(self: *Self, bytecode_addr: u32) bool {
+        if (self.entry_points.get(bytecode_addr)) |entry| {
+            return entry.is_active and entry.is_compiled;
+        }
+        return false;
+    }
+
+    /// Deactivate an entry point
+    pub fn deactivateEntryPoint(self: *Self, bytecode_addr: u32) void {
+        if (self.entry_points.getPtr(bytecode_addr)) |entry| {
+            entry.is_active = false;
+        }
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct {
+        entries: usize,
+        exits: usize,
+        compilations: usize,
+        active_points: usize,
+    } {
+        var active: usize = 0;
+        var iter = self.entry_points.valueIterator();
+        while (iter.next()) |entry| {
+            if (entry.is_active) active += 1;
+        }
+
+        return .{
+            .entries = self.total_osr_entries,
+            .exits = self.total_osr_exits,
+            .compilations = self.compilations_triggered,
+            .active_points = active,
+        };
+    }
+};
+
+/// OSR-aware loop compiler
+pub const OSRLoopCompiler = struct {
+    allocator: Allocator,
+    /// OSR manager
+    osr_manager: *OSRManager,
+    /// Loop unroller for optimization
+    loop_unroller: LoopUnroller,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, osr_manager: *OSRManager) Self {
+        return .{
+            .allocator = allocator,
+            .osr_manager = osr_manager,
+            .loop_unroller = LoopUnroller.init(allocator),
+        };
+    }
+
+    /// Compile a loop for OSR entry
+    pub fn compileLoopForOSR(self: *Self, ir: []const IRInstruction, loop: LoopInfo, bytecode_addr: u32) ![]IRInstruction {
+        _ = loop; // Loop info used for future optimizations
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Add OSR entry prologue - state transfer code
+        try result.append(.{
+            .opcode = .NOP, // Placeholder for OSR entry marker
+            .dest = 0,
+            .src1 = 0,
+            .src2 = 0,
+            .imm = @intCast(bytecode_addr),
+        });
+
+        // Copy loop body with optimizations
+        const optimized = try self.loop_unroller.optimize(ir);
+        defer self.allocator.free(optimized);
+
+        for (optimized) |instr| {
+            try result.append(instr);
+        }
+
+        // Add OSR exit check at loop back edge
+        try result.append(.{
+            .opcode = .GUARD_TYPE, // Use as OSR exit check
+            .dest = 0,
+            .src1 = 0,
+            .src2 = 0,
+            .imm = @intCast(bytecode_addr), // Exit target
+        });
+
+        return result.toOwnedSlice();
+    }
+
+    /// Create OSR entry point for detected loop
+    pub fn createOSRForLoop(self: *Self, bytecode_addr: u32, loop: LoopInfo) !u32 {
+        return try self.osr_manager.createEntryPoint(bytecode_addr, loop.start_idx, loop.end_idx);
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -7024,6 +7407,10 @@ pub const TieredCompiler = struct {
     adaptive_recompiler: AdaptiveRecompiler,
     /// Recompilation queue
     recompile_queue: RecompilationQueue,
+    /// Enable OSR
+    enable_osr: bool,
+    /// OSR manager
+    osr_manager: OSRManager,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -7088,6 +7475,8 @@ pub const TieredCompiler = struct {
             .enable_adaptive_recompile = true,
             .adaptive_recompiler = AdaptiveRecompiler.init(allocator),
             .recompile_queue = RecompilationQueue.init(allocator),
+            .enable_osr = true,
+            .osr_manager = OSRManager.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -7142,6 +7531,9 @@ pub const TieredCompiler = struct {
         // Free adaptive recompilation
         self.adaptive_recompiler.deinit();
         self.recompile_queue.deinit();
+
+        // Free OSR
+        self.osr_manager.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -7349,6 +7741,47 @@ pub const TieredCompiler = struct {
     /// Get recompilation queue
     pub fn getRecompileQueue(self: *Self) *RecompilationQueue {
         return &self.recompile_queue;
+    }
+
+    /// Get OSR manager
+    pub fn getOSRManager(self: *Self) *OSRManager {
+        return &self.osr_manager;
+    }
+
+    /// Create OSR entry point for a loop
+    pub fn createOSREntryPoint(self: *Self, bytecode_addr: u32, loop_start: usize, loop_end: usize) !u32 {
+        if (!self.enable_osr) return 0;
+        return try self.osr_manager.createEntryPoint(bytecode_addr, loop_start, loop_end);
+    }
+
+    /// Record loop iteration for OSR
+    pub fn recordLoopIteration(self: *Self, bytecode_addr: u32) bool {
+        if (!self.enable_osr) return false;
+        return self.osr_manager.recordIteration(bytecode_addr);
+    }
+
+    /// Perform OSR entry
+    pub fn performOSREntry(self: *Self, bytecode_addr: u32, registers: *SavedRegisterState) ?u32 {
+        if (!self.enable_osr) return null;
+        return self.osr_manager.performOSREntry(bytecode_addr, registers);
+    }
+
+    /// Perform OSR exit
+    pub fn performOSRExit(self: *Self, bytecode_addr: u32) void {
+        if (!self.enable_osr) return;
+        self.osr_manager.performOSRExit(bytecode_addr);
+    }
+
+    /// Check if OSR is available for a loop
+    pub fn hasOSRAvailable(self: *Self, bytecode_addr: u32) bool {
+        if (!self.enable_osr) return false;
+        return self.osr_manager.hasActiveEntryPoint(bytecode_addr);
+    }
+
+    /// Mark OSR entry point as compiled
+    pub fn markOSRCompiled(self: *Self, bytecode_addr: u32, compiled_addr: u32) void {
+        if (!self.enable_osr) return;
+        self.osr_manager.markCompiled(bytecode_addr, compiled_addr);
     }
 
     /// Get or create function state
@@ -14385,6 +14818,255 @@ test "TieredCompiler process pending recompiles" {
 
     // Queue should be empty
     try std.testing.expect(compiler.recompile_queue.isEmpty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ON-STACK REPLACEMENT (OSR) TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "OSRStateMap basic operations" {
+    const allocator = std.testing.allocator;
+
+    var state_map = OSRStateMap.init(allocator);
+    defer state_map.deinit();
+
+    // Initially no registers are live
+    try std.testing.expect(!state_map.isLive(0));
+    try std.testing.expectEqual(@as(u8, 0), state_map.live_count);
+
+    // Add mapping
+    state_map.addRegisterMapping(0, 5);
+    try std.testing.expect(state_map.isLive(0));
+    try std.testing.expectEqual(@as(u8, 5), state_map.getCompiledReg(0));
+    try std.testing.expectEqual(@as(u8, 1), state_map.live_count);
+
+    // Add another
+    state_map.addRegisterMapping(10, 15);
+    try std.testing.expect(state_map.isLive(10));
+    try std.testing.expectEqual(@as(u8, 15), state_map.getCompiledReg(10));
+}
+
+test "OSRStateMap stack mapping" {
+    const allocator = std.testing.allocator;
+
+    var state_map = OSRStateMap.init(allocator);
+    defer state_map.deinit();
+
+    try state_map.addStackMapping(0, 100);
+    try state_map.addStackMapping(1, 104);
+
+    try std.testing.expectEqual(@as(usize, 2), state_map.stack_map.items.len);
+    try std.testing.expectEqual(@as(u32, 0), state_map.stack_map.items[0].interp_slot);
+    try std.testing.expectEqual(@as(u32, 100), state_map.stack_map.items[0].compiled_slot);
+}
+
+test "OSREntryPoint creation and iteration" {
+    const allocator = std.testing.allocator;
+
+    var entry = OSREntryPoint.init(allocator, 1, 0x1000, 10, 20);
+    defer entry.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), entry.id);
+    try std.testing.expectEqual(@as(u32, 0x1000), entry.bytecode_addr);
+    try std.testing.expectEqual(@as(usize, 10), entry.loop_start);
+    try std.testing.expectEqual(@as(usize, 20), entry.loop_end);
+    try std.testing.expect(entry.is_active);
+    try std.testing.expect(!entry.is_compiled);
+
+    // Record iterations
+    entry.iteration_threshold = 5;
+    try std.testing.expect(!entry.recordIteration()); // 1
+    try std.testing.expect(!entry.recordIteration()); // 2
+    try std.testing.expect(!entry.recordIteration()); // 3
+    try std.testing.expect(!entry.recordIteration()); // 4
+    try std.testing.expect(entry.recordIteration()); // 5 - threshold reached
+}
+
+test "OSREntryPoint mark compiled" {
+    const allocator = std.testing.allocator;
+
+    var entry = OSREntryPoint.init(allocator, 1, 0x1000, 10, 20);
+    defer entry.deinit();
+
+    try std.testing.expect(!entry.is_compiled);
+    try std.testing.expectEqual(@as(u32, 0), entry.compiled_addr);
+
+    entry.markCompiled(0x5000);
+
+    try std.testing.expect(entry.is_compiled);
+    try std.testing.expectEqual(@as(u32, 0x5000), entry.compiled_addr);
+}
+
+test "OSRManager create entry point" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    const id = try manager.createEntryPoint(0x1000, 10, 20);
+    try std.testing.expectEqual(@as(u32, 0), id);
+
+    const entry = manager.getEntryPoint(0x1000);
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqual(@as(u32, 0x1000), entry.?.bytecode_addr);
+}
+
+test "OSRManager record iteration and trigger" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    manager.default_threshold = 3;
+    _ = try manager.createEntryPoint(0x1000, 10, 20);
+
+    // Record iterations below threshold
+    try std.testing.expect(!manager.recordIteration(0x1000));
+    try std.testing.expect(!manager.recordIteration(0x1000));
+
+    // Third iteration triggers compilation request
+    try std.testing.expect(!manager.recordIteration(0x1000)); // Not compiled yet
+
+    // Check compilation was queued
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.compilations);
+}
+
+test "OSRManager perform OSR entry" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    _ = try manager.createEntryPoint(0x1000, 10, 20);
+
+    // Not compiled yet - should return null
+    var registers = SavedRegisterState.init();
+    try std.testing.expect(manager.performOSREntry(0x1000, &registers) == null);
+
+    // Mark as compiled
+    manager.markCompiled(0x1000, 0x5000);
+
+    // Now should return compiled address
+    const addr = manager.performOSREntry(0x1000, &registers);
+    try std.testing.expect(addr != null);
+    try std.testing.expectEqual(@as(u32, 0x5000), addr.?);
+
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.entries);
+}
+
+test "OSRManager perform OSR exit" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    manager.default_threshold = 3;
+    _ = try manager.createEntryPoint(0x1000, 10, 20);
+
+    // Record some iterations
+    _ = manager.recordIteration(0x1000);
+    _ = manager.recordIteration(0x1000);
+
+    // Exit should reset iterations
+    manager.performOSRExit(0x1000);
+
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.exits);
+
+    // Entry point should have reset iterations
+    const entry = manager.getEntryPoint(0x1000);
+    try std.testing.expectEqual(@as(u32, 0), entry.?.current_iterations);
+}
+
+test "OSRManager register mapping" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    _ = try manager.createEntryPoint(0x1000, 10, 20);
+
+    // Add register mappings
+    manager.addRegisterMapping(0x1000, 0, 5);
+    manager.addRegisterMapping(0x1000, 1, 6);
+
+    const entry = manager.getEntryPoint(0x1000);
+    try std.testing.expect(entry.?.state_map.isLive(0));
+    try std.testing.expect(entry.?.state_map.isLive(1));
+    try std.testing.expectEqual(@as(u8, 5), entry.?.state_map.getCompiledReg(0));
+    try std.testing.expectEqual(@as(u8, 6), entry.?.state_map.getCompiledReg(1));
+}
+
+test "OSRManager has active entry point" {
+    const allocator = std.testing.allocator;
+
+    var manager = OSRManager.init(allocator);
+    defer manager.deinit();
+
+    _ = try manager.createEntryPoint(0x1000, 10, 20);
+
+    // Not compiled yet
+    try std.testing.expect(!manager.hasActiveEntryPoint(0x1000));
+
+    // Mark compiled
+    manager.markCompiled(0x1000, 0x5000);
+    try std.testing.expect(manager.hasActiveEntryPoint(0x1000));
+
+    // Deactivate
+    manager.deactivateEntryPoint(0x1000);
+    try std.testing.expect(!manager.hasActiveEntryPoint(0x1000));
+}
+
+test "OSR in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_osr);
+
+    // Create OSR entry point
+    const id = try compiler.createOSREntryPoint(0x1000, 10, 20);
+    try std.testing.expectEqual(@as(u32, 0), id);
+
+    // Record iterations
+    compiler.osr_manager.default_threshold = 3;
+    try std.testing.expect(!compiler.recordLoopIteration(0x1000));
+    try std.testing.expect(!compiler.recordLoopIteration(0x1000));
+
+    // Check OSR availability
+    try std.testing.expect(!compiler.hasOSRAvailable(0x1000));
+
+    // Mark compiled
+    compiler.markOSRCompiled(0x1000, 0x5000);
+    try std.testing.expect(compiler.hasOSRAvailable(0x1000));
+}
+
+test "OSR entry with state transfer" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    _ = try compiler.createOSREntryPoint(0x1000, 10, 20);
+    compiler.markOSRCompiled(0x1000, 0x5000);
+
+    // Add register mapping
+    compiler.osr_manager.addRegisterMapping(0x1000, 0, 5);
+
+    // Create register state
+    var registers = SavedRegisterState.init();
+    registers.save(0, 42);
+
+    // Perform OSR entry
+    const addr = compiler.performOSREntry(0x1000, &registers);
+    try std.testing.expect(addr != null);
+    try std.testing.expectEqual(@as(u32, 0x5000), addr.?);
+
+    // Register should be transferred
+    try std.testing.expectEqual(@as(?i64, 42), registers.get(5));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
