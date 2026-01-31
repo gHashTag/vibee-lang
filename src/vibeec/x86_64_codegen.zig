@@ -317,6 +317,26 @@ pub const X86_64Emitter = struct {
         }
     }
 
+    /// mov dst, [base + offset] (load from arbitrary base register)
+    pub fn movRegMemBase(self: *Self, dst: Reg64, base: Reg64, offset: i32) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const base_val: u8 = @intFromEnum(base);
+        try self.code.append(rex(true, dst_val >= 8, false, base_val >= 8));
+        try self.code.append(0x8B);
+        if (offset == 0 and (base_val & 0x7) != 5) {
+            // [base] without displacement (except RBP/R13 which need disp8)
+            try self.code.append(((dst_val & 0x7) << 3) | (base_val & 0x7));
+        } else if (offset >= -128 and offset <= 127) {
+            // [base + disp8]
+            try self.code.append(0x40 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.code.append(@bitCast(@as(i8, @intCast(offset))));
+        } else {
+            // [base + disp32]
+            try self.code.append(0x80 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.emitImm32(offset);
+        }
+    }
+
     /// push reg
     pub fn pushReg(self: *Self, reg: Reg64) !void {
         const reg_val: u8 = @intFromEnum(reg);
@@ -500,6 +520,53 @@ pub const X86_64Emitter = struct {
         try self.emitImm32(offset);
     }
 
+    /// cmp reg, imm32 (compare register with immediate)
+    pub fn cmpRegImm32(self: *Self, reg: Reg64, imm: i32) !void {
+        const reg_val: u8 = @intFromEnum(reg);
+        try self.code.append(rex(true, false, false, reg_val >= 8));
+        try self.code.append(0x81); // CMP r/m64, imm32
+        try self.code.append(0xF8 | (reg_val & 0x7)); // ModR/M: /7 for CMP
+        try self.emitImm32(imm);
+    }
+
+    /// call reg (indirect call through register)
+    pub fn callReg(self: *Self, reg: Reg64) !void {
+        const reg_val: u8 = @intFromEnum(reg);
+        if (reg_val >= 8) {
+            try self.code.append(rex(false, false, false, true));
+        }
+        try self.code.append(0xFF); // CALL r/m64
+        try self.code.append(0xD0 | (reg_val & 0x7)); // ModR/M: /2 for CALL
+    }
+
+    /// mov reg, imm64 (load 64-bit immediate into register)
+    pub fn movRegImm64(self: *Self, dst: Reg64, imm: u64) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        try self.code.append(rex(true, false, false, dst_val >= 8));
+        try self.code.append(0xB8 | (dst_val & 0x7)); // MOV r64, imm64
+        // Emit 64-bit immediate (little-endian)
+        const bytes = @as([8]u8, @bitCast(imm));
+        for (bytes) |b| {
+            try self.code.append(b);
+        }
+    }
+
+    /// Get current code position (for calculating jump offsets)
+    pub fn getPosition(self: *Self) usize {
+        return self.code.items.len;
+    }
+
+    /// Patch a rel32 offset at a given position
+    pub fn patchRel32(self: *Self, position: usize, target: usize) void {
+        // Calculate relative offset from end of instruction (position + 4)
+        const offset: i32 = @intCast(@as(i64, @intCast(target)) - @as(i64, @intCast(position + 4)));
+        const bytes = @as([4]u8, @bitCast(offset));
+        self.code.items[position] = bytes[0];
+        self.code.items[position + 1] = bytes[1];
+        self.code.items[position + 2] = bytes[2];
+        self.code.items[position + 3] = bytes[3];
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -516,14 +583,6 @@ pub const X86_64Emitter = struct {
 
     pub fn currentOffset(self: *Self) usize {
         return self.code.items.len;
-    }
-
-    pub fn patchRel32(self: *Self, offset: usize, target: i32) void {
-        const bytes: [4]u8 = @bitCast(target);
-        self.code.items[offset] = bytes[0];
-        self.code.items[offset + 1] = bytes[1];
-        self.code.items[offset + 2] = bytes[2];
-        self.code.items[offset + 3] = bytes[3];
     }
 };
 
@@ -989,6 +1048,70 @@ pub const NativeCompiler = struct {
                 // The actual target would be resolved by a linker/loader
                 const offset: i32 = @intCast(instr.imm);
                 try self.emitter.jmpRel32(offset);
+            },
+
+            .CALL_METHOD => {
+                // IC Stub Generation for method calls
+                // Structure:
+                //   cmp [object + type_offset], expected_type
+                //   jne slow_path
+                //   ; fast path - direct call to cached target
+                //   call cached_target
+                //   jmp done
+                // slow_path:
+                //   ; call runtime lookup
+                //   mov rdi, object_reg
+                //   mov rsi, method_id
+                //   call ic_miss_handler
+                // done:
+                //   mov dest, rax
+
+                const dst = self.getDstReg(instr.dest);
+                const object_reg = try self.getSrcReg(instr.src1, false);
+                const expected_type: i32 = @intCast(instr.src2);
+                const method_id = instr.imm;
+
+                // For now, simplified IC stub:
+                // 1. Compare type (assuming type is at offset 0 of object)
+                // 2. If match, call cached target
+                // 3. If miss, call slow path
+
+                // Load type from object (assuming [object + 0] = type_id)
+                // mov r11, [object_reg]
+                try self.emitter.movRegMemBase(.R11, object_reg, 0);
+
+                // cmp r11, expected_type
+                try self.emitter.cmpRegImm32(.R11, expected_type);
+
+                // jne slow_path (placeholder offset, will be patched)
+                const jne_pos = self.emitter.getPosition();
+                try self.emitter.jneRel32(0); // Placeholder
+
+                // Fast path: direct call (simplified - just load method_id as result)
+                // In real implementation, this would call the cached native code
+                try self.emitter.movImm64(dst, method_id);
+
+                // jmp done
+                const jmp_pos = self.emitter.getPosition();
+                try self.emitter.jmpRel32(0); // Placeholder
+
+                // slow_path:
+                const slow_path_pos = self.emitter.getPosition();
+                self.emitter.patchRel32(jne_pos + 2, slow_path_pos); // Patch jne offset
+
+                // Slow path: call IC miss handler (simplified)
+                // In real implementation, this would:
+                // 1. Call runtime to lookup method
+                // 2. Update IC cache
+                // 3. Call the resolved method
+                // For now, just load -1 to indicate miss
+                try self.emitter.movImm64(dst, -1);
+
+                // done:
+                const done_pos = self.emitter.getPosition();
+                self.emitter.patchRel32(jmp_pos + 1, done_pos); // Patch jmp offset
+
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             else => {
@@ -1497,4 +1620,68 @@ test "Benchmark: native LEA vs MUL (multiply by 3)" {
             std.debug.print("Speedup: {d:.2}x\n", .{mul_per_iter / lea_per_iter});
         }
     }
+}
+
+test "IC Stub generation for CALL_METHOD" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate IC stub for method call
+    // CALL_METHOD: dest=0, src1=object_reg, src2=expected_type, imm=method_id
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0x1000 }, // object address
+        .{ .opcode = .CALL_METHOD, .dest = 0, .src1 = 1, .src2 = 42, .imm = 100 }, // call method 100 on object, expect type 42
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    // Verify code was generated (IC stub should be ~50-100 bytes)
+    try std.testing.expect(code.len > 30);
+    try std.testing.expect(code.len < 200);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== IC Stub Generation Test ===\n", .{});
+        std.debug.print("Generated code size: {d} bytes\n", .{code.len});
+    }
+}
+
+test "X86_64Emitter cmpRegImm32" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // cmp rax, 42
+    try emitter.cmpRegImm32(.RAX, 42);
+
+    // Should generate: REX.W + 81 F8 2A 00 00 00
+    try std.testing.expect(emitter.code.items.len >= 6);
+}
+
+test "X86_64Emitter callReg" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // call rax
+    try emitter.callReg(.RAX);
+
+    // Should generate: FF D0
+    try std.testing.expectEqual(@as(usize, 2), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0xFF), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0xD0), emitter.code.items[1]);
+}
+
+test "X86_64Emitter movRegImm64" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // mov rax, 0x123456789ABCDEF0
+    try emitter.movRegImm64(.RAX, 0x123456789ABCDEF0);
+
+    // Should generate: REX.W + B8 + 8 bytes immediate
+    try std.testing.expectEqual(@as(usize, 10), emitter.code.items.len);
 }
