@@ -688,6 +688,56 @@ pub const JitCompiler = struct {
         try self.encoder.code.append(0x24); // SIB: r12
     }
 
+    /// Load local variable from frame base (r13) + idx*8 into rax
+    fn emitLoadLocal(self: *Self, idx: u16) !void {
+        const offset: i32 = @as(i32, @intCast(idx)) * 8;
+        if (offset == 0) {
+            // mov rax, [r13]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x45); // ModR/M: rax, [r13+disp8]
+            try self.encoder.code.append(0x00); // disp8 = 0
+        } else if (offset <= 127) {
+            // mov rax, [r13 + disp8]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x45); // ModR/M: rax, [r13+disp8]
+            try self.encoder.code.append(@intCast(offset));
+        } else {
+            // mov rax, [r13 + disp32]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x85); // ModR/M: rax, [r13+disp32]
+            const bytes: [4]u8 = @bitCast(offset);
+            try self.encoder.code.appendSlice(&bytes);
+        }
+    }
+
+    /// Store rax to local variable at frame base (r13) + idx*8
+    fn emitStoreLocal(self: *Self, idx: u16) !void {
+        const offset: i32 = @as(i32, @intCast(idx)) * 8;
+        if (offset == 0) {
+            // mov [r13], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x45); // ModR/M: [r13+disp8], rax
+            try self.encoder.code.append(0x00); // disp8 = 0
+        } else if (offset <= 127) {
+            // mov [r13 + disp8], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x45); // ModR/M: [r13+disp8], rax
+            try self.encoder.code.append(@intCast(offset));
+        } else {
+            // mov [r13 + disp32], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x85); // ModR/M: [r13+disp32], rax
+            const bytes: [4]u8 = @bitCast(offset);
+            try self.encoder.code.appendSlice(&bytes);
+        }
+    }
+
     /// Compile bytecode to x86-64 machine code
     /// Uses r12 as value stack pointer (passed in rdi from caller)
     /// This allows proper CALL/RET with nested function calls
@@ -701,12 +751,21 @@ pub const JitCompiler = struct {
         // Prologue - save callee-saved registers
         try self.encoder.push(.rbp);
         try self.encoder.movReg(.rbp, .rsp);
-        try self.encoder.push(.r12); // Save r12
+        try self.encoder.push(.r12); // Save r12 (value stack pointer)
+        try self.encoder.push(.r13); // Save r13
         try self.encoder.push(.rbx); // Save rbx (used in operations)
 
         // Align stack to 16 bytes (System V ABI requirement)
-        // After 4 pushes (32 bytes), stack is aligned
-        // But we need to ensure it stays aligned for CALLs
+        // After 5 pushes (40 bytes), need one more for alignment
+        try self.encoder.push(.r14); // Padding for 16-byte alignment
+
+        // Allocate space for local variables on x86 stack
+        // Reserve 256 bytes (32 locals * 8 bytes)
+        // sub rsp, 256
+        try self.encoder.code.append(0x48); // REX.W
+        try self.encoder.code.append(0x81); // SUB r/m64, imm32
+        try self.encoder.code.append(0xEC); // ModR/M: rsp
+        try self.encoder.code.appendSlice(&[4]u8{ 0x00, 0x01, 0x00, 0x00 }); // 256
 
         // r12 = rdi (value stack pointer passed from caller)
         try self.encoder.movReg(.r12, .rdi);
@@ -892,11 +951,11 @@ pub const JitCompiler = struct {
                 .load_local => {
                     const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
                     ip += 2;
-                    // Load from value stack base + idx*8
-                    // Value stack grows upward from r12 base
-                    // But locals are at fixed positions from function entry
-                    // For now, use rbp-based addressing for locals
-                    try self.encoder.movMemToReg(.rax, .rbp, -@as(i32, @intCast((idx + 1) * 8)));
+                    // Load from x86 stack frame (rbp - offset)
+                    // Locals are in the 256-byte area allocated after saved registers
+                    // local[0] at rbp-56, local[1] at rbp-64, etc.
+                    const offset: i32 = -56 - @as(i32, @intCast(idx * 8));
+                    try self.encoder.movMemToReg(.rax, .rbp, offset);
                     try self.emitVPush();
                 },
 
@@ -904,8 +963,9 @@ pub const JitCompiler = struct {
                     const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
                     ip += 2;
                     try self.emitVPop();
-                    // Store to rbp-based local
-                    try self.encoder.movRegToMem(.rbp, -@as(i32, @intCast((idx + 1) * 8)), .rax);
+                    // Store to x86 stack frame (rbp - offset)
+                    const offset: i32 = -56 - @as(i32, @intCast(idx * 8));
+                    try self.encoder.movRegToMem(.rbp, offset, .rax);
                 },
 
                 .call => {
@@ -962,9 +1022,18 @@ pub const JitCompiler = struct {
         // Epilogue label - halt jumps here
         const epilogue_offset: u32 = @intCast(self.encoder.code.items.len);
 
-        // Epilogue - restore callee-saved registers
+        // Epilogue - restore stack and callee-saved registers
         // Result is already in rax from halt
+
+        // add rsp, 256 (deallocate locals)
+        try self.encoder.code.append(0x48); // REX.W
+        try self.encoder.code.append(0x81); // ADD r/m64, imm32
+        try self.encoder.code.append(0xC4); // ModR/M: rsp
+        try self.encoder.code.appendSlice(&[4]u8{ 0x00, 0x01, 0x00, 0x00 }); // 256
+
+        try self.encoder.pop(.r14); // Restore padding
         try self.encoder.pop(.rbx);
+        try self.encoder.pop(.r13);
         try self.encoder.pop(.r12);
         try self.encoder.pop(.rbp);
         try self.encoder.ret();
@@ -1839,6 +1908,111 @@ test "JitExecutor nested loops" {
 
     try std.testing.expect(val.isInt());
     try std.testing.expectEqual(@as(i64, 0), val.asInt());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOCAL VARIABLE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "JitExecutor simple local variable" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: store value to local, load it back
+    // x = 42; return x;
+
+    const constants = [_]Value{
+        Value.int(42),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 42 (0-2)
+        @intFromEnum(Opcode.store_local), 0, 0, // store to local[0] (3-5)
+        @intFromEnum(Opcode.load_local), 0, 0, // load from local[0] (6-8)
+        @intFromEnum(Opcode.halt), // return (9)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 42), val.asInt());
+}
+
+test "JitExecutor multiple locals" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: a = 10; b = 20; return a + b;
+
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10 (0-2)
+        @intFromEnum(Opcode.store_local), 0, 0, // a = 10 (3-5)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 20 (6-8)
+        @intFromEnum(Opcode.store_local), 0, 1, // b = 20 (9-11)
+        @intFromEnum(Opcode.load_local), 0, 0, // push a (12-14)
+        @intFromEnum(Opcode.load_local), 0, 1, // push b (15-17)
+        @intFromEnum(Opcode.add), // a + b (18)
+        @intFromEnum(Opcode.halt), // return (19)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
+}
+
+test "JitExecutor local variable in loop" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: sum = 0; i = 3; while (i > 0) { sum += i; i--; } return sum;
+    // Expected: 3 + 2 + 1 = 6
+
+    const constants = [_]Value{
+        Value.int(0), // initial sum
+        Value.int(3), // initial counter
+        Value.int(1), // decrement
+    };
+
+    const bytecode = [_]u8{
+        // Initialize locals
+        @intFromEnum(Opcode.load_const), 0, 0, // push 0 (0-2)
+        @intFromEnum(Opcode.store_local), 0, 0, // sum = 0 (3-5)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 3 (6-8)
+        @intFromEnum(Opcode.store_local), 0, 1, // i = 3 (9-11)
+        // Loop at 12:
+        @intFromEnum(Opcode.load_local), 0, 1, // push i (12-14)
+        @intFromEnum(Opcode.load_const), 0, 0, // push 0 (15-17)
+        @intFromEnum(Opcode.eq), // i == 0? (18)
+        @intFromEnum(Opcode.jump_if), 0, 0, 0, 49, // if true, jump to end at 49 (19-23)
+        // sum += i
+        @intFromEnum(Opcode.load_local), 0, 0, // push sum (24-26)
+        @intFromEnum(Opcode.load_local), 0, 1, // push i (27-29)
+        @intFromEnum(Opcode.add), // sum + i (30)
+        @intFromEnum(Opcode.store_local), 0, 0, // sum = sum + i (31-33)
+        // i--
+        @intFromEnum(Opcode.load_local), 0, 1, // push i (34-36)
+        @intFromEnum(Opcode.load_const), 0, 2, // push 1 (37-39)
+        @intFromEnum(Opcode.sub), // i - 1 (40)
+        @intFromEnum(Opcode.store_local), 0, 1, // i = i - 1 (41-43)
+        @intFromEnum(Opcode.jump), 0, 0, 0, 12, // back to loop (44-48)
+        // End at 49:
+        @intFromEnum(Opcode.load_local), 0, 0, // push sum (49-51)
+        @intFromEnum(Opcode.halt), // return sum (52)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 6), val.asInt());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
