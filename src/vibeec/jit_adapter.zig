@@ -2250,6 +2250,308 @@ pub const GVNOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// INSTRUCTION SCHEDULING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Dependency type between instructions
+pub const DependencyType = enum {
+    RAW, // Read After Write (true dependency)
+    WAR, // Write After Read (anti-dependency)
+    WAW, // Write After Write (output dependency)
+    Control, // Control flow dependency
+};
+
+/// Dependency edge in the dependency graph
+pub const DependencyEdge = struct {
+    from: usize, // Source instruction index
+    to: usize, // Target instruction index
+    dep_type: DependencyType,
+    latency: u8, // Cycles between instructions
+};
+
+/// Instruction Scheduler - reorders instructions for better ILP
+/// Uses list scheduling algorithm with dependency analysis
+pub const InstructionScheduler = struct {
+    allocator: Allocator,
+    /// Dependency edges
+    edges: std.ArrayList(DependencyEdge),
+    /// Predecessors count for each instruction
+    pred_count: std.ArrayList(usize),
+    /// Ready queue (instructions with no pending dependencies)
+    ready_queue: std.ArrayList(usize),
+    /// Statistics
+    instructions_moved: usize = 0,
+    ilp_improvement: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .edges = std.ArrayList(DependencyEdge).init(allocator),
+            .pred_count = std.ArrayList(usize).init(allocator),
+            .ready_queue = std.ArrayList(usize).init(allocator),
+            .instructions_moved = 0,
+            .ilp_improvement = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.edges.deinit();
+        self.pred_count.deinit();
+        self.ready_queue.deinit();
+    }
+
+    /// Reset state for new scheduling pass
+    fn reset(self: *Self) void {
+        self.edges.clearRetainingCapacity();
+        self.pred_count.clearRetainingCapacity();
+        self.ready_queue.clearRetainingCapacity();
+    }
+
+    /// Check if instruction has side effects (cannot be reordered freely)
+    fn hasSideEffects(opcode: jit.IROpcode) bool {
+        return switch (opcode) {
+            .STORE_LOCAL, .STORE_GLOBAL, .CALL, .TAIL_CALL, .RETURN,
+            .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Check if instruction is a memory operation
+    fn isMemoryOp(opcode: jit.IROpcode) bool {
+        return switch (opcode) {
+            .LOAD_LOCAL, .STORE_LOCAL, .LOAD_GLOBAL, .STORE_GLOBAL => true,
+            else => false,
+        };
+    }
+
+    /// Get estimated latency for an instruction
+    fn getLatency(opcode: jit.IROpcode) u8 {
+        return switch (opcode) {
+            .MUL_INT, .MUL_FLOAT => 3, // Multiplication is slower
+            .DIV_INT, .DIV_FLOAT => 10, // Division is very slow
+            .LOAD_LOCAL, .LOAD_GLOBAL => 2, // Memory access
+            .STORE_LOCAL, .STORE_GLOBAL => 2,
+            .CALL, .TAIL_CALL => 5, // Function calls
+            else => 1, // Most instructions are 1 cycle
+        };
+    }
+
+    /// Build dependency graph for instructions
+    fn buildDependencyGraph(self: *Self, ir: []const IRInstruction) !void {
+        self.reset();
+
+        // Initialize predecessor counts
+        try self.pred_count.resize(ir.len);
+        for (self.pred_count.items) |*count| {
+            count.* = 0;
+        }
+
+        // Track last writer for each register (for RAW dependencies)
+        var last_writer = std.AutoHashMap(u8, usize).init(self.allocator);
+        defer last_writer.deinit();
+
+        // Track last readers for each register (for WAR dependencies)
+        var last_readers = std.AutoHashMap(u8, std.ArrayList(usize)).init(self.allocator);
+        defer {
+            var iter = last_readers.valueIterator();
+            while (iter.next()) |list| {
+                list.deinit();
+            }
+            last_readers.deinit();
+        }
+
+        // Track last memory operation (for memory ordering)
+        var last_memory_op: ?usize = null;
+
+        // Track last control flow instruction
+        var last_control: ?usize = null;
+
+        for (ir, 0..) |instr, i| {
+            // RAW: Read After Write - we read from a register that was written
+            // Check src1
+            if (last_writer.get(instr.src1)) |writer| {
+                try self.addEdge(writer, i, .RAW, getLatency(ir[writer].opcode));
+            }
+            // Check src2
+            if (last_writer.get(instr.src2)) |writer| {
+                try self.addEdge(writer, i, .RAW, getLatency(ir[writer].opcode));
+            }
+
+            // WAR: Write After Read - we write to a register that was read
+            if (last_readers.get(instr.dest)) |readers| {
+                for (readers.items) |reader| {
+                    if (reader != i) {
+                        try self.addEdge(reader, i, .WAR, 1);
+                    }
+                }
+            }
+
+            // WAW: Write After Write - we write to a register that was written
+            if (last_writer.get(instr.dest)) |writer| {
+                try self.addEdge(writer, i, .WAW, 1);
+            }
+
+            // Memory ordering: memory ops must maintain order
+            if (isMemoryOp(instr.opcode)) {
+                if (last_memory_op) |mem_op| {
+                    try self.addEdge(mem_op, i, .RAW, 1);
+                }
+                last_memory_op = i;
+            }
+
+            // Control flow dependencies
+            if (hasSideEffects(instr.opcode)) {
+                if (last_control) |ctrl| {
+                    try self.addEdge(ctrl, i, .Control, 1);
+                }
+                last_control = i;
+            }
+
+            // Update tracking
+            try last_writer.put(instr.dest, i);
+
+            // Update readers for src1 and src2
+            var readers1 = last_readers.get(instr.src1) orelse std.ArrayList(usize).init(self.allocator);
+            try readers1.append(i);
+            try last_readers.put(instr.src1, readers1);
+
+            if (instr.src2 != instr.src1) {
+                var readers2 = last_readers.get(instr.src2) orelse std.ArrayList(usize).init(self.allocator);
+                try readers2.append(i);
+                try last_readers.put(instr.src2, readers2);
+            }
+
+            // Clear readers for dest (it's being overwritten)
+            if (last_readers.getPtr(instr.dest)) |readers| {
+                readers.clearRetainingCapacity();
+            }
+        }
+    }
+
+    /// Add a dependency edge
+    fn addEdge(self: *Self, from: usize, to: usize, dep_type: DependencyType, latency: u8) !void {
+        try self.edges.append(.{
+            .from = from,
+            .to = to,
+            .dep_type = dep_type,
+            .latency = latency,
+        });
+        self.pred_count.items[to] += 1;
+    }
+
+    /// Get priority for scheduling (higher = schedule earlier)
+    fn getPriority(self: *Self, ir: []const IRInstruction, idx: usize) i32 {
+        _ = self;
+        const instr = ir[idx];
+
+        // Prioritize high-latency instructions (start them early)
+        var priority: i32 = @as(i32, getLatency(instr.opcode)) * 10;
+
+        // Prioritize instructions with many dependents
+        // (they unlock more instructions)
+
+        // Deprioritize side-effect instructions (keep them in order)
+        if (hasSideEffects(instr.opcode)) {
+            priority -= 100;
+        }
+
+        return priority;
+    }
+
+    /// Schedule instructions using list scheduling
+    pub fn schedule(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len < 2) return self.allocator.dupe(IRInstruction, ir);
+
+        try self.buildDependencyGraph(ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var scheduled = std.AutoHashMap(usize, bool).init(self.allocator);
+        defer scheduled.deinit();
+
+        // Initialize ready queue with instructions that have no predecessors
+        self.ready_queue.clearRetainingCapacity();
+        for (self.pred_count.items, 0..) |count, i| {
+            if (count == 0) {
+                try self.ready_queue.append(i);
+            }
+        }
+
+        var original_positions = std.ArrayList(usize).init(self.allocator);
+        defer original_positions.deinit();
+
+        while (self.ready_queue.items.len > 0 or result.items.len < ir.len) {
+            if (self.ready_queue.items.len == 0) {
+                // Deadlock - shouldn't happen with correct dependency graph
+                // Fall back to original order for remaining instructions
+                for (ir, 0..) |instr, i| {
+                    if (!scheduled.contains(i)) {
+                        try result.append(instr);
+                        try scheduled.put(i, true);
+                    }
+                }
+                break;
+            }
+
+            // Find highest priority instruction in ready queue
+            var best_idx: usize = 0;
+            var best_priority: i32 = self.getPriority(ir, self.ready_queue.items[0]);
+
+            for (self.ready_queue.items[1..], 1..) |ready_instr, idx| {
+                const priority = self.getPriority(ir, ready_instr);
+                if (priority > best_priority) {
+                    best_priority = priority;
+                    best_idx = idx;
+                }
+            }
+
+            // Schedule the best instruction
+            const to_schedule = self.ready_queue.orderedRemove(best_idx);
+            try result.append(ir[to_schedule]);
+            try scheduled.put(to_schedule, true);
+            try original_positions.append(to_schedule);
+
+            // Track if instruction moved
+            if (original_positions.items.len > 1) {
+                const prev_pos = original_positions.items[original_positions.items.len - 2];
+                if (to_schedule != prev_pos + 1) {
+                    self.instructions_moved += 1;
+                }
+            }
+
+            // Update predecessor counts and add newly ready instructions
+            for (self.edges.items) |edge| {
+                if (edge.from == to_schedule) {
+                    self.pred_count.items[edge.to] -= 1;
+                    if (self.pred_count.items[edge.to] == 0 and !scheduled.contains(edge.to)) {
+                        try self.ready_queue.append(edge.to);
+                    }
+                }
+            }
+        }
+
+        // Calculate ILP improvement estimate
+        if (self.instructions_moved > 0) {
+            self.ilp_improvement = self.instructions_moved * 10; // Rough estimate
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { moved: usize, ilp: usize } {
+        return .{
+            .moved = self.instructions_moved,
+            .ilp = self.ilp_improvement,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // REGISTER ALLOCATOR (Linear Scan)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -4061,6 +4363,8 @@ pub const TieredCompiler = struct {
     cse: CSEOptimizer,
     /// GVN optimizer
     gvn: GVNOptimizer,
+    /// Instruction scheduler
+    scheduler: InstructionScheduler,
     /// Register allocator
     regalloc: RegisterAllocator,
     /// Profile data for PGO
@@ -4097,6 +4401,8 @@ pub const TieredCompiler = struct {
     enable_cse: bool,
     /// Enable GVN
     enable_gvn: bool,
+    /// Enable instruction scheduling
+    enable_scheduling: bool,
     /// Enable register allocation
     enable_regalloc: bool,
     /// Enable PGO
@@ -4131,6 +4437,7 @@ pub const TieredCompiler = struct {
             .peephole = PeepholeOptimizer.init(allocator),
             .cse = CSEOptimizer.init(allocator),
             .gvn = GVNOptimizer.init(allocator),
+            .scheduler = InstructionScheduler.init(allocator),
             .regalloc = RegisterAllocator.init(allocator),
             .profile_data = ProfileData.init(allocator),
             .instrumenter = null,
@@ -4149,6 +4456,7 @@ pub const TieredCompiler = struct {
             .enable_peephole = true,
             .enable_cse = true,
             .enable_gvn = true,
+            .enable_scheduling = true,
             .enable_regalloc = true,
             .enable_pgo = true,
             .enable_inlining = true,
@@ -4185,6 +4493,7 @@ pub const TieredCompiler = struct {
         self.profile_data.deinit();
         self.inliner.deinit();
         self.gvn.deinit();
+        self.scheduler.deinit();
 
         // Free CFG and dominator tree
         if (self.cfg) |*cfg| {
@@ -4394,6 +4703,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = peeped;
                 }
 
+                // Instruction scheduling for ILP (after all other optimizations)
+                if (self.enable_scheduling) {
+                    const scheduled = try self.scheduler.schedule(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = scheduled;
+                }
+
                 // Register allocation (analysis only at JIT_IR tier)
                 if (self.enable_regalloc) {
                     var alloc_result = try self.regalloc.allocate(optimized_ir);
@@ -4474,6 +4790,12 @@ pub const TieredCompiler = struct {
                         const peeped = try self.peephole.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = peeped;
+                    }
+
+                    if (self.enable_scheduling) {
+                        const scheduled = try self.scheduler.schedule(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = scheduled;
                     }
 
                     break :blk opt_ir;
@@ -8137,6 +8459,91 @@ test "GVNOptimizer getStats" {
 
     try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
     try std.testing.expectEqual(@as(usize, 0), stats.numbered);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INSTRUCTION SCHEDULER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "InstructionScheduler basic scheduling" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // Simple IR with no dependencies between some instructions
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const scheduled = try scheduler.schedule(&ir);
+    defer allocator.free(scheduled);
+
+    // Should produce valid output with same number of instructions
+    try std.testing.expectEqual(ir.len, scheduled.len);
+}
+
+test "InstructionScheduler preserves dependencies" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    // IR with RAW dependency: r1 depends on r0
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // uses r0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const scheduled = try scheduler.schedule(&ir);
+    defer allocator.free(scheduled);
+
+    // LOAD_CONST must come before ADD_INT (RAW dependency)
+    var load_idx: ?usize = null;
+    var add_idx: ?usize = null;
+
+    for (scheduled, 0..) |instr, i| {
+        if (instr.opcode == .LOAD_CONST and instr.dest == 0) load_idx = i;
+        if (instr.opcode == .ADD_INT and instr.dest == 1) add_idx = i;
+    }
+
+    try std.testing.expect(load_idx != null);
+    try std.testing.expect(add_idx != null);
+    try std.testing.expect(load_idx.? < add_idx.?);
+}
+
+test "InstructionScheduler getLatency" {
+    // Test latency values for different opcodes
+    try std.testing.expectEqual(@as(u8, 3), InstructionScheduler.getLatency(.MUL_INT));
+    try std.testing.expectEqual(@as(u8, 10), InstructionScheduler.getLatency(.DIV_INT));
+    try std.testing.expectEqual(@as(u8, 1), InstructionScheduler.getLatency(.ADD_INT));
+    try std.testing.expectEqual(@as(u8, 2), InstructionScheduler.getLatency(.LOAD_LOCAL));
+}
+
+test "InstructionScheduler in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify scheduling is enabled by default
+    try std.testing.expect(compiler.enable_scheduling);
+}
+
+test "InstructionScheduler getStats" {
+    const allocator = std.testing.allocator;
+
+    var scheduler = InstructionScheduler.init(allocator);
+    defer scheduler.deinit();
+
+    const stats = scheduler.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.moved);
+    try std.testing.expectEqual(@as(usize, 0), stats.ilp);
 }
 
 test "Benchmark: Strength reduction effect" {
