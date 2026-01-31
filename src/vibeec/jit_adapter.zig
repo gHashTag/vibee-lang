@@ -4701,6 +4701,233 @@ pub const InlineExpander = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNCTION SPECIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Specialized function version - a function with constant arguments baked in
+pub const SpecializedFunction = struct {
+    /// Original function ID
+    original_func_id: u32,
+    /// Specialized function ID (unique)
+    specialized_id: u32,
+    /// Constant argument values (index -> value)
+    const_args: std.AutoHashMap(u8, i64),
+    /// Specialized IR body
+    body: []const IRInstruction,
+    /// Number of times this specialization was used
+    use_count: usize,
+};
+
+/// Constant argument for specialization
+pub const ConstArg = struct {
+    idx: u8,
+    val: i64,
+};
+
+/// Function Specializer - creates specialized versions of functions
+/// when called with constant arguments
+pub const FunctionSpecializer = struct {
+    allocator: Allocator,
+    /// Original function registry (from InlineExpander)
+    original_functions: *std.AutoHashMap(u32, InlineCandidate),
+    /// Specialized versions: (func_id, arg_hash) -> SpecializedFunction
+    specializations: std.AutoHashMap(u64, SpecializedFunction),
+    /// Next specialized function ID
+    next_spec_id: u32,
+    /// Statistics
+    functions_specialized: usize = 0,
+    calls_specialized: usize = 0,
+    instructions_saved: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, functions: *std.AutoHashMap(u32, InlineCandidate)) Self {
+        return .{
+            .allocator = allocator,
+            .original_functions = functions,
+            .specializations = std.AutoHashMap(u64, SpecializedFunction).init(allocator),
+            .next_spec_id = 0x80000000, // Start specialized IDs high to avoid collision
+            .functions_specialized = 0,
+            .calls_specialized = 0,
+            .instructions_saved = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.specializations.valueIterator();
+        while (iter.next()) |spec| {
+            spec.const_args.deinit();
+            self.allocator.free(spec.body);
+        }
+        self.specializations.deinit();
+    }
+
+    /// Compute hash for specialization key
+    pub fn computeSpecKey(func_id: u32, const_args: []const ConstArg) u64 {
+        var hash: u64 = func_id;
+        for (const_args) |arg| {
+            hash = hash *% 31 +% arg.idx;
+            hash = hash *% 31 +% @as(u64, @bitCast(arg.val));
+        }
+        return hash;
+    }
+
+    /// Check if a CALL instruction has constant arguments
+    fn findConstantArgs(self: *Self, ir: []const IRInstruction, call_idx: usize) !?[]ConstArg {
+        const call = ir[call_idx];
+        if (call.opcode != .CALL) return null;
+
+        var const_args = std.ArrayList(ConstArg).init(self.allocator);
+        errdefer const_args.deinit();
+
+        // Look for LOAD_CONST instructions that set up arguments before the call
+        // Arguments are typically in registers before the call
+        // For simplicity, check if src1 (first arg register) was set by LOAD_CONST
+        var i = call_idx;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+
+            // Stop at control flow
+            switch (instr.opcode) {
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK, .CALL, .TAIL_CALL => break,
+                else => {},
+            }
+
+            // Check if this is a LOAD_CONST that sets an argument register
+            if (instr.opcode == .LOAD_CONST) {
+                // Assume registers 0-7 are argument registers
+                if (instr.dest < 8) {
+                    try const_args.append(.{ .idx = instr.dest, .val = instr.imm });
+                }
+            }
+        }
+
+        if (const_args.items.len == 0) {
+            const_args.deinit();
+            return null;
+        }
+
+        const slice = try const_args.toOwnedSlice();
+        return slice;
+    }
+
+    /// Create a specialized version of a function
+    fn createSpecialization(self: *Self, func_id: u32, const_args: []const ConstArg) !?*SpecializedFunction {
+        const original = self.original_functions.get(func_id) orelse return null;
+
+        // Create specialized body by replacing argument loads with constants
+        var spec_body = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer spec_body.deinit();
+
+        var args_map = std.AutoHashMap(u8, i64).init(self.allocator);
+        errdefer args_map.deinit();
+
+        for (const_args) |arg| {
+            try args_map.put(arg.idx, arg.val);
+        }
+
+        // Copy and specialize the function body
+        for (original.body) |instr| {
+            switch (instr.opcode) {
+                .LOAD_LOCAL => {
+                    // If loading from an argument register that's constant, replace with LOAD_CONST
+                    if (args_map.get(instr.src1)) |const_val| {
+                        try spec_body.append(.{
+                            .opcode = .LOAD_CONST,
+                            .dest = instr.dest,
+                            .src1 = 0,
+                            .src2 = 0,
+                            .imm = const_val,
+                        });
+                        self.instructions_saved += 1;
+                    } else {
+                        try spec_body.append(instr);
+                    }
+                },
+                else => {
+                    try spec_body.append(instr);
+                },
+            }
+        }
+
+        const spec_id = self.next_spec_id;
+        self.next_spec_id += 1;
+
+        const spec_key = computeSpecKey(func_id, const_args);
+
+        const spec = SpecializedFunction{
+            .original_func_id = func_id,
+            .specialized_id = spec_id,
+            .const_args = args_map,
+            .body = try spec_body.toOwnedSlice(),
+            .use_count = 0,
+        };
+
+        try self.specializations.put(spec_key, spec);
+        self.functions_specialized += 1;
+
+        return self.specializations.getPtr(spec_key);
+    }
+
+    /// Get or create a specialized version
+    fn getOrCreateSpecialization(self: *Self, func_id: u32, const_args: []const ConstArg) !?*SpecializedFunction {
+        const spec_key = computeSpecKey(func_id, const_args);
+
+        if (self.specializations.getPtr(spec_key)) |existing| {
+            existing.use_count += 1;
+            return existing;
+        }
+
+        return self.createSpecialization(func_id, const_args);
+    }
+
+    /// Optimize IR by specializing function calls with constant arguments
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir, 0..) |instr, idx| {
+            if (instr.opcode == .CALL) {
+                // Check for constant arguments
+                if (try self.findConstantArgs(ir, idx)) |const_args| {
+                    defer self.allocator.free(const_args);
+
+                    // Get or create specialized version
+                    const func_id: u32 = @intCast(instr.imm);
+                    if (try self.getOrCreateSpecialization(func_id, const_args)) |spec| {
+                        // Replace call with call to specialized version
+                        try result.append(.{
+                            .opcode = .CALL,
+                            .dest = instr.dest,
+                            .src1 = instr.src1,
+                            .src2 = instr.src2,
+                            .imm = @intCast(spec.specialized_id),
+                        });
+                        self.calls_specialized += 1;
+                        continue;
+                    }
+                }
+            }
+            try result.append(instr);
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { specialized: usize, calls: usize, saved: usize } {
+        return .{
+            .specialized = self.functions_specialized,
+            .calls = self.calls_specialized,
+            .saved = self.instructions_saved,
+        };
+    }
+};
+
 /// PGO Optimizer - uses profile data to guide optimizations
 pub const PGOOptimizer = struct {
     allocator: Allocator,
@@ -4846,6 +5073,8 @@ pub const TieredCompiler = struct {
     pgo: ?PGOOptimizer,
     /// Inline expander
     inliner: InlineExpander,
+    /// Function specializer
+    specializer: ?FunctionSpecializer,
     /// Tail call optimizer
     tco: TailCallOptimizer,
     /// LICM optimizer
@@ -4884,6 +5113,8 @@ pub const TieredCompiler = struct {
     enable_pgo: bool,
     /// Enable inline expansion
     enable_inlining: bool,
+    /// Enable function specialization
+    enable_specialization: bool,
     /// Enable tail call optimization
     enable_tco: bool,
     /// Enable LICM
@@ -4920,6 +5151,7 @@ pub const TieredCompiler = struct {
             .instrumenter = null,
             .pgo = null,
             .inliner = InlineExpander.init(allocator),
+            .specializer = null, // Initialized lazily when inliner has functions
             .tco = TailCallOptimizer.init(allocator),
             .licm = LICMOptimizer.init(allocator),
             .loop_strength_reduction = StrengthReductionOptimizer.init(allocator),
@@ -4939,6 +5171,7 @@ pub const TieredCompiler = struct {
             .enable_regalloc = true,
             .enable_pgo = true,
             .enable_inlining = true,
+            .enable_specialization = true,
             .enable_tco = true,
             .enable_licm = true,
             .enable_loop_strength_reduction = true,
@@ -4971,6 +5204,9 @@ pub const TieredCompiler = struct {
         self.function_states.deinit();
         self.profile_data.deinit();
         self.inliner.deinit();
+        if (self.specializer) |*spec| {
+            spec.deinit();
+        }
         self.gvn.deinit();
         self.scheduler.deinit();
 
@@ -5101,6 +5337,19 @@ pub const TieredCompiler = struct {
                     const inlined = try self.inliner.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
                     optimized_ir = inlined;
+                }
+
+                // Function specialization (after inlining, creates specialized versions)
+                if (self.enable_specialization) {
+                    // Initialize specializer if needed
+                    if (self.specializer == null) {
+                        self.specializer = FunctionSpecializer.init(self.allocator, &self.inliner.functions);
+                    }
+                    if (self.specializer) |*spec| {
+                        const specialized = try spec.optimize(optimized_ir);
+                        self.allocator.free(optimized_ir);
+                        optimized_ir = specialized;
+                    }
                 }
 
                 // Tail call optimization (after inlining, before other opts)
@@ -10604,6 +10853,74 @@ test "InlineExpander large function not inlined" {
 
     // Call should NOT be expanded
     try std.testing.expectEqual(jit.IROpcode.CALL, optimized[0].opcode);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNCTION SPECIALIZATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "FunctionSpecializer init and deinit" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    var specializer = FunctionSpecializer.init(allocator, &inliner.functions);
+    defer specializer.deinit();
+
+    const stats = specializer.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.specialized);
+    try std.testing.expectEqual(@as(usize, 0), stats.calls);
+    try std.testing.expectEqual(@as(usize, 0), stats.saved);
+}
+
+test "FunctionSpecializer computeSpecKey" {
+    // Test that different arguments produce different keys
+    const key1 = FunctionSpecializer.computeSpecKey(1, &[_]ConstArg{
+        .{ .idx = 0, .val = 42 },
+    });
+
+    const key2 = FunctionSpecializer.computeSpecKey(1, &[_]ConstArg{
+        .{ .idx = 0, .val = 43 },
+    });
+
+    const key3 = FunctionSpecializer.computeSpecKey(2, &[_]ConstArg{
+        .{ .idx = 0, .val = 42 },
+    });
+
+    // Different values should produce different keys
+    try std.testing.expect(key1 != key2);
+    // Different function IDs should produce different keys
+    try std.testing.expect(key1 != key3);
+}
+
+test "FunctionSpecializer in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify specialization is enabled by default
+    try std.testing.expect(compiler.enable_specialization);
+
+    // Specializer is lazily initialized
+    try std.testing.expectEqual(@as(?FunctionSpecializer, null), compiler.specializer);
+}
+
+test "FunctionSpecializer getStats" {
+    const allocator = std.testing.allocator;
+
+    var inliner = InlineExpander.init(allocator);
+    defer inliner.deinit();
+
+    var specializer = FunctionSpecializer.init(allocator, &inliner.functions);
+    defer specializer.deinit();
+
+    const stats = specializer.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.specialized);
+    try std.testing.expectEqual(@as(usize, 0), stats.calls);
+    try std.testing.expectEqual(@as(usize, 0), stats.saved);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
