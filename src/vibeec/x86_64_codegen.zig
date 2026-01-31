@@ -35,6 +35,26 @@ pub const Reg64 = enum(u4) {
     R15 = 15,
 };
 
+/// XMM registers for 128-bit SIMD (SSE)
+pub const XMMReg = enum(u4) {
+    XMM0 = 0,
+    XMM1 = 1,
+    XMM2 = 2,
+    XMM3 = 3,
+    XMM4 = 4,
+    XMM5 = 5,
+    XMM6 = 6,
+    XMM7 = 7,
+    XMM8 = 8,
+    XMM9 = 9,
+    XMM10 = 10,
+    XMM11 = 11,
+    XMM12 = 12,
+    XMM13 = 13,
+    XMM14 = 14,
+    XMM15 = 15,
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // X86-64 CODE EMITTER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -551,6 +571,377 @@ pub const X86_64Emitter = struct {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SSE/AVX SIMD INSTRUCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// PADDD xmm1, xmm2 - Packed add doublewords (SSE2)
+    /// Opcode: 66 0F FE /r
+    pub fn paddd(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        // REX prefix if needed (for XMM8-15)
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66); // Operand size prefix
+        try self.code.append(0x0F);
+        try self.code.append(0xFE); // PADDD opcode
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7)); // ModR/M
+    }
+
+    /// PSUBD xmm1, xmm2 - Packed subtract doublewords (SSE2)
+    /// Opcode: 66 0F FA /r
+    pub fn psubd(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0xFA); // PSUBD opcode
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// PMULLD xmm1, xmm2 - Packed multiply low doublewords (SSE4.1)
+    /// Opcode: 66 0F 38 40 /r
+    pub fn pmulld(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x38);
+        try self.code.append(0x40); // PMULLD opcode
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// MOVDQU xmm, m128 - Move unaligned double quadword (load)
+    /// Opcode: F3 0F 6F /r
+    pub fn movdquLoad(self: *Self, dst: XMMReg, base: Reg64, offset: i32) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const base_val: u8 = @intFromEnum(base);
+
+        try self.code.append(0xF3);
+
+        if (dst_val >= 8 or base_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, base_val >= 8));
+        }
+
+        try self.code.append(0x0F);
+        try self.code.append(0x6F); // MOVDQU load opcode
+
+        // ModR/M with displacement
+        if (offset == 0 and base_val != 5) { // RBP needs displacement
+            try self.code.append(((dst_val & 0x7) << 3) | (base_val & 0x7));
+        } else if (offset >= -128 and offset <= 127) {
+            try self.code.append(0x40 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.code.append(@bitCast(@as(i8, @intCast(offset))));
+        } else {
+            try self.code.append(0x80 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.emitImm32(offset);
+        }
+    }
+
+    /// MOVDQU m128, xmm - Move unaligned double quadword (store)
+    /// Opcode: F3 0F 7F /r
+    pub fn movdquStore(self: *Self, base: Reg64, offset: i32, src: XMMReg) !void {
+        const src_val: u8 = @intFromEnum(src);
+        const base_val: u8 = @intFromEnum(base);
+
+        try self.code.append(0xF3);
+
+        if (src_val >= 8 or base_val >= 8) {
+            try self.code.append(rex(false, src_val >= 8, false, base_val >= 8));
+        }
+
+        try self.code.append(0x0F);
+        try self.code.append(0x7F); // MOVDQU store opcode
+
+        // ModR/M with displacement
+        if (offset == 0 and base_val != 5) {
+            try self.code.append(((src_val & 0x7) << 3) | (base_val & 0x7));
+        } else if (offset >= -128 and offset <= 127) {
+            try self.code.append(0x40 | ((src_val & 0x7) << 3) | (base_val & 0x7));
+            try self.code.append(@bitCast(@as(i8, @intCast(offset))));
+        } else {
+            try self.code.append(0x80 | ((src_val & 0x7) << 3) | (base_val & 0x7));
+            try self.emitImm32(offset);
+        }
+    }
+
+    /// MOVDQA xmm1, xmm2 - Move aligned double quadword (register to register)
+    /// Opcode: 66 0F 6F /r
+    pub fn movdqa(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x6F);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// PMINSD xmm1, xmm2 - Packed minimum signed doublewords (SSE4.1)
+    /// Opcode: 66 0F 38 39 /r
+    pub fn pminsd(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x38);
+        try self.code.append(0x39);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// PMAXSD xmm1, xmm2 - Packed maximum signed doublewords (SSE4.1)
+    /// Opcode: 66 0F 38 3D /r
+    pub fn pmaxsd(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x38);
+        try self.code.append(0x3D);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// PHADDD xmm1, xmm2 - Packed horizontal add doublewords (SSSE3)
+    /// Opcode: 66 0F 38 02 /r
+    pub fn phaddd(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0x38);
+        try self.code.append(0x02);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    /// PXOR xmm1, xmm2 - Packed XOR (SSE2)
+    /// Opcode: 66 0F EF /r
+    pub fn pxor(self: *Self, dst: XMMReg, src: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src_val: u8 = @intFromEnum(src);
+
+        if (dst_val >= 8 or src_val >= 8) {
+            try self.code.append(rex(false, dst_val >= 8, false, src_val >= 8));
+        }
+
+        try self.code.append(0x66);
+        try self.code.append(0x0F);
+        try self.code.append(0xEF);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src_val & 0x7));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AVX INSTRUCTIONS (VEX-encoded)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Emit 2-byte VEX prefix: C5 [R~vvvv Lpp]
+    fn emitVex2(self: *Self, r: bool, vvvv: u4, l: bool, pp: u2) !void {
+        try self.code.append(0xC5);
+        var byte: u8 = 0;
+        if (!r) byte |= 0x80; // R~ (inverted)
+        byte |= (@as(u8, ~vvvv) & 0x0F) << 3; // vvvv (inverted)
+        if (l) byte |= 0x04; // L (vector length: 0=128, 1=256)
+        byte |= pp; // pp (SIMD prefix)
+        try self.code.append(byte);
+    }
+
+    /// Emit 3-byte VEX prefix: C4 [R~X~B~ mmmmm] [W vvvv L pp]
+    fn emitVex3(self: *Self, r: bool, x: bool, b: bool, mmmmm: u5, w: bool, vvvv: u4, l: bool, pp: u2) !void {
+        try self.code.append(0xC4);
+
+        var byte1: u8 = 0;
+        if (!r) byte1 |= 0x80; // R~
+        if (!x) byte1 |= 0x40; // X~
+        if (!b) byte1 |= 0x20; // B~
+        byte1 |= mmmmm; // mmmmm (opcode map)
+        try self.code.append(byte1);
+
+        var byte2: u8 = 0;
+        if (w) byte2 |= 0x80; // W
+        byte2 |= (@as(u8, ~vvvv) & 0x0F) << 3; // vvvv (inverted)
+        if (l) byte2 |= 0x04; // L
+        byte2 |= pp; // pp
+        try self.code.append(byte2);
+    }
+
+    /// VPADDD ymm1, ymm2, ymm3 - AVX2 packed add doublewords (256-bit)
+    /// VEX.256.66.0F.WIG FE /r
+    pub fn vpaddd256(self: *Self, dst: XMMReg, src1: XMMReg, src2: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src1_val: u8 = @intFromEnum(src1);
+        const src2_val: u8 = @intFromEnum(src2);
+
+        // Use 3-byte VEX if any register >= 8
+        if (dst_val >= 8 or src2_val >= 8) {
+            try self.emitVex3(
+                dst_val < 8,  // R
+                true,         // X
+                src2_val < 8, // B
+                0x01,         // mmmmm = 0F
+                false,        // W
+                @truncate(src1_val), // vvvv
+                true,         // L = 256-bit
+                0x01,         // pp = 66
+            );
+        } else {
+            try self.emitVex2(
+                dst_val < 8,
+                @truncate(src1_val),
+                true,  // L = 256-bit
+                0x01,  // pp = 66
+            );
+        }
+
+        try self.code.append(0xFE); // PADDD opcode
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src2_val & 0x7));
+    }
+
+    /// VPADDD xmm1, xmm2, xmm3 - AVX packed add doublewords (128-bit)
+    /// VEX.128.66.0F.WIG FE /r
+    pub fn vpaddd128(self: *Self, dst: XMMReg, src1: XMMReg, src2: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src1_val: u8 = @intFromEnum(src1);
+        const src2_val: u8 = @intFromEnum(src2);
+
+        if (dst_val >= 8 or src2_val >= 8) {
+            try self.emitVex3(
+                dst_val < 8,
+                true,
+                src2_val < 8,
+                0x01,
+                false,
+                @truncate(src1_val),
+                false, // L = 128-bit
+                0x01,
+            );
+        } else {
+            try self.emitVex2(
+                dst_val < 8,
+                @truncate(src1_val),
+                false, // L = 128-bit
+                0x01,
+            );
+        }
+
+        try self.code.append(0xFE);
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src2_val & 0x7));
+    }
+
+    /// VPMULLD ymm1, ymm2, ymm3 - AVX2 packed multiply low doublewords (256-bit)
+    /// VEX.256.66.0F38.WIG 40 /r
+    pub fn vpmulld256(self: *Self, dst: XMMReg, src1: XMMReg, src2: XMMReg) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const src1_val: u8 = @intFromEnum(src1);
+        const src2_val: u8 = @intFromEnum(src2);
+
+        try self.emitVex3(
+            dst_val < 8,
+            true,
+            src2_val < 8,
+            0x02, // mmmmm = 0F38
+            false,
+            @truncate(src1_val),
+            true, // L = 256-bit
+            0x01, // pp = 66
+        );
+
+        try self.code.append(0x40); // PMULLD opcode
+        try self.code.append(0xC0 | ((dst_val & 0x7) << 3) | (src2_val & 0x7));
+    }
+
+    /// VMOVDQU ymm, m256 - AVX unaligned load (256-bit)
+    /// VEX.256.F3.0F.WIG 6F /r
+    pub fn vmovdquLoad256(self: *Self, dst: XMMReg, base: Reg64, offset: i32) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const base_val: u8 = @intFromEnum(base);
+
+        try self.emitVex3(
+            dst_val < 8,
+            true,
+            base_val < 8,
+            0x01, // mmmmm = 0F
+            false,
+            0x0F, // vvvv = 1111 (unused)
+            true, // L = 256-bit
+            0x02, // pp = F3
+        );
+
+        try self.code.append(0x6F);
+
+        // ModR/M with displacement
+        if (offset == 0 and base_val != 5) {
+            try self.code.append(((dst_val & 0x7) << 3) | (base_val & 0x7));
+        } else if (offset >= -128 and offset <= 127) {
+            try self.code.append(0x40 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.code.append(@bitCast(@as(i8, @intCast(offset))));
+        } else {
+            try self.code.append(0x80 | ((dst_val & 0x7) << 3) | (base_val & 0x7));
+            try self.emitImm32(offset);
+        }
+    }
+
+    /// VMOVDQU m256, ymm - AVX unaligned store (256-bit)
+    /// VEX.256.F3.0F.WIG 7F /r
+    pub fn vmovdquStore256(self: *Self, base: Reg64, offset: i32, src: XMMReg) !void {
+        const src_val: u8 = @intFromEnum(src);
+        const base_val: u8 = @intFromEnum(base);
+
+        try self.emitVex3(
+            src_val < 8,
+            true,
+            base_val < 8,
+            0x01,
+            false,
+            0x0F,
+            true, // L = 256-bit
+            0x02, // pp = F3
+        );
+
+        try self.code.append(0x7F);
+
+        if (offset == 0 and base_val != 5) {
+            try self.code.append(((src_val & 0x7) << 3) | (base_val & 0x7));
+        } else if (offset >= -128 and offset <= 127) {
+            try self.code.append(0x40 | ((src_val & 0x7) << 3) | (base_val & 0x7));
+            try self.code.append(@bitCast(@as(i8, @intCast(offset))));
+        } else {
+            try self.code.append(0x80 | ((src_val & 0x7) << 3) | (base_val & 0x7));
+            try self.emitImm32(offset);
+        }
+    }
+
     /// Get current code position (for calculating jump offsets)
     pub fn getPosition(self: *Self) usize {
         return self.code.items.len;
@@ -693,6 +1084,13 @@ pub const NativeCompiler = struct {
             return SPILL_TEMP_REG;
         }
         return self.irRegToX86(vreg);
+    }
+
+    /// Get XMM register for SIMD operand
+    fn getXMMReg(self: *Self, vreg: u8) XMMReg {
+        _ = self;
+        // Map IR virtual registers to XMM registers (0-15)
+        return @enumFromInt(vreg & 0x0F);
     }
 
     /// Store dest register to spill slot if needed
@@ -1114,66 +1512,97 @@ pub const NativeCompiler = struct {
                 try self.storeDstIfSpilled(instr.dest);
             },
 
-            // SIMD Vector Operations
+            // SIMD Vector Operations - Real SSE/AVX Instructions
             .VADD => {
-                // Vector add using AVX2: vpaddd ymm0, ymm1, ymm2
-                // For simplicity, we use scalar operations in a loop
-                // In production, this would emit actual AVX instructions
-                const dst = self.getDstReg(instr.dest);
-                const src1 = try self.getSrcReg(instr.src1, false);
-                const src2 = try self.getSrcReg(instr.src2, true);
+                // Vector add using SSE2 PADDD or AVX VPADDD
+                const vector_width = @as(u32, @intCast(instr.imm & 0xFFF));
+                const dst_xmm = self.getXMMReg(instr.dest);
+                const src1_xmm = self.getXMMReg(instr.src1);
+                const src2_xmm = self.getXMMReg(instr.src2);
 
-                // Simplified: just do scalar add (placeholder for real SIMD)
-                if (dst != src1) try self.emitter.movRegReg(dst, src1);
-                try self.emitter.addRegReg(dst, src2);
-                try self.storeDstIfSpilled(instr.dest);
+                if (vector_width >= 256) {
+                    // AVX 256-bit: VPADDD ymm, ymm, ymm
+                    try self.emitter.vpaddd256(dst_xmm, src1_xmm, src2_xmm);
+                } else {
+                    // SSE 128-bit: PADDD xmm, xmm (dst = dst + src)
+                    if (dst_xmm != src1_xmm) {
+                        try self.emitter.movdqa(dst_xmm, src1_xmm);
+                    }
+                    try self.emitter.paddd(dst_xmm, src2_xmm);
+                }
             },
 
             .VSUB => {
-                const dst = self.getDstReg(instr.dest);
-                const src1 = try self.getSrcReg(instr.src1, false);
-                const src2 = try self.getSrcReg(instr.src2, true);
+                const dst_xmm = self.getXMMReg(instr.dest);
+                const src1_xmm = self.getXMMReg(instr.src1);
+                const src2_xmm = self.getXMMReg(instr.src2);
 
-                if (dst != src1) try self.emitter.movRegReg(dst, src1);
-                try self.emitter.subRegReg(dst, src2);
-                try self.storeDstIfSpilled(instr.dest);
+                // SSE 128-bit: PSUBD xmm, xmm
+                if (dst_xmm != src1_xmm) {
+                    try self.emitter.movdqa(dst_xmm, src1_xmm);
+                }
+                try self.emitter.psubd(dst_xmm, src2_xmm);
             },
 
             .VMUL => {
-                const dst = self.getDstReg(instr.dest);
-                const src1 = try self.getSrcReg(instr.src1, false);
-                const src2 = try self.getSrcReg(instr.src2, true);
+                const vector_width = @as(u32, @intCast(instr.imm & 0xFFF));
+                const dst_xmm = self.getXMMReg(instr.dest);
+                const src1_xmm = self.getXMMReg(instr.src1);
+                const src2_xmm = self.getXMMReg(instr.src2);
 
-                if (dst != src1) try self.emitter.movRegReg(dst, src1);
-                try self.emitter.imulRegReg(dst, src2);
-                try self.storeDstIfSpilled(instr.dest);
+                if (vector_width >= 256) {
+                    // AVX2 256-bit: VPMULLD ymm, ymm, ymm
+                    try self.emitter.vpmulld256(dst_xmm, src1_xmm, src2_xmm);
+                } else {
+                    // SSE4.1 128-bit: PMULLD xmm, xmm
+                    if (dst_xmm != src1_xmm) {
+                        try self.emitter.movdqa(dst_xmm, src1_xmm);
+                    }
+                    try self.emitter.pmulld(dst_xmm, src2_xmm);
+                }
             },
 
             .VLOAD => {
-                // Vector load - placeholder (would use vmovdqu)
-                const dst = self.getDstReg(instr.dest);
+                // Vector load using MOVDQU (unaligned) or VMOVDQU
+                const vector_width = @as(u32, @intCast(instr.imm & 0xFFF));
+                const dst_xmm = self.getXMMReg(instr.dest);
                 const base = try self.getSrcReg(instr.src1, false);
-                try self.emitter.movRegMemBase(dst, base, 0);
-                try self.storeDstIfSpilled(instr.dest);
+
+                if (vector_width >= 256) {
+                    // AVX 256-bit: VMOVDQU ymm, [base]
+                    try self.emitter.vmovdquLoad256(dst_xmm, base, 0);
+                } else {
+                    // SSE 128-bit: MOVDQU xmm, [base]
+                    try self.emitter.movdquLoad(dst_xmm, base, 0);
+                }
             },
 
             .VSTORE => {
-                // Vector store - placeholder (would use vmovdqu)
-                // For now, just a regular store
-                const base = self.getDstReg(instr.dest);
-                const src = try self.getSrcReg(instr.src1, false);
-                // Store to [base]
-                try self.emitter.movMemReg(0, src);
-                _ = base;
+                // Vector store using MOVDQU (unaligned) or VMOVDQU
+                const vector_width = @as(u32, @intCast(instr.imm & 0xFFF));
+                const base = try self.getSrcReg(instr.dest, false);
+                const src_xmm = self.getXMMReg(instr.src1);
+
+                if (vector_width >= 256) {
+                    // AVX 256-bit: VMOVDQU [base], ymm
+                    try self.emitter.vmovdquStore256(base, 0, src_xmm);
+                } else {
+                    // SSE 128-bit: MOVDQU [base], xmm
+                    try self.emitter.movdquStore(base, 0, src_xmm);
+                }
             },
 
             .VSUM => {
-                // Horizontal sum - placeholder
-                // In real SIMD, this would use vphaddd + extract
-                const dst = self.getDstReg(instr.dest);
-                const src = try self.getSrcReg(instr.src1, false);
-                if (dst != src) try self.emitter.movRegReg(dst, src);
-                try self.storeDstIfSpilled(instr.dest);
+                // Horizontal sum using PHADDD (SSSE3)
+                const dst_xmm = self.getXMMReg(instr.dest);
+                const src_xmm = self.getXMMReg(instr.src1);
+
+                // PHADDD twice to sum all 4 elements
+                if (dst_xmm != src_xmm) {
+                    try self.emitter.movdqa(dst_xmm, src_xmm);
+                }
+                try self.emitter.phaddd(dst_xmm, dst_xmm);
+                try self.emitter.phaddd(dst_xmm, dst_xmm);
             },
 
             else => {
@@ -1746,4 +2175,141 @@ test "X86_64Emitter movRegImm64" {
 
     // Should generate: REX.W + B8 + 8 bytes immediate
     try std.testing.expectEqual(@as(usize, 10), emitter.code.items.len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SSE/AVX SIMD INSTRUCTION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "X86_64Emitter PADDD xmm0, xmm1" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // PADDD xmm0, xmm1: 66 0F FE C1
+    try emitter.paddd(.XMM0, .XMM1);
+
+    try std.testing.expectEqual(@as(usize, 4), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0x66), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0xFE), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0xC1), emitter.code.items[3]); // ModR/M: xmm0, xmm1
+}
+
+test "X86_64Emitter PSUBD xmm2, xmm3" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // PSUBD xmm2, xmm3: 66 0F FA D3
+    try emitter.psubd(.XMM2, .XMM3);
+
+    try std.testing.expectEqual(@as(usize, 4), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0x66), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0xFA), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0xD3), emitter.code.items[3]); // ModR/M: xmm2, xmm3
+}
+
+test "X86_64Emitter PMULLD xmm0, xmm1" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // PMULLD xmm0, xmm1: 66 0F 38 40 C1
+    try emitter.pmulld(.XMM0, .XMM1);
+
+    try std.testing.expectEqual(@as(usize, 5), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0x66), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0x38), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0x40), emitter.code.items[3]);
+    try std.testing.expectEqual(@as(u8, 0xC1), emitter.code.items[4]);
+}
+
+test "X86_64Emitter MOVDQU load xmm0, [rax]" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // MOVDQU xmm0, [rax]: F3 0F 6F 00
+    try emitter.movdquLoad(.XMM0, .RAX, 0);
+
+    try std.testing.expectEqual(@as(usize, 4), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0xF3), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0x6F), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0x00), emitter.code.items[3]); // ModR/M: xmm0, [rax]
+}
+
+test "X86_64Emitter MOVDQU store [rax], xmm1" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // MOVDQU [rax], xmm1: F3 0F 7F 08
+    try emitter.movdquStore(.RAX, 0, .XMM1);
+
+    try std.testing.expectEqual(@as(usize, 4), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0xF3), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0x7F), emitter.code.items[2]);
+}
+
+test "X86_64Emitter PHADDD xmm0, xmm0" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // PHADDD xmm0, xmm0: 66 0F 38 02 C0
+    try emitter.phaddd(.XMM0, .XMM0);
+
+    try std.testing.expectEqual(@as(usize, 5), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0x66), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0x38), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0x02), emitter.code.items[3]);
+}
+
+test "X86_64Emitter AVX VPADDD ymm0, ymm1, ymm2" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // VPADDD ymm0, ymm1, ymm2: VEX.256.66.0F.WIG FE C2
+    try emitter.vpaddd256(.XMM0, .XMM1, .XMM2);
+
+    // VEX 2-byte prefix + opcode + ModR/M
+    try std.testing.expect(emitter.code.items.len >= 4);
+    // First byte should be VEX prefix (C5 for 2-byte)
+    try std.testing.expectEqual(@as(u8, 0xC5), emitter.code.items[0]);
+}
+
+test "X86_64Emitter AVX VPMULLD ymm0, ymm1, ymm2" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // VPMULLD ymm0, ymm1, ymm2: VEX.256.66.0F38.WIG 40 C2
+    try emitter.vpmulld256(.XMM0, .XMM1, .XMM2);
+
+    // VEX 3-byte prefix + opcode + ModR/M
+    try std.testing.expect(emitter.code.items.len >= 5);
+    // First byte should be VEX 3-byte prefix (C4)
+    try std.testing.expectEqual(@as(u8, 0xC4), emitter.code.items[0]);
+}
+
+test "X86_64Emitter PXOR xmm0, xmm0 (zero register)" {
+    const allocator = std.testing.allocator;
+    var emitter = X86_64Emitter.init(allocator);
+    defer emitter.deinit();
+
+    // PXOR xmm0, xmm0: 66 0F EF C0
+    try emitter.pxor(.XMM0, .XMM0);
+
+    try std.testing.expectEqual(@as(usize, 4), emitter.code.items.len);
+    try std.testing.expectEqual(@as(u8, 0x66), emitter.code.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emitter.code.items[1]);
+    try std.testing.expectEqual(@as(u8, 0xEF), emitter.code.items[2]);
+    try std.testing.expectEqual(@as(u8, 0xC0), emitter.code.items[3]);
 }

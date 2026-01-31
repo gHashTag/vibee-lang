@@ -1,0 +1,98 @@
+name: real_simd_codegen
+version: "1.0.0"
+language: zig
+module: real_simd_codegen
+
+description: |
+  Real SIMD Code Generation for x86_64.
+  Generates actual SSE4.1/AVX/AVX2 machine code instructions.
+
+types:
+  XMMRegister:
+    fields:
+      id: Int
+    description: XMM register (0-15) for 128-bit SIMD
+    values: [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15]
+
+  YMMRegister:
+    fields:
+      id: Int
+    description: YMM register (0-15) for 256-bit AVX
+    values: [YMM0, YMM1, YMM2, YMM3, YMM4, YMM5, YMM6, YMM7, YMM8, YMM9, YMM10, YMM11, YMM12, YMM13, YMM14, YMM15]
+
+  SIMDWidth:
+    fields:
+      bits: Int
+      type: String
+    description: SIMD width configuration
+    values:
+      - bits: 128, type: SSE
+      - bits: 256, type: AVX
+      - bits: 512, type: AVX512
+
+behaviors:
+  - name: emit_paddd_xmm
+    given: Two XMM registers
+    when: Generating packed add doublewords
+    then: Emit 66 0F FE /r (PADDD xmm1, xmm2)
+
+  - name: emit_pmulld_xmm
+    given: Two XMM registers
+    when: Generating packed multiply low doublewords
+    then: Emit 66 0F 38 40 /r (PMULLD xmm1, xmm2)
+
+  - name: emit_movdqu_load
+    given: XMM register and memory address
+    when: Loading 128 bits unaligned
+    then: Emit F3 0F 6F /r (MOVDQU xmm, m128)
+
+  - name: emit_movdqu_store
+    given: Memory address and XMM register
+    when: Storing 128 bits unaligned
+    then: Emit F3 0F 7F /r (MOVDQU m128, xmm)
+
+  - name: emit_vpaddd_ymm
+    given: Three YMM registers (AVX)
+    when: Generating 256-bit packed add
+    then: Emit VEX.256.66.0F.WIG FE /r (VPADDD ymm1, ymm2, ymm3)
+
+  - name: emit_vpmulld_ymm
+    given: Three YMM registers (AVX2)
+    when: Generating 256-bit packed multiply
+    then: Emit VEX.256.66.0F38.WIG 40 /r (VPMULLD ymm1, ymm2, ymm3)
+
+  - name: emit_vmovdqu_load
+    given: YMM register and memory address
+    when: Loading 256 bits unaligned
+    then: Emit VEX.256.F3.0F.WIG 6F /r (VMOVDQU ymm, m256)
+
+  - name: emit_vmovdqu_store
+    given: Memory address and YMM register
+    when: Storing 256 bits unaligned
+    then: Emit VEX.256.F3.0F.WIG 7F /r (VMOVDQU m256, ymm)
+
+sse_opcodes:
+  PADDD: [0x66, 0x0F, 0xFE]      # Packed add i32
+  PSUBD: [0x66, 0x0F, 0xFA]      # Packed sub i32
+  PMULLD: [0x66, 0x0F, 0x38, 0x40]  # Packed mul i32 (SSE4.1)
+  PMINSD: [0x66, 0x0F, 0x38, 0x39]  # Packed min signed i32
+  PMAXSD: [0x66, 0x0F, 0x38, 0x3D]  # Packed max signed i32
+  MOVDQU_LOAD: [0xF3, 0x0F, 0x6F]   # Unaligned load
+  MOVDQU_STORE: [0xF3, 0x0F, 0x7F]  # Unaligned store
+  MOVDQA_LOAD: [0x66, 0x0F, 0x6F]   # Aligned load
+  MOVDQA_STORE: [0x66, 0x0F, 0x7F]  # Aligned store
+
+vex_prefix:
+  description: VEX prefix for AVX instructions
+  format: |
+    2-byte VEX: C5 [R~vvvv Lpp]
+    3-byte VEX: C4 [R~X~B~ mmmmm] [W vvvv L pp]
+  fields:
+    R: Inverted REX.R
+    X: Inverted REX.X
+    B: Inverted REX.B
+    W: REX.W equivalent
+    vvvv: Source register (inverted)
+    L: Vector length (0=128, 1=256)
+    pp: SIMD prefix (00=none, 01=66, 10=F3, 11=F2)
+    mmmmm: Opcode map (00001=0F, 00010=0F38, 00011=0F3A)
