@@ -2960,6 +2960,385 @@ pub const StrengthReductionOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONTROL FLOW GRAPH (CFG) AND DOMINATOR TREE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Basic Block - a sequence of instructions with single entry and exit
+pub const BasicBlock = struct {
+    id: u32, // Block identifier
+    start_idx: usize, // First instruction index in IR
+    end_idx: usize, // Last instruction index (inclusive)
+    predecessors: std.ArrayList(u32), // Blocks that jump to this block
+    successors: std.ArrayList(u32), // Blocks this block can jump to
+    is_entry: bool, // True if this is the entry block
+    is_exit: bool, // True if this block ends with RETURN
+
+    pub fn init(allocator: Allocator, id: u32, start: usize, end: usize) BasicBlock {
+        return .{
+            .id = id,
+            .start_idx = start,
+            .end_idx = end,
+            .predecessors = std.ArrayList(u32).init(allocator),
+            .successors = std.ArrayList(u32).init(allocator),
+            .is_entry = false,
+            .is_exit = false,
+        };
+    }
+
+    pub fn deinit(self: *BasicBlock) void {
+        self.predecessors.deinit();
+        self.successors.deinit();
+    }
+
+    pub fn instructionCount(self: BasicBlock) usize {
+        return self.end_idx - self.start_idx + 1;
+    }
+};
+
+/// Control Flow Graph - represents program structure as basic blocks
+pub const CFG = struct {
+    allocator: Allocator,
+    blocks: std.ArrayList(BasicBlock),
+    entry_block: ?u32,
+    /// Map from instruction index to block id
+    instr_to_block: std.AutoHashMap(usize, u32),
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .blocks = std.ArrayList(BasicBlock).init(allocator),
+            .entry_block = null,
+            .instr_to_block = std.AutoHashMap(usize, u32).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.blocks.items) |*block| {
+            block.deinit();
+        }
+        self.blocks.deinit();
+        self.instr_to_block.deinit();
+    }
+
+    /// Build CFG from IR instructions
+    pub fn build(self: *Self, ir: []const IRInstruction) !void {
+        if (ir.len == 0) return;
+
+        // Phase 1: Find block boundaries (leaders)
+        var leaders = std.AutoHashMap(usize, bool).init(self.allocator);
+        defer leaders.deinit();
+
+        // First instruction is always a leader
+        try leaders.put(0, true);
+
+        // Find all jump targets and instructions after jumps
+        for (ir, 0..) |instr, i| {
+            switch (instr.opcode) {
+                .JUMP, .LOOP_BACK => {
+                    // Target of jump is a leader
+                    const target = self.computeJumpTarget(i, instr.imm);
+                    if (target < ir.len) {
+                        try leaders.put(target, true);
+                    }
+                    // Instruction after jump is a leader (if exists)
+                    if (i + 1 < ir.len) {
+                        try leaders.put(i + 1, true);
+                    }
+                },
+                .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    // Target of conditional jump is a leader
+                    const target = self.computeJumpTarget(i, instr.imm);
+                    if (target < ir.len) {
+                        try leaders.put(target, true);
+                    }
+                    // Fall-through is also a leader
+                    if (i + 1 < ir.len) {
+                        try leaders.put(i + 1, true);
+                    }
+                },
+                .RETURN => {
+                    // Instruction after return is a leader (if exists)
+                    if (i + 1 < ir.len) {
+                        try leaders.put(i + 1, true);
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Phase 2: Create basic blocks
+        var sorted_leaders = std.ArrayList(usize).init(self.allocator);
+        defer sorted_leaders.deinit();
+
+        var leader_iter = leaders.keyIterator();
+        while (leader_iter.next()) |key| {
+            try sorted_leaders.append(key.*);
+        }
+        std.mem.sort(usize, sorted_leaders.items, {}, std.sort.asc(usize));
+
+        for (sorted_leaders.items, 0..) |start, idx| {
+            const end = if (idx + 1 < sorted_leaders.items.len)
+                sorted_leaders.items[idx + 1] - 1
+            else
+                ir.len - 1;
+
+            var block = BasicBlock.init(self.allocator, @intCast(idx), start, end);
+
+            // Mark entry block
+            if (start == 0) {
+                block.is_entry = true;
+                self.entry_block = @intCast(idx);
+            }
+
+            // Mark exit blocks
+            if (ir[end].opcode == .RETURN) {
+                block.is_exit = true;
+            }
+
+            try self.blocks.append(block);
+
+            // Map instructions to block
+            for (start..end + 1) |instr_idx| {
+                try self.instr_to_block.put(instr_idx, @intCast(idx));
+            }
+        }
+
+        // Phase 3: Connect blocks (add edges)
+        for (self.blocks.items, 0..) |*block, block_idx| {
+            const last_instr = ir[block.end_idx];
+
+            switch (last_instr.opcode) {
+                .JUMP, .LOOP_BACK => {
+                    // Unconditional jump - single successor
+                    const target = self.computeJumpTarget(block.end_idx, last_instr.imm);
+                    if (self.instr_to_block.get(target)) |target_block| {
+                        try block.successors.append(target_block);
+                        try self.blocks.items[target_block].predecessors.append(@intCast(block_idx));
+                    }
+                },
+                .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    // Conditional jump - two successors
+                    const target = self.computeJumpTarget(block.end_idx, last_instr.imm);
+                    if (self.instr_to_block.get(target)) |target_block| {
+                        try block.successors.append(target_block);
+                        try self.blocks.items[target_block].predecessors.append(@intCast(block_idx));
+                    }
+                    // Fall-through successor
+                    if (block.end_idx + 1 < ir.len) {
+                        if (self.instr_to_block.get(block.end_idx + 1)) |fall_block| {
+                            try block.successors.append(fall_block);
+                            try self.blocks.items[fall_block].predecessors.append(@intCast(block_idx));
+                        }
+                    }
+                },
+                .RETURN => {
+                    // No successors for return
+                },
+                else => {
+                    // Fall-through to next block
+                    if (block.end_idx + 1 < ir.len) {
+                        if (self.instr_to_block.get(block.end_idx + 1)) |next_block| {
+                            try block.successors.append(next_block);
+                            try self.blocks.items[next_block].predecessors.append(@intCast(block_idx));
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    fn computeJumpTarget(self: *Self, current_idx: usize, offset: i64) usize {
+        _ = self;
+        if (offset >= 0) {
+            return current_idx + @as(usize, @intCast(offset)) + 1;
+        } else {
+            const neg_offset: usize = @intCast(-offset);
+            if (neg_offset <= current_idx) {
+                return current_idx - neg_offset;
+            }
+            return 0;
+        }
+    }
+
+    pub fn getBlock(self: *Self, id: u32) ?*BasicBlock {
+        if (id < self.blocks.items.len) {
+            return &self.blocks.items[id];
+        }
+        return null;
+    }
+
+    pub fn blockCount(self: *Self) usize {
+        return self.blocks.items.len;
+    }
+};
+
+/// Dominator Tree - for each node, stores its immediate dominator
+/// Node A dominates node B if every path from entry to B goes through A
+pub const DominatorTree = struct {
+    allocator: Allocator,
+    /// Immediate dominator for each block (block_id -> idom_id)
+    idom: std.AutoHashMap(u32, u32),
+    /// Dominance frontier for each block
+    dom_frontier: std.AutoHashMap(u32, std.ArrayList(u32)),
+    /// Children in dominator tree (for traversal)
+    dom_children: std.AutoHashMap(u32, std.ArrayList(u32)),
+    /// Entry block id
+    entry: ?u32,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .idom = std.AutoHashMap(u32, u32).init(allocator),
+            .dom_frontier = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
+            .dom_children = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
+            .entry = null,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.idom.deinit();
+
+        var df_iter = self.dom_frontier.valueIterator();
+        while (df_iter.next()) |list| {
+            list.deinit();
+        }
+        self.dom_frontier.deinit();
+
+        var dc_iter = self.dom_children.valueIterator();
+        while (dc_iter.next()) |list| {
+            list.deinit();
+        }
+        self.dom_children.deinit();
+    }
+
+    /// Build dominator tree from CFG using Cooper-Harvey-Kennedy algorithm
+    /// (simpler than Lengauer-Tarjan, good for small CFGs)
+    pub fn build(self: *Self, cfg: *CFG) !void {
+        if (cfg.blocks.items.len == 0) return;
+
+        self.entry = cfg.entry_block;
+        const entry = cfg.entry_block orelse return;
+
+        // Initialize: entry dominates itself, others undefined
+        try self.idom.put(entry, entry);
+
+        // Iterative dataflow algorithm
+        var changed = true;
+        while (changed) {
+            changed = false;
+
+            // Process blocks in reverse postorder (approximated by forward order for simplicity)
+            for (cfg.blocks.items, 0..) |block, idx| {
+                const block_id: u32 = @intCast(idx);
+                if (block_id == entry) continue;
+
+                // Find new idom as intersection of predecessors' dominators
+                var new_idom: ?u32 = null;
+
+                for (block.predecessors.items) |pred| {
+                    if (self.idom.contains(pred)) {
+                        if (new_idom == null) {
+                            new_idom = pred;
+                        } else {
+                            new_idom = self.intersect(new_idom.?, pred);
+                        }
+                    }
+                }
+
+                if (new_idom) |idom| {
+                    const old_idom = self.idom.get(block_id);
+                    if (old_idom == null or old_idom.? != idom) {
+                        try self.idom.put(block_id, idom);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Build dominator tree children
+        var idom_iter = self.idom.iterator();
+        while (idom_iter.next()) |entry_kv| {
+            const child = entry_kv.key_ptr.*;
+            const parent = entry_kv.value_ptr.*;
+            if (child != parent) { // Skip entry node
+                var children = self.dom_children.get(parent) orelse std.ArrayList(u32).init(self.allocator);
+                try children.append(child);
+                try self.dom_children.put(parent, children);
+            }
+        }
+    }
+
+    /// Find intersection of two dominators (lowest common ancestor in dom tree)
+    fn intersect(self: *Self, b1: u32, b2: u32) u32 {
+        var finger1 = b1;
+        var finger2 = b2;
+
+        while (finger1 != finger2) {
+            while (finger1 > finger2) {
+                finger1 = self.idom.get(finger1) orelse finger1;
+            }
+            while (finger2 > finger1) {
+                finger2 = self.idom.get(finger2) orelse finger2;
+            }
+        }
+
+        return finger1;
+    }
+
+    /// Check if block A dominates block B
+    pub fn dominates(self: *Self, a: u32, b: u32) bool {
+        if (a == b) return true;
+
+        var current = b;
+        while (self.idom.get(current)) |idom| {
+            if (idom == a) return true;
+            if (idom == current) break; // Reached entry
+            current = idom;
+        }
+
+        return false;
+    }
+
+    /// Check if block A strictly dominates block B (A dom B and A != B)
+    pub fn strictlyDominates(self: *Self, a: u32, b: u32) bool {
+        return a != b and self.dominates(a, b);
+    }
+
+    /// Get immediate dominator of a block
+    pub fn getIdom(self: *Self, block: u32) ?u32 {
+        const idom = self.idom.get(block) orelse return null;
+        if (idom == block) return null; // Entry has no idom
+        return idom;
+    }
+
+    /// Get all blocks dominated by a given block
+    pub fn getDominated(self: *Self, block: u32, cfg: *CFG) !std.ArrayList(u32) {
+        var result = std.ArrayList(u32).init(self.allocator);
+
+        for (cfg.blocks.items, 0..) |_, idx| {
+            const b: u32 = @intCast(idx);
+            if (self.dominates(block, b)) {
+                try result.append(b);
+            }
+        }
+
+        return result;
+    }
+
+    /// Get children in dominator tree
+    pub fn getChildren(self: *Self, block: u32) []const u32 {
+        if (self.dom_children.get(block)) |children| {
+            return children.items;
+        }
+        return &[_]u32{};
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TAIL CALL OPTIMIZATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3384,6 +3763,10 @@ pub const TieredCompiler = struct {
     licm: LICMOptimizer,
     /// Loop-based strength reduction optimizer
     loop_strength_reduction: StrengthReductionOptimizer,
+    /// CFG for analysis
+    cfg: ?CFG,
+    /// Dominator tree for analysis
+    dom_tree: ?DominatorTree,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -3410,6 +3793,8 @@ pub const TieredCompiler = struct {
     enable_licm: bool,
     /// Enable loop-based strength reduction
     enable_loop_strength_reduction: bool,
+    /// Enable CFG/dominator analysis
+    enable_cfg_analysis: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -3437,6 +3822,8 @@ pub const TieredCompiler = struct {
             .tco = TailCallOptimizer.init(allocator),
             .licm = LICMOptimizer.init(allocator),
             .loop_strength_reduction = StrengthReductionOptimizer.init(allocator),
+            .cfg = null,
+            .dom_tree = null,
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -3450,6 +3837,7 @@ pub const TieredCompiler = struct {
             .enable_tco = true,
             .enable_licm = true,
             .enable_loop_strength_reduction = true,
+            .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
     }
@@ -3478,6 +3866,14 @@ pub const TieredCompiler = struct {
         self.function_states.deinit();
         self.profile_data.deinit();
         self.inliner.deinit();
+
+        // Free CFG and dominator tree
+        if (self.cfg) |*cfg| {
+            cfg.deinit();
+        }
+        if (self.dom_tree) |*dt| {
+            dt.deinit();
+        }
     }
 
     /// Enable PGO instrumentation
@@ -3489,6 +3885,53 @@ pub const TieredCompiler = struct {
             self.pgo = PGOOptimizer.init(self.allocator, &self.profile_data);
         }
         self.enable_pgo = true;
+    }
+
+    /// Build CFG and dominator tree for IR analysis
+    pub fn buildCFGAnalysis(self: *Self, ir: []const IRInstruction) !void {
+        if (!self.enable_cfg_analysis) return;
+
+        // Clean up previous analysis
+        if (self.cfg) |*cfg| {
+            cfg.deinit();
+        }
+        if (self.dom_tree) |*dt| {
+            dt.deinit();
+        }
+
+        // Build new CFG
+        var cfg = CFG.init(self.allocator);
+        try cfg.build(ir);
+        self.cfg = cfg;
+
+        // Build dominator tree
+        var dom_tree = DominatorTree.init(self.allocator);
+        try dom_tree.build(&cfg);
+        self.dom_tree = dom_tree;
+    }
+
+    /// Check if block A dominates block B (requires CFG analysis)
+    pub fn dominates(self: *Self, a: u32, b: u32) bool {
+        if (self.dom_tree) |*dt| {
+            return dt.dominates(a, b);
+        }
+        return false;
+    }
+
+    /// Get CFG for external analysis
+    pub fn getCFG(self: *Self) ?*CFG {
+        if (self.cfg) |*cfg| {
+            return cfg;
+        }
+        return null;
+    }
+
+    /// Get dominator tree for external analysis
+    pub fn getDomTree(self: *Self) ?*DominatorTree {
+        if (self.dom_tree) |*dt| {
+            return dt;
+        }
+        return null;
     }
 
     /// Get profile data for analysis
@@ -8821,4 +9264,202 @@ test "StrengthReductionOptimizer getStats" {
     try std.testing.expectEqual(@as(usize, 0), stats.muls_reduced);
     try std.testing.expectEqual(@as(usize, 0), stats.divs_reduced);
     try std.testing.expectEqual(@as(usize, 0), stats.ivs_found);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CFG AND DOMINATOR TREE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "CFG build simple linear code" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    // Simple linear code: no branches
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    // Should have 1 basic block
+    try std.testing.expectEqual(@as(usize, 1), cfg.blockCount());
+
+    // Entry block should be block 0
+    try std.testing.expectEqual(@as(?u32, 0), cfg.entry_block);
+
+    // Block should be both entry and exit
+    const block = cfg.getBlock(0).?;
+    try std.testing.expect(block.is_entry);
+    try std.testing.expect(block.is_exit);
+}
+
+test "CFG build with conditional branch" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    // Code with conditional branch:
+    // 0: LOAD_CONST r0, 5
+    // 1: JUMP_IF_ZERO r0, +2  (jump to instruction 4)
+    // 2: LOAD_CONST r1, 10    (then branch)
+    // 3: JUMP +1              (skip else)
+    // 4: LOAD_CONST r1, 20    (else branch)
+    // 5: RETURN r1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .JUMP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    // Should have multiple basic blocks
+    try std.testing.expect(cfg.blockCount() >= 2);
+}
+
+test "CFG build with loop" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    // Simple loop:
+    // 0: LOAD_CONST r0, 0     (init)
+    // 1: LOAD_CONST r1, 10    (limit)
+    // 2: ADD_INT r0, r0, 1    (loop body - increment)
+    // 3: CMP_LT_INT r2, r0, r1
+    // 4: LOOP_BACK -2         (back to instruction 2)
+    // 5: RETURN r0
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .CMP_LT_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    // Should have at least 2 blocks (before loop, loop body + after)
+    try std.testing.expect(cfg.blockCount() >= 2);
+}
+
+test "DominatorTree build and dominates" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    // Simple linear code
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    var dom_tree = DominatorTree.init(allocator);
+    defer dom_tree.deinit();
+
+    try dom_tree.build(&cfg);
+
+    // Entry block dominates itself
+    try std.testing.expect(dom_tree.dominates(0, 0));
+}
+
+test "DominatorTree getIdom" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    // Code with branch creating multiple blocks
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    var dom_tree = DominatorTree.init(allocator);
+    defer dom_tree.deinit();
+
+    try dom_tree.build(&cfg);
+
+    // Entry block has no idom
+    try std.testing.expectEqual(@as(?u32, null), dom_tree.getIdom(0));
+}
+
+test "DominatorTree strictlyDominates" {
+    const allocator = std.testing.allocator;
+
+    var cfg = CFG.init(allocator);
+    defer cfg.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try cfg.build(&ir);
+
+    var dom_tree = DominatorTree.init(allocator);
+    defer dom_tree.deinit();
+
+    try dom_tree.build(&cfg);
+
+    // Block does not strictly dominate itself
+    try std.testing.expect(!dom_tree.strictlyDominates(0, 0));
+}
+
+test "TieredCompiler CFG analysis" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify CFG analysis is enabled by default
+    try std.testing.expect(compiler.enable_cfg_analysis);
+
+    // Initially no CFG
+    try std.testing.expectEqual(@as(?*CFG, null), compiler.getCFG());
+    try std.testing.expectEqual(@as(?*DominatorTree, null), compiler.getDomTree());
+
+    // Build CFG analysis
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    try compiler.buildCFGAnalysis(&ir);
+
+    // Now should have CFG and dom tree
+    try std.testing.expect(compiler.getCFG() != null);
+    try std.testing.expect(compiler.getDomTree() != null);
+}
+
+test "BasicBlock init and instructionCount" {
+    const allocator = std.testing.allocator;
+
+    var block = BasicBlock.init(allocator, 0, 5, 10);
+    defer block.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), block.id);
+    try std.testing.expectEqual(@as(usize, 5), block.start_idx);
+    try std.testing.expectEqual(@as(usize, 10), block.end_idx);
+    try std.testing.expectEqual(@as(usize, 6), block.instructionCount());
+    try std.testing.expect(!block.is_entry);
+    try std.testing.expect(!block.is_exit);
 }
