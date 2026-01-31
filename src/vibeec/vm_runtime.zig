@@ -467,6 +467,16 @@ pub const VM = struct {
             // QUANTUM SPEED INLINE DISPATCH - NO FUNCTION CALLS
             // ═══════════════════════════════════════════════════════════════
 
+            // PUSH_CONST - most common opcode
+            if (opcode_byte == 0x01) { // PUSH_CONST
+                const idx = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                ip += 2;
+                stack[sp] = self.constants[idx];
+                sp += 1;
+                self.instructions_executed += 1;
+                continue;
+            }
+
             // Binary arithmetic - most common operations
             if (opcode_byte == 0x10) { // ADD
                 const b = stack[sp - 1];
@@ -518,6 +528,19 @@ pub const VM = struct {
                     stack[sp - 1] = .{ .bool_val = a.int_val < b.int_val };
                 } else {
                     stack[sp - 1] = .{ .bool_val = (a.toInt() orelse 0) < (b.toInt() orelse 0) };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
+            if (opcode_byte == 0x23) { // LE
+                const b = stack[sp - 1];
+                const a = stack[sp - 2];
+                sp -= 1;
+                if (a == .int_val and b == .int_val) {
+                    stack[sp - 1] = .{ .bool_val = a.int_val <= b.int_val };
+                } else {
+                    stack[sp - 1] = .{ .bool_val = (a.toInt() orelse 0) <= (b.toInt() orelse 0) };
                 }
                 self.instructions_executed += 1;
                 continue;
@@ -592,6 +615,36 @@ pub const VM = struct {
             // POP
             if (opcode_byte == 0x02) { // POP
                 sp -= 1;
+                self.instructions_executed += 1;
+                continue;
+            }
+
+            // LOAD_ADD - fused load + add (very common in loops)
+            if (opcode_byte == 0xA0) { // LOAD_ADD
+                const idx = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                ip += 2;
+                const local_val = self.locals[@min(idx, MAX_LOCALS - 1)];
+                const stack_val = stack[sp - 1];
+                if (local_val == .int_val and stack_val == .int_val) {
+                    stack[sp - 1] = .{ .int_val = local_val.int_val + stack_val.int_val };
+                } else {
+                    stack[sp - 1] = .{ .int_val = (local_val.toInt() orelse 0) + (stack_val.toInt() orelse 0) };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
+            // LOAD_MUL - fused load + mul (common in nested loops)
+            if (opcode_byte == 0xA2) { // LOAD_MUL
+                const idx = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                ip += 2;
+                const local_val = self.locals[@min(idx, MAX_LOCALS - 1)];
+                const stack_val = stack[sp - 1];
+                if (local_val == .int_val and stack_val == .int_val) {
+                    stack[sp - 1] = .{ .int_val = local_val.int_val * stack_val.int_val };
+                } else {
+                    stack[sp - 1] = .{ .int_val = (local_val.toInt() orelse 0) * (stack_val.toInt() orelse 0) };
+                }
                 self.instructions_executed += 1;
                 continue;
             }

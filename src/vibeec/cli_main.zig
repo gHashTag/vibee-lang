@@ -451,7 +451,7 @@ fn benchmarkVM(path: []const u8, iterations: u32, allocator: std.mem.Allocator) 
         defer vm.deinit();
         vm.load(code, constants);
 
-        final_result = vm.run() catch .{ .nil = {} };
+        final_result = vm.runFast() catch .{ .nil = {} };
 
         const exec_time = vm.getExecutionTimeNs();
         total_time_ns += exec_time;
