@@ -1167,6 +1167,422 @@ pub const TraceJIT = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TRACE LINKING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Link type between traces
+pub const TraceLinkType = enum(u8) {
+    /// Direct jump from one trace to another
+    direct,
+    /// Conditional branch (taken path)
+    branch_taken,
+    /// Conditional branch (not taken path)
+    branch_not_taken,
+    /// Side exit from guard failure
+    side_exit,
+    /// Loop back edge
+    loop_back,
+    /// Call to another trace
+    call,
+    /// Return from trace
+    ret,
+};
+
+/// A link between two traces
+pub const TraceLink = struct {
+    /// Source trace address
+    source_addr: u32,
+    /// Target trace address
+    target_addr: u32,
+    /// Instruction index in source trace where link originates
+    source_idx: usize,
+    /// Type of link
+    link_type: TraceLinkType,
+    /// Number of times this link was taken
+    execution_count: u64,
+    /// Is this link hot (frequently taken)?
+    is_hot: bool,
+
+    pub fn init(source: u32, target: u32, idx: usize, link_type: TraceLinkType) TraceLink {
+        return .{
+            .source_addr = source,
+            .target_addr = target,
+            .source_idx = idx,
+            .link_type = link_type,
+            .execution_count = 0,
+            .is_hot = false,
+        };
+    }
+
+    pub fn recordExecution(self: *TraceLink) void {
+        self.execution_count += 1;
+    }
+};
+
+/// Linked trace - a trace with links to other traces
+pub const LinkedTrace = struct {
+    /// The base trace
+    trace: *RecordedTrace,
+    /// Outgoing links from this trace
+    outgoing_links: std.ArrayList(TraceLink),
+    /// Incoming links to this trace
+    incoming_links: std.ArrayList(TraceLink),
+    /// Merged IR (if this trace has been merged with others)
+    merged_ir: ?[]IRInstruction,
+    /// Is this trace part of a trace tree?
+    in_tree: bool,
+
+    pub fn init(allocator: Allocator, trace: *RecordedTrace) LinkedTrace {
+        return .{
+            .trace = trace,
+            .outgoing_links = std.ArrayList(TraceLink).init(allocator),
+            .incoming_links = std.ArrayList(TraceLink).init(allocator),
+            .merged_ir = null,
+            .in_tree = false,
+        };
+    }
+
+    pub fn deinit(self: *LinkedTrace, allocator: Allocator) void {
+        self.outgoing_links.deinit();
+        self.incoming_links.deinit();
+        if (self.merged_ir) |ir| {
+            allocator.free(ir);
+        }
+    }
+
+    pub fn addOutgoingLink(self: *LinkedTrace, link: TraceLink) !void {
+        try self.outgoing_links.append(link);
+    }
+
+    pub fn addIncomingLink(self: *LinkedTrace, link: TraceLink) !void {
+        try self.incoming_links.append(link);
+    }
+
+    pub fn getOutgoingCount(self: *const LinkedTrace) usize {
+        return self.outgoing_links.items.len;
+    }
+
+    pub fn getIncomingCount(self: *const LinkedTrace) usize {
+        return self.incoming_links.items.len;
+    }
+};
+
+/// Trace Link Manager - manages links between traces and trace trees
+pub const TraceLinkManager = struct {
+    allocator: Allocator,
+    /// Linked traces by address
+    linked_traces: std.AutoHashMap(u32, LinkedTrace),
+    /// Hot link threshold
+    hot_threshold: u64,
+    /// Statistics
+    links_created: usize = 0,
+    links_hot: usize = 0,
+    traces_merged: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .linked_traces = std.AutoHashMap(u32, LinkedTrace).init(allocator),
+            .hot_threshold = 10,
+            .links_created = 0,
+            .links_hot = 0,
+            .traces_merged = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.linked_traces.valueIterator();
+        while (iter.next()) |lt| {
+            lt.deinit(self.allocator);
+        }
+        self.linked_traces.deinit();
+    }
+
+    /// Register a trace for linking
+    pub fn registerTrace(self: *Self, trace: *RecordedTrace) !*LinkedTrace {
+        const result = try self.linked_traces.getOrPut(trace.start_addr);
+        if (!result.found_existing) {
+            result.value_ptr.* = LinkedTrace.init(self.allocator, trace);
+        }
+        return result.value_ptr;
+    }
+
+    /// Create a link between two traces
+    pub fn createLink(self: *Self, source_addr: u32, target_addr: u32, source_idx: usize, link_type: TraceLinkType) !void {
+        // Get or create linked traces
+        const source_result = try self.linked_traces.getOrPut(source_addr);
+        if (!source_result.found_existing) {
+            return; // Source trace not registered
+        }
+
+        const target_result = try self.linked_traces.getOrPut(target_addr);
+        if (!target_result.found_existing) {
+            return; // Target trace not registered
+        }
+
+        const link = TraceLink.init(source_addr, target_addr, source_idx, link_type);
+
+        try source_result.value_ptr.addOutgoingLink(link);
+        try target_result.value_ptr.addIncomingLink(link);
+
+        self.links_created += 1;
+    }
+
+    /// Record execution of a link
+    pub fn recordLinkExecution(self: *Self, source_addr: u32, target_addr: u32) void {
+        if (self.linked_traces.getPtr(source_addr)) |source| {
+            for (source.outgoing_links.items) |*link| {
+                if (link.target_addr == target_addr) {
+                    link.recordExecution();
+                    if (!link.is_hot and link.execution_count >= self.hot_threshold) {
+                        link.is_hot = true;
+                        self.links_hot += 1;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Get all hot outgoing links from a trace
+    pub fn getHotLinks(self: *Self, addr: u32) ?[]TraceLink {
+        if (self.linked_traces.getPtr(addr)) |lt| {
+            var hot_links = std.ArrayList(TraceLink).init(self.allocator);
+            for (lt.outgoing_links.items) |link| {
+                if (link.is_hot) {
+                    hot_links.append(link) catch continue;
+                }
+            }
+            if (hot_links.items.len > 0) {
+                return hot_links.toOwnedSlice() catch null;
+            }
+            hot_links.deinit();
+        }
+        return null;
+    }
+
+    /// Merge two linked traces into one
+    pub fn mergeTraces(self: *Self, primary_addr: u32, secondary_addr: u32) !?[]IRInstruction {
+        const primary = self.linked_traces.getPtr(primary_addr) orelse return null;
+        const secondary = self.linked_traces.getPtr(secondary_addr) orelse return null;
+
+        const primary_ir = primary.trace.compiled_ir orelse return null;
+        const secondary_ir = secondary.trace.compiled_ir orelse return null;
+
+        // Create merged IR
+        var merged = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer merged.deinit();
+
+        // Copy primary trace (without final jump/return)
+        var primary_end = primary_ir.len;
+        if (primary_end > 0) {
+            const last = primary_ir[primary_end - 1];
+            if (last.opcode == .JUMP or last.opcode == .LOOP_BACK or last.opcode == .RETURN) {
+                primary_end -= 1;
+            }
+        }
+        for (primary_ir[0..primary_end]) |instr| {
+            try merged.append(instr);
+        }
+
+        // Add jump to secondary trace (will be patched)
+        try merged.append(.{
+            .opcode = .JUMP,
+            .dest = 0,
+            .src1 = 0,
+            .src2 = 0,
+            .imm = 1, // Jump to next instruction (secondary trace start)
+        });
+
+        // Copy secondary trace
+        for (secondary_ir) |instr| {
+            try merged.append(instr);
+        }
+
+        const result = try merged.toOwnedSlice();
+        primary.merged_ir = result;
+        primary.in_tree = true;
+        secondary.in_tree = true;
+
+        self.traces_merged += 1;
+
+        return result;
+    }
+
+    /// Build a trace tree from a root trace
+    pub fn buildTraceTree(self: *Self, root_addr: u32, max_depth: usize) !?[]IRInstruction {
+        if (max_depth == 0) return null;
+
+        const root = self.linked_traces.getPtr(root_addr) orelse return null;
+        if (root.trace.compiled_ir == null) return null;
+
+        // Find hot outgoing links
+        var best_link: ?TraceLink = null;
+        var best_count: u64 = 0;
+
+        for (root.outgoing_links.items) |link| {
+            if (link.is_hot and link.execution_count > best_count) {
+                best_link = link;
+                best_count = link.execution_count;
+            }
+        }
+
+        if (best_link) |link| {
+            // Recursively build tree for target
+            _ = try self.buildTraceTree(link.target_addr, max_depth - 1);
+
+            // Merge with target
+            return try self.mergeTraces(root_addr, link.target_addr);
+        }
+
+        return root.trace.compiled_ir;
+    }
+
+    /// Get linked trace by address
+    pub fn getLinkedTrace(self: *Self, addr: u32) ?*LinkedTrace {
+        return self.linked_traces.getPtr(addr);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { created: usize, hot: usize, merged: usize } {
+        return .{
+            .created = self.links_created,
+            .hot = self.links_hot,
+            .merged = self.traces_merged,
+        };
+    }
+};
+
+/// Extended TraceJIT with linking support
+pub const LinkedTraceJIT = struct {
+    allocator: Allocator,
+    /// Base trace JIT
+    trace_jit: TraceJIT,
+    /// Link manager
+    link_manager: TraceLinkManager,
+    /// Last executed trace address (for linking)
+    last_trace_addr: ?u32,
+    /// Statistics
+    transitions_recorded: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .trace_jit = TraceJIT.init(allocator),
+            .link_manager = TraceLinkManager.init(allocator),
+            .last_trace_addr = null,
+            .transitions_recorded = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.trace_jit.deinit();
+        self.link_manager.deinit();
+    }
+
+    /// Record execution and track transitions
+    pub fn recordExecution(self: *Self, addr: u32) !bool {
+        // Record transition from last trace
+        if (self.last_trace_addr) |last_addr| {
+            if (last_addr != addr) {
+                self.link_manager.recordLinkExecution(last_addr, addr);
+                self.transitions_recorded += 1;
+            }
+        }
+
+        // Record execution in base trace JIT
+        const started = try self.trace_jit.recordExecution(addr);
+
+        // If a new trace was started, register it for linking
+        if (started) {
+            if (self.trace_jit.recorder.getTrace(addr)) |trace| {
+                _ = try self.link_manager.registerTrace(trace);
+            }
+        }
+
+        self.last_trace_addr = addr;
+        return started;
+    }
+
+    /// Record instruction (delegates to base)
+    pub fn recordInstruction(self: *Self, ir: IRInstruction, observed_type: TypeTag) !void {
+        try self.trace_jit.recordInstruction(ir, observed_type);
+    }
+
+    /// Record guard with side exit link
+    pub fn recordGuard(self: *Self, ir: IRInstruction, expected_type: TypeTag, side_exit: u32) !void {
+        try self.trace_jit.recordGuard(ir, expected_type, side_exit);
+
+        // Create potential link to side exit
+        if (self.last_trace_addr) |source| {
+            if (self.trace_jit.recorder.current_trace) |trace| {
+                try self.link_manager.createLink(
+                    source,
+                    side_exit,
+                    trace.instructions.items.len,
+                    .side_exit,
+                );
+            }
+        }
+    }
+
+    /// Complete loop trace with linking
+    pub fn completeLoopTrace(self: *Self, loop_back_addr: u32) !?[]IRInstruction {
+        const compiled = try self.trace_jit.completeLoopTrace(loop_back_addr);
+
+        // Create loop back link
+        if (self.last_trace_addr) |source| {
+            try self.link_manager.createLink(source, loop_back_addr, 0, .loop_back);
+        }
+
+        return compiled;
+    }
+
+    /// Complete linear trace with linking
+    pub fn completeLinearTrace(self: *Self, addr: u32) !?[]IRInstruction {
+        return try self.trace_jit.completeLinearTrace(addr);
+    }
+
+    /// Get optimized trace tree
+    pub fn getOptimizedTrace(self: *Self, addr: u32) !?[]IRInstruction {
+        // Try to build a trace tree if there are hot links
+        if (try self.link_manager.buildTraceTree(addr, 3)) |merged| {
+            return merged;
+        }
+
+        // Fall back to single trace
+        return self.trace_jit.getCompiledTrace(addr);
+    }
+
+    /// Check if recording
+    pub fn isRecording(self: *Self) bool {
+        return self.trace_jit.isRecording();
+    }
+
+    /// Abort recording
+    pub fn abortTrace(self: *Self) void {
+        self.trace_jit.abortTrace();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct {
+        trace_jit: @TypeOf(self.trace_jit.getStats()),
+        link_manager: @TypeOf(self.link_manager.getStats()),
+        transitions: usize,
+    } {
+        return .{
+            .trace_jit = self.trace_jit.getStats(),
+            .link_manager = self.link_manager.getStats(),
+            .transitions = self.transitions_recorded,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5722,6 +6138,10 @@ pub const TieredCompiler = struct {
     enable_trace_jit: bool,
     /// Trace-based JIT manager
     trace_jit: TraceJIT,
+    /// Enable trace linking
+    enable_trace_linking: bool,
+    /// Linked trace JIT manager
+    linked_trace_jit: LinkedTraceJIT,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -5778,6 +6198,8 @@ pub const TieredCompiler = struct {
             .enable_loop_strength_reduction = true,
             .enable_trace_jit = true,
             .trace_jit = TraceJIT.init(allocator),
+            .enable_trace_linking = true,
+            .linked_trace_jit = LinkedTraceJIT.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -5823,6 +6245,7 @@ pub const TieredCompiler = struct {
 
         // Free trace JIT
         self.trace_jit.deinit();
+        self.linked_trace_jit.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -5903,6 +6326,25 @@ pub const TieredCompiler = struct {
     pub fn getCompiledTrace(self: *Self, addr: u32) ?[]IRInstruction {
         if (!self.enable_trace_jit) return null;
         return self.trace_jit.getCompiledTrace(addr);
+    }
+
+    /// Get linked trace JIT manager
+    pub fn getLinkedTraceJIT(self: *Self) *LinkedTraceJIT {
+        return &self.linked_trace_jit;
+    }
+
+    /// Record execution for linked trace JIT
+    pub fn recordLinkedTraceExecution(self: *Self, addr: u32) !bool {
+        if (!self.enable_trace_linking) return false;
+        return try self.linked_trace_jit.recordExecution(addr);
+    }
+
+    /// Get optimized trace tree for an address
+    pub fn getOptimizedTrace(self: *Self, addr: u32) !?[]IRInstruction {
+        if (!self.enable_trace_linking) {
+            return self.getCompiledTrace(addr);
+        }
+        return try self.linked_trace_jit.getOptimizedTrace(addr);
     }
 
     /// Get or create function state
@@ -12284,6 +12726,191 @@ test "TraceJIT in TieredCompiler" {
     const trace_jit = compiler.getTraceJIT();
     // Verify it's accessible
     const stats = trace_jit.getStats();
+    _ = stats;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRACE LINKING TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TraceLink basic creation" {
+    const link = TraceLink.init(0x100, 0x200, 5, .direct);
+
+    try std.testing.expectEqual(@as(u32, 0x100), link.source_addr);
+    try std.testing.expectEqual(@as(u32, 0x200), link.target_addr);
+    try std.testing.expectEqual(@as(usize, 5), link.source_idx);
+    try std.testing.expectEqual(TraceLinkType.direct, link.link_type);
+    try std.testing.expectEqual(@as(u64, 0), link.execution_count);
+    try std.testing.expect(!link.is_hot);
+}
+
+test "TraceLink execution counting" {
+    var link = TraceLink.init(0x100, 0x200, 0, .branch_taken);
+
+    link.recordExecution();
+    try std.testing.expectEqual(@as(u64, 1), link.execution_count);
+
+    link.recordExecution();
+    link.recordExecution();
+    try std.testing.expectEqual(@as(u64, 3), link.execution_count);
+}
+
+test "LinkedTrace basic operations" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    try recorder.startRecording(0x100);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+    recorder.completeLinearTrace();
+
+    const trace = recorder.getTrace(0x100).?;
+
+    var linked = LinkedTrace.init(allocator, trace);
+    defer linked.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), linked.getOutgoingCount());
+    try std.testing.expectEqual(@as(usize, 0), linked.getIncomingCount());
+
+    // Add links
+    try linked.addOutgoingLink(TraceLink.init(0x100, 0x200, 0, .direct));
+    try linked.addIncomingLink(TraceLink.init(0x50, 0x100, 0, .direct));
+
+    try std.testing.expectEqual(@as(usize, 1), linked.getOutgoingCount());
+    try std.testing.expectEqual(@as(usize, 1), linked.getIncomingCount());
+}
+
+test "TraceLinkManager register and link traces" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    var manager = TraceLinkManager.init(allocator);
+    defer manager.deinit();
+
+    // Create two traces
+    try recorder.startRecording(0x100);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+    recorder.completeLinearTrace();
+
+    try recorder.startRecording(0x200);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 }, .int);
+    recorder.completeLinearTrace();
+
+    // Register traces
+    const trace1 = recorder.getTrace(0x100).?;
+    const trace2 = recorder.getTrace(0x200).?;
+
+    _ = try manager.registerTrace(trace1);
+    _ = try manager.registerTrace(trace2);
+
+    // Create link
+    try manager.createLink(0x100, 0x200, 0, .direct);
+
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.created);
+}
+
+test "TraceLinkManager hot link detection" {
+    const allocator = std.testing.allocator;
+
+    var recorder = TraceRecorder.init(allocator);
+    defer recorder.deinit();
+
+    var manager = TraceLinkManager.init(allocator);
+    defer manager.deinit();
+
+    manager.hot_threshold = 3;
+
+    // Create and register traces
+    try recorder.startRecording(0x100);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, .int);
+    recorder.completeLinearTrace();
+
+    try recorder.startRecording(0x200);
+    try recorder.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 }, .int);
+    recorder.completeLinearTrace();
+
+    _ = try manager.registerTrace(recorder.getTrace(0x100).?);
+    _ = try manager.registerTrace(recorder.getTrace(0x200).?);
+
+    try manager.createLink(0x100, 0x200, 0, .direct);
+
+    // Execute link multiple times
+    manager.recordLinkExecution(0x100, 0x200);
+    manager.recordLinkExecution(0x100, 0x200);
+
+    var stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.hot);
+
+    // Third execution should make it hot
+    manager.recordLinkExecution(0x100, 0x200);
+
+    stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.hot);
+}
+
+test "LinkedTraceJIT basic operations" {
+    const allocator = std.testing.allocator;
+
+    var linked_jit = LinkedTraceJIT.init(allocator);
+    defer linked_jit.deinit();
+
+    linked_jit.trace_jit.hot_threshold = 1; // Immediate hot
+
+    // Record execution to start tracing
+    const started = try linked_jit.recordExecution(0x100);
+    try std.testing.expect(started);
+    try std.testing.expect(linked_jit.isRecording());
+
+    // Record instructions
+    try linked_jit.recordInstruction(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 }, .int);
+
+    // Complete trace
+    _ = try linked_jit.completeLoopTrace(0x100);
+
+    try std.testing.expect(!linked_jit.isRecording());
+
+    // First execution doesn't create a transition (no previous trace)
+    const stats = linked_jit.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.transitions);
+}
+
+test "LinkedTraceJIT transition tracking" {
+    const allocator = std.testing.allocator;
+
+    var linked_jit = LinkedTraceJIT.init(allocator);
+    defer linked_jit.deinit();
+
+    linked_jit.trace_jit.hot_threshold = 100; // High threshold to avoid recording
+
+    // Record transitions between addresses
+    _ = try linked_jit.recordExecution(0x100);
+    _ = try linked_jit.recordExecution(0x200);
+    _ = try linked_jit.recordExecution(0x100);
+    _ = try linked_jit.recordExecution(0x300);
+
+    const stats = linked_jit.getStats();
+    try std.testing.expectEqual(@as(usize, 3), stats.transitions);
+}
+
+test "LinkedTraceJIT in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_trace_linking);
+
+    // Record linked execution
+    const started = try compiler.recordLinkedTraceExecution(0x100);
+    _ = started;
+
+    // Get linked trace JIT
+    const linked_jit = compiler.getLinkedTraceJIT();
+    const stats = linked_jit.getStats();
     _ = stats;
 }
 
