@@ -2836,6 +2836,395 @@ pub const OSRLoopCompiler = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// JIT STATISTICS DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Aggregated JIT compilation statistics
+pub const JITStatistics = struct {
+    // Compilation stats
+    functions_compiled: usize,
+    traces_compiled: usize,
+    total_ir_instructions: usize,
+    total_native_bytes: usize,
+
+    // Optimization stats
+    constants_folded: usize,
+    dead_code_eliminated: usize,
+    loops_unrolled: usize,
+    loops_invariants_hoisted: usize,
+    strength_reductions: usize,
+    inlined_functions: usize,
+    specialized_functions: usize,
+
+    // Deoptimization stats
+    total_deopts: usize,
+    type_guard_deopts: usize,
+    bounds_check_deopts: usize,
+    recompilations: usize,
+
+    // OSR stats
+    osr_entries: usize,
+    osr_exits: usize,
+    osr_compilations: usize,
+
+    // Trace stats
+    traces_recorded: usize,
+    traces_linked: usize,
+    hot_spots_detected: usize,
+
+    // Tier stats
+    tier0_functions: usize,
+    tier1_functions: usize,
+    tier2_functions: usize,
+    tier3_functions: usize,
+
+    // Performance metrics
+    avg_compile_time_ns: u64,
+    total_compile_time_ns: u64,
+    cache_hits: usize,
+    cache_misses: usize,
+
+    pub fn init() JITStatistics {
+        return .{
+            .functions_compiled = 0,
+            .traces_compiled = 0,
+            .total_ir_instructions = 0,
+            .total_native_bytes = 0,
+            .constants_folded = 0,
+            .dead_code_eliminated = 0,
+            .loops_unrolled = 0,
+            .loops_invariants_hoisted = 0,
+            .strength_reductions = 0,
+            .inlined_functions = 0,
+            .specialized_functions = 0,
+            .total_deopts = 0,
+            .type_guard_deopts = 0,
+            .bounds_check_deopts = 0,
+            .recompilations = 0,
+            .osr_entries = 0,
+            .osr_exits = 0,
+            .osr_compilations = 0,
+            .traces_recorded = 0,
+            .traces_linked = 0,
+            .hot_spots_detected = 0,
+            .tier0_functions = 0,
+            .tier1_functions = 0,
+            .tier2_functions = 0,
+            .tier3_functions = 0,
+            .avg_compile_time_ns = 0,
+            .total_compile_time_ns = 0,
+            .cache_hits = 0,
+            .cache_misses = 0,
+        };
+    }
+
+    /// Calculate optimization effectiveness ratio
+    pub fn getOptimizationRatio(self: *const JITStatistics) f64 {
+        if (self.total_ir_instructions == 0) return 0.0;
+        const optimized = self.constants_folded + self.dead_code_eliminated +
+            self.loops_unrolled + self.strength_reductions;
+        return @as(f64, @floatFromInt(optimized)) / @as(f64, @floatFromInt(self.total_ir_instructions));
+    }
+
+    /// Calculate deoptimization rate
+    pub fn getDeoptRate(self: *const JITStatistics) f64 {
+        if (self.functions_compiled == 0) return 0.0;
+        return @as(f64, @floatFromInt(self.total_deopts)) / @as(f64, @floatFromInt(self.functions_compiled));
+    }
+
+    /// Calculate cache hit rate
+    pub fn getCacheHitRate(self: *const JITStatistics) f64 {
+        const total = self.cache_hits + self.cache_misses;
+        if (total == 0) return 0.0;
+        return @as(f64, @floatFromInt(self.cache_hits)) / @as(f64, @floatFromInt(total));
+    }
+
+    /// Calculate OSR effectiveness
+    pub fn getOSREffectiveness(self: *const JITStatistics) f64 {
+        if (self.osr_compilations == 0) return 0.0;
+        return @as(f64, @floatFromInt(self.osr_entries)) / @as(f64, @floatFromInt(self.osr_compilations));
+    }
+
+    /// Get tier distribution as percentages
+    pub fn getTierDistribution(self: *const JITStatistics) struct { t0: f64, t1: f64, t2: f64, t3: f64 } {
+        const total = self.tier0_functions + self.tier1_functions + self.tier2_functions + self.tier3_functions;
+        if (total == 0) return .{ .t0 = 0, .t1 = 0, .t2 = 0, .t3 = 0 };
+        const t: f64 = @floatFromInt(total);
+        return .{
+            .t0 = @as(f64, @floatFromInt(self.tier0_functions)) / t * 100.0,
+            .t1 = @as(f64, @floatFromInt(self.tier1_functions)) / t * 100.0,
+            .t2 = @as(f64, @floatFromInt(self.tier2_functions)) / t * 100.0,
+            .t3 = @as(f64, @floatFromInt(self.tier3_functions)) / t * 100.0,
+        };
+    }
+};
+
+/// JIT Dashboard - collects and formats statistics from all JIT components
+pub const JITDashboard = struct {
+    allocator: Allocator,
+    /// Cached statistics
+    cached_stats: JITStatistics,
+    /// Last update timestamp
+    last_update: i64,
+    /// Update interval (ns)
+    update_interval_ns: i64,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .cached_stats = JITStatistics.init(),
+            .last_update = 0,
+            .update_interval_ns = 100_000_000, // 100ms
+        };
+    }
+
+    /// Collect statistics from TieredCompiler
+    pub fn collectFromCompiler(self: *Self, compiler: *TieredCompiler) void {
+        var stats = JITStatistics.init();
+
+        // Collect from loop unroller
+        const loop_stats = compiler.loop_unroller.getStats();
+        stats.loops_unrolled = loop_stats.unrolled;
+
+        // Collect from constant folder
+        const cf_stats = compiler.constant_folder.getStats();
+        stats.constants_folded = cf_stats.folded;
+        stats.dead_code_eliminated = cf_stats.eliminated;
+
+        // Collect from DCE
+        const dce_stats = compiler.dce.getStats();
+        stats.dead_code_eliminated += dce_stats.eliminated;
+
+        // Collect from inliner
+        const inline_stats = compiler.inliner.getStats();
+        stats.inlined_functions = inline_stats.functions;
+
+        // Collect from LICM
+        const licm_stats = compiler.licm.getStats();
+        stats.loops_invariants_hoisted = licm_stats.hoisted;
+
+        // Collect from strength reducer
+        const sr_stats = compiler.strength_reducer.getStats();
+        stats.strength_reductions = sr_stats.reductions;
+
+        // Collect from specializer (optional)
+        if (compiler.specializer) |specializer| {
+            const spec_stats = specializer.getStats();
+            stats.specialized_functions = spec_stats.specialized;
+        }
+
+        // Collect from deopt manager
+        const deopt_stats = compiler.deopt_manager.getStats();
+        stats.total_deopts = deopt_stats.total;
+        stats.type_guard_deopts = deopt_stats.type_guards;
+        stats.bounds_check_deopts = deopt_stats.bounds_checks;
+        stats.recompilations = deopt_stats.recompilations;
+
+        // Collect from adaptive recompiler
+        const recompile_stats = compiler.adaptive_recompiler.getStats();
+        stats.recompilations = recompile_stats.total;
+
+        // Collect from OSR manager
+        const osr_stats = compiler.osr_manager.getStats();
+        stats.osr_entries = osr_stats.entries;
+        stats.osr_exits = osr_stats.exits;
+        stats.osr_compilations = osr_stats.compilations;
+
+        // Collect from trace JIT
+        const trace_stats = compiler.trace_jit.getStats();
+        stats.hot_spots_detected = trace_stats.hot_spots;
+        stats.traces_recorded = trace_stats.recorder.completed;
+        stats.traces_compiled = trace_stats.compiler.compiled;
+
+        // Collect from linked trace JIT
+        const linked_stats = compiler.linked_trace_jit.getStats();
+        stats.traces_linked = linked_stats.link_manager.merged;
+
+        // Collect tier distribution from functions_at_tier array
+        stats.tier0_functions = compiler.stats.functions_at_tier[0];
+        stats.tier1_functions = compiler.stats.functions_at_tier[1];
+        stats.tier2_functions = compiler.stats.functions_at_tier[2];
+        stats.tier3_functions = 0; // Tier 3 not tracked in current TieredStats
+
+        // Cache stats from native_cache size
+        stats.cache_hits = compiler.native_cache.count();
+        stats.cache_misses = 0; // Not tracked directly
+
+        // Compilation counts from promotions
+        stats.functions_compiled = @intCast(compiler.stats.total_promotions);
+        stats.total_compile_time_ns = compiler.stats.total_compile_time_ns;
+        if (stats.functions_compiled > 0) {
+            stats.avg_compile_time_ns = stats.total_compile_time_ns / @as(u64, @intCast(stats.functions_compiled));
+        }
+
+        self.cached_stats = stats;
+        self.last_update = std.time.timestamp();
+    }
+
+    /// Get current statistics
+    pub fn getStats(self: *const Self) JITStatistics {
+        return self.cached_stats;
+    }
+
+    /// Format statistics as a summary string
+    pub fn formatSummary(self: *const Self, buffer: []u8) ![]u8 {
+        const stats = self.cached_stats;
+        var stream = std.io.fixedBufferStream(buffer);
+        const writer = stream.writer();
+
+        try writer.print(
+            \\╔══════════════════════════════════════════════════════════════════╗
+            \\║                    JIT COMPILATION DASHBOARD                     ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ COMPILATION                                                      ║
+            \\║   Functions compiled: {d:>10}                                    ║
+            \\║   Traces compiled:    {d:>10}                                    ║
+            \\║   Cache hit rate:     {d:>9.1}%                                   ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ OPTIMIZATIONS                                                    ║
+            \\║   Constants folded:   {d:>10}                                    ║
+            \\║   Dead code elim:     {d:>10}                                    ║
+            \\║   Loops unrolled:     {d:>10}                                    ║
+            \\║   LICM hoisted:       {d:>10}                                    ║
+            \\║   Strength reduced:   {d:>10}                                    ║
+            \\║   Functions inlined:  {d:>10}                                    ║
+            \\║   Specialized:        {d:>10}                                    ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ DEOPTIMIZATION                                                   ║
+            \\║   Total deopts:       {d:>10}                                    ║
+            \\║   Type guard fails:   {d:>10}                                    ║
+            \\║   Bounds check fails: {d:>10}                                    ║
+            \\║   Recompilations:     {d:>10}                                    ║
+            \\║   Deopt rate:         {d:>9.2}%                                   ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ ON-STACK REPLACEMENT                                             ║
+            \\║   OSR entries:        {d:>10}                                    ║
+            \\║   OSR exits:          {d:>10}                                    ║
+            \\║   OSR compilations:   {d:>10}                                    ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ TRACE JIT                                                        ║
+            \\║   Hot spots:          {d:>10}                                    ║
+            \\║   Traces recorded:    {d:>10}                                    ║
+            \\║   Traces linked:      {d:>10}                                    ║
+            \\╠══════════════════════════════════════════════════════════════════╣
+            \\║ TIER DISTRIBUTION                                                ║
+            \\║   Tier 0 (interp):    {d:>9.1}%                                   ║
+            \\║   Tier 1 (baseline):  {d:>9.1}%                                   ║
+            \\║   Tier 2 (optimized): {d:>9.1}%                                   ║
+            \\║   Tier 3 (native):    {d:>9.1}%                                   ║
+            \\╚══════════════════════════════════════════════════════════════════╝
+            \\
+        , .{
+            stats.functions_compiled,
+            stats.traces_compiled,
+            stats.getCacheHitRate() * 100.0,
+            stats.constants_folded,
+            stats.dead_code_eliminated,
+            stats.loops_unrolled,
+            stats.loops_invariants_hoisted,
+            stats.strength_reductions,
+            stats.inlined_functions,
+            stats.specialized_functions,
+            stats.total_deopts,
+            stats.type_guard_deopts,
+            stats.bounds_check_deopts,
+            stats.recompilations,
+            stats.getDeoptRate() * 100.0,
+            stats.osr_entries,
+            stats.osr_exits,
+            stats.osr_compilations,
+            stats.hot_spots_detected,
+            stats.traces_recorded,
+            stats.traces_linked,
+            stats.getTierDistribution().t0,
+            stats.getTierDistribution().t1,
+            stats.getTierDistribution().t2,
+            stats.getTierDistribution().t3,
+        });
+
+        return stream.getWritten();
+    }
+
+    /// Format compact one-line summary
+    pub fn formatCompact(self: *const Self, buffer: []u8) ![]u8 {
+        const stats = self.cached_stats;
+        var stream = std.io.fixedBufferStream(buffer);
+        const writer = stream.writer();
+
+        try writer.print(
+            "JIT: {d} funcs, {d} traces | Opts: {d} fold, {d} dce, {d} unroll | Deopt: {d} ({d:.1}%) | OSR: {d}/{d}",
+            .{
+                stats.functions_compiled,
+                stats.traces_compiled,
+                stats.constants_folded,
+                stats.dead_code_eliminated,
+                stats.loops_unrolled,
+                stats.total_deopts,
+                stats.getDeoptRate() * 100.0,
+                stats.osr_entries,
+                stats.osr_compilations,
+            },
+        );
+
+        return stream.getWritten();
+    }
+
+    /// Get optimization breakdown
+    pub fn getOptimizationBreakdown(self: *const Self) struct {
+        constant_folding: usize,
+        dead_code_elimination: usize,
+        loop_unrolling: usize,
+        licm: usize,
+        strength_reduction: usize,
+        inlining: usize,
+        specialization: usize,
+        total: usize,
+    } {
+        const stats = self.cached_stats;
+        const total = stats.constants_folded + stats.dead_code_eliminated +
+            stats.loops_unrolled + stats.loops_invariants_hoisted +
+            stats.strength_reductions + stats.inlined_functions +
+            stats.specialized_functions;
+
+        return .{
+            .constant_folding = stats.constants_folded,
+            .dead_code_elimination = stats.dead_code_eliminated,
+            .loop_unrolling = stats.loops_unrolled,
+            .licm = stats.loops_invariants_hoisted,
+            .strength_reduction = stats.strength_reductions,
+            .inlining = stats.inlined_functions,
+            .specialization = stats.specialized_functions,
+            .total = total,
+        };
+    }
+
+    /// Get deoptimization breakdown
+    pub fn getDeoptBreakdown(self: *const Self) struct {
+        type_guards: usize,
+        bounds_checks: usize,
+        other: usize,
+        total: usize,
+        recompilations: usize,
+    } {
+        const stats = self.cached_stats;
+        const other = if (stats.total_deopts > stats.type_guard_deopts + stats.bounds_check_deopts)
+            stats.total_deopts - stats.type_guard_deopts - stats.bounds_check_deopts
+        else
+            0;
+
+        return .{
+            .type_guards = stats.type_guard_deopts,
+            .bounds_checks = stats.bounds_check_deopts,
+            .other = other,
+            .total = stats.total_deopts,
+            .recompilations = stats.recompilations,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -7185,7 +7574,7 @@ pub const FunctionSpecializer = struct {
     }
 
     /// Get statistics
-    pub fn getStats(self: *Self) struct { specialized: usize, calls: usize, saved: usize } {
+    pub fn getStats(self: *const Self) struct { specialized: usize, calls: usize, saved: usize } {
         return .{
             .specialized = self.functions_specialized,
             .calls = self.calls_specialized,
@@ -7411,6 +7800,8 @@ pub const TieredCompiler = struct {
     enable_osr: bool,
     /// OSR manager
     osr_manager: OSRManager,
+    /// JIT Dashboard
+    dashboard: JITDashboard,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -7477,6 +7868,7 @@ pub const TieredCompiler = struct {
             .recompile_queue = RecompilationQueue.init(allocator),
             .enable_osr = true,
             .osr_manager = OSRManager.init(allocator),
+            .dashboard = JITDashboard.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -7782,6 +8174,46 @@ pub const TieredCompiler = struct {
     pub fn markOSRCompiled(self: *Self, bytecode_addr: u32, compiled_addr: u32) void {
         if (!self.enable_osr) return;
         self.osr_manager.markCompiled(bytecode_addr, compiled_addr);
+    }
+
+    /// Get JIT dashboard
+    pub fn getDashboard(self: *Self) *JITDashboard {
+        return &self.dashboard;
+    }
+
+    /// Update dashboard statistics
+    pub fn updateDashboard(self: *Self) void {
+        self.dashboard.collectFromCompiler(self);
+    }
+
+    /// Get aggregated JIT statistics
+    pub fn getJITStatistics(self: *Self) JITStatistics {
+        self.updateDashboard();
+        return self.dashboard.getStats();
+    }
+
+    /// Format dashboard summary
+    pub fn formatDashboardSummary(self: *Self, buffer: []u8) ![]u8 {
+        self.updateDashboard();
+        return try self.dashboard.formatSummary(buffer);
+    }
+
+    /// Format compact dashboard
+    pub fn formatDashboardCompact(self: *Self, buffer: []u8) ![]u8 {
+        self.updateDashboard();
+        return try self.dashboard.formatCompact(buffer);
+    }
+
+    /// Get optimization breakdown
+    pub fn getOptimizationBreakdown(self: *Self) @TypeOf(self.dashboard.getOptimizationBreakdown()) {
+        self.updateDashboard();
+        return self.dashboard.getOptimizationBreakdown();
+    }
+
+    /// Get deoptimization breakdown
+    pub fn getDeoptBreakdown(self: *Self) @TypeOf(self.dashboard.getDeoptBreakdown()) {
+        self.updateDashboard();
+        return self.dashboard.getDeoptBreakdown();
     }
 
     /// Get or create function state
@@ -15067,6 +15499,209 @@ test "OSR entry with state transfer" {
 
     // Register should be transferred
     try std.testing.expectEqual(@as(?i64, 42), registers.get(5));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JIT STATISTICS DASHBOARD TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "JITStatistics initialization" {
+    const stats = JITStatistics.init();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.functions_compiled);
+    try std.testing.expectEqual(@as(usize, 0), stats.traces_compiled);
+    try std.testing.expectEqual(@as(usize, 0), stats.constants_folded);
+    try std.testing.expectEqual(@as(usize, 0), stats.total_deopts);
+    try std.testing.expectEqual(@as(usize, 0), stats.osr_entries);
+}
+
+test "JITStatistics optimization ratio" {
+    var stats = JITStatistics.init();
+
+    // No instructions - ratio should be 0
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getOptimizationRatio());
+
+    // Add some stats
+    stats.total_ir_instructions = 100;
+    stats.constants_folded = 10;
+    stats.dead_code_eliminated = 5;
+    stats.loops_unrolled = 5;
+
+    // 20 optimizations out of 100 = 0.2
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), stats.getOptimizationRatio(), 0.01);
+}
+
+test "JITStatistics deopt rate" {
+    var stats = JITStatistics.init();
+
+    // No functions - rate should be 0
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getDeoptRate());
+
+    // Add some stats
+    stats.functions_compiled = 100;
+    stats.total_deopts = 5;
+
+    // 5 deopts out of 100 functions = 0.05
+    try std.testing.expectApproxEqAbs(@as(f64, 0.05), stats.getDeoptRate(), 0.001);
+}
+
+test "JITStatistics cache hit rate" {
+    var stats = JITStatistics.init();
+
+    // No cache accesses - rate should be 0
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getCacheHitRate());
+
+    // Add some stats
+    stats.cache_hits = 80;
+    stats.cache_misses = 20;
+
+    // 80 hits out of 100 = 0.8
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), stats.getCacheHitRate(), 0.01);
+}
+
+test "JITStatistics tier distribution" {
+    var stats = JITStatistics.init();
+
+    // No functions - all zeros
+    const empty_dist = stats.getTierDistribution();
+    try std.testing.expectEqual(@as(f64, 0), empty_dist.t0);
+
+    // Add tier distribution
+    stats.tier0_functions = 10;
+    stats.tier1_functions = 30;
+    stats.tier2_functions = 40;
+    stats.tier3_functions = 20;
+
+    const dist = stats.getTierDistribution();
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), dist.t0, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.0), dist.t1, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0), dist.t2, 0.1);
+    try std.testing.expectApproxEqAbs(@as(f64, 20.0), dist.t3, 0.1);
+}
+
+test "JITStatistics OSR effectiveness" {
+    var stats = JITStatistics.init();
+
+    // No OSR compilations - effectiveness should be 0
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getOSREffectiveness());
+
+    // Add some stats
+    stats.osr_compilations = 10;
+    stats.osr_entries = 50;
+
+    // 50 entries from 10 compilations = 5.0 effectiveness
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), stats.getOSREffectiveness(), 0.1);
+}
+
+test "JITDashboard initialization" {
+    const allocator = std.testing.allocator;
+
+    const dashboard = JITDashboard.init(allocator);
+
+    const stats = dashboard.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.functions_compiled);
+}
+
+test "JITDashboard optimization breakdown" {
+    const allocator = std.testing.allocator;
+
+    var dashboard = JITDashboard.init(allocator);
+
+    // Manually set some stats
+    dashboard.cached_stats.constants_folded = 10;
+    dashboard.cached_stats.dead_code_eliminated = 5;
+    dashboard.cached_stats.loops_unrolled = 3;
+    dashboard.cached_stats.inlined_functions = 2;
+
+    const breakdown = dashboard.getOptimizationBreakdown();
+    try std.testing.expectEqual(@as(usize, 10), breakdown.constant_folding);
+    try std.testing.expectEqual(@as(usize, 5), breakdown.dead_code_elimination);
+    try std.testing.expectEqual(@as(usize, 3), breakdown.loop_unrolling);
+    try std.testing.expectEqual(@as(usize, 2), breakdown.inlining);
+    try std.testing.expectEqual(@as(usize, 20), breakdown.total);
+}
+
+test "JITDashboard deopt breakdown" {
+    const allocator = std.testing.allocator;
+
+    var dashboard = JITDashboard.init(allocator);
+
+    // Manually set some stats
+    dashboard.cached_stats.total_deopts = 15;
+    dashboard.cached_stats.type_guard_deopts = 8;
+    dashboard.cached_stats.bounds_check_deopts = 5;
+    dashboard.cached_stats.recompilations = 3;
+
+    const breakdown = dashboard.getDeoptBreakdown();
+    try std.testing.expectEqual(@as(usize, 8), breakdown.type_guards);
+    try std.testing.expectEqual(@as(usize, 5), breakdown.bounds_checks);
+    try std.testing.expectEqual(@as(usize, 2), breakdown.other);
+    try std.testing.expectEqual(@as(usize, 15), breakdown.total);
+    try std.testing.expectEqual(@as(usize, 3), breakdown.recompilations);
+}
+
+test "JITDashboard format compact" {
+    const allocator = std.testing.allocator;
+
+    var dashboard = JITDashboard.init(allocator);
+
+    // Set some stats
+    dashboard.cached_stats.functions_compiled = 100;
+    dashboard.cached_stats.traces_compiled = 20;
+    dashboard.cached_stats.constants_folded = 50;
+    dashboard.cached_stats.dead_code_eliminated = 30;
+    dashboard.cached_stats.loops_unrolled = 10;
+    dashboard.cached_stats.total_deopts = 5;
+    dashboard.cached_stats.osr_entries = 15;
+    dashboard.cached_stats.osr_compilations = 5;
+
+    var buffer: [512]u8 = undefined;
+    const output = try dashboard.formatCompact(&buffer);
+
+    // Check that output contains expected values
+    try std.testing.expect(std.mem.indexOf(u8, output, "100 funcs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "20 traces") != null);
+}
+
+test "JIT Dashboard in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Get dashboard
+    const dashboard = compiler.getDashboard();
+    _ = dashboard;
+
+    // Update and get stats
+    const stats = compiler.getJITStatistics();
+    try std.testing.expectEqual(@as(usize, 0), stats.functions_compiled);
+
+    // Get breakdowns
+    const opt_breakdown = compiler.getOptimizationBreakdown();
+    try std.testing.expectEqual(@as(usize, 0), opt_breakdown.total);
+
+    const deopt_breakdown = compiler.getDeoptBreakdown();
+    try std.testing.expectEqual(@as(usize, 0), deopt_breakdown.total);
+}
+
+test "JIT Dashboard format summary" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    const output = try compiler.formatDashboardSummary(&buffer);
+
+    // Check that output contains expected sections
+    try std.testing.expect(std.mem.indexOf(u8, output, "JIT COMPILATION DASHBOARD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "COMPILATION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "OPTIMIZATIONS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "DEOPTIMIZATION") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "ON-STACK REPLACEMENT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "TRACE JIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "TIER DISTRIBUTION") != null);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
