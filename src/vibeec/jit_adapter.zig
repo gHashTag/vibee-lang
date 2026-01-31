@@ -6175,6 +6175,97 @@ pub const PolymorphicInlineCache = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// IC RUNTIME - Обработка IC miss и интеграция с компилятором
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// IC Runtime - управляет Inline Cache во время выполнения
+pub const ICRuntime = struct {
+    allocator: Allocator,
+    /// Polymorphic Inline Cache
+    pic: *PolymorphicInlineCache,
+    /// Method table: type_id -> method_id -> native_code
+    method_table: std.AutoHashMap(u64, *const fn () callconv(.C) i64),
+    /// Statistics
+    lookups: usize = 0,
+    cache_updates: usize = 0,
+    recompilations: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, pic: *PolymorphicInlineCache) Self {
+        return .{
+            .allocator = allocator,
+            .pic = pic,
+            .method_table = std.AutoHashMap(u64, *const fn () callconv(.C) i64).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.method_table.deinit();
+    }
+
+    /// Создать ключ для method table
+    fn makeMethodKey(type_id: u32, method_id: u32) u64 {
+        return (@as(u64, type_id) << 32) | @as(u64, method_id);
+    }
+
+    /// Зарегистрировать метод в таблице
+    pub fn registerMethod(self: *Self, type_id: u32, method_id: u32, native_code: *const fn () callconv(.C) i64) !void {
+        const key = makeMethodKey(type_id, method_id);
+        try self.method_table.put(key, native_code);
+    }
+
+    /// IC Miss Handler - вызывается при промахе в IC
+    /// Возвращает результат вызова метода и обновляет IC
+    pub fn handleICMiss(self: *Self, call_site: u32, type_id: u32, method_id: u32) !i64 {
+        self.lookups += 1;
+
+        // 1. Найти метод в таблице
+        const key = makeMethodKey(type_id, method_id);
+        const native_code = self.method_table.get(key);
+
+        if (native_code) |code| {
+            // 2. Обновить IC cache
+            try self.pic.update(call_site, type_id, method_id, code);
+            self.cache_updates += 1;
+
+            // 3. Вызвать метод
+            return code();
+        } else {
+            // Метод не найден - ошибка
+            return error.MethodNotFound;
+        }
+    }
+
+    /// Быстрый путь - проверка IC и вызов
+    pub fn callMethod(self: *Self, call_site: u32, type_id: u32, method_id: u32) !i64 {
+        // Попробовать IC lookup
+        if (self.pic.lookup(call_site, type_id)) |native_code| {
+            // IC hit - прямой вызов
+            return native_code();
+        }
+
+        // IC miss - медленный путь
+        return self.handleICMiss(call_site, type_id, method_id);
+    }
+
+    /// Получить статистику
+    pub fn getStats(self: *const Self) struct {
+        lookups: usize,
+        cache_updates: usize,
+        recompilations: usize,
+        methods_registered: usize,
+    } {
+        return .{
+            .lookups = self.lookups,
+            .cache_updates = self.cache_updates,
+            .recompilations = self.recompilations,
+            .methods_registered = self.method_table.count(),
+        };
+    }
+};
+
 /// Legacy InlineCache (для обратной совместимости)
 pub const InlineCache = struct {
     allocator: Allocator,
@@ -8005,6 +8096,8 @@ pub const TieredCompiler = struct {
     regalloc: RegisterAllocator,
     /// Polymorphic Inline Cache
     pic: PolymorphicInlineCache,
+    /// IC Runtime for method dispatch
+    ic_runtime: ?ICRuntime,
     /// Profile data for PGO
     profile_data: ProfileData,
     /// Profile instrumenter
@@ -8114,6 +8207,7 @@ pub const TieredCompiler = struct {
             .scheduler = InstructionScheduler.init(allocator),
             .regalloc = RegisterAllocator.init(allocator),
             .pic = PolymorphicInlineCache.init(allocator),
+            .ic_runtime = null, // Initialized lazily when needed
             .profile_data = ProfileData.init(allocator),
             .instrumenter = null,
             .pgo = null,
@@ -8212,6 +8306,12 @@ pub const TieredCompiler = struct {
 
         // Free OSR
         self.osr_manager.deinit();
+
+        // Free IC
+        self.pic.deinit();
+        if (self.ic_runtime) |*runtime| {
+            runtime.deinit();
+        }
     }
 
     /// Enable PGO instrumentation
@@ -8339,6 +8439,41 @@ pub const TieredCompiler = struct {
     pub fn triggerDeopt(self: *Self, compiled_addr: u32) ?DeoptResult {
         if (!self.enable_deopt) return null;
         return self.deopt_manager.triggerDeopt(compiled_addr);
+    }
+
+    /// Initialize IC Runtime for method dispatch
+    pub fn initICRuntime(self: *Self) void {
+        if (self.ic_runtime == null) {
+            self.ic_runtime = ICRuntime.init(self.allocator, &self.pic);
+        }
+    }
+
+    /// Register a method in IC Runtime
+    pub fn registerMethod(self: *Self, type_id: u32, method_id: u32, native_code: *const fn () callconv(.C) i64) !void {
+        self.initICRuntime();
+        if (self.ic_runtime) |*runtime| {
+            try runtime.registerMethod(type_id, method_id, native_code);
+        }
+    }
+
+    /// Call a method through IC (fast path + slow path)
+    pub fn callMethod(self: *Self, call_site: u32, type_id: u32, method_id: u32) !i64 {
+        self.initICRuntime();
+        if (self.ic_runtime) |*runtime| {
+            return runtime.callMethod(call_site, type_id, method_id);
+        }
+        return error.ICRuntimeNotInitialized;
+    }
+
+    /// Get IC statistics
+    pub fn getICStats(self: *Self) struct {
+        pic_stats: @TypeOf(self.pic.getStats()),
+        runtime_stats: ?@TypeOf(ICRuntime.init(self.allocator, &self.pic).getStats()),
+    } {
+        return .{
+            .pic_stats = self.pic.getStats(),
+            .runtime_stats = if (self.ic_runtime) |*runtime| runtime.getStats() else null,
+        };
     }
 
     /// Record type assumption for speculation
@@ -13529,6 +13664,134 @@ test "PolymorphicIC hit rate calculation" {
         std.debug.print("Misses: {d}\n", .{stats.misses});
         std.debug.print("Hit rate: {d:.2}%\n", .{stats.hit_rate * 100});
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IC RUNTIME TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn testMethod1() callconv(.C) i64 {
+    return 42;
+}
+
+fn testMethod2() callconv(.C) i64 {
+    return 100;
+}
+
+fn testMethod3() callconv(.C) i64 {
+    return 999;
+}
+
+test "ICRuntime register and call method" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    var runtime = ICRuntime.init(allocator, &pic);
+    defer runtime.deinit();
+
+    // Register methods
+    try runtime.registerMethod(1, 100, &testMethod1); // type 1, method 100
+    try runtime.registerMethod(2, 100, &testMethod2); // type 2, method 100
+
+    // First call - IC miss, should lookup and cache
+    const result1 = try runtime.callMethod(0x1000, 1, 100);
+    try std.testing.expectEqual(@as(i64, 42), result1);
+
+    // Second call - IC hit
+    const result2 = try runtime.callMethod(0x1000, 1, 100);
+    try std.testing.expectEqual(@as(i64, 42), result2);
+
+    // Call with different type - IC miss, then polymorphic
+    const result3 = try runtime.callMethod(0x1000, 2, 100);
+    try std.testing.expectEqual(@as(i64, 100), result3);
+
+    const stats = runtime.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.lookups); // 2 misses
+    try std.testing.expectEqual(@as(usize, 2), stats.cache_updates);
+    try std.testing.expectEqual(@as(usize, 2), stats.methods_registered);
+}
+
+test "ICRuntime end-to-end with TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Register methods
+    try compiler.registerMethod(1, 100, &testMethod1);
+    try compiler.registerMethod(2, 100, &testMethod2);
+    try compiler.registerMethod(3, 200, &testMethod3);
+
+    // Call methods through IC
+    const result1 = try compiler.callMethod(0x1000, 1, 100);
+    try std.testing.expectEqual(@as(i64, 42), result1);
+
+    const result2 = try compiler.callMethod(0x1000, 1, 100); // IC hit
+    try std.testing.expectEqual(@as(i64, 42), result2);
+
+    const result3 = try compiler.callMethod(0x2000, 3, 200);
+    try std.testing.expectEqual(@as(i64, 999), result3);
+
+    // Check IC stats
+    const ic_stats = compiler.getICStats();
+    try std.testing.expect(ic_stats.pic_stats.monomorphic_hits > 0);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== ICRuntime End-to-End Test ===\n", .{});
+        std.debug.print("PIC monomorphic hits: {d}\n", .{ic_stats.pic_stats.monomorphic_hits});
+        std.debug.print("PIC misses: {d}\n", .{ic_stats.pic_stats.misses});
+        if (ic_stats.runtime_stats) |rs| {
+            std.debug.print("Runtime lookups: {d}\n", .{rs.lookups});
+            std.debug.print("Cache updates: {d}\n", .{rs.cache_updates});
+        }
+    }
+}
+
+test "ICRuntime benchmark: IC hit vs miss" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    var runtime = ICRuntime.init(allocator, &pic);
+    defer runtime.deinit();
+
+    // Register method
+    try runtime.registerMethod(1, 100, &testMethod1);
+
+    const iterations: usize = 10000;
+
+    // Warm up - first call is miss
+    _ = try runtime.callMethod(0x1000, 1, 100);
+
+    // Benchmark IC hits
+    const start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        _ = try runtime.callMethod(0x1000, 1, 100);
+    }
+    const elapsed = std.time.nanoTimestamp() - start;
+    const ns_per_call = @as(f64, @floatFromInt(elapsed)) / @as(f64, @floatFromInt(iterations));
+
+    const stats = runtime.getStats();
+    const pic_stats = pic.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== IC Hit Benchmark ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("Time per call: {d:.2} ns\n", .{ns_per_call});
+        std.debug.print("IC hits: {d}\n", .{pic_stats.monomorphic_hits});
+        std.debug.print("IC misses: {d}\n", .{stats.lookups});
+        std.debug.print("Hit rate: {d:.2}%\n", .{pic_stats.hit_rate * 100});
+    }
+
+    // IC hit should be fast
+    // In debug mode it's slower, so we use a generous threshold
+    const threshold: f64 = if (@import("builtin").mode == .Debug) 500 else 100;
+    try std.testing.expect(ns_per_call < threshold);
+    // Most calls should be hits
+    try std.testing.expect(pic_stats.hit_rate > 0.99);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
