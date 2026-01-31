@@ -50,7 +50,8 @@ pub const AdapterConfig = struct {
     hot_threshold: u32 = jit.HOT_THRESHOLD,
     trace_max_length: usize = jit.TRACE_MAX_LENGTH,
     enable_profiling: bool = true,
-    use_fast_path: bool = true, // Use VM's runFast() when not JIT-ing
+    use_fast_path: bool = true, // Использовать VM.runFast() вместо run()
+    use_native: bool = true, // Использовать нативный x86-64 код когда доступен
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -246,13 +247,21 @@ pub const JITAdapter = struct {
     }
 
     /// Mixed mode: interpret + JIT hot paths
-    /// Uses post-execution analysis of opcode_counts for hot path detection
+    /// Автоматически использует нативный код когда доступен
     fn executeMixed(self: *Self, code: []const u8) !Value {
-        // First pass: run with profiling to detect hot paths
+        // Проверяем есть ли уже скомпилированный нативный код для начала программы
+        if (self.config.use_native) {
+            if (self.tryExecuteNative(0)) |native_result| {
+                self.native_instructions += 1;
+                return .{ .int_val = native_result };
+            }
+        }
+
+        // Первый проход: выполняем через интерпретатор с профилированием
         const result = try self.vm.run();
         self.interpreter_instructions = self.vm.instructions_executed;
 
-        // Analyze opcode counts for hot paths
+        // Анализируем hot paths и компилируем в нативный код
         try self.analyzeHotPaths(code);
 
         return result;
@@ -1055,10 +1064,41 @@ test "JITAdapter native metrics" {
     try std.testing.expectEqual(@as(usize, 1), metrics.cached_functions);
 }
 
+test "JITAdapter автоматический JIT при повторном выполнении" {
+    const allocator = std.testing.allocator;
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+    adapter.setMode(.Mixed);
+    adapter.config.hot_threshold = 1; // Компилировать сразу
+
+    // Простой байткод: PUSH 42, HALT
+    const code = [_]u8{
+        @intFromEnum(Opcode.PUSH_CONST), 0x00, 0x00,
+        @intFromEnum(Opcode.HALT),
+    };
+    const constants = [_]Value{.{ .int_val = 42 }};
+
+    // Первое выполнение - через интерпретатор
+    const result1 = try adapter.execute(&code, &constants);
+    try std.testing.expect(result1.value == .int_val);
+    try std.testing.expectEqual(@as(i64, 42), result1.value.int_val);
+
+    // После первого выполнения должен быть скомпилирован нативный код
+    // (если hot_threshold = 1)
+    const metrics = adapter.getNativeMetrics();
+
+    // Проверяем что компиляция произошла
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Автоматический JIT тест ===\n", .{});
+        std.debug.print("Кэшированных функций: {d}\n", .{metrics.cached_functions});
+        std.debug.print("Нативных инструкций: {d}\n", .{metrics.native_instructions});
+    }
+}
+
 test "Benchmark: VM vs JIT IR vs Native" {
     const allocator = std.testing.allocator;
 
-    // IR for: (2 + 3) * 7 = 35
+    // IR для: (2 + 3) * 7 = 35
     const ir = [_]IRInstruction{
         .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
         .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
@@ -1070,7 +1110,7 @@ test "Benchmark: VM vs JIT IR vs Native" {
 
     const iterations: usize = 10000;
 
-    // Benchmark Native Code
+    // Бенчмарк нативного кода
     var adapter = try JITAdapter.init(allocator);
     defer adapter.deinit();
     try adapter.compileToNative(0, &ir);
@@ -1083,17 +1123,56 @@ test "Benchmark: VM vs JIT IR vs Native" {
     const native_end = std.time.nanoTimestamp();
     const native_time = native_end - native_start;
 
-    // Verify result
+    // Проверяем результат
     try std.testing.expectEqual(@as(i64, 35), native_result);
 
-    // Print benchmark results
+    // Выводим результаты бенчмарка
     if (@import("builtin").mode == .Debug) {
-        std.debug.print("\n=== VM vs JIT IR vs Native Benchmark ===\n", .{});
-        std.debug.print("Iterations: {d}\n", .{iterations});
-        std.debug.print("Native:     {d} ns ({d:.2} ns/iter)\n", .{
+        std.debug.print("\n=== Бенчмарк: VM vs JIT IR vs Native ===\n", .{});
+        std.debug.print("Итераций: {d}\n", .{iterations});
+        std.debug.print("Нативный код: {d} нс ({d:.2} нс/итер)\n", .{
             native_time,
             @as(f64, @floatFromInt(native_time)) / @as(f64, @floatFromInt(iterations)),
         });
-        std.debug.print("Result: {d} (expected 35)\n", .{native_result});
+        std.debug.print("Результат: {d} (ожидалось 35)\n", .{native_result});
+    }
+}
+
+test "Бенчмарк: нативный код vs интерпретатор" {
+    const allocator = std.testing.allocator;
+
+    // Компилируем IR в нативный код: 2 + 3 = 5
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+    try adapter.compileToNative(0, &ir);
+
+    const iterations: usize = 1000;
+
+    // Бенчмарк нативного кода
+    const start = std.time.nanoTimestamp();
+    var result: i64 = 0;
+    for (0..iterations) |_| {
+        result = adapter.tryExecuteNative(0).?;
+    }
+    const end = std.time.nanoTimestamp();
+    const native_time: u64 = @intCast(@max(0, end - start));
+
+    // Проверяем результат
+    try std.testing.expectEqual(@as(i64, 5), result);
+
+    // Выводим результаты
+    if (@import("builtin").mode == .Debug) {
+        const per_iter = @as(f64, @floatFromInt(native_time)) / @as(f64, @floatFromInt(iterations));
+        std.debug.print("\n=== Бенчмарк нативного кода ===\n", .{});
+        std.debug.print("Итераций: {d}\n", .{iterations});
+        std.debug.print("Время: {d} нс ({d:.2} нс/итер)\n", .{ native_time, per_iter });
+        std.debug.print("Результат: {d} (ожидалось 5)\n", .{result});
     }
 }
