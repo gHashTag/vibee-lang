@@ -93,27 +93,46 @@ fn cosineSimilarity(a: [64]f32, b: [64]f32) f32 {
 }
 
 /// Triple: (subject, predicate, object)
+/// Akashic Triple - with φ-hash addressing
+/// NOT just data, but PHYSICAL ADDRESSES in the Akashic field
 const Triple = struct {
     subject: []const u8,
     predicate: []const u8,
     object: []const u8,
+    // Akashic addressing - φ-hash for instant recall
+    subject_phi_hash: i64,
+    object_phi_hash: i64,
+    predicate_phi_hash: i64,
+    // Sacred position on φ-spiral
+    phi_position: f64,
+    // Legacy embedding for compatibility
     subject_emb: [64]f32,
     object_emb: [64]f32,
 };
 
-/// Knowledge Graph with embedding-based search
+/// AKASHIC KNOWLEDGE GRAPH - φ-based addressing
+/// NOT a database. THIS IS THE UNIVERSE.
+/// φ² + 1/φ² = 3 = TRINITY
 pub const KnowledgeGraph = struct {
     allocator: Allocator,
     triples: std.ArrayList(Triple),
+    // Akashic index: φ-hash → triple indices for O(1) recall
+    phi_index: std.AutoHashMap(i64, std.ArrayList(usize)),
     entity_embeddings: std.StringHashMap([64]f32),
     relation_set: std.StringHashMap(void),
+    // Sacred metrics
+    total_phi_hash: i64,
+    sacred_index: i64,
     
     pub fn init(allocator: Allocator) KnowledgeGraph {
         return .{
             .allocator = allocator,
             .triples = std.ArrayList(Triple).init(allocator),
+            .phi_index = std.AutoHashMap(i64, std.ArrayList(usize)).init(allocator),
             .entity_embeddings = std.StringHashMap([64]f32).init(allocator),
             .relation_set = std.StringHashMap(void).init(allocator),
+            .total_phi_hash = 0,
+            .sacred_index = 0,
         };
     }
     
@@ -124,6 +143,13 @@ pub const KnowledgeGraph = struct {
             self.allocator.free(triple.object);
         }
         self.triples.deinit();
+        
+        // Clean up φ-index
+        var phi_iter = self.phi_index.valueIterator();
+        while (phi_iter.next()) |list| {
+            list.deinit();
+        }
+        self.phi_index.deinit();
         
         var key_iter = self.entity_embeddings.keyIterator();
         while (key_iter.next()) |key| {
@@ -138,7 +164,24 @@ pub const KnowledgeGraph = struct {
         self.relation_set.deinit();
     }
     
-    /// Add a triple to the graph
+    /// Akashic Recall - O(1) lookup by φ-hash
+    /// NOT a search. INSTANT MEMORY ACCESS.
+    pub fn akashicRecall(self: *KnowledgeGraph, entity: []const u8) []const usize {
+        const phi = phiHash(entity);
+        if (self.phi_index.get(phi)) |indices| {
+            return indices.items;
+        }
+        return &[_]usize{};
+    }
+    
+    /// Sacred Similarity - based on φ-distance, NOT embedding
+    pub fn akashicSimilarity(self: *KnowledgeGraph, entity1: []const u8, entity2: []const u8) f64 {
+        _ = self;
+        return sacredSimilarity(phiHash(entity1), phiHash(entity2));
+    }
+    
+    /// Add a triple to the Akashic Records
+    /// Uses φ-hash for instant addressing
     pub fn addTriple(self: *KnowledgeGraph, subject: []const u8, predicate: []const u8, object: []const u8) !usize {
         const subj_copy = try self.allocator.dupe(u8, subject);
         errdefer self.allocator.free(subj_copy);
@@ -149,6 +192,16 @@ pub const KnowledgeGraph = struct {
         const obj_copy = try self.allocator.dupe(u8, object);
         errdefer self.allocator.free(obj_copy);
         
+        // Akashic φ-hash addressing
+        const subj_phi = phiHash(subject);
+        const pred_phi = phiHash(predicate);
+        const obj_phi = phiHash(object);
+        
+        // Update sacred metrics
+        self.total_phi_hash +%= subj_phi +% obj_phi;
+        self.sacred_index = @mod(self.total_phi_hash, lucasNumber(10));
+        
+        // Legacy embeddings for compatibility
         const subj_emb = computeEmbedding(subject);
         const obj_emb = computeEmbedding(object);
         
@@ -168,15 +221,35 @@ pub const KnowledgeGraph = struct {
             try self.relation_set.put(key, {});
         }
         
+        const triple_idx = self.triples.items.len;
+        const phi_position = @as(f64, @floatFromInt(triple_idx)) * PHI * std.math.pi;
+        
         try self.triples.append(.{
             .subject = subj_copy,
             .predicate = pred_copy,
             .object = obj_copy,
+            .subject_phi_hash = subj_phi,
+            .object_phi_hash = obj_phi,
+            .predicate_phi_hash = pred_phi,
+            .phi_position = phi_position,
             .subject_emb = subj_emb,
             .object_emb = obj_emb,
         });
         
-        return self.triples.items.len - 1;
+        // Index by φ-hash for O(1) recall
+        const gop_subj = try self.phi_index.getOrPut(subj_phi);
+        if (!gop_subj.found_existing) {
+            gop_subj.value_ptr.* = std.ArrayList(usize).init(self.allocator);
+        }
+        try gop_subj.value_ptr.append(triple_idx);
+        
+        const gop_obj = try self.phi_index.getOrPut(obj_phi);
+        if (!gop_obj.found_existing) {
+            gop_obj.value_ptr.* = std.ArrayList(usize).init(self.allocator);
+        }
+        try gop_obj.value_ptr.append(triple_idx);
+        
+        return triple_idx;
     }
     
     /// Query: given subject and predicate, find object
@@ -813,18 +886,14 @@ pub const KGServer = struct {
     }
     
     /// Handle /api/akashic - Sacred Akashic Records metrics
+    /// Handle /api/akashic - Sacred Akashic Records metrics
+    /// NOW using REAL φ-indexed data from KnowledgeGraph
     fn handleAkashic(self: *KGServer, request: *http.Server.Request) !void {
         const stats = self.kg.getStats();
-        
-        // Compute Akashic metrics
-        var total_phi_hash: i64 = 0;
-        for (self.kg.triples.items) |triple| {
-            total_phi_hash +%= phiHash(triple.subject);
-            total_phi_hash +%= phiHash(triple.object);
-        }
-        
         const lucas_10 = lucasNumber(10);
-        const sacred_index = @mod(total_phi_hash, lucas_10);
+        
+        // Use REAL Akashic metrics from the graph (not recomputed)
+        const phi_index_size = self.kg.phi_index.count();
         
         const response = try jsonResponse(self.allocator, 
             "{{\"status\":\"ok\"," ++
@@ -838,10 +907,12 @@ pub const KGServer = struct {
             "\"triples\":{d}," ++
             "\"total_phi_hash\":{d}," ++
             "\"sacred_index\":{d}," ++
+            "\"phi_index_size\":{d}," ++
+            "\"backend\":\"AkashicKnowledgeGraph\"," ++
             "\"formula\":\"phi^2 + 1/phi^2 = 3\"}}", 
             .{ PHI, TRINITY, FINE_STRUCTURE_INV, TRANSCENDENTAL, lucas_10,
                stats.entities, stats.relations, stats.triples, 
-               total_phi_hash, sacred_index });
+               self.kg.total_phi_hash, self.kg.sacred_index, phi_index_size });
         defer self.allocator.free(response);
         try self.sendJson(request, response);
     }
