@@ -190,6 +190,49 @@ pub const X64Encoder = struct {
         try self.modrm(3, @truncate(b_val & 0x7), @truncate(a_val & 0x7));
     }
 
+    // TEST reg, imm8 (test bit)
+    pub fn testReg(self: *Self, reg: Reg64, imm: u8) !void {
+        const reg_val = @intFromEnum(reg);
+        if (reg == .rax) {
+            // Special encoding for rax
+            try self.code.append(0xA8); // TEST al, imm8
+            try self.code.append(imm);
+        } else {
+            try self.rex(false, false, false, reg_val >= 8);
+            try self.code.append(0xF6); // TEST r/m8, imm8
+            try self.modrm(3, 0, @truncate(reg_val & 0x7));
+            try self.code.append(imm);
+        }
+    }
+
+    // MOV reg, [base + disp32]
+    pub fn movMemToReg(self: *Self, dst: Reg64, base: Reg64, disp: i32) !void {
+        const dst_val = @intFromEnum(dst);
+        const base_val = @intFromEnum(base);
+        try self.rex(true, dst_val >= 8, false, base_val >= 8);
+        try self.code.append(0x8B); // MOV r64, r/m64
+        // ModR/M: mod=10 (disp32), reg=dst, rm=base
+        try self.modrm(2, @truncate(dst_val & 0x7), @truncate(base_val & 0x7));
+        // SIB byte needed for rsp/r12 as base
+        if ((base_val & 0x7) == 4) {
+            try self.code.append(0x24); // SIB: scale=0, index=rsp, base=rsp
+        }
+        try self.code.appendSlice(&@as([4]u8, @bitCast(disp)));
+    }
+
+    // MOV [base + disp32], reg
+    pub fn movRegToMem(self: *Self, base: Reg64, disp: i32, src: Reg64) !void {
+        const src_val = @intFromEnum(src);
+        const base_val = @intFromEnum(base);
+        try self.rex(true, src_val >= 8, false, base_val >= 8);
+        try self.code.append(0x89); // MOV r/m64, r64
+        try self.modrm(2, @truncate(src_val & 0x7), @truncate(base_val & 0x7));
+        if ((base_val & 0x7) == 4) {
+            try self.code.append(0x24);
+        }
+        try self.code.appendSlice(&@as([4]u8, @bitCast(disp)));
+    }
+
     // JMP rel32
     pub fn jmpRel32(self: *Self, offset: i32) !void {
         try self.code.append(0xE9);
@@ -354,9 +397,20 @@ const QNAN_INT: u64 = QNAN | TAG_INT; // 0x7FFC_4000_0000_0000
 // JIT COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Patch location for forward jumps
+const JumpPatch = struct {
+    code_offset: u32, // Offset in generated code where to patch
+    bytecode_target: u32, // Target bytecode address
+};
+
 pub const JitCompiler = struct {
     encoder: X64Encoder,
     allocator: std.mem.Allocator,
+
+    // Label tracking: bytecode address -> machine code offset
+    labels: std.AutoHashMap(u32, u32),
+    // Forward jump patches to resolve
+    patches: std.ArrayList(JumpPatch),
 
     const Self = @This();
 
@@ -364,11 +418,47 @@ pub const JitCompiler = struct {
         return .{
             .encoder = X64Encoder.init(allocator),
             .allocator = allocator,
+            .labels = std.AutoHashMap(u32, u32).init(allocator),
+            .patches = std.ArrayList(JumpPatch).init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.encoder.deinit();
+        self.labels.deinit();
+        self.patches.deinit();
+    }
+
+    fn recordLabel(self: *Self, bytecode_addr: u32) !void {
+        const code_offset: u32 = @intCast(self.encoder.code.items.len);
+        try self.labels.put(bytecode_addr, code_offset);
+    }
+
+    fn emitJumpPatch(self: *Self, target_bytecode: u32) !void {
+        // Record patch location (current position + 1 for opcode byte)
+        const patch_offset: u32 = @intCast(self.encoder.code.items.len);
+        try self.patches.append(.{
+            .code_offset = patch_offset,
+            .bytecode_target = target_bytecode,
+        });
+        // Emit placeholder (will be patched later)
+        try self.encoder.code.appendSlice(&[4]u8{ 0, 0, 0, 0 });
+    }
+
+    fn resolvePatches(self: *Self) !void {
+        for (self.patches.items) |patch| {
+            if (self.labels.get(patch.bytecode_target)) |target_offset| {
+                // Calculate relative offset from end of jump instruction
+                const jump_end = patch.code_offset + 4;
+                const rel_offset: i32 = @as(i32, @intCast(target_offset)) - @as(i32, @intCast(jump_end));
+                // Patch the offset
+                const bytes: [4]u8 = @bitCast(rel_offset);
+                self.encoder.code.items[patch.code_offset] = bytes[0];
+                self.encoder.code.items[patch.code_offset + 1] = bytes[1];
+                self.encoder.code.items[patch.code_offset + 2] = bytes[2];
+                self.encoder.code.items[patch.code_offset + 3] = bytes[3];
+            }
+        }
     }
 
     /// Extract int payload from NaN-boxed value in rax -> rax
@@ -402,6 +492,8 @@ pub const JitCompiler = struct {
     /// Compile bytecode to x86-64 machine code
     pub fn compile(self: *Self, bytecode: []const u8, constants: []const Value) ![]const u8 {
         self.encoder.clear();
+        self.labels.clearRetainingCapacity();
+        self.patches.clearRetainingCapacity();
 
         // Prologue
         try self.encoder.push(.rbp);
@@ -409,6 +501,9 @@ pub const JitCompiler = struct {
 
         var ip: usize = 0;
         while (ip < bytecode.len) {
+            // Record label for this bytecode address
+            try self.recordLabel(@intCast(ip));
+
             const opcode: Opcode = @enumFromInt(bytecode[ip]);
             ip += 1;
 
@@ -424,18 +519,24 @@ pub const JitCompiler = struct {
                     }
                 },
 
+                .dup => {
+                    // Duplicate top of stack
+                    try self.encoder.pop(.rax);
+                    try self.encoder.push(.rax);
+                    try self.encoder.push(.rax);
+                },
+
+                .pop => {
+                    try self.encoder.pop(.rax);
+                },
+
                 .add => {
-                    // Pop operands
-                    try self.encoder.pop(.rbx); // b
-                    try self.encoder.pop(.rax); // a
-                    // Extract int payloads
-                    try self.emitExtractInt(); // rax = a.payload
-                    try self.emitExtractIntRbx(); // rbx = b.payload
-                    // Add
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
                     try self.encoder.addReg(.rax, .rbx);
-                    // Pack result
                     try self.emitPackInt();
-                    // Push result
                     try self.encoder.push(.rax);
                 },
 
@@ -460,16 +561,123 @@ pub const JitCompiler = struct {
                 },
 
                 .div => {
-                    try self.encoder.pop(.rbx); // divisor
-                    try self.encoder.pop(.rax); // dividend
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
                     try self.emitExtractInt();
                     try self.emitExtractIntRbx();
-                    // Sign extend rax into rdx:rax for idiv
                     try self.encoder.cqo();
-                    // idiv rbx (rax = rdx:rax / rbx)
                     try self.encoder.idivReg(.rbx);
                     try self.emitPackInt();
                     try self.encoder.push(.rax);
+                },
+
+                // Comparison opcodes
+                .lt => {
+                    try self.encoder.pop(.rbx); // b
+                    try self.encoder.pop(.rax); // a
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    try self.emitSetBoolLt(); // Set rax to NaN-boxed bool based on LT
+                    try self.encoder.push(.rax);
+                },
+
+                .le => {
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    try self.emitSetBoolLe();
+                    try self.encoder.push(.rax);
+                },
+
+                .gt => {
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    try self.emitSetBoolGt();
+                    try self.encoder.push(.rax);
+                },
+
+                .ge => {
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    try self.emitSetBoolGe();
+                    try self.encoder.push(.rax);
+                },
+
+                .eq => {
+                    try self.encoder.pop(.rbx);
+                    try self.encoder.pop(.rax);
+                    // For eq, compare full NaN-boxed values
+                    try self.encoder.cmpReg(.rax, .rbx);
+                    try self.emitSetBoolEq();
+                    try self.encoder.push(.rax);
+                },
+
+                // Jump opcodes
+                .jump => {
+                    const target = (@as(u32, bytecode[ip]) << 24) |
+                        (@as(u32, bytecode[ip + 1]) << 16) |
+                        (@as(u32, bytecode[ip + 2]) << 8) |
+                        @as(u32, bytecode[ip + 3]);
+                    ip += 4;
+                    try self.encoder.code.append(0xE9); // JMP rel32
+                    try self.emitJumpPatch(target);
+                },
+
+                .jump_if => {
+                    const target = (@as(u32, bytecode[ip]) << 24) |
+                        (@as(u32, bytecode[ip + 1]) << 16) |
+                        (@as(u32, bytecode[ip + 2]) << 8) |
+                        @as(u32, bytecode[ip + 3]);
+                    ip += 4;
+                    // Pop condition
+                    try self.encoder.pop(.rax);
+                    // Test if true (bit 0 for bool)
+                    try self.encoder.testReg(.rax, 1);
+                    // JNZ (jump if not zero = jump if true)
+                    try self.encoder.code.append(0x0F);
+                    try self.encoder.code.append(0x85); // JNZ rel32
+                    try self.emitJumpPatch(target);
+                },
+
+                .jump_if_not => {
+                    const target = (@as(u32, bytecode[ip]) << 24) |
+                        (@as(u32, bytecode[ip + 1]) << 16) |
+                        (@as(u32, bytecode[ip + 2]) << 8) |
+                        @as(u32, bytecode[ip + 3]);
+                    ip += 4;
+                    // Pop condition
+                    try self.encoder.pop(.rax);
+                    // Test if true
+                    try self.encoder.testReg(.rax, 1);
+                    // JZ (jump if zero = jump if false)
+                    try self.encoder.code.append(0x0F);
+                    try self.encoder.code.append(0x84); // JZ rel32
+                    try self.emitJumpPatch(target);
+                },
+
+                .load_local => {
+                    const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
+                    ip += 2;
+                    // Load from stack at rbp - (idx+1)*8
+                    try self.encoder.movMemToReg(.rax, .rbp, -@as(i32, @intCast((idx + 1) * 8)));
+                    try self.encoder.push(.rax);
+                },
+
+                .store_local => {
+                    const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
+                    ip += 2;
+                    try self.encoder.pop(.rax);
+                    // Store to stack at rbp - (idx+1)*8
+                    try self.encoder.movRegToMem(.rbp, -@as(i32, @intCast((idx + 1) * 8)), .rax);
                 },
 
                 .halt => {
@@ -480,8 +688,7 @@ pub const JitCompiler = struct {
                 else => {
                     // Skip unsupported opcodes
                     switch (opcode) {
-                        .push, .load_local, .store_local, .load_global, .store_global => ip += 2,
-                        .jump, .jump_if, .jump_if_not => ip += 4,
+                        .push, .load_global, .store_global => ip += 2,
                         .call => ip += 5,
                         .native_call => ip += 2,
                         else => {},
@@ -490,12 +697,82 @@ pub const JitCompiler = struct {
             }
         }
 
+        // Record final label
+        try self.recordLabel(@intCast(ip));
+
         // Epilogue
         try self.encoder.movReg(.rsp, .rbp);
         try self.encoder.pop(.rbp);
         try self.encoder.ret();
 
+        // Resolve forward jumps
+        try self.resolvePatches();
+
         return self.encoder.getCode();
+    }
+
+    // Emit code to set rax to NaN-boxed bool based on comparison flags
+    fn emitSetBoolLt(self: *Self) !void {
+        // SETL al (set if less)
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x9C);
+        try self.encoder.code.append(0xC0); // SETL al
+        // MOVZX rax, al
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        // OR with QNAN_BOOL to make NaN-boxed bool
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT)); // TAG_BOOL
+        try self.encoder.orReg(.rax, .rcx);
+    }
+
+    fn emitSetBoolLe(self: *Self) !void {
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x9E); // SETLE al
+        try self.encoder.code.append(0xC0);
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
+    }
+
+    fn emitSetBoolGt(self: *Self) !void {
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x9F); // SETG al
+        try self.encoder.code.append(0xC0);
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
+    }
+
+    fn emitSetBoolGe(self: *Self) !void {
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x9D); // SETGE al
+        try self.encoder.code.append(0xC0);
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
+    }
+
+    fn emitSetBoolEq(self: *Self) !void {
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0x94); // SETE al
+        try self.encoder.code.append(0xC0);
+        try self.encoder.code.append(0x48);
+        try self.encoder.code.append(0x0F);
+        try self.encoder.code.append(0xB6);
+        try self.encoder.code.append(0xC0);
+        try self.encoder.movImm64(.rcx, QNAN | (@as(u64, 1) << TAG_SHIFT));
+        try self.encoder.orReg(.rax, .rcx);
     }
 };
 
@@ -767,11 +1044,80 @@ test "JitExecutor complex expression" {
     try std.testing.expectEqual(@as(i64, 30), val.asInt());
 }
 
+test "JitExecutor comparison LT" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 5 < 10 = true
+    const constants = [_]Value{
+        Value.int(5),
+        Value.int(10),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 5
+        @intFromEnum(Opcode.load_const), 0, 1, // push 10
+        @intFromEnum(Opcode.lt), // 5 < 10
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isBool());
+    try std.testing.expect(val.asBool() == true);
+}
+
+test "JitExecutor comparison GT" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 10 > 5 = true
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(5),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.gt),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isBool());
+    try std.testing.expect(val.asBool() == true);
+}
+
+test "JitExecutor comparison EQ" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // 42 == 42 = true
+    const constants = [_]Value{
+        Value.int(42),
+        Value.int(42),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.eq),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isBool());
+    try std.testing.expect(val.asBool() == true);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BENCHMARK: VM vs JIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test "Benchmark VM vs JIT" {
+test "Benchmark VM vs JIT simple" {
     const vm_mod_local = @import("vm.zig");
     const iterations: u32 = 10000;
 
@@ -825,17 +1171,81 @@ test "Benchmark VM vs JIT" {
     const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
 
     // Print results
-    std.debug.print("\n=== BENCHMARK RESULTS ===\n", .{});
+    std.debug.print("\n=== BENCHMARK: Simple Add ===\n", .{});
     std.debug.print("Iterations: {}\n", .{iterations});
     std.debug.print("VM:  {} ns total, {} ns/iter\n", .{ vm_ns, vm_ns / iterations });
     std.debug.print("JIT: {} ns total, {} ns/iter\n", .{ jit_ns, jit_ns / iterations });
     std.debug.print("Speedup: {d:.2}x\n", .{speedup});
     std.debug.print("VM result: {}, JIT result: {}\n", .{ vm_result, jit_result });
 
-    // Verify correctness: both should return 3 (1 + 2)
+    // Verify correctness
     try std.testing.expectEqual(@as(i64, 3), vm_result);
     try std.testing.expectEqual(@as(i64, 3), jit_result);
+    try std.testing.expect(speedup > 1.0);
+}
 
-    // JIT should be faster
+test "Benchmark VM vs JIT arithmetic chain" {
+    const vm_mod_local = @import("vm.zig");
+    const iterations: u32 = 10000;
+
+    // More complex: (10 + 5) * 3 - 2 = 43
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(5),
+        Value.int(3),
+        Value.int(2),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // 10
+        @intFromEnum(Opcode.load_const), 0, 1, // 5
+        @intFromEnum(Opcode.add), // 15
+        @intFromEnum(Opcode.load_const), 0, 2, // 3
+        @intFromEnum(Opcode.mul), // 45
+        @intFromEnum(Opcode.load_const), 0, 3, // 2
+        @intFromEnum(Opcode.sub), // 43
+        @intFromEnum(Opcode.halt),
+    };
+
+    // Benchmark VM
+    var vm = try vm_mod_local.VM.init(std.testing.allocator, .{});
+    defer vm.deinit();
+
+    const vm_start = std.time.nanoTimestamp();
+    var vm_result: i64 = 0;
+    for (0..iterations) |_| {
+        vm.load(&bytecode, &constants);
+        const r = try vm.run();
+        vm_result = r.asInt();
+        vm.reset();
+    }
+    const vm_end = std.time.nanoTimestamp();
+    const vm_ns = @as(u64, @intCast(vm_end - vm_start));
+
+    // Benchmark JIT
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    try executor.compile(&bytecode, &constants);
+
+    const jit_start = std.time.nanoTimestamp();
+    var jit_result_raw: i64 = 0;
+    for (0..iterations) |_| {
+        jit_result_raw = try executor.execute();
+    }
+    const jit_end = std.time.nanoTimestamp();
+    const jit_ns = @as(u64, @intCast(jit_end - jit_start));
+
+    const jit_val = Value{ .bits = @bitCast(jit_result_raw) };
+    const jit_result = jit_val.asInt();
+
+    const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    std.debug.print("\n=== BENCHMARK: Arithmetic Chain ===\n", .{});
+    std.debug.print("Expression: (10 + 5) * 3 - 2 = 43\n", .{});
+    std.debug.print("VM:  {} ns/iter | JIT: {} ns/iter | Speedup: {d:.2}x\n", .{ vm_ns / iterations, jit_ns / iterations, speedup });
+    std.debug.print("VM result: {}, JIT result: {}\n", .{ vm_result, jit_result });
+
+    try std.testing.expectEqual(@as(i64, 43), vm_result);
+    try std.testing.expectEqual(@as(i64, 43), jit_result);
     try std.testing.expect(speedup > 1.0);
 }
