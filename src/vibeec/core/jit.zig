@@ -738,6 +738,54 @@ pub const JitCompiler = struct {
         }
     }
 
+    /// Load global variable from globals array (r14 + idx*8) into rax
+    fn emitLoadGlobal(self: *Self, idx: u16) !void {
+        const offset: i32 = @as(i32, @intCast(idx)) * 8;
+        if (offset == 0) {
+            // mov rax, [r14]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x06); // ModR/M: rax, [r14]
+        } else if (offset <= 127) {
+            // mov rax, [r14 + disp8]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x46); // ModR/M: rax, [r14+disp8]
+            try self.encoder.code.append(@intCast(offset));
+        } else {
+            // mov rax, [r14 + disp32]
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x8B); // MOV r64, r/m64
+            try self.encoder.code.append(0x86); // ModR/M: rax, [r14+disp32]
+            const bytes: [4]u8 = @bitCast(offset);
+            try self.encoder.code.appendSlice(&bytes);
+        }
+    }
+
+    /// Store rax to global variable at globals array (r14 + idx*8)
+    fn emitStoreGlobal(self: *Self, idx: u16) !void {
+        const offset: i32 = @as(i32, @intCast(idx)) * 8;
+        if (offset == 0) {
+            // mov [r14], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x06); // ModR/M: [r14], rax
+        } else if (offset <= 127) {
+            // mov [r14 + disp8], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x46); // ModR/M: [r14+disp8], rax
+            try self.encoder.code.append(@intCast(offset));
+        } else {
+            // mov [r14 + disp32], rax
+            try self.encoder.code.append(0x49); // REX.WB
+            try self.encoder.code.append(0x89); // MOV r/m64, r64
+            try self.encoder.code.append(0x86); // ModR/M: [r14+disp32], rax
+            const bytes: [4]u8 = @bitCast(offset);
+            try self.encoder.code.appendSlice(&bytes);
+        }
+    }
+
     /// Compile bytecode to x86-64 machine code
     /// Uses r12 as value stack pointer (passed in rdi from caller)
     /// This allows proper CALL/RET with nested function calls
@@ -753,11 +801,11 @@ pub const JitCompiler = struct {
         try self.encoder.movReg(.rbp, .rsp);
         try self.encoder.push(.r12); // Save r12 (value stack pointer)
         try self.encoder.push(.r13); // Save r13
+        try self.encoder.push(.r14); // Save r14 (will hold globals pointer)
         try self.encoder.push(.rbx); // Save rbx (used in operations)
 
         // Align stack to 16 bytes (System V ABI requirement)
-        // After 5 pushes (40 bytes), need one more for alignment
-        try self.encoder.push(.r14); // Padding for 16-byte alignment
+        // After 6 pushes (48 bytes), stack is aligned
 
         // Allocate space for local variables on x86 stack
         // Reserve 256 bytes (32 locals * 8 bytes)
@@ -769,6 +817,8 @@ pub const JitCompiler = struct {
 
         // r12 = rdi (value stack pointer passed from caller)
         try self.encoder.movReg(.r12, .rdi);
+        // r14 = rsi (globals pointer passed from caller)
+        try self.encoder.movReg(.r14, .rsi);
 
         var ip: usize = 0;
         while (ip < bytecode.len) {
@@ -968,6 +1018,22 @@ pub const JitCompiler = struct {
                     try self.encoder.movRegToMem(.rbp, offset, .rax);
                 },
 
+                .load_global => {
+                    const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
+                    ip += 2;
+                    // Load from globals array (r14 + idx*8)
+                    try self.emitLoadGlobal(idx);
+                    try self.emitVPush();
+                },
+
+                .store_global => {
+                    const idx = (@as(u16, bytecode[ip]) << 8) | @as(u16, bytecode[ip + 1]);
+                    ip += 2;
+                    try self.emitVPop();
+                    // Store to globals array (r14 + idx*8)
+                    try self.emitStoreGlobal(idx);
+                },
+
                 .call => {
                     const func_addr = (@as(u32, bytecode[ip]) << 24) |
                         (@as(u32, bytecode[ip + 1]) << 16) |
@@ -1008,7 +1074,7 @@ pub const JitCompiler = struct {
                 else => {
                     // Skip unsupported opcodes
                     switch (opcode) {
-                        .push, .load_global, .store_global => ip += 2,
+                        .push => ip += 2,
                         .native_call => ip += 2,
                         else => {},
                     }
@@ -1031,8 +1097,8 @@ pub const JitCompiler = struct {
         try self.encoder.code.append(0xC4); // ModR/M: rsp
         try self.encoder.code.appendSlice(&[4]u8{ 0x00, 0x01, 0x00, 0x00 }); // 256
 
-        try self.encoder.pop(.r14); // Restore padding
         try self.encoder.pop(.rbx);
+        try self.encoder.pop(.r14);
         try self.encoder.pop(.r13);
         try self.encoder.pop(.r12);
         try self.encoder.pop(.rbp);
@@ -1128,16 +1194,19 @@ pub const JitExecutor = struct {
     compiler: JitCompiler,
     exec_mem: ?ExecutableMemory,
     value_stack: []u64, // Separate value stack
+    globals: []u64, // Global variables
     allocator: std.mem.Allocator,
 
     const Self = @This();
     const VALUE_STACK_SLOTS: usize = 1024;
+    const GLOBAL_SLOTS: usize = 256;
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .compiler = JitCompiler.init(allocator),
             .exec_mem = null,
             .value_stack = allocator.alloc(u64, VALUE_STACK_SLOTS) catch &[_]u64{},
+            .globals = allocator.alloc(u64, GLOBAL_SLOTS) catch &[_]u64{},
             .allocator = allocator,
         };
     }
@@ -1148,6 +1217,9 @@ pub const JitExecutor = struct {
         }
         if (self.value_stack.len > 0) {
             self.allocator.free(self.value_stack);
+        }
+        if (self.globals.len > 0) {
+            self.allocator.free(self.globals);
         }
         self.compiler.deinit();
     }
@@ -1177,10 +1249,10 @@ pub const JitExecutor = struct {
     /// Passes value stack pointer in rdi (first arg in System V ABI)
     pub fn execute(self: *Self) !i64 {
         if (self.exec_mem) |mem| {
-            // Function signature: fn(value_stack: [*]u64) i64
-            const FnType = *const fn ([*]u64) callconv(.C) i64;
+            // Function signature: fn(value_stack: [*]u64, globals: [*]u64) i64
+            const FnType = *const fn ([*]u64, [*]u64) callconv(.C) i64;
             const func: FnType = @ptrCast(mem.ptr);
-            return func(self.value_stack.ptr);
+            return func(self.value_stack.ptr, self.globals.ptr);
         }
         return error.NotCompiled;
     }
@@ -2013,6 +2085,117 @@ test "JitExecutor local variable in loop" {
 
     try std.testing.expect(val.isInt());
     try std.testing.expectEqual(@as(i64, 6), val.asInt());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL VARIABLE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "JitExecutor simple global variable" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: store value to global, load it back
+    // global[0] = 42; return global[0];
+
+    const constants = [_]Value{
+        Value.int(42),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 42 (0-2)
+        @intFromEnum(Opcode.store_global), 0, 0, // store to global[0] (3-5)
+        @intFromEnum(Opcode.load_global), 0, 0, // load from global[0] (6-8)
+        @intFromEnum(Opcode.halt), // return (9)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 42), val.asInt());
+}
+
+test "JitExecutor multiple globals" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: g0 = 10; g1 = 20; return g0 + g1;
+
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10 (0-2)
+        @intFromEnum(Opcode.store_global), 0, 0, // g0 = 10 (3-5)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 20 (6-8)
+        @intFromEnum(Opcode.store_global), 0, 1, // g1 = 20 (9-11)
+        @intFromEnum(Opcode.load_global), 0, 0, // push g0 (12-14)
+        @intFromEnum(Opcode.load_global), 0, 1, // push g1 (15-17)
+        @intFromEnum(Opcode.add), // g0 + g1 (18)
+        @intFromEnum(Opcode.halt), // return (19)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
+}
+
+test "JitExecutor global in loop" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: counter = 5; while (counter > 0) counter--; return counter;
+
+    const constants = [_]Value{
+        Value.int(5), // initial counter
+        Value.int(0), // comparison
+        Value.int(1), // decrement
+    };
+
+    // Bytecode offsets:
+    // 0-2: load_const
+    // 3-5: store_global
+    // 6-8: load_global (loop start)
+    // 9-11: load_const
+    // 12: eq
+    // 13-17: jump_if (5 bytes)
+    // 18-20: load_global
+    // 21-23: load_const
+    // 24: sub
+    // 25-27: store_global
+    // 28-32: jump (5 bytes)
+    // 33-35: load_global (end)
+    // 36: halt
+    const bytecode = [_]u8{
+        // Initialize global
+        @intFromEnum(Opcode.load_const), 0, 0, // push 5 (0-2)
+        @intFromEnum(Opcode.store_global), 0, 0, // counter = 5 (3-5)
+        // Loop at 6:
+        @intFromEnum(Opcode.load_global), 0, 0, // push counter (6-8)
+        @intFromEnum(Opcode.load_const), 0, 1, // push 0 (9-11)
+        @intFromEnum(Opcode.eq), // counter == 0? (12)
+        @intFromEnum(Opcode.jump_if), 0, 0, 0, 33, // if true, jump to end at 33 (13-17)
+        // counter--
+        @intFromEnum(Opcode.load_global), 0, 0, // push counter (18-20)
+        @intFromEnum(Opcode.load_const), 0, 2, // push 1 (21-23)
+        @intFromEnum(Opcode.sub), // counter - 1 (24)
+        @intFromEnum(Opcode.store_global), 0, 0, // counter = counter - 1 (25-27)
+        @intFromEnum(Opcode.jump), 0, 0, 0, 6, // back to loop at 6 (28-32)
+        // End at 33:
+        @intFromEnum(Opcode.load_global), 0, 0, // push counter (33-35)
+        @intFromEnum(Opcode.halt), // return counter (36)
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 0), val.asInt());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
