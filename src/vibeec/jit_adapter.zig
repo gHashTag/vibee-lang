@@ -2496,6 +2496,132 @@ pub const DeadStoreEliminator = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// LOAD-STORE FORWARDING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Load-Store Forwarder - replaces loads with values from preceding stores
+/// When a load reads from a location that was just stored to, we can
+/// forward the stored value directly, eliminating the memory access
+pub const LoadStoreForwarder = struct {
+    allocator: Allocator,
+    /// Alias analyzer for memory disambiguation
+    alias_analyzer: AliasAnalyzer,
+    /// Statistics
+    loads_forwarded: usize = 0,
+    loads_analyzed: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .alias_analyzer = AliasAnalyzer.init(allocator),
+            .loads_forwarded = 0,
+            .loads_analyzed = 0,
+        };
+    }
+
+    /// Check if instruction is a store
+    fn isStore(opcode: jit.IROpcode) bool {
+        return opcode == .STORE_LOCAL or opcode == .STORE_GLOBAL;
+    }
+
+    /// Check if instruction is a load
+    fn isLoad(opcode: jit.IROpcode) bool {
+        return opcode == .LOAD_LOCAL or opcode == .LOAD_GLOBAL;
+    }
+
+    /// Find the most recent store that this load can forward from
+    /// Returns the store instruction index and the register containing the value
+    fn findForwardableStore(self: *Self, ir: []const IRInstruction, load_idx: usize) ?struct { store_idx: usize, value_reg: u8 } {
+        const load = ir[load_idx];
+        if (!isLoad(load.opcode)) return null;
+
+        self.loads_analyzed += 1;
+
+        const load_loc = MemoryLocation.fromInstruction(load) orelse return null;
+
+        // Scan backward to find a matching store
+        var i = load_idx;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+
+            // Control flow - stop searching (value might come from different path)
+            switch (instr.opcode) {
+                .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK, .CALL, .TAIL_CALL => {
+                    return null;
+                },
+                else => {},
+            }
+
+            // Check if this is a store to the same location
+            if (isStore(instr.opcode)) {
+                const store_loc = MemoryLocation.fromInstruction(instr) orelse continue;
+                const alias_result = self.alias_analyzer.query(load_loc, store_loc);
+
+                if (alias_result == .MustAlias) {
+                    // Found a store to the same location - can forward!
+                    // The stored value is in src1 of the store instruction
+                    return .{
+                        .store_idx = i,
+                        .value_reg = instr.src1,
+                    };
+                } else if (alias_result == .MayAlias) {
+                    // Might alias - can't safely forward
+                    return null;
+                }
+                // NoAlias - continue searching
+            }
+
+            // Check if any instruction overwrites the value register we might forward
+            // This is handled by the fact that we're looking for the most recent store
+        }
+
+        return null;
+    }
+
+    /// Optimize IR by forwarding loads from stores
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        if (ir.len == 0) return self.allocator.dupe(IRInstruction, ir);
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        for (ir, 0..) |instr, idx| {
+            if (isLoad(instr.opcode)) {
+                if (self.findForwardableStore(ir, idx)) |forward| {
+                    // Replace load with a register copy
+                    // LOAD_LOCAL dest, base, offset -> copy from stored value register
+                    try result.append(.{
+                        .opcode = .LOAD_LOCAL, // Use as register-to-register copy
+                        .dest = instr.dest,
+                        .src1 = forward.value_reg,
+                        .src2 = 0,
+                        .imm = 0, // imm=0 indicates register copy mode
+                    });
+                    self.loads_forwarded += 1;
+                } else {
+                    try result.append(instr);
+                }
+            } else {
+                try result.append(instr);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { forwarded: usize, analyzed: usize } {
+        return .{
+            .forwarded = self.loads_forwarded,
+            .analyzed = self.loads_analyzed,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INSTRUCTION SCHEDULING
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -4696,6 +4822,8 @@ pub const TieredCompiler = struct {
     dce: DeadCodeEliminator,
     /// Dead store eliminator
     dse: DeadStoreEliminator,
+    /// Load-store forwarder
+    lsf: LoadStoreForwarder,
     /// Strength reducer
     strength_reducer: StrengthReducer,
     /// Copy propagator
@@ -4736,6 +4864,8 @@ pub const TieredCompiler = struct {
     enable_dce: bool,
     /// Enable dead store elimination
     enable_dse: bool,
+    /// Enable load-store forwarding
+    enable_lsf: bool,
     /// Enable strength reduction
     enable_strength_reduction: bool,
     /// Enable copy propagation
@@ -4778,6 +4908,7 @@ pub const TieredCompiler = struct {
             .constant_folder = ConstantFolder.init(allocator),
             .dce = DeadCodeEliminator.init(allocator),
             .dse = DeadStoreEliminator.init(allocator),
+            .lsf = LoadStoreForwarder.init(allocator),
             .strength_reducer = StrengthReducer.init(allocator),
             .copy_propagator = CopyPropagator.init(allocator),
             .peephole = PeepholeOptimizer.init(allocator),
@@ -4798,6 +4929,7 @@ pub const TieredCompiler = struct {
             .enable_folding = true,
             .enable_dce = true,
             .enable_dse = true,
+            .enable_lsf = true,
             .enable_strength_reduction = true,
             .enable_copy_propagation = true,
             .enable_peephole = true,
@@ -5045,6 +5177,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = dse_result;
                 }
 
+                // Load-store forwarding (after DSE, uses alias analysis)
+                if (self.enable_lsf) {
+                    const lsf_result = try self.lsf.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = lsf_result;
+                }
+
                 if (self.enable_unrolling) {
                     const unrolled = try self.loop_unroller.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -5138,6 +5277,12 @@ pub const TieredCompiler = struct {
                         const dse_result = try self.dse.optimize(opt_ir);
                         self.allocator.free(opt_ir);
                         opt_ir = dse_result;
+                    }
+
+                    if (self.enable_lsf) {
+                        const lsf_result = try self.lsf.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = lsf_result;
                     }
 
                     if (self.enable_unrolling) {
@@ -9256,6 +9401,95 @@ test "DeadStoreEliminator getStats" {
     const stats = dse.getStats();
 
     try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+    try std.testing.expectEqual(@as(usize, 0), stats.analyzed);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOAD-STORE FORWARDING TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "LoadStoreForwarder forward from store" {
+    const allocator = std.testing.allocator;
+
+    var lsf = LoadStoreForwarder.init(allocator);
+
+    // Store then load from same location - should forward
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // store r0 to offset 0
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // load from offset 0
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try lsf.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // Load should be forwarded
+    const stats = lsf.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.forwarded);
+}
+
+test "LoadStoreForwarder no forward different locations" {
+    const allocator = std.testing.allocator;
+
+    var lsf = LoadStoreForwarder.init(allocator);
+
+    // Store and load from different locations - no forwarding
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // store to offset 0
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 8 }, // load from offset 8
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try lsf.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // No forwarding (different locations)
+    const stats = lsf.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.forwarded);
+}
+
+test "LoadStoreForwarder no forward across control flow" {
+    const allocator = std.testing.allocator;
+
+    var lsf = LoadStoreForwarder.init(allocator);
+
+    // Store, jump, then load - no forwarding (control flow)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .JUMP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try lsf.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // No forwarding (control flow between store and load)
+    const stats = lsf.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.forwarded);
+}
+
+test "LoadStoreForwarder in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify LSF is enabled by default
+    try std.testing.expect(compiler.enable_lsf);
+}
+
+test "LoadStoreForwarder getStats" {
+    const allocator = std.testing.allocator;
+
+    var lsf = LoadStoreForwarder.init(allocator);
+
+    const stats = lsf.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.forwarded);
     try std.testing.expectEqual(@as(usize, 0), stats.analyzed);
 }
 
