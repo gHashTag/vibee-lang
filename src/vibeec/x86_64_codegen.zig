@@ -225,6 +225,67 @@ pub const X86_64Emitter = struct {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // LEA OPERATIONS (for multiply by 3, 5, 9)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Scale values for SIB byte
+    pub const Scale = enum(u2) {
+        x1 = 0, // *1
+        x2 = 1, // *2
+        x4 = 2, // *4
+        x8 = 3, // *8
+    };
+
+    /// lea dst, [base + index*scale] - computes dst = base + index * scale
+    /// For multiply: x*3 = lea dst,[src+src*2], x*5 = lea dst,[src+src*4], x*9 = lea dst,[src+src*8]
+    pub fn leaRegRegScale(self: *Self, dst: Reg64, base: Reg64, index: Reg64, scale: Scale) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const base_val: u8 = @intFromEnum(base);
+        const index_val: u8 = @intFromEnum(index);
+
+        // REX prefix: W=1 (64-bit), R=dst>=8, X=index>=8, B=base>=8
+        try self.code.append(rex(true, dst_val >= 8, index_val >= 8, base_val >= 8));
+
+        // LEA opcode
+        try self.code.append(0x8D);
+
+        // ModR/M: mod=00 (no displacement), reg=dst, r/m=100 (SIB follows)
+        try self.code.append(0x04 | ((dst_val & 0x7) << 3));
+
+        // SIB byte: scale | index | base
+        const sib: u8 = (@as(u8, @intFromEnum(scale)) << 6) | ((index_val & 0x7) << 3) | (base_val & 0x7);
+        try self.code.append(sib);
+
+        // Special case: if base is RBP/R13, need displacement byte
+        if ((base_val & 0x7) == 5) {
+            try self.code.append(0x00); // disp8 = 0
+        }
+    }
+
+    /// lea dst, [index*scale + disp32] - computes dst = index * scale + displacement
+    /// For multiply by power of 2: x*2 = lea dst,[0+src*2], x*4 = lea dst,[0+src*4], x*8 = lea dst,[0+src*8]
+    pub fn leaRegScaleDisp(self: *Self, dst: Reg64, index: Reg64, scale: Scale, disp: i32) !void {
+        const dst_val: u8 = @intFromEnum(dst);
+        const index_val: u8 = @intFromEnum(index);
+
+        // REX prefix
+        try self.code.append(rex(true, dst_val >= 8, index_val >= 8, false));
+
+        // LEA opcode
+        try self.code.append(0x8D);
+
+        // ModR/M: mod=00, reg=dst, r/m=100 (SIB follows)
+        try self.code.append(0x04 | ((dst_val & 0x7) << 3));
+
+        // SIB byte: scale | index | base=101 (no base, disp32 follows)
+        const sib: u8 = (@as(u8, @intFromEnum(scale)) << 6) | ((index_val & 0x7) << 3) | 0x05;
+        try self.code.append(sib);
+
+        // disp32
+        try self.emitImm32(disp);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // MEMORY OPERATIONS (for local variables)
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -598,6 +659,20 @@ pub const NativeCompiler = struct {
                     try self.emitter.movRegReg(.RCX, shift_src);
                     try self.emitter.shrRegCL(dst);
                 }
+            },
+
+            .LEA => {
+                // LEA for multiply by 3, 5, 9: dst = src1 + src1 * scale
+                // imm contains scale (2, 4, or 8)
+                const dst = irRegToX86(instr.dest);
+                const src = irRegToX86(instr.src1);
+                const scale: X86_64Emitter.Scale = switch (instr.imm) {
+                    2 => .x2, // x*3 = x + x*2
+                    4 => .x4, // x*5 = x + x*4
+                    8 => .x8, // x*9 = x + x*8
+                    else => .x1,
+                };
+                try self.emitter.leaRegRegScale(dst, src, src, scale);
             },
 
             .CMP_LT_INT => {
@@ -1047,6 +1122,145 @@ test "Benchmark: native SHL vs MUL (strength reduction)" {
         std.debug.print("Code size: MUL={d} bytes, SHL={d} bytes\n", .{ code_mul.len, code_shl.len });
         if (mul_per_iter > shl_per_iter) {
             std.debug.print("Speedup: {d:.2}x\n", .{mul_per_iter / shl_per_iter});
+        }
+    }
+}
+
+test "Execute native code: 7 * 3 = 21 (LEA)" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate: return 7 * 3 using LEA (7 + 7*2 = 21)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LEA, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 }, // 7 + 7*2 = 21
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    const result = exec.call();
+    try std.testing.expectEqual(@as(i64, 21), result);
+}
+
+test "Execute native code: 4 * 5 = 20 (LEA)" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate: return 4 * 5 using LEA (4 + 4*4 = 20)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 4 },
+        .{ .opcode = .LEA, .dest = 1, .src1 = 0, .src2 = 0, .imm = 4 }, // 4 + 4*4 = 20
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    const result = exec.call();
+    try std.testing.expectEqual(@as(i64, 20), result);
+}
+
+test "Execute native code: 3 * 9 = 27 (LEA)" {
+    const allocator = std.testing.allocator;
+    var compiler = NativeCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Generate: return 3 * 9 using LEA (3 + 3*8 = 27)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .LEA, .dest = 1, .src1 = 0, .src2 = 0, .imm = 8 }, // 3 + 3*8 = 27
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    var exec = try ExecutableCode.init(code);
+    defer exec.deinit();
+
+    const result = exec.call();
+    try std.testing.expectEqual(@as(i64, 27), result);
+}
+
+test "Benchmark: native LEA vs MUL (multiply by 3)" {
+    const allocator = std.testing.allocator;
+
+    // IR with MUL: 7 * 3
+    const ir_mul = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // IR with LEA: 7 + 7*2 = 21 (equivalent to 7 * 3)
+    const ir_lea = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LEA, .dest = 1, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Compile MUL version
+    var compiler_mul = NativeCompiler.init(allocator);
+    defer compiler_mul.deinit();
+    const code_mul = try compiler_mul.compile(&ir_mul);
+    defer allocator.free(code_mul);
+    var exec_mul = try ExecutableCode.init(code_mul);
+    defer exec_mul.deinit();
+
+    // Compile LEA version
+    var compiler_lea = NativeCompiler.init(allocator);
+    defer compiler_lea.deinit();
+    const code_lea = try compiler_lea.compile(&ir_lea);
+    defer allocator.free(code_lea);
+    var exec_lea = try ExecutableCode.init(code_lea);
+    defer exec_lea.deinit();
+
+    const iterations: usize = 100000;
+
+    // Benchmark MUL
+    const mul_start = std.time.nanoTimestamp();
+    var mul_result: i64 = 0;
+    for (0..iterations) |_| {
+        mul_result = exec_mul.call();
+    }
+    const mul_end = std.time.nanoTimestamp();
+    const mul_time: u64 = @intCast(@max(0, mul_end - mul_start));
+
+    // Benchmark LEA
+    const lea_start = std.time.nanoTimestamp();
+    var lea_result: i64 = 0;
+    for (0..iterations) |_| {
+        lea_result = exec_lea.call();
+    }
+    const lea_end = std.time.nanoTimestamp();
+    const lea_time: u64 = @intCast(@max(0, lea_end - lea_start));
+
+    // Both should produce same result: 21
+    try std.testing.expectEqual(@as(i64, 21), mul_result);
+    try std.testing.expectEqual(@as(i64, 21), lea_result);
+
+    if (@import("builtin").mode == .Debug) {
+        const mul_per_iter = @as(f64, @floatFromInt(mul_time)) / @as(f64, @floatFromInt(iterations));
+        const lea_per_iter = @as(f64, @floatFromInt(lea_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Native LEA vs MUL Benchmark (x*3) ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("MUL (imul): {d:.2} ns/iter\n", .{mul_per_iter});
+        std.debug.print("LEA (lea):  {d:.2} ns/iter\n", .{lea_per_iter});
+        std.debug.print("Code size: MUL={d} bytes, LEA={d} bytes\n", .{ code_mul.len, code_lea.len });
+        if (mul_per_iter > lea_per_iter) {
+            std.debug.print("Speedup: {d:.2}x\n", .{mul_per_iter / lea_per_iter});
         }
     }
 }

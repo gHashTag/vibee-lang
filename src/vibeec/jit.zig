@@ -160,6 +160,9 @@ pub const IROpcode = enum(u8) {
     BXOR,
     BNOT,
 
+    // Address computation (for strength reduction)
+    LEA, // dest = src1 + src1 * scale (scale in imm: 2, 4, or 8)
+
     // Control
     JUMP,
     JUMP_IF_ZERO,

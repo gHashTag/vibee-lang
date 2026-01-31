@@ -917,6 +917,7 @@ pub const StrengthReducer = struct {
     /// Statistics
     reductions: usize = 0,
     mul_to_shift: usize = 0,
+    mul_to_lea: usize = 0,
     div_to_shift: usize = 0,
     identity_removed: usize = 0,
 
@@ -927,6 +928,7 @@ pub const StrengthReducer = struct {
             .allocator = allocator,
             .reductions = 0,
             .mul_to_shift = 0,
+            .mul_to_lea = 0,
             .div_to_shift = 0,
             .identity_removed = 0,
         };
@@ -945,6 +947,17 @@ pub const StrengthReducer = struct {
             shift += 1;
         }
         return shift;
+    }
+
+    /// Check if value can be computed with LEA (3, 5, 9)
+    /// Returns the scale factor (2, 4, or 8) for LEA [reg + reg*scale]
+    fn isLeaMultiplier(value: i64) ?u8 {
+        return switch (value) {
+            3 => 2, // x*3 = x + x*2
+            5 => 4, // x*5 = x + x*4
+            9 => 8, // x*9 = x + x*8
+            else => null,
+        };
     }
 
     /// Optimize IR by reducing operation strength
@@ -1011,6 +1024,19 @@ pub const StrengthReducer = struct {
                             self.reductions += 1;
                             self.mul_to_shift += 1;
                             continue;
+                        } else if (isLeaMultiplier(c)) |scale| {
+                            // x * 3 = x + x*2, x * 5 = x + x*4, x * 9 = x + x*8
+                            try result.append(.{
+                                .opcode = .LEA,
+                                .dest = instr.dest,
+                                .src1 = instr.src1,
+                                .src2 = 0,
+                                .imm = scale,
+                            });
+                            reg_constants[instr.dest] = if (src1_const) |v| v * c else null;
+                            self.reductions += 1;
+                            self.mul_to_lea += 1;
+                            continue;
                         }
                     }
 
@@ -1053,6 +1079,19 @@ pub const StrengthReducer = struct {
                             reg_constants[instr.dest] = if (src2_const) |v| v << shift else null;
                             self.reductions += 1;
                             self.mul_to_shift += 1;
+                            continue;
+                        } else if (isLeaMultiplier(c)) |scale| {
+                            // x * 3 = x + x*2, x * 5 = x + x*4, x * 9 = x + x*8
+                            try result.append(.{
+                                .opcode = .LEA,
+                                .dest = instr.dest,
+                                .src1 = instr.src2,
+                                .src2 = 0,
+                                .imm = scale,
+                            });
+                            reg_constants[instr.dest] = if (src2_const) |v| v * c else null;
+                            self.reductions += 1;
+                            self.mul_to_lea += 1;
                             continue;
                         }
                     }
@@ -1192,10 +1231,11 @@ pub const StrengthReducer = struct {
     }
 
     /// Get statistics
-    pub fn getStats(self: *Self) struct { reductions: usize, mul_to_shift: usize, div_to_shift: usize, identity: usize } {
+    pub fn getStats(self: *Self) struct { reductions: usize, mul_to_shift: usize, mul_to_lea: usize, div_to_shift: usize, identity: usize } {
         return .{
             .reductions = self.reductions,
             .mul_to_shift = self.mul_to_shift,
+            .mul_to_lea = self.mul_to_lea,
             .div_to_shift = self.div_to_shift,
             .identity = self.identity_removed,
         };
@@ -1549,6 +1589,12 @@ fn interpretIRCode(ir: []const IRInstruction) i64 {
                 const shift_val = if (instr.imm != 0) instr.imm else registers[instr.src2];
                 const shift_amt: u6 = @intCast(@min(63, @max(0, shift_val)));
                 registers[instr.dest] = registers[instr.src1] >> shift_amt;
+            },
+            .LEA => {
+                // LEA: dest = src1 + src1 * scale (scale in imm: 2, 4, or 8)
+                const src = registers[instr.src1];
+                const scale = instr.imm;
+                registers[instr.dest] = src + src * scale;
             },
             .RETURN => {
                 return registers[instr.dest];
@@ -4342,6 +4388,75 @@ test "StrengthReducer isPowerOf2" {
     try std.testing.expectEqual(@as(?u6, null), StrengthReducer.isPowerOf2(-4)); // negative
 }
 
+test "StrengthReducer mul by 3 to LEA" {
+    const allocator = std.testing.allocator;
+
+    // IR: x * 3 (should become LEA)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LEA instead of MUL
+    try std.testing.expectEqual(jit.IROpcode.LEA, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 2), optimized[2].imm); // scale = 2 for x*3
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.mul_to_lea);
+}
+
+test "StrengthReducer mul by 5 to LEA" {
+    const allocator = std.testing.allocator;
+
+    // IR: x * 5 (should become LEA)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 4 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LEA instead of MUL
+    try std.testing.expectEqual(jit.IROpcode.LEA, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 4), optimized[2].imm); // scale = 4 for x*5
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.mul_to_lea);
+}
+
+test "StrengthReducer mul by 9 to LEA" {
+    const allocator = std.testing.allocator;
+
+    // IR: x * 9 (should become LEA)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 9 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var reducer = StrengthReducer.init(allocator);
+    const optimized = try reducer.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Should have LEA instead of MUL
+    try std.testing.expectEqual(jit.IROpcode.LEA, optimized[2].opcode);
+    try std.testing.expectEqual(@as(i64, 8), optimized[2].imm); // scale = 8 for x*9
+
+    const stats = reducer.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.mul_to_lea);
+}
+
 test "Benchmark: Strength reduction effect" {
     const allocator = std.testing.allocator;
 
@@ -4390,9 +4505,10 @@ test "Benchmark: Strength reduction effect" {
         std.debug.print("\n=== Strength Reduction Benchmark ===\n", .{});
         std.debug.print("Original (MUL): {d:.2} ns/iter\n", .{orig_per_iter});
         std.debug.print("Reduced (SHL): {d:.2} ns/iter\n", .{red_per_iter});
-        std.debug.print("Reductions: {d} (mul->shift: {d}, div->shift: {d}, identity: {d})\n", .{
+        std.debug.print("Reductions: {d} (mul->shift: {d}, mul->lea: {d}, div->shift: {d}, identity: {d})\n", .{
             stats.reductions,
             stats.mul_to_shift,
+            stats.mul_to_lea,
             stats.div_to_shift,
             stats.identity,
         });
