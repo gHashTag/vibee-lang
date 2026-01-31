@@ -1029,7 +1029,7 @@ pub const JITAdapter = struct {
         }
     }
 
-    /// Build IR instructions from bytecode
+    /// Build IR instructions from bytecode with constants
     fn buildIRFromBytecode(self: *Self, start_addr: u32, code: []const u8) ![]IRInstruction {
         var ir_list = std.ArrayList(IRInstruction).init(self.allocator);
         errdefer ir_list.deinit();
@@ -1037,6 +1037,9 @@ pub const JITAdapter = struct {
         var ip: usize = start_addr;
         var reg: u8 = 0;
         const max_instructions: usize = 100;
+
+        // Get constants from VM
+        const constants = self.vm.constants;
 
         while (ip < code.len and ir_list.items.len < max_instructions) {
             const opcode_byte = code[ip];
@@ -1053,12 +1056,19 @@ pub const JITAdapter = struct {
             // Convert bytecode opcode to IR instruction
             const ir_instr: ?IRInstruction = switch (opcode) {
                 .PUSH_CONST => blk: {
+                    // Get actual value from constants pool
+                    const const_idx: usize = @intCast(operand);
+                    const actual_value: i64 = if (const_idx < constants.len)
+                        constants[const_idx].toInt() orelse 0
+                    else
+                        0;
+
                     const instr = IRInstruction{
                         .opcode = .LOAD_CONST,
                         .dest = reg,
                         .src1 = 0,
                         .src2 = 0,
-                        .imm = operand,
+                        .imm = actual_value, // Use actual value, not index
                     };
                     reg +%= 1;
                     break :blk instr;
@@ -2577,9 +2587,9 @@ test "executeTiered automatic tier promotion" {
     // Execute multiple times to trigger promotions
     for (0..10) |i| {
         const result = try adapter.executeTiered(&code, &constants);
-        // Value check: 7 * 6 = 42 (from VM stack)
+        // Value check: 7 * 6 = 42
         const val = result.value.toInt() orelse 0;
-        try std.testing.expect(val == 42 or val == 0); // 0 if stack empty
+        try std.testing.expectEqual(@as(i64, 42), val);
 
         const tier = adapter.getFunctionTier(0);
         if (@import("builtin").mode == .Debug and i < 5) {
@@ -2615,9 +2625,9 @@ test "executeTiered metrics tracking" {
     for (0..5) |_| {
         const result = try adapter.executeTiered(&code, &constants);
         total_time += result.execution_time_ns;
-        // Value from stack (100 or 0 if empty)
+        // Value should be 100
         const val = result.value.toInt() orelse 0;
-        try std.testing.expect(val == 100 or val == 0);
+        try std.testing.expectEqual(@as(i64, 100), val);
     }
 
     const state = adapter.tiered_compiler.getFunctionState(0);
@@ -2658,8 +2668,9 @@ test "Benchmark: Full Automatic Tiered Compilation" {
         tier_times[tier_idx] += result.execution_time_ns;
         tier_counts[tier_idx] += 1;
 
-        // Value: (2+3)*7 = 35 or intermediate values during tier transitions
-        // Don't check value - focus on tier promotion mechanics
+        // Value: (2+3)*7 = 35
+        const val = result.value.toInt() orelse 0;
+        try std.testing.expectEqual(@as(i64, 35), val);
     }
 
     const stats = adapter.getTieredStats();
@@ -2686,5 +2697,58 @@ test "Benchmark: Full Automatic Tiered Compilation" {
             stats.tier2_promotions,
         });
         std.debug.print("Final tier: {s}\n", .{adapter.getFunctionTier(0).name()});
+    }
+}
+
+test "Value correctness across all tiers" {
+    const allocator = std.testing.allocator;
+
+    var adapter = try JITAdapter.init(allocator);
+    defer adapter.deinit();
+
+    // Very low thresholds to quickly reach all tiers
+    adapter.tiered_compiler.thresholds.tier1_threshold = 2;
+    adapter.tiered_compiler.thresholds.tier2_threshold = 4;
+
+    // Bytecode: 10 + 5 = 15
+    const code = [_]u8{
+        @intFromEnum(Opcode.PUSH_CONST), 0, 0,
+        @intFromEnum(Opcode.PUSH_CONST), 0, 1,
+        @intFromEnum(Opcode.ADD),
+        @intFromEnum(Opcode.HALT),
+    };
+    const constants = [_]Value{ .{ .int_val = 10 }, .{ .int_val = 5 } };
+
+    // Track values at each tier
+    var tier_values: [3]?i64 = [_]?i64{ null, null, null };
+
+    for (0..10) |_| {
+        const tier = adapter.getFunctionTier(0);
+        const result = try adapter.executeTiered(&code, &constants);
+        const val = result.value.toInt() orelse 0;
+
+        // Record first value at each tier
+        const tier_idx = @intFromEnum(tier);
+        if (tier_values[tier_idx] == null) {
+            tier_values[tier_idx] = val;
+        }
+
+        // All values should be 15
+        try std.testing.expectEqual(@as(i64, 15), val);
+    }
+
+    // Verify we hit multiple tiers
+    const stats = adapter.getTieredStats();
+    try std.testing.expect(stats.total_promotions >= 1);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Value Correctness Test ===\n", .{});
+        for (0..3) |i| {
+            if (tier_values[i]) |val| {
+                const tier: CompilationTier = @enumFromInt(i);
+                std.debug.print("{s}: value = {d}\n", .{ tier.name(), val });
+            }
+        }
+        std.debug.print("All values correct: 15\n", .{});
     }
 }
