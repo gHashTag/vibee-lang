@@ -169,6 +169,11 @@ pub const VM = struct {
     opcode_counts: [256]u64,
     opcode_times: [256]u64,
 
+    // Hot loop detection
+    loop_counts: [256]u32, // Count back-edges per loop address (mod 256)
+    hot_loops: [256]bool, // Mark hot loops
+    hot_loop_threshold: u32,
+
     const Self = @This();
 
     pub fn init(allocator: Allocator) !Self {
@@ -196,6 +201,9 @@ pub const VM = struct {
             .execution_time_ns = 0,
             .opcode_counts = [_]u64{0} ** 256,
             .opcode_times = [_]u64{0} ** 256,
+            .loop_counts = [_]u32{0} ** 256,
+            .hot_loops = [_]bool{false} ** 256,
+            .hot_loop_threshold = 10, // Mark as hot after 10 iterations
         };
 
         // Register built-in natives
@@ -920,6 +928,28 @@ pub const VM = struct {
         if (self.execution_time_ns == 0) return 0;
         const seconds = @as(f64, @floatFromInt(self.execution_time_ns)) / 1_000_000_000.0;
         return @as(f64, @floatFromInt(self.instructions_executed)) / seconds;
+    }
+
+    /// Get number of detected hot loops
+    pub fn getHotLoopCount(self: *Self) u32 {
+        var count: u32 = 0;
+        for (self.hot_loops) |is_hot| {
+            if (is_hot) count += 1;
+        }
+        return count;
+    }
+
+    /// Get hot loop addresses
+    pub fn getHotLoopAddresses(self: *Self) [256]?u8 {
+        var addrs: [256]?u8 = [_]?u8{null} ** 256;
+        var idx: usize = 0;
+        for (0..256) |i| {
+            if (self.hot_loops[i]) {
+                addrs[idx] = @intCast(i);
+                idx += 1;
+            }
+        }
+        return addrs;
     }
 
     /// Print opcode profile - top N slowest opcodes

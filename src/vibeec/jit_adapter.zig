@@ -10587,9 +10587,20 @@ pub const JITAdapter = struct {
         // Execute at appropriate tier
         const result: Value = switch (current_tier) {
             .Interpreter => blk: {
-                // Tier 0: Bytecode interpreter
-                const val = try self.vm.run();
+                // Tier 0: Bytecode interpreter with hot loop detection
+                const val = try self.vm.runFast();
                 self.interpreter_instructions = self.vm.instructions_executed;
+                // Track hot loops for future JIT
+                const hot_count = self.vm.getHotLoopCount();
+                if (hot_count > 0) {
+                    const hot_addrs = self.vm.getHotLoopAddresses();
+                    for (hot_addrs) |maybe_addr| {
+                        if (maybe_addr) |addr| {
+                            // Record with 0 time - we just want to track the address
+                            _ = self.tiered_compiler.recordExecution(@as(u32, addr), 0) catch {};
+                        }
+                    }
+                }
                 break :blk val;
             },
             .JIT_IR => blk: {

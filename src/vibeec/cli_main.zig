@@ -298,6 +298,10 @@ fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
     // Print VM stats
     printSuccess("VM execution complete");
     std.debug.print("  Instructions: {}\n", .{vm.instructions_executed});
+    const hot_count = vm.getHotLoopCount();
+    if (hot_count > 0) {
+        std.debug.print("  Hot loops detected: {}\n", .{hot_count});
+    }
     if (!std.mem.eql(u8, result_str, "nil")) {
         std.debug.print("  Result: {s}\n", .{result_str});
     }
