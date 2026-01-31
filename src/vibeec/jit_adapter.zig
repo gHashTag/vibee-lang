@@ -5918,6 +5918,264 @@ pub const RegisterAllocator = struct {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Inline Cache for hot call sites
+// ═══════════════════════════════════════════════════════════════════════════════
+// POLYMORPHIC INLINE CACHE (PIC)
+// Оптимизация вызовов методов через кэширование targets
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Состояние Inline Cache
+pub const ICState = enum {
+    Uninitialized, // Ещё не использовался
+    Monomorphic, // Один target (оптимально)
+    Polymorphic, // 2-4 targets
+    Megamorphic, // >4 targets (fallback)
+};
+
+/// Запись в Inline Cache
+pub const ICEntry = struct {
+    type_id: u32, // ID типа объекта
+    target_address: u32, // Адрес целевой функции
+    native_code: ?*const fn () callconv(.C) i64, // Скомпилированный код
+    hit_count: u64, // Счётчик попаданий
+};
+
+/// Polymorphic Inline Cache
+pub const PolymorphicInlineCache = struct {
+    allocator: Allocator,
+    /// Кэш: call_site -> PIC entry
+    cache: std.AutoHashMap(u32, PICEntry),
+    /// Статистика
+    monomorphic_hits: usize = 0,
+    polymorphic_hits: usize = 0,
+    megamorphic_lookups: usize = 0,
+    misses: usize = 0,
+    transitions: usize = 0,
+    invalidations: usize = 0,
+
+    /// Максимум entries в polymorphic режиме
+    const MAX_POLYMORPHIC_ENTRIES: usize = 4;
+
+    /// PIC entry для одного call site
+    const PICEntry = struct {
+        state: ICState,
+        entries: [MAX_POLYMORPHIC_ENTRIES]?ICEntry,
+        entry_count: u8,
+        total_calls: u64,
+        /// Megamorphic fallback (hash map для >4 types)
+        megamorphic_map: ?std.AutoHashMap(u32, ICEntry),
+
+        fn init() PICEntry {
+            return .{
+                .state = .Uninitialized,
+                .entries = [_]?ICEntry{null} ** MAX_POLYMORPHIC_ENTRIES,
+                .entry_count = 0,
+                .total_calls = 0,
+                .megamorphic_map = null,
+            };
+        }
+    };
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .cache = std.AutoHashMap(u32, PICEntry).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.cache.valueIterator();
+        while (iter.next()) |entry| {
+            if (entry.megamorphic_map) |*map| {
+                map.deinit();
+            }
+        }
+        self.cache.deinit();
+    }
+
+    /// Lookup в IC - возвращает native_code или null
+    pub fn lookup(self: *Self, call_site: u32, type_id: u32) ?*const fn () callconv(.C) i64 {
+        if (self.cache.getPtr(call_site)) |pic| {
+            pic.total_calls += 1;
+
+            switch (pic.state) {
+                .Uninitialized => {
+                    self.misses += 1;
+                    return null;
+                },
+                .Monomorphic => {
+                    if (pic.entries[0]) |*entry| {
+                        if (entry.type_id == type_id) {
+                            entry.hit_count += 1;
+                            self.monomorphic_hits += 1;
+                            return entry.native_code;
+                        }
+                    }
+                    self.misses += 1;
+                    return null;
+                },
+                .Polymorphic => {
+                    // Линейный поиск по 2-4 entries
+                    for (&pic.entries) |*maybe_entry| {
+                        if (maybe_entry.*) |*entry| {
+                            if (entry.type_id == type_id) {
+                                entry.hit_count += 1;
+                                self.polymorphic_hits += 1;
+                                return entry.native_code;
+                            }
+                        }
+                    }
+                    self.misses += 1;
+                    return null;
+                },
+                .Megamorphic => {
+                    // Hash lookup
+                    if (pic.megamorphic_map) |*map| {
+                        if (map.getPtr(type_id)) |entry| {
+                            entry.hit_count += 1;
+                            self.megamorphic_lookups += 1;
+                            return entry.native_code;
+                        }
+                    }
+                    self.misses += 1;
+                    return null;
+                },
+            }
+        }
+        self.misses += 1;
+        return null;
+    }
+
+    /// Обновить IC при miss
+    pub fn update(self: *Self, call_site: u32, type_id: u32, target: u32, native_code: ?*const fn () callconv(.C) i64) !void {
+        const entry = ICEntry{
+            .type_id = type_id,
+            .target_address = target,
+            .native_code = native_code,
+            .hit_count = 0,
+        };
+
+        const pic = try self.cache.getOrPut(call_site);
+        if (!pic.found_existing) {
+            pic.value_ptr.* = PICEntry.init();
+        }
+
+        switch (pic.value_ptr.state) {
+            .Uninitialized => {
+                // Первый вызов -> monomorphic
+                pic.value_ptr.entries[0] = entry;
+                pic.value_ptr.entry_count = 1;
+                pic.value_ptr.state = .Monomorphic;
+            },
+            .Monomorphic => {
+                // Проверяем, не тот же ли это тип
+                if (pic.value_ptr.entries[0]) |existing| {
+                    if (existing.type_id == type_id) {
+                        // Обновляем существующий
+                        pic.value_ptr.entries[0] = entry;
+                        return;
+                    }
+                }
+                // Новый тип -> polymorphic
+                pic.value_ptr.entries[1] = entry;
+                pic.value_ptr.entry_count = 2;
+                pic.value_ptr.state = .Polymorphic;
+                self.transitions += 1;
+            },
+            .Polymorphic => {
+                // Ищем существующий или свободный слот
+                var free_slot: ?usize = null;
+                for (&pic.value_ptr.entries, 0..) |*maybe_entry, i| {
+                    if (maybe_entry.*) |existing| {
+                        if (existing.type_id == type_id) {
+                            // Обновляем существующий
+                            maybe_entry.* = entry;
+                            return;
+                        }
+                    } else if (free_slot == null) {
+                        free_slot = i;
+                    }
+                }
+
+                if (free_slot) |slot| {
+                    // Есть свободный слот
+                    pic.value_ptr.entries[slot] = entry;
+                    pic.value_ptr.entry_count += 1;
+                } else {
+                    // Нет места -> megamorphic
+                    try self.transitionToMegamorphic(pic.value_ptr, entry);
+                }
+            },
+            .Megamorphic => {
+                // Добавляем в hash map
+                if (pic.value_ptr.megamorphic_map) |*map| {
+                    try map.put(type_id, entry);
+                }
+            },
+        }
+    }
+
+    /// Переход в megamorphic режим
+    fn transitionToMegamorphic(self: *Self, pic: *PICEntry, new_entry: ICEntry) !void {
+        var map = std.AutoHashMap(u32, ICEntry).init(self.allocator);
+
+        // Копируем существующие entries
+        for (pic.entries) |maybe_entry| {
+            if (maybe_entry) |entry| {
+                try map.put(entry.type_id, entry);
+            }
+        }
+
+        // Добавляем новый
+        try map.put(new_entry.type_id, new_entry);
+
+        pic.megamorphic_map = map;
+        pic.state = .Megamorphic;
+        self.transitions += 1;
+    }
+
+    /// Инвалидация IC для call site
+    pub fn invalidate(self: *Self, call_site: u32) void {
+        if (self.cache.getPtr(call_site)) |pic| {
+            if (pic.megamorphic_map) |*map| {
+                map.deinit();
+                pic.megamorphic_map = null;
+            }
+            pic.* = PICEntry.init();
+            self.invalidations += 1;
+        }
+    }
+
+    /// Получить статистику
+    pub fn getStats(self: *const Self) struct {
+        monomorphic_hits: usize,
+        polymorphic_hits: usize,
+        megamorphic_lookups: usize,
+        misses: usize,
+        transitions: usize,
+        invalidations: usize,
+        hit_rate: f64,
+        call_sites: usize,
+    } {
+        const total = self.monomorphic_hits + self.polymorphic_hits + self.megamorphic_lookups + self.misses;
+        const hits = self.monomorphic_hits + self.polymorphic_hits + self.megamorphic_lookups;
+        const hit_rate = if (total > 0) @as(f64, @floatFromInt(hits)) / @as(f64, @floatFromInt(total)) else 0.0;
+
+        return .{
+            .monomorphic_hits = self.monomorphic_hits,
+            .polymorphic_hits = self.polymorphic_hits,
+            .megamorphic_lookups = self.megamorphic_lookups,
+            .misses = self.misses,
+            .transitions = self.transitions,
+            .invalidations = self.invalidations,
+            .hit_rate = hit_rate,
+            .call_sites = self.cache.count(),
+        };
+    }
+};
+
+/// Legacy InlineCache (для обратной совместимости)
 pub const InlineCache = struct {
     allocator: Allocator,
     /// Cache entries: call_site -> cached_target
@@ -7745,6 +8003,8 @@ pub const TieredCompiler = struct {
     scheduler: InstructionScheduler,
     /// Register allocator
     regalloc: RegisterAllocator,
+    /// Polymorphic Inline Cache
+    pic: PolymorphicInlineCache,
     /// Profile data for PGO
     profile_data: ProfileData,
     /// Profile instrumenter
@@ -7853,6 +8113,7 @@ pub const TieredCompiler = struct {
             .gvn = GVNOptimizer.init(allocator),
             .scheduler = InstructionScheduler.init(allocator),
             .regalloc = RegisterAllocator.init(allocator),
+            .pic = PolymorphicInlineCache.init(allocator),
             .profile_data = ProfileData.init(allocator),
             .instrumenter = null,
             .pgo = null,
@@ -13132,6 +13393,142 @@ test "RegisterAllocator in TieredCompiler" {
 
     // Verify regalloc was called (stats should be > 0)
     try std.testing.expect(regalloc_stats.allocated > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POLYMORPHIC INLINE CACHE TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "PolymorphicIC monomorphic hit" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    const call_site: u32 = 0x1000;
+    const type_id: u32 = 1;
+    const target: u32 = 0x2000;
+
+    // Первый вызов - miss, добавляем в кэш
+    const result1 = pic.lookup(call_site, type_id);
+    try std.testing.expect(result1 == null);
+
+    // Обновляем кэш
+    try pic.update(call_site, type_id, target, null);
+
+    // Второй вызов - hit
+    const result2 = pic.lookup(call_site, type_id);
+    // native_code is null, but lookup should still work
+    _ = result2;
+
+    const stats = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.monomorphic_hits);
+    try std.testing.expectEqual(@as(usize, 1), stats.misses);
+}
+
+test "PolymorphicIC polymorphic transition" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    const call_site: u32 = 0x1000;
+
+    // Добавляем первый тип -> monomorphic
+    try pic.update(call_site, 1, 0x2000, null);
+
+    // Добавляем второй тип -> polymorphic
+    try pic.update(call_site, 2, 0x3000, null);
+
+    const stats = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.transitions);
+
+    // Lookup для обоих типов должен работать
+    _ = pic.lookup(call_site, 1);
+    _ = pic.lookup(call_site, 2);
+
+    const stats2 = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats2.polymorphic_hits);
+}
+
+test "PolymorphicIC megamorphic transition" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    const call_site: u32 = 0x1000;
+
+    // Добавляем 5 разных типов -> megamorphic
+    try pic.update(call_site, 1, 0x2000, null);
+    try pic.update(call_site, 2, 0x3000, null);
+    try pic.update(call_site, 3, 0x4000, null);
+    try pic.update(call_site, 4, 0x5000, null);
+    try pic.update(call_site, 5, 0x6000, null); // Переход в megamorphic
+
+    const stats = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.transitions); // mono->poly, poly->mega
+
+    // Lookup в megamorphic режиме
+    _ = pic.lookup(call_site, 3);
+
+    const stats2 = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats2.megamorphic_lookups);
+}
+
+test "PolymorphicIC invalidation" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    const call_site: u32 = 0x1000;
+
+    // Добавляем entry
+    try pic.update(call_site, 1, 0x2000, null);
+    _ = pic.lookup(call_site, 1);
+
+    // Инвалидируем
+    pic.invalidate(call_site);
+
+    // После инвалидации - miss
+    const result = pic.lookup(call_site, 1);
+    try std.testing.expect(result == null);
+
+    const stats = pic.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.invalidations);
+}
+
+test "PolymorphicIC hit rate calculation" {
+    const allocator = std.testing.allocator;
+
+    var pic = PolymorphicInlineCache.init(allocator);
+    defer pic.deinit();
+
+    const call_site: u32 = 0x1000;
+
+    // Добавляем entry
+    try pic.update(call_site, 1, 0x2000, null);
+
+    // 10 hits
+    for (0..10) |_| {
+        _ = pic.lookup(call_site, 1);
+    }
+
+    // 2 misses (другой тип)
+    _ = pic.lookup(call_site, 2);
+    _ = pic.lookup(call_site, 2);
+
+    const stats = pic.getStats();
+    // hit_rate = 10 / 12 = 0.833...
+    try std.testing.expectApproxEqAbs(@as(f64, 0.833), stats.hit_rate, 0.01);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== PolymorphicIC Hit Rate Test ===\n", .{});
+        std.debug.print("Monomorphic hits: {d}\n", .{stats.monomorphic_hits});
+        std.debug.print("Misses: {d}\n", .{stats.misses});
+        std.debug.print("Hit rate: {d:.2}%\n", .{stats.hit_rate * 100});
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

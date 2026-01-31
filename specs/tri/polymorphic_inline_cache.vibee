@@ -1,0 +1,133 @@
+# Polymorphic Inline Cache (PIC)
+# Кэширование нескольких targets для call sites
+# Священная формула: V = n × 3^k × π^m × φ^p × e^q
+
+name: polymorphic_inline_cache
+version: "1.0.0"
+language: zig
+module: polymorphic_inline_cache
+
+description: |
+  Polymorphic Inline Cache для оптимизации вызовов методов.
+  
+  Типы IC:
+  1. Monomorphic IC - один target (текущая реализация)
+  2. Polymorphic IC - 2-4 targets (эта реализация)
+  3. Megamorphic IC - >4 targets (fallback to hash lookup)
+  
+  Алгоритм:
+  1. При первом вызове - записать target в IC (monomorphic)
+  2. При втором разном target - расширить до polymorphic
+  3. При >4 targets - перейти в megamorphic режим
+  4. При hit - прямой вызов без dispatch overhead
+
+types:
+  # Состояние IC
+  ICState:
+    fields:
+      state: String  # "uninitialized", "monomorphic", "polymorphic", "megamorphic"
+      
+  # Запись в кэше
+  ICEntry:
+    fields:
+      type_id: Int           # ID типа объекта
+      target_address: Int    # Адрес целевой функции
+      native_code: Option<Int>  # Указатель на скомпилированный код
+      hit_count: Int         # Счётчик попаданий
+
+  # Polymorphic IC (до 4 entries)
+  PolymorphicIC:
+    fields:
+      call_site: Int         # Адрес call site
+      state: String          # Текущее состояние
+      entries: List<ICEntry> # До 4 записей
+      total_calls: Int       # Всего вызовов
+      fallback_count: Int    # Вызовов через fallback
+
+  # Статистика IC
+  ICStats:
+    fields:
+      monomorphic_hits: Int
+      polymorphic_hits: Int
+      megamorphic_hits: Int
+      misses: Int
+      transitions: Int       # Переходы между состояниями
+      invalidations: Int
+
+behaviors:
+  # Lookup в IC
+  - name: lookup
+    given: Call site и type_id объекта
+    when: Вызов метода
+    then: Возвращает native_code или null (miss)
+
+  # Обновление IC при miss
+  - name: update
+    given: Call site, type_id, target_address
+    when: IC miss
+    then: Добавляет entry или переходит в следующее состояние
+
+  # Переход monomorphic -> polymorphic
+  - name: transition_to_polymorphic
+    given: Monomorphic IC с новым type_id
+    when: Второй разный тип
+    then: Создаёт polymorphic IC с 2 entries
+
+  # Переход polymorphic -> megamorphic
+  - name: transition_to_megamorphic
+    given: Polymorphic IC с >4 types
+    when: Пятый разный тип
+    then: Переходит в megamorphic (hash lookup)
+
+  # Инвалидация IC
+  - name: invalidate
+    given: IC entry
+    when: Код был деоптимизирован или изменён
+    then: Удаляет entry, возможно понижает состояние
+
+  # Генерация IC stub кода
+  - name: generate_ic_stub
+    given: IC state и entries
+    when: Компиляция call site
+    then: Генерирует inline проверку типа + прямой вызов
+
+tests:
+  - name: test_monomorphic_hit
+    description: Один тип - всегда hit
+    input:
+      call_site: 0x1000
+      type_id: 1
+      calls: 100
+    expected:
+      state: "monomorphic"
+      hit_rate: 1.0
+
+  - name: test_polymorphic_two_types
+    description: Два типа - polymorphic
+    input:
+      call_site: 0x1000
+      type_ids: [1, 2, 1, 2, 1, 2]
+    expected:
+      state: "polymorphic"
+      entries_count: 2
+
+  - name: test_megamorphic_transition
+    description: >4 типов - megamorphic
+    input:
+      call_site: 0x1000
+      type_ids: [1, 2, 3, 4, 5]
+    expected:
+      state: "megamorphic"
+
+constants:
+  # Лимиты
+  MAX_POLYMORPHIC_ENTRIES: 4
+  MEGAMORPHIC_THRESHOLD: 5
+  
+  # Веса для решения о переходе
+  MONOMORPHIC_BENEFIT: 10    # ns saved per call
+  POLYMORPHIC_BENEFIT: 5     # ns saved per call
+  MEGAMORPHIC_OVERHEAD: 15   # ns overhead per call
+  
+  # Пороги для инвалидации
+  INVALIDATION_THRESHOLD: 100  # misses before invalidation
