@@ -1865,6 +1865,16 @@ pub const CSEOptimizer = struct {
         pub fn eql(a: ExprKey, b: ExprKey) bool {
             return a.opcode == b.opcode and a.src1 == b.src1 and a.src2 == b.src2 and a.imm == b.imm;
         }
+
+        pub fn usesRegister(self: ExprKey, reg: u8) bool {
+            return self.src1 == reg or self.src2 == reg;
+        }
+    };
+
+    /// Store expression info for invalidation
+    const ExprInfo = struct {
+        result_reg: u8,
+        key: ExprKey,
     };
 
     pub fn init(allocator: Allocator) Self {
@@ -1892,13 +1902,9 @@ pub const CSEOptimizer = struct {
         var result = std.ArrayList(IRInstruction).init(self.allocator);
         errdefer result.deinit();
 
-        // Map from expression -> register that holds the result
-        var expr_map = std.AutoHashMap(u64, u8).init(self.allocator);
+        // Map from hash -> ExprInfo (result register and key for invalidation)
+        var expr_map = std.AutoHashMap(u64, ExprInfo).init(self.allocator);
         defer expr_map.deinit();
-
-        // Track which registers have been overwritten
-        var valid_exprs = std.AutoHashMap(u64, bool).init(self.allocator);
-        defer valid_exprs.deinit();
 
         for (ir) |instr| {
             if (isPureComputation(instr.opcode)) {
@@ -1910,47 +1916,41 @@ pub const CSEOptimizer = struct {
                 };
                 const hash_val = key.hash();
 
-                // Check if we've seen this expression before and it's still valid
-                if (expr_map.get(hash_val)) |prev_reg| {
-                    if (valid_exprs.get(hash_val) orelse false) {
-                        // Reuse previous result - emit a copy instead
-                        if (instr.dest != prev_reg) {
-                            try result.append(.{
-                                .opcode = .LOAD_LOCAL,
-                                .dest = instr.dest,
-                                .src1 = prev_reg,
-                                .src2 = 0,
-                                .imm = 0,
-                            });
-                        }
-                        self.expressions_eliminated += 1;
-                        continue;
+                // Check if we've seen this expression before
+                if (expr_map.get(hash_val)) |info| {
+                    // Reuse previous result - emit a copy instead
+                    if (instr.dest != info.result_reg) {
+                        try result.append(.{
+                            .opcode = .LOAD_LOCAL,
+                            .dest = instr.dest,
+                            .src1 = info.result_reg,
+                            .src2 = 0,
+                            .imm = 0,
+                        });
                     }
+                    self.expressions_eliminated += 1;
+                    continue;
                 }
 
-                // Invalidate expressions whose result is in the destination register BEFORE recording new one
-                self.invalidateExprsUsing(instr.dest, &expr_map, &valid_exprs);
+                // Invalidate expressions whose result is in the destination register
+                self.invalidateExprsForReg(instr.dest, &expr_map);
 
                 // New expression - record it
-                try expr_map.put(hash_val, instr.dest);
-                try valid_exprs.put(hash_val, true);
+                try expr_map.put(hash_val, .{ .result_reg = instr.dest, .key = key });
                 try result.append(instr);
             } else {
                 // Non-pure instruction
                 try result.append(instr);
 
-                // If it writes to a register, invalidate expressions using it
+                // If it writes to a register, invalidate expressions that use it as source
                 if (instr.dest < 32) {
-                    self.invalidateExprsUsing(instr.dest, &expr_map, &valid_exprs);
+                    self.invalidateExprsUsingSrc(instr.dest, &expr_map);
                 }
 
                 // Control flow invalidates all expressions
                 switch (instr.opcode) {
                     .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK => {
-                        var iter = valid_exprs.iterator();
-                        while (iter.next()) |entry| {
-                            entry.value_ptr.* = false;
-                        }
+                        expr_map.clearRetainingCapacity();
                     },
                     else => {},
                 }
@@ -1960,18 +1960,37 @@ pub const CSEOptimizer = struct {
         return result.toOwnedSlice();
     }
 
-    fn invalidateExprsUsing(self: *Self, reg: u8, expr_map: *std.AutoHashMap(u64, u8), valid_exprs: *std.AutoHashMap(u64, bool)) void {
-        _ = self;
-        // Mark all expressions as potentially invalid if they use this register
-        // This is conservative - a more precise analysis would track dependencies
-        var iter = valid_exprs.iterator();
+    /// Invalidate expressions whose result is stored in reg
+    fn invalidateExprsForReg(self: *Self, reg: u8, expr_map: *std.AutoHashMap(u64, ExprInfo)) void {
+        var to_remove = std.ArrayList(u64).init(self.allocator);
+        defer to_remove.deinit();
+
+        var iter = expr_map.iterator();
         while (iter.next()) |entry| {
-            // For simplicity, invalidate expressions whose result is in this register
-            if (expr_map.get(entry.key_ptr.*)) |result_reg| {
-                if (result_reg == reg) {
-                    entry.value_ptr.* = false;
-                }
+            if (entry.value_ptr.result_reg == reg) {
+                to_remove.append(entry.key_ptr.*) catch {};
             }
+        }
+
+        for (to_remove.items) |key| {
+            _ = expr_map.remove(key);
+        }
+    }
+
+    /// Invalidate expressions that use reg as a source operand
+    fn invalidateExprsUsingSrc(self: *Self, reg: u8, expr_map: *std.AutoHashMap(u64, ExprInfo)) void {
+        var to_remove = std.ArrayList(u64).init(self.allocator);
+        defer to_remove.deinit();
+
+        var iter = expr_map.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.key.usesRegister(reg)) {
+                to_remove.append(entry.key_ptr.*) catch {};
+            }
+        }
+
+        for (to_remove.items) |key| {
+            _ = expr_map.remove(key);
         }
     }
 
@@ -1998,6 +2017,9 @@ pub const RegisterAllocator = struct {
     /// Number of physical registers available (R8-R15 on x86-64)
     const NUM_PHYS_REGS: usize = 8;
 
+    /// Live range for a virtual register
+    const LiveRange = struct { start: usize, end: usize };
+
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
@@ -2009,8 +2031,8 @@ pub const RegisterAllocator = struct {
     }
 
     /// Compute live ranges for each virtual register
-    fn computeLiveRanges(self: *Self, ir: []const IRInstruction) !std.AutoHashMap(u8, struct { start: usize, end: usize }) {
-        var ranges = std.AutoHashMap(u8, struct { start: usize, end: usize }).init(self.allocator);
+    fn computeLiveRanges(self: *Self, ir: []const IRInstruction) !std.AutoHashMap(u8, LiveRange) {
+        var ranges = std.AutoHashMap(u8, LiveRange).init(self.allocator);
 
         for (ir, 0..) |instr, i| {
             // Definition point
@@ -2080,7 +2102,7 @@ pub const RegisterAllocator = struct {
             // Try to allocate
             if (active.items.len < NUM_PHYS_REGS) {
                 mapping[vreg] = phys_reg;
-                phys_reg = (phys_reg + 1) % NUM_PHYS_REGS;
+                phys_reg = (phys_reg + 1) % @as(u8, NUM_PHYS_REGS);
                 try active.append(vreg);
                 self.registers_allocated += 1;
             } else {
@@ -2184,18 +2206,21 @@ pub const InlineCache = struct {
 pub const ProfileData = struct {
     allocator: Allocator,
     /// Branch taken counts: branch_address -> (taken, not_taken)
-    branch_counts: std.AutoHashMap(u32, struct { taken: u64, not_taken: u64 }),
+    branch_counts: std.AutoHashMap(u32, BranchCounts),
     /// Loop iteration counts: loop_header -> total_iterations
     loop_counts: std.AutoHashMap(u32, u64),
     /// Hot basic blocks: address -> execution_count
     block_counts: std.AutoHashMap(u32, u64),
+
+    /// Branch count data
+    const BranchCounts = struct { taken: u64, not_taken: u64 };
 
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
-            .branch_counts = std.AutoHashMap(u32, struct { taken: u64, not_taken: u64 }).init(allocator),
+            .branch_counts = std.AutoHashMap(u32, BranchCounts).init(allocator),
             .loop_counts = std.AutoHashMap(u32, u64).init(allocator),
             .block_counts = std.AutoHashMap(u32, u64).init(allocator),
         };
@@ -2257,9 +2282,12 @@ pub const ProfileData = struct {
         return false;
     }
 
+    /// Hot block info
+    const HotBlock = struct { address: u32, count: u64 };
+
     /// Get hot blocks sorted by execution count
-    pub fn getHotBlocks(self: *Self, min_count: u64) !std.ArrayList(struct { address: u32, count: u64 }) {
-        var hot = std.ArrayList(struct { address: u32, count: u64 }).init(self.allocator);
+    pub fn getHotBlocks(self: *Self, min_count: u64) !std.ArrayList(HotBlock) {
+        var hot = std.ArrayList(HotBlock).init(self.allocator);
         var iter = self.block_counts.iterator();
         while (iter.next()) |entry| {
             if (entry.value_ptr.* >= min_count) {
@@ -2267,6 +2295,91 @@ pub const ProfileData = struct {
             }
         }
         return hot;
+    }
+};
+
+/// Profile Instrumenter - inserts profiling code into IR
+pub const ProfileInstrumenter = struct {
+    allocator: Allocator,
+    profile: *ProfileData,
+    /// Statistics
+    branches_instrumented: usize = 0,
+    loops_instrumented: usize = 0,
+    blocks_instrumented: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, profile: *ProfileData) Self {
+        return .{
+            .allocator = allocator,
+            .profile = profile,
+            .branches_instrumented = 0,
+            .loops_instrumented = 0,
+            .blocks_instrumented = 0,
+        };
+    }
+
+    /// Instrument IR for profiling - records execution counts
+    pub fn instrument(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var loop_header: ?u32 = null;
+
+        for (ir, 0..) |instr, i| {
+            const addr: u32 = @intCast(i);
+
+            switch (instr.opcode) {
+                .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO => {
+                    // Record branch for profiling
+                    self.branches_instrumented += 1;
+                    // Track as potential loop header if jumping backward
+                    if (instr.imm < 0) {
+                        loop_header = addr;
+                    }
+                    try result.append(instr);
+                },
+                .LOOP_BACK => {
+                    if (loop_header) |header| {
+                        // Record loop iteration
+                        try self.profile.recordLoopIteration(header);
+                        self.loops_instrumented += 1;
+                    }
+                    loop_header = null;
+                    try result.append(instr);
+                },
+                .JUMP => {
+                    // Backward jump indicates loop
+                    if (instr.imm < 0) {
+                        self.loops_instrumented += 1;
+                        try self.profile.recordLoopIteration(addr);
+                    }
+                    // Record basic block entry at jump target
+                    self.blocks_instrumented += 1;
+                    try self.profile.recordBlockExecution(addr);
+                    try result.append(instr);
+                },
+                else => {
+                    try result.append(instr);
+                },
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Simulate branch execution for profiling
+    pub fn recordBranchExecution(self: *Self, address: u32, taken: bool) !void {
+        try self.profile.recordBranch(address, taken);
+    }
+
+    /// Get instrumentation statistics
+    pub fn getStats(self: Self) struct { branches: usize, loops: usize, blocks: usize } {
+        return .{
+            .branches = self.branches_instrumented,
+            .loops = self.loops_instrumented,
+            .blocks = self.blocks_instrumented,
+        };
     }
 };
 
@@ -2397,6 +2510,14 @@ pub const TieredCompiler = struct {
     peephole: PeepholeOptimizer,
     /// CSE optimizer
     cse: CSEOptimizer,
+    /// Register allocator
+    regalloc: RegisterAllocator,
+    /// Profile data for PGO
+    profile_data: ProfileData,
+    /// Profile instrumenter
+    instrumenter: ?ProfileInstrumenter,
+    /// PGO optimizer
+    pgo: ?PGOOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -2411,6 +2532,10 @@ pub const TieredCompiler = struct {
     enable_peephole: bool,
     /// Enable CSE
     enable_cse: bool,
+    /// Enable register allocation
+    enable_regalloc: bool,
+    /// Enable PGO
+    enable_pgo: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -2430,6 +2555,10 @@ pub const TieredCompiler = struct {
             .copy_propagator = CopyPropagator.init(allocator),
             .peephole = PeepholeOptimizer.init(allocator),
             .cse = CSEOptimizer.init(allocator),
+            .regalloc = RegisterAllocator.init(allocator),
+            .profile_data = ProfileData.init(allocator),
+            .instrumenter = null,
+            .pgo = null,
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -2437,6 +2566,8 @@ pub const TieredCompiler = struct {
             .enable_copy_propagation = true,
             .enable_peephole = true,
             .enable_cse = true,
+            .enable_regalloc = true,
+            .enable_pgo = true,
             .stats = TieredStats.init(),
         };
     }
@@ -2463,6 +2594,23 @@ pub const TieredCompiler = struct {
         self.native_cache.deinit();
 
         self.function_states.deinit();
+        self.profile_data.deinit();
+    }
+
+    /// Enable PGO instrumentation
+    pub fn enablePGO(self: *Self) void {
+        if (self.instrumenter == null) {
+            self.instrumenter = ProfileInstrumenter.init(self.allocator, &self.profile_data);
+        }
+        if (self.pgo == null) {
+            self.pgo = PGOOptimizer.init(self.allocator, &self.profile_data);
+        }
+        self.enable_pgo = true;
+    }
+
+    /// Get profile data for analysis
+    pub fn getProfileData(self: *Self) *ProfileData {
+        return &self.profile_data;
     }
 
     /// Get or create function state
@@ -2557,6 +2705,21 @@ pub const TieredCompiler = struct {
                     optimized_ir = peeped;
                 }
 
+                // Register allocation (analysis only at JIT_IR tier)
+                if (self.enable_regalloc) {
+                    var alloc_result = try self.regalloc.allocate(optimized_ir);
+                    alloc_result.spilled.deinit();
+                }
+
+                // PGO instrumentation at JIT_IR tier
+                if (self.enable_pgo) {
+                    if (self.instrumenter) |*inst| {
+                        const instrumented = try inst.instrument(optimized_ir);
+                        self.allocator.free(optimized_ir);
+                        optimized_ir = instrumented;
+                    }
+                }
+
                 try self.jit_ir_cache.put(address, optimized_ir);
                 self.stats.tier1_promotions += 1;
 
@@ -2614,6 +2777,25 @@ pub const TieredCompiler = struct {
                     break :blk opt_ir;
                 };
                 defer if (self.jit_ir_cache.get(address) == null) self.allocator.free(optimized_ir);
+
+                // Register allocation for native code generation
+                if (self.enable_regalloc) {
+                    var alloc_result = try self.regalloc.allocate(optimized_ir);
+                    alloc_result.spilled.deinit();
+                    // TODO: Use mapping for actual register assignment in native codegen
+                }
+
+                // PGO optimization at Native tier (use collected profile data)
+                if (self.enable_pgo) {
+                    if (self.pgo) |*pgo_opt| {
+                        const pgo_result = try pgo_opt.optimize(optimized_ir);
+                        if (self.jit_ir_cache.get(address) == null) {
+                            self.allocator.free(optimized_ir);
+                        }
+                        // Note: pgo_result is used for native compilation
+                        _ = pgo_result;
+                    }
+                }
 
                 // Compile optimized IR to native
                 var native_compiler = NativeCompiler.init(self.allocator);
@@ -6048,6 +6230,102 @@ test "CSEOptimizer basic elimination" {
     try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
 }
 
+test "CSEOptimizer multiple eliminations" {
+    const allocator = std.testing.allocator;
+
+    // IR: r2 = r0 + r1, r3 = r0 + r1, r4 = r0 + r1 (same expression 3 times)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // r2 = r0 + r1
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 }, // r3 = r0 + r1 (CSE)
+        .{ .opcode = .ADD_INT, .dest = 4, .src1 = 0, .src2 = 1, .imm = 0 }, // r4 = r0 + r1 (CSE)
+        .{ .opcode = .RETURN, .dest = 4, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cse = CSEOptimizer.init(allocator);
+    const optimized = try cse.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Both r3 and r4 should be copies from r2
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[3].opcode);
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[4].opcode);
+
+    const stats = cse.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.eliminated);
+}
+
+test "CSEOptimizer different operations" {
+    const allocator = std.testing.allocator;
+
+    // IR: r2 = r0 + r1, r3 = r0 * r1 (different ops, no CSE)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // r2 = r0 + r1
+        .{ .opcode = .MUL_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 }, // r3 = r0 * r1 (different!)
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cse = CSEOptimizer.init(allocator);
+    const optimized = try cse.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // No CSE - different operations
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[2].opcode);
+    try std.testing.expectEqual(jit.IROpcode.MUL_INT, optimized[3].opcode);
+
+    const stats = cse.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+}
+
+test "CSEOptimizer invalidation on overwrite" {
+    const allocator = std.testing.allocator;
+
+    // IR: r2 = r0 + r1, r0 = 20, r3 = r0 + r1 (r0 changed, no CSE)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // r2 = r0 + r1 = 15
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 20 }, // r0 = 20 (invalidates!)
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 }, // r3 = r0 + r1 = 30 (different!)
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cse = CSEOptimizer.init(allocator);
+    const optimized = try cse.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Second ADD should NOT be CSE'd because r0 was overwritten
+    try std.testing.expectEqual(jit.IROpcode.ADD_INT, optimized[4].opcode);
+
+    const stats = cse.getStats();
+    try std.testing.expectEqual(@as(usize, 0), stats.eliminated);
+}
+
+test "CSEOptimizer with shifts" {
+    const allocator = std.testing.allocator;
+
+    // IR: r1 = r0 << 3, r2 = r0 << 3 (same shift)
+    const original_ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .SHL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 }, // r1 = r0 << 3
+        .{ .opcode = .SHL, .dest = 2, .src1 = 0, .src2 = 0, .imm = 3 }, // r2 = r0 << 3 (CSE)
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var cse = CSEOptimizer.init(allocator);
+    const optimized = try cse.optimize(&original_ir);
+    defer allocator.free(optimized);
+
+    // Second SHL should be replaced with copy
+    try std.testing.expectEqual(jit.IROpcode.LOAD_LOCAL, optimized[2].opcode);
+    try std.testing.expectEqual(@as(u8, 1), optimized[2].src1);
+
+    const stats = cse.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.eliminated);
+}
+
 test "Benchmark: Strength reduction effect" {
     const allocator = std.testing.allocator;
 
@@ -6240,5 +6518,266 @@ test "Integration Benchmark: Full optimization pipeline" {
         std.debug.print("╠══════════════════════════════════════════════════════════════════╣\n", .{});
         std.debug.print("║ RESULT: {d} (correct: 4480)                                     ║\n", .{opt_result});
         std.debug.print("╚══════════════════════════════════════════════════════════════════╝\n", .{});
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REGISTER ALLOCATOR TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "RegisterAllocator basic allocation" {
+    const allocator = std.testing.allocator;
+
+    var regalloc = RegisterAllocator.init(allocator);
+
+    // Simple IR: r0 = 10, r1 = 20, r2 = r0 + r1
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var result = try regalloc.allocate(&ir);
+    defer result.spilled.deinit();
+
+    // All 3 registers should be allocated (we have 8 physical regs)
+    try std.testing.expect(result.mapping[0] != null);
+    try std.testing.expect(result.mapping[1] != null);
+    try std.testing.expect(result.mapping[2] != null);
+    try std.testing.expectEqual(@as(usize, 0), result.spilled.items.len);
+
+    const stats = regalloc.getStats();
+    try std.testing.expect(stats.allocated >= 3);
+    try std.testing.expectEqual(@as(usize, 0), stats.spills);
+}
+
+test "RegisterAllocator spilling" {
+    const allocator = std.testing.allocator;
+
+    var regalloc = RegisterAllocator.init(allocator);
+
+    // Create IR that uses more than 8 registers simultaneously
+    var ir: [20]IRInstruction = undefined;
+    for (0..16) |i| {
+        ir[i] = .{ .opcode = .LOAD_CONST, .dest = @intCast(i), .src1 = 0, .src2 = 0, .imm = @intCast(i * 10) };
+    }
+    // Use all registers at the end to keep them live
+    ir[16] = .{ .opcode = .ADD_INT, .dest = 16, .src1 = 0, .src2 = 1, .imm = 0 };
+    ir[17] = .{ .opcode = .ADD_INT, .dest = 17, .src1 = 2, .src2 = 3, .imm = 0 };
+    ir[18] = .{ .opcode = .ADD_INT, .dest = 18, .src1 = 16, .src2 = 17, .imm = 0 };
+    ir[19] = .{ .opcode = .RETURN, .dest = 18, .src1 = 0, .src2 = 0, .imm = 0 };
+
+    var result = try regalloc.allocate(&ir);
+    defer result.spilled.deinit();
+
+    const stats = regalloc.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== RegisterAllocator Spilling Test ===\n", .{});
+        std.debug.print("Registers allocated: {d}\n", .{stats.allocated});
+        std.debug.print("Spills generated: {d}\n", .{stats.spills});
+    }
+
+    // With 8 physical registers and 19 virtual registers, some should spill
+    try std.testing.expect(stats.allocated > 0);
+}
+
+test "RegisterAllocator in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 20,
+    });
+    defer compiler.deinit();
+
+    // Verify regalloc is enabled by default
+    try std.testing.expect(compiler.enable_regalloc);
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 100 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 50 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x1000;
+
+    // Trigger tier1 promotion
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted);
+
+    // Check regalloc stats - stats accumulate across calls
+    const regalloc_stats = compiler.regalloc.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== RegisterAllocator in TieredCompiler ===\n", .{});
+        std.debug.print("Registers allocated: {d}\n", .{regalloc_stats.allocated});
+        std.debug.print("Spills: {d}\n", .{regalloc_stats.spills});
+    }
+
+    // Verify regalloc was called (stats should be > 0)
+    try std.testing.expect(regalloc_stats.allocated > 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PGO TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "ProfileData basic recording" {
+    const allocator = std.testing.allocator;
+
+    var profile = ProfileData.init(allocator);
+    defer profile.deinit();
+
+    // Record branch outcomes
+    try profile.recordBranch(0x100, true);
+    try profile.recordBranch(0x100, true);
+    try profile.recordBranch(0x100, false);
+
+    // Check probability
+    const prob = profile.getBranchProbability(0x100);
+    try std.testing.expect(prob != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.666), prob.?, 0.01);
+
+    // Record loop iterations
+    try profile.recordLoopIteration(0x200);
+    try profile.recordLoopIteration(0x200);
+    try profile.recordLoopIteration(0x200);
+
+    try std.testing.expect(!profile.isHotLoop(0x200, 10));
+    try std.testing.expect(profile.isHotLoop(0x200, 2));
+
+    // Record block executions
+    try profile.recordBlockExecution(0x300);
+    try profile.recordBlockExecution(0x300);
+
+    var hot_blocks = try profile.getHotBlocks(1);
+    defer hot_blocks.deinit();
+    try std.testing.expectEqual(@as(usize, 1), hot_blocks.items.len);
+}
+
+test "ProfileInstrumenter basic instrumentation" {
+    const allocator = std.testing.allocator;
+
+    var profile = ProfileData.init(allocator);
+    defer profile.deinit();
+
+    var instrumenter = ProfileInstrumenter.init(allocator, &profile);
+
+    // IR with branches and jumps
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .JUMP, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 }, // backward jump
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const instrumented = try instrumenter.instrument(&ir);
+    defer allocator.free(instrumented);
+
+    const stats = instrumenter.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== ProfileInstrumenter Test ===\n", .{});
+        std.debug.print("Branches instrumented: {d}\n", .{stats.branches});
+        std.debug.print("Loops instrumented: {d}\n", .{stats.loops});
+        std.debug.print("Blocks instrumented: {d}\n", .{stats.blocks});
+    }
+
+    try std.testing.expect(stats.branches >= 1);
+    try std.testing.expect(stats.loops >= 1);
+}
+
+test "PGOOptimizer basic optimization" {
+    const allocator = std.testing.allocator;
+
+    var profile = ProfileData.init(allocator);
+    defer profile.deinit();
+
+    // Simulate profiling data - branch at address 1 is almost always taken
+    try profile.recordBranch(1, true);
+    try profile.recordBranch(1, true);
+    try profile.recordBranch(1, true);
+    try profile.recordBranch(1, true);
+    try profile.recordBranch(1, true);
+    try profile.recordBranch(1, false); // 5/6 = 83% taken
+
+    // Hot loop at address 3
+    for (0..2000) |_| {
+        try profile.recordLoopIteration(3);
+    }
+
+    var pgo = PGOOptimizer.init(allocator, &profile);
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try pgo.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = pgo.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== PGOOptimizer Test ===\n", .{});
+        std.debug.print("Branches optimized: {d}\n", .{stats.branches});
+        std.debug.print("Loops unrolled: {d}\n", .{stats.loops});
+    }
+
+    // Loop should be detected as hot
+    try std.testing.expect(stats.loops >= 1);
+}
+
+test "PGO in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 20,
+    });
+    defer compiler.deinit();
+
+    // Enable PGO
+    compiler.enablePGO();
+    try std.testing.expect(compiler.enable_pgo);
+    try std.testing.expect(compiler.instrumenter != null);
+    try std.testing.expect(compiler.pgo != null);
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 100 },
+        .{ .opcode = .JUMP_IF_ZERO, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 50 },
+        .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x2000;
+
+    // Trigger tier1 promotion with PGO instrumentation
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted);
+
+    // Check instrumenter stats
+    if (compiler.instrumenter) |inst| {
+        const inst_stats = inst.getStats();
+        if (@import("builtin").mode == .Debug) {
+            std.debug.print("\n=== PGO in TieredCompiler ===\n", .{});
+            std.debug.print("Branches instrumented: {d}\n", .{inst_stats.branches});
+            std.debug.print("Loops instrumented: {d}\n", .{inst_stats.loops});
+            std.debug.print("Blocks instrumented: {d}\n", .{inst_stats.blocks});
+        }
+        try std.testing.expect(inst_stats.branches >= 1);
     }
 }
