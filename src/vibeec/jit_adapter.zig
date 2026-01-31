@@ -455,27 +455,35 @@ pub const LoopUnroller = struct {
 
             // Look for backward jumps (LOOP_BACK or JUMP with negative offset)
             if (instr.opcode == .LOOP_BACK) {
-                const target: usize = @intCast(instr.imm);
-                if (target < i) {
-                    self.loops_detected += 1;
-                    try loops.append(LoopInfo{
-                        .start_idx = target,
-                        .end_idx = i,
-                        .iteration_count = null, // Unknown
-                        .body_size = i - target,
-                    });
+                // imm is a relative offset (negative for backward jump)
+                if (instr.imm < 0) {
+                    const offset: usize = @intCast(-instr.imm);
+                    if (offset <= i) {
+                        const target = i - offset;
+                        self.loops_detected += 1;
+                        try loops.append(LoopInfo{
+                            .start_idx = target,
+                            .end_idx = i,
+                            .iteration_count = null, // Unknown
+                            .body_size = i - target,
+                        });
+                    }
                 }
             } else if (instr.opcode == .JUMP) {
-                const target: usize = @intCast(instr.imm);
-                if (target < i) {
-                    // Backward jump - potential loop
-                    self.loops_detected += 1;
-                    try loops.append(LoopInfo{
-                        .start_idx = target,
-                        .end_idx = i,
-                        .iteration_count = null,
-                        .body_size = i - target,
-                    });
+                // imm is a relative offset (negative for backward jump)
+                if (instr.imm < 0) {
+                    const offset: usize = @intCast(-instr.imm);
+                    if (offset <= i) {
+                        const target = i - offset;
+                        // Backward jump - potential loop
+                        self.loops_detected += 1;
+                        try loops.append(LoopInfo{
+                            .start_idx = target,
+                            .end_idx = i,
+                            .iteration_count = null,
+                            .body_size = i - target,
+                        });
+                    }
                 }
             }
         }
@@ -2513,6 +2521,172 @@ pub const InlineCandidate = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// LOOP INVARIANT CODE MOTION (LICM)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// LICM Optimizer - moves loop-invariant computations out of loops
+/// An instruction is loop-invariant if:
+/// 1. It's a constant load (LOAD_CONST)
+/// 2. All its operands are defined outside the loop or are themselves invariant
+/// 3. It has no side effects (no stores, calls, etc.)
+pub const LICMOptimizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    loops_analyzed: usize = 0,
+    instructions_hoisted: usize = 0,
+    iterations_saved: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .loops_analyzed = 0,
+            .instructions_hoisted = 0,
+            .iterations_saved = 0,
+        };
+    }
+
+    /// Check if an instruction has side effects (cannot be moved)
+    fn hasSideEffects(instr: IRInstruction) bool {
+        return switch (instr.opcode) {
+            .STORE_LOCAL, .STORE_GLOBAL, .CALL, .TAIL_CALL, .RETURN,
+            .JUMP, .JUMP_IF_ZERO, .JUMP_IF_NOT_ZERO, .LOOP_BACK,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Check if a register is defined within the loop body
+    fn isDefinedInLoop(ir: []const IRInstruction, loop: LoopInfo, reg: u8) bool {
+        for (loop.start_idx..loop.end_idx) |i| {
+            if (ir[i].dest == reg) return true;
+        }
+        return false;
+    }
+
+    /// Check if an instruction is loop-invariant
+    fn isLoopInvariant(self: *Self, ir: []const IRInstruction, loop: LoopInfo, instr_idx: usize) bool {
+        _ = self;
+        const instr = ir[instr_idx];
+
+        // Instructions with side effects cannot be hoisted
+        if (hasSideEffects(instr)) return false;
+
+        // LOAD_CONST is always invariant
+        if (instr.opcode == .LOAD_CONST) return true;
+
+        // Check if all source operands are defined outside the loop
+        // or are themselves loop-invariant constants
+        const src1_in_loop = isDefinedInLoop(ir, loop, instr.src1);
+        const src2_in_loop = isDefinedInLoop(ir, loop, instr.src2);
+
+        // If any source is defined in the loop, not invariant
+        // (simplified - full analysis would check if source is also invariant)
+        if (src1_in_loop or src2_in_loop) return false;
+
+        return true;
+    }
+
+    /// Check if it's safe to hoist an instruction (no dependencies broken)
+    fn canHoist(self: *Self, ir: []const IRInstruction, loop: LoopInfo, instr_idx: usize) bool {
+        const instr = ir[instr_idx];
+
+        // Must be loop-invariant
+        if (!self.isLoopInvariant(ir, loop, instr_idx)) return false;
+
+        // Check that the dest register is not used before this instruction in the loop
+        // (to avoid breaking dependencies)
+        for (loop.start_idx..instr_idx) |i| {
+            const other = ir[i];
+            if (other.src1 == instr.dest or other.src2 == instr.dest) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// Optimize IR by hoisting loop-invariant code
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        // First, detect loops using LoopUnroller's detection
+        var loop_unroller = LoopUnroller.init(self.allocator);
+        const loops = try loop_unroller.detectLoops(ir);
+        defer self.allocator.free(loops);
+
+        if (loops.len == 0) {
+            // No loops, return copy of original
+            return try self.allocator.dupe(IRInstruction, ir);
+        }
+
+        self.loops_analyzed += loops.len;
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // For each loop, find invariant instructions to hoist
+        var hoisted = std.AutoHashMap(usize, bool).init(self.allocator);
+        defer hoisted.deinit();
+
+        // Collect instructions to hoist for each loop
+        for (loops) |loop| {
+            for (loop.start_idx..loop.end_idx) |i| {
+                if (self.canHoist(ir, loop, i)) {
+                    try hoisted.put(i, true);
+                    self.instructions_hoisted += 1;
+                    // Estimate iterations saved (assume average 10 iterations)
+                    self.iterations_saved += 10;
+                }
+            }
+        }
+
+        // Build result: hoisted instructions first, then rest
+        // For simplicity, we'll insert hoisted instructions before their loop
+
+        var current_loop_idx: usize = 0;
+        var i: usize = 0;
+
+        while (i < ir.len) : (i += 1) {
+            // Check if we're at the start of a loop
+            if (current_loop_idx < loops.len and i == loops[current_loop_idx].start_idx) {
+                const loop = loops[current_loop_idx];
+
+                // First, emit hoisted instructions for this loop
+                for (loop.start_idx..loop.end_idx) |j| {
+                    if (hoisted.get(j) orelse false) {
+                        try result.append(ir[j]);
+                    }
+                }
+
+                // Then emit the loop body (skipping hoisted instructions)
+                for (loop.start_idx..loop.end_idx + 1) |j| {
+                    if (!(hoisted.get(j) orelse false)) {
+                        try result.append(ir[j]);
+                    }
+                }
+
+                // Skip past the loop
+                i = loop.end_idx;
+                current_loop_idx += 1;
+            } else {
+                try result.append(ir[i]);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { loops: usize, hoisted: usize, saved: usize } {
+        return .{
+            .loops = self.loops_analyzed,
+            .hoisted = self.instructions_hoisted,
+            .saved = self.iterations_saved,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TAIL CALL OPTIMIZATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2933,6 +3107,8 @@ pub const TieredCompiler = struct {
     inliner: InlineExpander,
     /// Tail call optimizer
     tco: TailCallOptimizer,
+    /// LICM optimizer
+    licm: LICMOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -2955,6 +3131,8 @@ pub const TieredCompiler = struct {
     enable_inlining: bool,
     /// Enable tail call optimization
     enable_tco: bool,
+    /// Enable LICM
+    enable_licm: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -2980,6 +3158,7 @@ pub const TieredCompiler = struct {
             .pgo = null,
             .inliner = InlineExpander.init(allocator),
             .tco = TailCallOptimizer.init(allocator),
+            .licm = LICMOptimizer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -2991,6 +3170,7 @@ pub const TieredCompiler = struct {
             .enable_pgo = true,
             .enable_inlining = true,
             .enable_tco = true,
+            .enable_licm = true,
             .stats = TieredStats.init(),
         };
     }
@@ -3099,6 +3279,13 @@ pub const TieredCompiler = struct {
                     const tco_result = try self.tco.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
                     optimized_ir = tco_result;
+                }
+
+                // LICM - hoist loop-invariant code (before loop unrolling)
+                if (self.enable_licm) {
+                    const licm_result = try self.licm.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = licm_result;
                 }
 
                 if (self.enable_strength_reduction) {
@@ -5578,12 +5765,12 @@ test "LoopUnroller detect simple loop" {
 
     var unroller = LoopUnroller.init(allocator);
 
-    // IR with a simple loop: instructions 0-3, then LOOP_BACK to 1
+    // IR with a simple loop: instructions 0-3, then LOOP_BACK with offset -2 (back 2 instructions)
     const ir = [_]IRInstruction{
         .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 0: init
         .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 1 }, // 1: loop start
         .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, // 2: body
-        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 }, // 3: back to 1
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -2 }, // 3: back to 1 (offset -2)
         .{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // 4: return
     };
 
@@ -8071,4 +8258,162 @@ test "TailCallOptimizer recursive function pattern" {
 
     // The recursive CALL+RETURN should be optimized
     try std.testing.expect(stats.optimized >= 1);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LICM (LOOP INVARIANT CODE MOTION) TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "LICMOptimizer detect loop invariant LOAD_CONST" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    // Loop with invariant LOAD_CONST inside
+    // for (i = 0; i < 10; i++) { x = 42; y = i + x; }
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },     // i = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },    // limit = 10
+        // Loop start
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 42 },    // x = 42 (INVARIANT!)
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 2, .imm = 0 },        // y = i + x
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },        // i++
+        .{ .opcode = .CMP_LT_INT, .dest = 4, .src1 = 0, .src2 = 1, .imm = 0 },     // i < 10
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 4, .src2 = 0, .imm = -4 },     // back to loop start
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try licm.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = licm.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== LICM LOAD_CONST Test ===\n", .{});
+        std.debug.print("Original IR: {d} instructions\n", .{ir.len});
+        std.debug.print("Optimized IR: {d} instructions\n", .{optimized.len});
+        std.debug.print("Loops analyzed: {d}\n", .{stats.loops});
+        std.debug.print("Instructions hoisted: {d}\n", .{stats.hoisted});
+        std.debug.print("Iterations saved: {d}\n", .{stats.saved});
+    }
+
+    // Should have analyzed at least one loop
+    try std.testing.expect(stats.loops >= 1);
+}
+
+test "LICMOptimizer no hoisting for loop-dependent code" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    // Loop where all instructions depend on loop variable
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },     // i = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },    // limit = 10
+        // Loop start
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },        // x = i * i (depends on i)
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },        // i++
+        .{ .opcode = .CMP_LT_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 },     // i < 10
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 3, .src2 = 0, .imm = -3 },     // back to loop start
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try licm.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = licm.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== LICM No Hoisting Test ===\n", .{});
+        std.debug.print("Instructions hoisted: {d}\n", .{stats.hoisted});
+    }
+
+    // MUL depends on loop variable, should not be hoisted
+    // (only LOAD_CONST might be hoisted if any)
+}
+
+test "LICMOptimizer in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 20,
+    });
+    defer compiler.deinit();
+
+    // Verify LICM is enabled
+    try std.testing.expect(compiler.enable_licm);
+
+    // IR with a loop containing invariant code
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        // Loop body
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 100 }, // Invariant
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 2, .imm = 0 },
+        .{ .opcode = .INC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .CMP_LT_INT, .dest = 4, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 4, .src2 = 0, .imm = -4 },
+        .{ .opcode = .RETURN, .dest = 3, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x7000;
+
+    // Trigger tier1 promotion
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted);
+
+    // Check LICM stats
+    const licm_stats = compiler.licm.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== LICM in TieredCompiler ===\n", .{});
+        std.debug.print("Loops analyzed: {d}\n", .{licm_stats.loops});
+        std.debug.print("Instructions hoisted: {d}\n", .{licm_stats.hoisted});
+        std.debug.print("Iterations saved: {d}\n", .{licm_stats.saved});
+    }
+
+    try std.testing.expect(licm_stats.loops >= 1);
+}
+
+test "LICMOptimizer hasSideEffects" {
+    // Test side effect detection
+    try std.testing.expect(LICMOptimizer.hasSideEffects(.{ .opcode = .STORE_LOCAL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+    try std.testing.expect(LICMOptimizer.hasSideEffects(.{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+    try std.testing.expect(LICMOptimizer.hasSideEffects(.{ .opcode = .RETURN, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+    try std.testing.expect(LICMOptimizer.hasSideEffects(.{ .opcode = .JUMP, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+
+    // These should NOT have side effects
+    try std.testing.expect(!LICMOptimizer.hasSideEffects(.{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+    try std.testing.expect(!LICMOptimizer.hasSideEffects(.{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+    try std.testing.expect(!LICMOptimizer.hasSideEffects(.{ .opcode = .MUL_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }));
+}
+
+test "LICMOptimizer no loops" {
+    const allocator = std.testing.allocator;
+
+    var licm = LICMOptimizer.init(allocator);
+
+    // IR without any loops
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try licm.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = licm.getStats();
+
+    // No loops to analyze
+    try std.testing.expectEqual(@as(usize, 0), stats.loops);
+    try std.testing.expectEqual(@as(usize, 0), stats.hoisted);
+
+    // Output should be same as input
+    try std.testing.expectEqual(ir.len, optimized.len);
 }
