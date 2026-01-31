@@ -1583,6 +1583,457 @@ pub const LinkedTraceJIT = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DEOPTIMIZATION FRAMEWORK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Reason for deoptimization
+pub const DeoptReason = enum(u8) {
+    /// Type guard failed
+    type_guard_failed,
+    /// Bounds check failed
+    bounds_check_failed,
+    /// Null check failed
+    null_check_failed,
+    /// Overflow detected
+    overflow,
+    /// Division by zero
+    division_by_zero,
+    /// Invalid assumption
+    invalid_assumption,
+    /// Uncommon trap (rarely taken path)
+    uncommon_trap,
+    /// OSR entry point
+    osr_entry,
+    /// Manual deopt request
+    manual,
+};
+
+/// Saved register state at deoptimization point
+pub const SavedRegisterState = struct {
+    /// Register values (up to 256 registers)
+    values: [256]i64,
+    /// Which registers are valid
+    valid_mask: [4]u64, // 256 bits
+    /// Number of valid registers
+    count: u8,
+
+    pub fn init() SavedRegisterState {
+        return .{
+            .values = [_]i64{0} ** 256,
+            .valid_mask = [_]u64{0} ** 4,
+            .count = 0,
+        };
+    }
+
+    pub fn save(self: *SavedRegisterState, reg: u8, value: i64) void {
+        self.values[reg] = value;
+        const word_idx = reg / 64;
+        const bit_idx: u6 = @intCast(reg % 64);
+        self.valid_mask[word_idx] |= (@as(u64, 1) << bit_idx);
+        self.count += 1;
+    }
+
+    pub fn get(self: *const SavedRegisterState, reg: u8) ?i64 {
+        const word_idx = reg / 64;
+        const bit_idx: u6 = @intCast(reg % 64);
+        if ((self.valid_mask[word_idx] & (@as(u64, 1) << bit_idx)) != 0) {
+            return self.values[reg];
+        }
+        return null;
+    }
+
+    pub fn isValid(self: *const SavedRegisterState, reg: u8) bool {
+        const word_idx = reg / 64;
+        const bit_idx: u6 = @intCast(reg % 64);
+        return (self.valid_mask[word_idx] & (@as(u64, 1) << bit_idx)) != 0;
+    }
+};
+
+/// A point where deoptimization can occur
+pub const DeoptimizationPoint = struct {
+    /// Unique ID for this deopt point
+    id: u32,
+    /// Address in compiled code where deopt can happen
+    compiled_addr: u32,
+    /// Corresponding bytecode address to resume at
+    bytecode_addr: u32,
+    /// Instruction index in IR
+    ir_index: usize,
+    /// Reason for potential deopt
+    reason: DeoptReason,
+    /// Saved register state (snapshot at this point)
+    registers: SavedRegisterState,
+    /// Stack depth at this point
+    stack_depth: u32,
+    /// Number of times this deopt point was triggered
+    trigger_count: u64,
+    /// Is this deopt point still active?
+    is_active: bool,
+
+    pub fn init(id: u32, compiled_addr: u32, bytecode_addr: u32, ir_index: usize, reason: DeoptReason) DeoptimizationPoint {
+        return .{
+            .id = id,
+            .compiled_addr = compiled_addr,
+            .bytecode_addr = bytecode_addr,
+            .ir_index = ir_index,
+            .reason = reason,
+            .registers = SavedRegisterState.init(),
+            .stack_depth = 0,
+            .trigger_count = 0,
+            .is_active = true,
+        };
+    }
+
+    pub fn trigger(self: *DeoptimizationPoint) void {
+        self.trigger_count += 1;
+    }
+
+    pub fn deactivate(self: *DeoptimizationPoint) void {
+        self.is_active = false;
+    }
+};
+
+/// Result of deoptimization
+pub const DeoptResult = struct {
+    /// Bytecode address to resume execution
+    resume_addr: u32,
+    /// Register state to restore
+    registers: SavedRegisterState,
+    /// Stack depth to restore
+    stack_depth: u32,
+    /// Reason for deopt
+    reason: DeoptReason,
+    /// Should recompile with different assumptions?
+    should_recompile: bool,
+};
+
+/// Deoptimization Manager - handles deoptimization and state recovery
+pub const DeoptimizationManager = struct {
+    allocator: Allocator,
+    /// Deopt points by compiled address
+    deopt_points: std.AutoHashMap(u32, DeoptimizationPoint),
+    /// Deopt points by ID
+    deopt_by_id: std.AutoHashMap(u32, u32), // id -> compiled_addr
+    /// Next deopt point ID
+    next_id: u32,
+    /// Deopt threshold before recompilation
+    recompile_threshold: u64,
+    /// Statistics
+    total_deopts: usize = 0,
+    type_guard_deopts: usize = 0,
+    bounds_check_deopts: usize = 0,
+    recompilations_triggered: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .deopt_points = std.AutoHashMap(u32, DeoptimizationPoint).init(allocator),
+            .deopt_by_id = std.AutoHashMap(u32, u32).init(allocator),
+            .next_id = 0,
+            .recompile_threshold = 10,
+            .total_deopts = 0,
+            .type_guard_deopts = 0,
+            .bounds_check_deopts = 0,
+            .recompilations_triggered = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.deopt_points.deinit();
+        self.deopt_by_id.deinit();
+    }
+
+    /// Create a deoptimization point
+    pub fn createDeoptPoint(
+        self: *Self,
+        compiled_addr: u32,
+        bytecode_addr: u32,
+        ir_index: usize,
+        reason: DeoptReason,
+    ) !u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const point = DeoptimizationPoint.init(id, compiled_addr, bytecode_addr, ir_index, reason);
+
+        try self.deopt_points.put(compiled_addr, point);
+        try self.deopt_by_id.put(id, compiled_addr);
+
+        return id;
+    }
+
+    /// Save register state at a deopt point
+    pub fn saveRegisterState(self: *Self, compiled_addr: u32, reg: u8, value: i64) void {
+        if (self.deopt_points.getPtr(compiled_addr)) |point| {
+            point.registers.save(reg, value);
+        }
+    }
+
+    /// Set stack depth at a deopt point
+    pub fn setStackDepth(self: *Self, compiled_addr: u32, depth: u32) void {
+        if (self.deopt_points.getPtr(compiled_addr)) |point| {
+            point.stack_depth = depth;
+        }
+    }
+
+    /// Trigger deoptimization at a point
+    pub fn triggerDeopt(self: *Self, compiled_addr: u32) ?DeoptResult {
+        const point = self.deopt_points.getPtr(compiled_addr) orelse return null;
+
+        if (!point.is_active) return null;
+
+        point.trigger();
+        self.total_deopts += 1;
+
+        // Track by reason
+        switch (point.reason) {
+            .type_guard_failed => self.type_guard_deopts += 1,
+            .bounds_check_failed => self.bounds_check_deopts += 1,
+            else => {},
+        }
+
+        // Check if should recompile
+        const should_recompile = point.trigger_count >= self.recompile_threshold;
+        if (should_recompile) {
+            self.recompilations_triggered += 1;
+            point.deactivate();
+        }
+
+        return DeoptResult{
+            .resume_addr = point.bytecode_addr,
+            .registers = point.registers,
+            .stack_depth = point.stack_depth,
+            .reason = point.reason,
+            .should_recompile = should_recompile,
+        };
+    }
+
+    /// Get deopt point by ID
+    pub fn getDeoptPoint(self: *Self, id: u32) ?*DeoptimizationPoint {
+        const addr = self.deopt_by_id.get(id) orelse return null;
+        return self.deopt_points.getPtr(addr);
+    }
+
+    /// Get deopt point by compiled address
+    pub fn getDeoptPointByAddr(self: *Self, addr: u32) ?*DeoptimizationPoint {
+        return self.deopt_points.getPtr(addr);
+    }
+
+    /// Remove all deopt points for a compiled address range
+    pub fn invalidateRange(self: *Self, start_addr: u32, end_addr: u32) void {
+        var to_remove = std.ArrayList(u32).init(self.allocator);
+        defer to_remove.deinit();
+
+        var iter = self.deopt_points.iterator();
+        while (iter.next()) |entry| {
+            if (entry.key_ptr.* >= start_addr and entry.key_ptr.* < end_addr) {
+                to_remove.append(entry.key_ptr.*) catch continue;
+            }
+        }
+
+        for (to_remove.items) |addr| {
+            if (self.deopt_points.get(addr)) |point| {
+                _ = self.deopt_by_id.remove(point.id);
+            }
+            _ = self.deopt_points.remove(addr);
+        }
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct {
+        total: usize,
+        type_guards: usize,
+        bounds_checks: usize,
+        recompilations: usize,
+        active_points: usize,
+    } {
+        var active: usize = 0;
+        var iter = self.deopt_points.valueIterator();
+        while (iter.next()) |point| {
+            if (point.is_active) active += 1;
+        }
+
+        return .{
+            .total = self.total_deopts,
+            .type_guards = self.type_guard_deopts,
+            .bounds_checks = self.bounds_check_deopts,
+            .recompilations = self.recompilations_triggered,
+            .active_points = active,
+        };
+    }
+};
+
+/// Deoptimization-aware IR generator
+pub const DeoptAwareIRGenerator = struct {
+    allocator: Allocator,
+    /// Deopt manager
+    deopt_manager: *DeoptimizationManager,
+    /// Current bytecode address
+    current_bytecode_addr: u32,
+    /// Current IR index
+    current_ir_index: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, deopt_manager: *DeoptimizationManager) Self {
+        return .{
+            .allocator = allocator,
+            .deopt_manager = deopt_manager,
+            .current_bytecode_addr = 0,
+            .current_ir_index = 0,
+        };
+    }
+
+    /// Set current position
+    pub fn setPosition(self: *Self, bytecode_addr: u32, ir_index: usize) void {
+        self.current_bytecode_addr = bytecode_addr;
+        self.current_ir_index = ir_index;
+    }
+
+    /// Generate type guard with deopt point
+    pub fn generateTypeGuard(self: *Self, compiled_addr: u32, reg: u8, expected_type: TypeTag) !IRInstruction {
+        // Create deopt point
+        _ = try self.deopt_manager.createDeoptPoint(
+            compiled_addr,
+            self.current_bytecode_addr,
+            self.current_ir_index,
+            .type_guard_failed,
+        );
+
+        return IRInstruction{
+            .opcode = .GUARD_TYPE,
+            .dest = reg,
+            .src1 = @intFromEnum(expected_type),
+            .src2 = 0,
+            .imm = @intCast(compiled_addr),
+        };
+    }
+
+    /// Generate bounds check with deopt point
+    pub fn generateBoundsCheck(self: *Self, compiled_addr: u32, index_reg: u8, length_reg: u8) !IRInstruction {
+        _ = try self.deopt_manager.createDeoptPoint(
+            compiled_addr,
+            self.current_bytecode_addr,
+            self.current_ir_index,
+            .bounds_check_failed,
+        );
+
+        return IRInstruction{
+            .opcode = .CMP_LT_INT,
+            .dest = index_reg,
+            .src1 = index_reg,
+            .src2 = length_reg,
+            .imm = @intCast(compiled_addr),
+        };
+    }
+
+    /// Generate null check with deopt point
+    pub fn generateNullCheck(self: *Self, compiled_addr: u32, reg: u8) !IRInstruction {
+        _ = try self.deopt_manager.createDeoptPoint(
+            compiled_addr,
+            self.current_bytecode_addr,
+            self.current_ir_index,
+            .null_check_failed,
+        );
+
+        return IRInstruction{
+            .opcode = .GUARD_TYPE,
+            .dest = reg,
+            .src1 = @intFromEnum(TypeTag.nil),
+            .src2 = 1, // Invert check (fail if nil)
+            .imm = @intCast(compiled_addr),
+        };
+    }
+
+    /// Generate uncommon trap
+    pub fn generateUncommonTrap(self: *Self, compiled_addr: u32) !IRInstruction {
+        _ = try self.deopt_manager.createDeoptPoint(
+            compiled_addr,
+            self.current_bytecode_addr,
+            self.current_ir_index,
+            .uncommon_trap,
+        );
+
+        return IRInstruction{
+            .opcode = .DEOPT,
+            .dest = 0,
+            .src1 = 0,
+            .src2 = 0,
+            .imm = @intCast(compiled_addr),
+        };
+    }
+};
+
+/// Speculation state for tracking assumptions
+/// Range assumption for speculation
+pub const RangeAssumption = struct {
+    min: i64,
+    max: i64,
+};
+
+pub const SpeculationState = struct {
+    /// Type assumptions: register -> assumed type
+    type_assumptions: std.AutoHashMap(u8, TypeTag),
+    /// Value range assumptions: register -> (min, max)
+    range_assumptions: std.AutoHashMap(u8, RangeAssumption),
+    /// Non-null assumptions
+    non_null_assumptions: std.AutoHashMap(u8, void),
+    /// Number of failed speculations
+    failed_speculations: usize,
+
+    pub fn init(allocator: Allocator) SpeculationState {
+        return .{
+            .type_assumptions = std.AutoHashMap(u8, TypeTag).init(allocator),
+            .range_assumptions = std.AutoHashMap(u8, RangeAssumption).init(allocator),
+            .non_null_assumptions = std.AutoHashMap(u8, void).init(allocator),
+            .failed_speculations = 0,
+        };
+    }
+
+    pub fn deinit(self: *SpeculationState) void {
+        self.type_assumptions.deinit();
+        self.range_assumptions.deinit();
+        self.non_null_assumptions.deinit();
+    }
+
+    pub fn assumeType(self: *SpeculationState, reg: u8, typ: TypeTag) !void {
+        try self.type_assumptions.put(reg, typ);
+    }
+
+    pub fn assumeRange(self: *SpeculationState, reg: u8, min: i64, max: i64) !void {
+        try self.range_assumptions.put(reg, .{ .min = min, .max = max });
+    }
+
+    pub fn assumeNonNull(self: *SpeculationState, reg: u8) !void {
+        try self.non_null_assumptions.put(reg, {});
+    }
+
+    pub fn getTypeAssumption(self: *SpeculationState, reg: u8) ?TypeTag {
+        return self.type_assumptions.get(reg);
+    }
+
+    pub fn getRangeAssumption(self: *SpeculationState, reg: u8) ?RangeAssumption {
+        return self.range_assumptions.get(reg);
+    }
+
+    pub fn isAssumedNonNull(self: *SpeculationState, reg: u8) bool {
+        return self.non_null_assumptions.contains(reg);
+    }
+
+    pub fn recordFailure(self: *SpeculationState) void {
+        self.failed_speculations += 1;
+    }
+
+    pub fn clear(self: *SpeculationState) void {
+        self.type_assumptions.clearRetainingCapacity();
+        self.range_assumptions.clearRetainingCapacity();
+        self.non_null_assumptions.clearRetainingCapacity();
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -6142,6 +6593,12 @@ pub const TieredCompiler = struct {
     enable_trace_linking: bool,
     /// Linked trace JIT manager
     linked_trace_jit: LinkedTraceJIT,
+    /// Enable deoptimization framework
+    enable_deopt: bool,
+    /// Deoptimization manager
+    deopt_manager: DeoptimizationManager,
+    /// Speculation state
+    speculation_state: SpeculationState,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -6200,6 +6657,9 @@ pub const TieredCompiler = struct {
             .trace_jit = TraceJIT.init(allocator),
             .enable_trace_linking = true,
             .linked_trace_jit = LinkedTraceJIT.init(allocator),
+            .enable_deopt = true,
+            .deopt_manager = DeoptimizationManager.init(allocator),
+            .speculation_state = SpeculationState.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -6246,6 +6706,10 @@ pub const TieredCompiler = struct {
         // Free trace JIT
         self.trace_jit.deinit();
         self.linked_trace_jit.deinit();
+
+        // Free deoptimization
+        self.deopt_manager.deinit();
+        self.speculation_state.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -6345,6 +6809,45 @@ pub const TieredCompiler = struct {
             return self.getCompiledTrace(addr);
         }
         return try self.linked_trace_jit.getOptimizedTrace(addr);
+    }
+
+    /// Get deoptimization manager
+    pub fn getDeoptManager(self: *Self) *DeoptimizationManager {
+        return &self.deopt_manager;
+    }
+
+    /// Get speculation state
+    pub fn getSpeculationState(self: *Self) *SpeculationState {
+        return &self.speculation_state;
+    }
+
+    /// Create a deoptimization point
+    pub fn createDeoptPoint(
+        self: *Self,
+        compiled_addr: u32,
+        bytecode_addr: u32,
+        ir_index: usize,
+        reason: DeoptReason,
+    ) !u32 {
+        if (!self.enable_deopt) return 0;
+        return try self.deopt_manager.createDeoptPoint(compiled_addr, bytecode_addr, ir_index, reason);
+    }
+
+    /// Trigger deoptimization
+    pub fn triggerDeopt(self: *Self, compiled_addr: u32) ?DeoptResult {
+        if (!self.enable_deopt) return null;
+        return self.deopt_manager.triggerDeopt(compiled_addr);
+    }
+
+    /// Record type assumption for speculation
+    pub fn assumeType(self: *Self, reg: u8, typ: TypeTag) !void {
+        try self.speculation_state.assumeType(reg, typ);
+    }
+
+    /// Check if speculation is safe based on failure rate
+    pub fn isSpeculationSafe(self: *Self) bool {
+        // If too many failures, disable speculation
+        return self.speculation_state.failed_speculations < 10;
     }
 
     /// Get or create function state
@@ -12912,6 +13415,235 @@ test "LinkedTraceJIT in TieredCompiler" {
     const linked_jit = compiler.getLinkedTraceJIT();
     const stats = linked_jit.getStats();
     _ = stats;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEOPTIMIZATION FRAMEWORK TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "SavedRegisterState basic operations" {
+    var state = SavedRegisterState.init();
+
+    // Initially no registers are valid
+    try std.testing.expect(!state.isValid(0));
+    try std.testing.expect(state.get(0) == null);
+
+    // Save a register
+    state.save(0, 42);
+    try std.testing.expect(state.isValid(0));
+    try std.testing.expectEqual(@as(?i64, 42), state.get(0));
+
+    // Save another register
+    state.save(5, -100);
+    try std.testing.expect(state.isValid(5));
+    try std.testing.expectEqual(@as(?i64, -100), state.get(5));
+
+    // Unsaved register still invalid
+    try std.testing.expect(!state.isValid(10));
+}
+
+test "SavedRegisterState high register numbers" {
+    var state = SavedRegisterState.init();
+
+    // Test registers in different words of the bitmask
+    state.save(0, 1); // Word 0
+    state.save(64, 2); // Word 1
+    state.save(128, 3); // Word 2
+    state.save(192, 4); // Word 3
+    state.save(255, 5); // Last register
+
+    try std.testing.expectEqual(@as(?i64, 1), state.get(0));
+    try std.testing.expectEqual(@as(?i64, 2), state.get(64));
+    try std.testing.expectEqual(@as(?i64, 3), state.get(128));
+    try std.testing.expectEqual(@as(?i64, 4), state.get(192));
+    try std.testing.expectEqual(@as(?i64, 5), state.get(255));
+}
+
+test "DeoptimizationPoint creation" {
+    const point = DeoptimizationPoint.init(1, 0x1000, 0x500, 10, .type_guard_failed);
+
+    try std.testing.expectEqual(@as(u32, 1), point.id);
+    try std.testing.expectEqual(@as(u32, 0x1000), point.compiled_addr);
+    try std.testing.expectEqual(@as(u32, 0x500), point.bytecode_addr);
+    try std.testing.expectEqual(@as(usize, 10), point.ir_index);
+    try std.testing.expectEqual(DeoptReason.type_guard_failed, point.reason);
+    try std.testing.expect(point.is_active);
+    try std.testing.expectEqual(@as(u64, 0), point.trigger_count);
+}
+
+test "DeoptimizationPoint trigger and deactivate" {
+    var point = DeoptimizationPoint.init(1, 0x1000, 0x500, 10, .bounds_check_failed);
+
+    point.trigger();
+    try std.testing.expectEqual(@as(u64, 1), point.trigger_count);
+
+    point.trigger();
+    point.trigger();
+    try std.testing.expectEqual(@as(u64, 3), point.trigger_count);
+
+    try std.testing.expect(point.is_active);
+    point.deactivate();
+    try std.testing.expect(!point.is_active);
+}
+
+test "DeoptimizationManager create and trigger" {
+    const allocator = std.testing.allocator;
+
+    var manager = DeoptimizationManager.init(allocator);
+    defer manager.deinit();
+
+    // Create deopt point
+    const id = try manager.createDeoptPoint(0x1000, 0x500, 10, .type_guard_failed);
+    try std.testing.expectEqual(@as(u32, 0), id);
+
+    // Trigger deopt
+    const result = manager.triggerDeopt(0x1000);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0x500), result.?.resume_addr);
+    try std.testing.expectEqual(DeoptReason.type_guard_failed, result.?.reason);
+    try std.testing.expect(!result.?.should_recompile);
+
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.total);
+    try std.testing.expectEqual(@as(usize, 1), stats.type_guards);
+}
+
+test "DeoptimizationManager recompile threshold" {
+    const allocator = std.testing.allocator;
+
+    var manager = DeoptimizationManager.init(allocator);
+    defer manager.deinit();
+
+    manager.recompile_threshold = 3;
+
+    _ = try manager.createDeoptPoint(0x1000, 0x500, 10, .type_guard_failed);
+
+    // Trigger below threshold
+    var result = manager.triggerDeopt(0x1000);
+    try std.testing.expect(!result.?.should_recompile);
+
+    result = manager.triggerDeopt(0x1000);
+    try std.testing.expect(!result.?.should_recompile);
+
+    // Third trigger should request recompile
+    result = manager.triggerDeopt(0x1000);
+    try std.testing.expect(result.?.should_recompile);
+
+    // Point should be deactivated
+    const point = manager.getDeoptPointByAddr(0x1000);
+    try std.testing.expect(!point.?.is_active);
+
+    const stats = manager.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.recompilations);
+}
+
+test "DeoptimizationManager save register state" {
+    const allocator = std.testing.allocator;
+
+    var manager = DeoptimizationManager.init(allocator);
+    defer manager.deinit();
+
+    _ = try manager.createDeoptPoint(0x1000, 0x500, 10, .type_guard_failed);
+
+    // Save register state
+    manager.saveRegisterState(0x1000, 0, 100);
+    manager.saveRegisterState(0x1000, 1, 200);
+    manager.setStackDepth(0x1000, 5);
+
+    // Trigger and check state
+    const result = manager.triggerDeopt(0x1000);
+    try std.testing.expectEqual(@as(?i64, 100), result.?.registers.get(0));
+    try std.testing.expectEqual(@as(?i64, 200), result.?.registers.get(1));
+    try std.testing.expectEqual(@as(u32, 5), result.?.stack_depth);
+}
+
+test "SpeculationState type assumptions" {
+    const allocator = std.testing.allocator;
+
+    var state = SpeculationState.init(allocator);
+    defer state.deinit();
+
+    // No assumptions initially
+    try std.testing.expect(state.getTypeAssumption(0) == null);
+
+    // Add assumption
+    try state.assumeType(0, .int);
+    try std.testing.expectEqual(@as(?TypeTag, .int), state.getTypeAssumption(0));
+
+    // Add another
+    try state.assumeType(1, .float);
+    try std.testing.expectEqual(@as(?TypeTag, .float), state.getTypeAssumption(1));
+
+    // Clear
+    state.clear();
+    try std.testing.expect(state.getTypeAssumption(0) == null);
+}
+
+test "SpeculationState range assumptions" {
+    const allocator = std.testing.allocator;
+
+    var state = SpeculationState.init(allocator);
+    defer state.deinit();
+
+    try state.assumeRange(0, 0, 100);
+
+    const range = state.getRangeAssumption(0);
+    try std.testing.expect(range != null);
+    try std.testing.expectEqual(@as(i64, 0), range.?.min);
+    try std.testing.expectEqual(@as(i64, 100), range.?.max);
+}
+
+test "SpeculationState non-null assumptions" {
+    const allocator = std.testing.allocator;
+
+    var state = SpeculationState.init(allocator);
+    defer state.deinit();
+
+    try std.testing.expect(!state.isAssumedNonNull(0));
+
+    try state.assumeNonNull(0);
+    try std.testing.expect(state.isAssumedNonNull(0));
+}
+
+test "DeoptAwareIRGenerator type guard" {
+    const allocator = std.testing.allocator;
+
+    var manager = DeoptimizationManager.init(allocator);
+    defer manager.deinit();
+
+    var generator = DeoptAwareIRGenerator.init(allocator, &manager);
+    generator.setPosition(0x500, 10);
+
+    const guard = try generator.generateTypeGuard(0x1000, 0, .int);
+
+    try std.testing.expectEqual(jit.IROpcode.GUARD_TYPE, guard.opcode);
+    try std.testing.expectEqual(@as(u8, 0), guard.dest);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(TypeTag.int)), guard.src1);
+
+    // Deopt point should be created
+    const point = manager.getDeoptPointByAddr(0x1000);
+    try std.testing.expect(point != null);
+    try std.testing.expectEqual(@as(u32, 0x500), point.?.bytecode_addr);
+}
+
+test "Deoptimization in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_deopt);
+
+    // Create deopt point
+    const id = try compiler.createDeoptPoint(0x1000, 0x500, 10, .type_guard_failed);
+    try std.testing.expectEqual(@as(u32, 0), id);
+
+    // Trigger deopt
+    const result = compiler.triggerDeopt(0x1000);
+    try std.testing.expect(result != null);
+
+    // Check speculation safety
+    try std.testing.expect(compiler.isSpeculationSafe());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
