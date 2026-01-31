@@ -175,6 +175,9 @@ pub const Opcode = enum(u8) {
     LOAD_TRYTE_ADD = 0xA4, // Load local + tryte add (fused)
     INC_LT = 0xA5,
     DEC_GT = 0xA6,
+    ADD_LOCALS = 0xD0, // locals[dest] = locals[src1] + locals[src2] (6 bytes: 3 x u16)
+    SUB_LOCALS = 0xD1, // locals[dest] = locals[src1] - locals[src2]
+    MUL_LOCALS = 0xD2, // locals[dest] = locals[src1] * locals[src2]
     // New superinstructions for loop optimization
     INC_LOCAL = 0xAE, // locals[idx] += 1 (increment local)
     DEC_LOCAL = 0xAF, // locals[idx] -= 1 (decrement local)
@@ -184,6 +187,7 @@ pub const Opcode = enum(u8) {
             .PUSH_CONST, .JMP, .JZ, .JNZ, .CALL, .LOOP => 2,
             .LOAD_LOCAL, .STORE_LOCAL, .LOAD_GLOBAL, .STORE_GLOBAL => 2,
             .LOAD_ADD, .LOAD_SUB, .LOAD_MUL, .TAIL_CALL, .LOAD_TRYTE_ADD, .INC_LOCAL, .DEC_LOCAL => 2,
+            .ADD_LOCALS, .SUB_LOCALS, .MUL_LOCALS => 6, // 3 x u16 indices
             .LT_JZ, .LE_JZ, .GT_JZ, .GE_JZ, .EQ_JZ, .NE_JZ => 2,
             .CALL_INDIRECT => 1, // arity (number of args)
             .LOAD_ARG, .STORE_ARG => 1, // arg index

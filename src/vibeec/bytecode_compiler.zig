@@ -604,6 +604,36 @@ pub const BytecodeCompiler = struct {
                                     return;
                                 }
                             }
+                            // Pattern: x = x op y (where y is also local) -> ADD_LOCALS/MUL_LOCALS
+                            if (rhs_right.kind == .identifier) {
+                                const rhs_right_name = rhs_right.token.lexeme(self.source);
+                                if (self.resolveLocal(rhs_right_name)) |src2_idx| {
+                                    // x = x + y -> ADD_LOCALS(dest=x, src1=x, src2=y)
+                                    if (std.mem.eql(u8, rhs_op, "+")) {
+                                        try self.emitter.emit(.ADD_LOCALS);
+                                        try self.emitter.code.append(@intCast((idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(idx & 0xFF));
+                                        try self.emitter.code.append(@intCast((idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(idx & 0xFF));
+                                        try self.emitter.code.append(@intCast((src2_idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(src2_idx & 0xFF));
+                                        try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
+                                        return;
+                                    }
+                                    // x = x * y -> MUL_LOCALS(dest=x, src1=x, src2=y)
+                                    if (std.mem.eql(u8, rhs_op, "*")) {
+                                        try self.emitter.emit(.MUL_LOCALS);
+                                        try self.emitter.code.append(@intCast((idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(idx & 0xFF));
+                                        try self.emitter.code.append(@intCast((idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(idx & 0xFF));
+                                        try self.emitter.code.append(@intCast((src2_idx >> 8) & 0xFF));
+                                        try self.emitter.code.append(@intCast(src2_idx & 0xFF));
+                                        try self.emitter.emitWithU16(.LOAD_LOCAL, idx);
+                                        return;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

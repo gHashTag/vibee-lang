@@ -677,6 +677,40 @@ pub const VM = struct {
                 continue;
             }
 
+            // ADD_LOCALS - locals[dest] = locals[src1] + locals[src2]
+            if (opcode_byte == 0xD0) { // ADD_LOCALS
+                const dest = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                const src1 = (@as(u16, code[ip + 2]) << 8) | @as(u16, code[ip + 3]);
+                const src2 = (@as(u16, code[ip + 4]) << 8) | @as(u16, code[ip + 5]);
+                ip += 6;
+                const a = self.locals[@min(src1, MAX_LOCALS - 1)];
+                const b = self.locals[@min(src2, MAX_LOCALS - 1)];
+                if (a == .int_val and b == .int_val) {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = a.int_val + b.int_val };
+                } else {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = (a.toInt() orelse 0) + (b.toInt() orelse 0) };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
+            // MUL_LOCALS - locals[dest] = locals[src1] * locals[src2]
+            if (opcode_byte == 0xD2) { // MUL_LOCALS
+                const dest = (@as(u16, code[ip]) << 8) | @as(u16, code[ip + 1]);
+                const src1 = (@as(u16, code[ip + 2]) << 8) | @as(u16, code[ip + 3]);
+                const src2 = (@as(u16, code[ip + 4]) << 8) | @as(u16, code[ip + 5]);
+                ip += 6;
+                const a = self.locals[@min(src1, MAX_LOCALS - 1)];
+                const b = self.locals[@min(src2, MAX_LOCALS - 1)];
+                if (a == .int_val and b == .int_val) {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = a.int_val * b.int_val };
+                } else {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = (a.toInt() orelse 0) * (b.toInt() orelse 0) };
+                }
+                self.instructions_executed += 1;
+                continue;
+            }
+
             // Fast path for common ternary operations (inline dispatch)
             if (opcode_byte == 0x79) { // TRYTE_ADD
                 const b = stack[sp - 1];
@@ -1948,6 +1982,46 @@ pub const VM = struct {
                     self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = local.int_val - 1 };
                 } else {
                     self.locals[@min(idx, MAX_LOCALS - 1)] = .{ .int_val = (local.toInt() orelse 0) - 1 };
+                }
+            },
+
+            .ADD_LOCALS => {
+                // Superinstruction: locals[dest] = locals[src1] + locals[src2]
+                const dest = try self.readU16();
+                const src1 = try self.readU16();
+                const src2 = try self.readU16();
+                const a = self.locals[@min(src1, MAX_LOCALS - 1)];
+                const b = self.locals[@min(src2, MAX_LOCALS - 1)];
+                if (a == .int_val and b == .int_val) {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = a.int_val + b.int_val };
+                } else {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = (a.toInt() orelse 0) + (b.toInt() orelse 0) };
+                }
+            },
+
+            .SUB_LOCALS => {
+                const dest = try self.readU16();
+                const src1 = try self.readU16();
+                const src2 = try self.readU16();
+                const a = self.locals[@min(src1, MAX_LOCALS - 1)];
+                const b = self.locals[@min(src2, MAX_LOCALS - 1)];
+                if (a == .int_val and b == .int_val) {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = a.int_val - b.int_val };
+                } else {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = (a.toInt() orelse 0) - (b.toInt() orelse 0) };
+                }
+            },
+
+            .MUL_LOCALS => {
+                const dest = try self.readU16();
+                const src1 = try self.readU16();
+                const src2 = try self.readU16();
+                const a = self.locals[@min(src1, MAX_LOCALS - 1)];
+                const b = self.locals[@min(src2, MAX_LOCALS - 1)];
+                if (a == .int_val and b == .int_val) {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = a.int_val * b.int_val };
+                } else {
+                    self.locals[@min(dest, MAX_LOCALS - 1)] = .{ .int_val = (a.toInt() orelse 0) * (b.toInt() orelse 0) };
                 }
             },
 
