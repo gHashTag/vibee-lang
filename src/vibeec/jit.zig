@@ -191,6 +191,7 @@ pub const IROpcode = enum(u8) {
     // Function calls
     CALL,        // dest = call func_id with args (imm = func_id, src1 = arg_count)
     CALL_INLINE, // Marker for inlined call (for debugging/profiling)
+    TAIL_CALL,   // Tail call optimization: jump instead of call+ret (imm = func_id)
 
     // Return
     RETURN,

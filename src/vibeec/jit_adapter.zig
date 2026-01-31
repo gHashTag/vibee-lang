@@ -2512,6 +2512,122 @@ pub const InlineCandidate = struct {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TAIL CALL OPTIMIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Tail Call Optimizer - converts CALL+RETURN sequences to TAIL_CALL
+/// This eliminates stack frame overhead for tail-recursive functions
+pub const TailCallOptimizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    tail_calls_detected: usize = 0,
+    tail_calls_optimized: usize = 0,
+    stack_frames_saved: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .tail_calls_detected = 0,
+            .tail_calls_optimized = 0,
+            .stack_frames_saved = 0,
+        };
+    }
+
+    /// Check if instruction at index is a tail call pattern
+    /// Pattern: CALL followed immediately by RETURN with same dest register
+    fn isTailCallPattern(ir: []const IRInstruction, index: usize) bool {
+        if (index + 1 >= ir.len) return false;
+
+        const call_instr = ir[index];
+        const next_instr = ir[index + 1];
+
+        // Must be CALL followed by RETURN
+        if (call_instr.opcode != .CALL) return false;
+        if (next_instr.opcode != .RETURN) return false;
+
+        // RETURN must use the same register as CALL dest
+        return next_instr.dest == call_instr.dest;
+    }
+
+    /// Check if a CALL is the last meaningful instruction before RETURN
+    /// (allows for some intervening NOPs or markers)
+    fn isTailPosition(self: *Self, ir: []const IRInstruction, call_index: usize) bool {
+        _ = self;
+        // Simple case: CALL immediately followed by RETURN
+        if (isTailCallPattern(ir, call_index)) return true;
+
+        // Check if only CALL_INLINE markers between CALL and RETURN
+        var i = call_index + 1;
+        while (i < ir.len) : (i += 1) {
+            const instr = ir[i];
+            switch (instr.opcode) {
+                .CALL_INLINE => continue, // Skip markers
+                .RETURN => {
+                    // Check if RETURN uses CALL's dest
+                    return instr.dest == ir[call_index].dest;
+                },
+                else => return false, // Other instruction breaks tail position
+            }
+        }
+        return false;
+    }
+
+    /// Optimize IR by converting tail calls to TAIL_CALL
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        var i: usize = 0;
+        while (i < ir.len) : (i += 1) {
+            const instr = ir[i];
+
+            if (instr.opcode == .CALL) {
+                self.tail_calls_detected += 1;
+
+                if (self.isTailPosition(ir, i)) {
+                    // Convert to TAIL_CALL
+                    try result.append(.{
+                        .opcode = .TAIL_CALL,
+                        .dest = instr.dest,
+                        .src1 = instr.src1,
+                        .src2 = instr.src2,
+                        .imm = instr.imm,
+                    });
+
+                    // Skip the following RETURN (and any markers)
+                    i += 1;
+                    while (i < ir.len and (ir[i].opcode == .CALL_INLINE or ir[i].opcode == .RETURN)) : (i += 1) {
+                        if (ir[i].opcode == .RETURN) {
+                            self.tail_calls_optimized += 1;
+                            self.stack_frames_saved += 1;
+                            break;
+                        }
+                    }
+                } else {
+                    // Keep as regular CALL
+                    try result.append(instr);
+                }
+            } else {
+                try result.append(instr);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct { detected: usize, optimized: usize, saved: usize } {
+        return .{
+            .detected = self.tail_calls_detected,
+            .optimized = self.tail_calls_optimized,
+            .saved = self.stack_frames_saved,
+        };
+    }
+};
+
 /// Inline Expander - inlines small functions at call sites
 pub const InlineExpander = struct {
     allocator: Allocator,
@@ -2815,6 +2931,8 @@ pub const TieredCompiler = struct {
     pgo: ?PGOOptimizer,
     /// Inline expander
     inliner: InlineExpander,
+    /// Tail call optimizer
+    tco: TailCallOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -2835,6 +2953,8 @@ pub const TieredCompiler = struct {
     enable_pgo: bool,
     /// Enable inline expansion
     enable_inlining: bool,
+    /// Enable tail call optimization
+    enable_tco: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -2859,6 +2979,7 @@ pub const TieredCompiler = struct {
             .instrumenter = null,
             .pgo = null,
             .inliner = InlineExpander.init(allocator),
+            .tco = TailCallOptimizer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -2869,6 +2990,7 @@ pub const TieredCompiler = struct {
             .enable_regalloc = true,
             .enable_pgo = true,
             .enable_inlining = true,
+            .enable_tco = true,
             .stats = TieredStats.init(),
         };
     }
@@ -2970,6 +3092,13 @@ pub const TieredCompiler = struct {
                     const inlined = try self.inliner.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
                     optimized_ir = inlined;
+                }
+
+                // Tail call optimization (after inlining, before other opts)
+                if (self.enable_tco) {
+                    const tco_result = try self.tco.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = tco_result;
                 }
 
                 if (self.enable_strength_reduction) {
@@ -7757,4 +7886,189 @@ test "InlineExpander large function not inlined" {
 
     // Call should NOT be expanded
     try std.testing.expectEqual(jit.IROpcode.CALL, optimized[0].opcode);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TAIL CALL OPTIMIZATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "TailCallOptimizer detect tail call pattern" {
+    // Test the static pattern detection
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .CALL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 42 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // CALL at index 1 followed by RETURN at index 2 with same dest (1)
+    try std.testing.expect(TailCallOptimizer.isTailCallPattern(&ir, 1));
+
+    // LOAD_CONST at index 0 is not a tail call
+    try std.testing.expect(!TailCallOptimizer.isTailCallPattern(&ir, 0));
+}
+
+test "TailCallOptimizer optimize simple tail call" {
+    const allocator = std.testing.allocator;
+
+    var tco = TailCallOptimizer.init(allocator);
+
+    // IR with tail call pattern: CALL followed by RETURN
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .CALL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 42 }, // func_id = 42
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try tco.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = tco.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== TailCallOptimizer Simple Test ===\n", .{});
+        std.debug.print("Original IR: {d} instructions\n", .{ir.len});
+        std.debug.print("Optimized IR: {d} instructions\n", .{optimized.len});
+        std.debug.print("Tail calls detected: {d}\n", .{stats.detected});
+        std.debug.print("Tail calls optimized: {d}\n", .{stats.optimized});
+        std.debug.print("Stack frames saved: {d}\n", .{stats.saved});
+    }
+
+    // Should have converted CALL+RETURN to TAIL_CALL
+    try std.testing.expect(stats.optimized >= 1);
+
+    // Optimized IR should have TAIL_CALL instead of CALL+RETURN
+    var found_tail_call = false;
+    for (optimized) |instr| {
+        if (instr.opcode == .TAIL_CALL) {
+            found_tail_call = true;
+            try std.testing.expectEqual(@as(i64, 42), instr.imm); // func_id preserved
+        }
+    }
+    try std.testing.expect(found_tail_call);
+
+    // Should be shorter (CALL+RETURN -> TAIL_CALL)
+    try std.testing.expect(optimized.len < ir.len);
+}
+
+test "TailCallOptimizer non-tail call preserved" {
+    const allocator = std.testing.allocator;
+
+    var tco = TailCallOptimizer.init(allocator);
+
+    // IR where CALL is NOT in tail position (more instructions after)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .ADD_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // Uses call result
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try tco.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = tco.getStats();
+
+    // Should NOT be optimized (not a tail call)
+    try std.testing.expectEqual(@as(usize, 0), stats.optimized);
+
+    // CALL should be preserved
+    try std.testing.expectEqual(jit.IROpcode.CALL, optimized[0].opcode);
+}
+
+test "TailCallOptimizer different dest registers" {
+    const allocator = std.testing.allocator;
+
+    var tco = TailCallOptimizer.init(allocator);
+
+    // IR where CALL dest != RETURN dest (not a tail call)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .CALL, .dest = 0, .src1 = 0, .src2 = 0, .imm = 1 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // Different dest!
+    };
+
+    const optimized = try tco.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = tco.getStats();
+
+    // Should NOT be optimized (different dest registers)
+    try std.testing.expectEqual(@as(usize, 0), stats.optimized);
+}
+
+test "TailCallOptimizer in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 20,
+    });
+    defer compiler.deinit();
+
+    // Verify TCO is enabled
+    try std.testing.expect(compiler.enable_tco);
+
+    // IR with tail call
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 100 },
+        .{ .opcode = .CALL, .dest = 1, .src1 = 0, .src2 = 0, .imm = 99 },
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x6000;
+
+    // Trigger tier1 promotion
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted);
+
+    // Check TCO stats
+    const tco_stats = compiler.tco.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== TailCallOptimizer in TieredCompiler ===\n", .{});
+        std.debug.print("Tail calls detected: {d}\n", .{tco_stats.detected});
+        std.debug.print("Tail calls optimized: {d}\n", .{tco_stats.optimized});
+        std.debug.print("Stack frames saved: {d}\n", .{tco_stats.saved});
+    }
+
+    try std.testing.expect(tco_stats.optimized >= 1);
+}
+
+test "TailCallOptimizer recursive function pattern" {
+    const allocator = std.testing.allocator;
+
+    var tco = TailCallOptimizer.init(allocator);
+
+    // Simulated tail-recursive factorial pattern:
+    // if (n == 0) return acc;
+    // return factorial(n-1, n*acc);  <- tail call
+    const ir = [_]IRInstruction{
+        // Check n == 0
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+        .{ .opcode = .CMP_EQ_INT, .dest = 3, .src1 = 0, .src2 = 2, .imm = 0 },
+        .{ .opcode = .JUMP_IF_NOT_ZERO, .dest = 0, .src1 = 3, .src2 = 0, .imm = 2 },
+        // Return acc (base case)
+        .{ .opcode = .RETURN, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 },
+        // Recursive case: tail call
+        .{ .opcode = .DEC_INT, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // n-1
+        .{ .opcode = .MUL_INT, .dest = 1, .src1 = 0, .src2 = 1, .imm = 0 }, // n*acc
+        .{ .opcode = .CALL, .dest = 4, .src1 = 2, .src2 = 0, .imm = 1 }, // factorial(n-1, n*acc)
+        .{ .opcode = .RETURN, .dest = 4, .src1 = 0, .src2 = 0, .imm = 0 }, // return result
+    };
+
+    const optimized = try tco.optimize(&ir);
+    defer allocator.free(optimized);
+
+    const stats = tco.getStats();
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== TailCallOptimizer Recursive Pattern ===\n", .{});
+        std.debug.print("Original IR: {d} instructions\n", .{ir.len});
+        std.debug.print("Optimized IR: {d} instructions\n", .{optimized.len});
+        std.debug.print("Tail calls optimized: {d}\n", .{stats.optimized});
+    }
+
+    // The recursive CALL+RETURN should be optimized
+    try std.testing.expect(stats.optimized >= 1);
 }

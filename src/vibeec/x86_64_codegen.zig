@@ -959,6 +959,38 @@ pub const NativeCompiler = struct {
                 try self.emitter.movRegReg(.RAX, src);
             },
 
+            .CALL => {
+                // Regular function call (simplified - would need function address resolution)
+                // For now, just mark the call site
+                // In a full implementation, this would:
+                // 1. Push arguments
+                // 2. Call the function address
+                // 3. Move result to dest register
+                const dst = self.getDstReg(instr.dest);
+                // Placeholder: load function ID as result (for testing)
+                try self.emitter.movImm64(dst, instr.imm);
+                try self.storeDstIfSpilled(instr.dest);
+            },
+
+            .CALL_INLINE => {
+                // Marker for inlined call - no code generation needed
+                // This is just for debugging/profiling
+            },
+
+            .TAIL_CALL => {
+                // Tail call optimization: jump instead of call+ret
+                // This eliminates the current stack frame
+                // In a full implementation, this would:
+                // 1. Restore callee-saved registers
+                // 2. Deallocate stack frame
+                // 3. Jump to function address (not call)
+                //
+                // For now, emit a jump placeholder
+                // The actual target would be resolved by a linker/loader
+                const offset: i32 = @intCast(instr.imm);
+                try self.emitter.jmpRel32(offset);
+            },
+
             else => {
                 // Unsupported - emit nop
             },
