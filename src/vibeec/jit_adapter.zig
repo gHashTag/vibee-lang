@@ -687,6 +687,10 @@ pub const JITAdapter = struct {
     // Tiered Compiler for automatic tier promotion
     tiered_compiler: TieredCompiler,
 
+    // Inline cache for last called native function (avoids HashMap lookup)
+    last_native_addr: u32,
+    last_native_ptr: ?*ExecutableCode,
+
     // Execution state
     is_recording: bool,
     current_trace_start: u32,
@@ -699,6 +703,7 @@ pub const JITAdapter = struct {
     native_compile_time_ns: u64,
     native_cache_hits: u64,
     native_cache_misses: u64,
+    inline_cache_hits: u64,
 
     const Self = @This();
 
@@ -711,6 +716,8 @@ pub const JITAdapter = struct {
             .native_cache = std.AutoHashMap(u32, NativeCodeEntry).init(allocator),
             .profiler = HotPathProfiler.init(allocator),
             .tiered_compiler = TieredCompiler.init(allocator),
+            .last_native_addr = 0xFFFFFFFF, // Invalid address
+            .last_native_ptr = null,
             .is_recording = false,
             .current_trace_start = 0,
             .jit_instructions = 0,
@@ -718,6 +725,7 @@ pub const JITAdapter = struct {
             .native_instructions = 0,
             .jit_compile_time_ns = 0,
             .native_compile_time_ns = 0,
+            .inline_cache_hits = 0,
             .native_cache_hits = 0,
             .native_cache_misses = 0,
         };
@@ -971,8 +979,22 @@ pub const JITAdapter = struct {
                 break :blk val;
             },
             .Native => blk: {
-                // Tier 2: Native x86-64 code
+                // Tier 2: Native x86-64 code with inline cache
+                // Check inline cache first (avoids HashMap lookup)
+                if (self.last_native_addr == entry_addr) {
+                    if (self.last_native_ptr) |executable| {
+                        const native_result = executable.call();
+                        self.native_instructions += 1;
+                        self.inline_cache_hits += 1;
+                        break :blk .{ .int_val = native_result };
+                    }
+                }
+                // Cache miss - lookup in HashMap
                 if (self.tiered_compiler.native_cache.getPtr(entry_addr)) |executable| {
+                    // Update inline cache
+                    self.last_native_addr = entry_addr;
+                    self.last_native_ptr = executable;
+
                     const native_result = executable.call();
                     self.native_instructions += 1;
                     break :blk .{ .int_val = native_result };
@@ -2750,5 +2772,76 @@ test "Value correctness across all tiers" {
             }
         }
         std.debug.print("All values correct: 15\n", .{});
+    }
+}
+
+test "Benchmark: Native call overhead analysis" {
+    const allocator = std.testing.allocator;
+
+    // Create IR for 2 + 3 = 5
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 2 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 3 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Compile to native
+    var native_compiler = NativeCompiler.init(allocator);
+    const machine_code = try native_compiler.compile(&ir);
+    defer allocator.free(machine_code);
+    native_compiler.deinit();
+
+    var executable = try ExecutableCode.init(machine_code);
+    defer executable.deinit();
+
+    const iterations: usize = 10000;
+
+    // Benchmark 1: Direct native call (no overhead)
+    const direct_start = std.time.nanoTimestamp();
+    var direct_result: i64 = 0;
+    for (0..iterations) |_| {
+        direct_result = executable.call();
+    }
+    const direct_end = std.time.nanoTimestamp();
+    const direct_time: u64 = @intCast(@max(0, direct_end - direct_start));
+
+    try std.testing.expectEqual(@as(i64, 5), direct_result);
+
+    // Benchmark 2: IR interpreter
+    const ir_start = std.time.nanoTimestamp();
+    var ir_result: i64 = 0;
+    for (0..iterations) |_| {
+        ir_result = interpretIRCode(&ir);
+    }
+    const ir_end = std.time.nanoTimestamp();
+    const ir_time: u64 = @intCast(@max(0, ir_end - ir_start));
+
+    try std.testing.expectEqual(@as(i64, 5), ir_result);
+
+    // Benchmark 3: HashMap lookup + native call (simulates tiered overhead)
+    var cache = std.AutoHashMap(u32, ExecutableCode).init(allocator);
+    defer cache.deinit();
+    // Note: We can't put executable in cache as it would be freed twice
+    // So we measure just the lookup overhead separately
+
+    const lookup_start = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        _ = cache.get(0); // Just lookup, no call
+    }
+    const lookup_end = std.time.nanoTimestamp();
+    const lookup_time: u64 = @intCast(@max(0, lookup_end - lookup_start));
+
+    if (@import("builtin").mode == .Debug) {
+        const direct_per_iter = @as(f64, @floatFromInt(direct_time)) / @as(f64, @floatFromInt(iterations));
+        const ir_per_iter = @as(f64, @floatFromInt(ir_time)) / @as(f64, @floatFromInt(iterations));
+        const lookup_per_iter = @as(f64, @floatFromInt(lookup_time)) / @as(f64, @floatFromInt(iterations));
+
+        std.debug.print("\n=== Native Call Overhead Analysis ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("Direct native call: {d:.2} ns/iter\n", .{direct_per_iter});
+        std.debug.print("IR interpreter: {d:.2} ns/iter\n", .{ir_per_iter});
+        std.debug.print("HashMap lookup only: {d:.2} ns/iter\n", .{lookup_per_iter});
+        std.debug.print("Speedup (IR vs Native): {d:.1}x\n", .{ir_per_iter / direct_per_iter});
     }
 }
