@@ -1,5 +1,5 @@
 const std = @import("std");
-const akashic = @import("src/akashic_records_manual.zig");
+const akashic = @import("akashic_records_manual.zig");
 
 pub const PHI: f64 = 1.618033988749895;
 pub const PHI_INVERSE: f64 = 0.6180339887498949;

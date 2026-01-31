@@ -2435,7 +2435,7 @@ pub const ZigCodeGen = struct {
             if (added_tests.contains(b.name)) continue;
             added_tests.put(b.name, {}) catch continue;
 
-            try self.builder.writeFmt("test \"{s}\" {{\n", .{b.name});
+            try self.builder.writeFmt("test \"{s}_behavior\" {{\n", .{b.name});
             self.builder.incIndent();
             try self.builder.writeFmt("// Given: {s}\n", .{b.given});
             try self.builder.writeFmt("// When: {s}\n", .{b.when});

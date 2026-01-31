@@ -470,7 +470,7 @@ pub const AdvancedArchaeologist = struct {
         const cc = @as(u32, @intCast(fossil.analysis.functions.items.len)) + 1;
         fossil.analysis.complexity_metrics.cyclomatic_complexity = cc;
         fossil.analysis.complexity_metrics.nesting_depth = 3;
-        const mi = 171 - 5.2 * @ln(@as(f64, @floatFromInt(cc)));
+        const mi = 171 - 5.2 * std.math.log(@as(f64, @floatFromInt(cc)));
         fossil.analysis.complexity_metrics.maintainability_index = if (mi < 0) 0.0 else mi;
     }
 

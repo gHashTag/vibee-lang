@@ -123,7 +123,7 @@ pub const TVCParser = struct {
         }
 
         // Add return instruction
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .ret,
             .operands = &[_]u64{},
             .location = @intCast(block.instructions.items.len),
@@ -140,26 +140,26 @@ pub const TVCParser = struct {
     fn emitTrinaryDeduction(self: *TVCParser, block: *tvc_ir.TVCBlock, ctx: *const BehaviorContext) !void {
         _ = self;
         _ = ctx;
-        const allocator = block.instructions.allocator;
+    
         _ = self;
         _ = ctx;
 
         // Emit trinary NOT operation
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .t_not,
             .operands = &[_]u64{0},
             .location = @intCast(block.instructions.items.len),
         });
 
         // Emit trinary AND operation
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .t_and,
             .operands = &[_]u64{ 1, 2 },
             .location = @intCast(block.instructions.items.len),
         });
 
         // Emit trinary OR operation
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .t_or,
             .operands = &[_]u64{ 3, 4 },
             .location = @intCast(block.instructions.items.len),
@@ -171,21 +171,21 @@ pub const TVCParser = struct {
         _ = ctx;
 
         // Load premises
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .load,
             .operands = &[_]u64{0},
             .location = @intCast(block.instructions.items.len),
         });
 
         // Trinary implication check
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .t_implies,
             .operands = &[_]u64{ 1, 2 },
             .location = @intCast(block.instructions.items.len),
         });
 
         // Conditional return based on trinary result
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .jump_if,
             .operands = &[_]u64{ 3, 10 },
             .location = @intCast(block.instructions.items.len),
@@ -197,21 +197,21 @@ pub const TVCParser = struct {
         _ = ctx;
 
         // Allocate KB structure
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .alloc,
             .operands = &[_]u64{256},
             .location = @intCast(block.instructions.items.len),
         });
 
         // Store fact
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .store,
             .operands = &[_]u64{ 0, 1 },
             .location = @intCast(block.instructions.items.len),
         });
 
         // Call lookup function
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .call,
             .operands = &[_]u64{0x100},
             .location = @intCast(block.instructions.items.len),
@@ -223,13 +223,13 @@ pub const TVCParser = struct {
         _ = ctx;
 
         // Simple load/store sequence
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .load,
             .operands = &[_]u64{0},
             .location = @intCast(block.instructions.items.len),
         });
 
-        try block.instructions.append(allocator, tvc_ir.TVCInstruction{
+        try block.instructions.append(tvc_ir.TVCInstruction{
             .opcode = .nop,
             .operands = &[_]u64{},
             .location = @intCast(block.instructions.items.len),

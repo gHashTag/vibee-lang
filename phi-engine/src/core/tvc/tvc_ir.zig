@@ -116,13 +116,14 @@ pub const TVCInstruction = struct {
 pub const TVCBlock = struct {
     name: []const u8,
     instructions: std.ArrayList(TVCInstruction),
+    allocator: std.mem.Allocator,
     entry_point: u32,
     exit_point: u32,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8) TVCBlock {
         return TVCBlock{
             .name = name,
-            .instructions = std.ArrayList(TVCInstruction).initCapacity(allocator, 0) catch unreachable,
+            .instructions = std.ArrayList(TVCInstruction).initCapacity(allocator, 64) catch @panic("OOM"),
             .entry_point = 0,
             .exit_point = 0,
         };

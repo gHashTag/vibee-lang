@@ -4,16 +4,16 @@ const quantum_agent = @import("src/quantum_coder_agent_with_akashic.zig");
 const akashic = @import("src/akashic_records_manual.zig");
 
 pub fn main() !void {
-    std.debug.print("\n╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("\n╔════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║   QUANTUM CODER AGENT - WITH AKASHIC RECORDS         ║\n", .{});
-    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n\n", .{});
+    std.debug.print("╚══════════════════════════════════════════════════════════════╝\n\n", .{});
 
     std.debug.print("Sacred Formula: φ = {d:.9}\n\n", .{quantum_agent.PHI});
 
     // Test Case 1: Fibonacci (Existing pattern in Akashic)
     std.debug.print("═════════════════════════════════════════════════════════════════\n", .{});
     std.debug.print("TEST CASE 1: Fibonacci (in Akashic Records)\n", .{});
-    std.debug.print("═══════════════════════════════════════════════════════════════════\n\n", .{});
+    std.debug.print("═════════════════════════════════════════════════════════════════════\n\n", .{});
 
     const query_fib = quantum_agent.AgentQuery{
         .text_input = "fibonacci",
@@ -102,7 +102,7 @@ pub fn main() !void {
     std.debug.print("  Confidence: {d:.2}% (not found in Akashic Records)\n\n", .{response_unknown.confidence * 100.0});
 
     // Learning: Simulate successful execution of fibonacci
-    std.debug.print("═════════════════════════════════════════════════════════════════\n", .{});
+    std.debug.print("═══════════════════════════════════════════════════════════════════\n", .{});
     std.debug.print("LEARNING: Simulate Successful Execution of Fibonacci\n", .{});
     std.debug.print("═══════════════════════════════════════════════════════════════════\n\n", .{});
 
@@ -135,9 +135,9 @@ pub fn main() !void {
     }
 
     // Summary
-    std.debug.print("═════════════════════════════════════════════════════════════════\n", .{});
+    std.debug.print("═══════════════════════════════════════════════════════════════════\n", .{});
     std.debug.print("INTEGRATION SUMMARY\n", .{});
-    std.debug.print("═══════════════════════════════════════════════════════════════════\n\n", .{});
+    std.debug.print("═════════════════════════════════════════════════════════════════════\n\n", .{});
 
     std.debug.print("✅ All components integrated:\n", .{});
     std.debug.print("  1. TextToTritEncoder - Working\n", .{});
