@@ -347,6 +347,44 @@ pub const X86_64Emitter = struct {
         try self.code.append(imm);
     }
 
+    /// sub reg, imm32 (for stack allocation)
+    pub fn subRegImm(self: *Self, reg: Reg64, imm: i32) !void {
+        const r: u8 = @intFromEnum(reg);
+        if (imm >= -128 and imm <= 127) {
+            // sub reg, imm8
+            try self.code.append(rex(true, false, false, r >= 8));
+            try self.code.append(0x83);
+            try self.code.append(0xE8 | (r & 0x7)); // /5 = sub
+            try self.code.append(@bitCast(@as(i8, @intCast(imm))));
+        } else {
+            // sub reg, imm32
+            try self.code.append(rex(true, false, false, r >= 8));
+            try self.code.append(0x81);
+            try self.code.append(0xE8 | (r & 0x7)); // /5 = sub
+            const bytes: [4]u8 = @bitCast(imm);
+            try self.code.appendSlice(&bytes);
+        }
+    }
+
+    /// add reg, imm32 (for stack deallocation)
+    pub fn addRegImm(self: *Self, reg: Reg64, imm: i32) !void {
+        const r: u8 = @intFromEnum(reg);
+        if (imm >= -128 and imm <= 127) {
+            // add reg, imm8
+            try self.code.append(rex(true, false, false, r >= 8));
+            try self.code.append(0x83);
+            try self.code.append(0xC0 | (r & 0x7)); // /0 = add
+            try self.code.append(@bitCast(@as(i8, @intCast(imm))));
+        } else {
+            // add reg, imm32
+            try self.code.append(rex(true, false, false, r >= 8));
+            try self.code.append(0x81);
+            try self.code.append(0xC0 | (r & 0x7)); // /0 = add
+            const bytes: [4]u8 = @bitCast(imm);
+            try self.code.appendSlice(&bytes);
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // COMPARISON INSTRUCTIONS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -498,6 +536,12 @@ pub const NativeCompiler = struct {
     allocator: Allocator,
     /// Custom register mapping from RegisterAllocator (optional)
     reg_mapping: ?[32]?u8 = null,
+    /// Spill slot assignments: vreg -> stack offset from RBP
+    spill_slots: ?[32]?i32 = null,
+    /// Total stack space for spills
+    spill_stack_size: u32 = 0,
+    /// Temporary register for spill operations (R15)
+    const SPILL_TEMP_REG: Reg64 = .R15;
 
     const Self = @This();
 
@@ -509,12 +553,36 @@ pub const NativeCompiler = struct {
         return phys_regs[ir_reg & 0x7];
     }
 
+    /// Check if virtual register is spilled
+    fn isSpilled(self: *Self, vreg: u8) bool {
+        if (self.reg_mapping) |mapping| {
+            if (vreg < 32) {
+                return mapping[vreg] == null;
+            }
+        }
+        return false;
+    }
+
+    /// Get spill slot offset for a virtual register
+    fn getSpillOffset(self: *Self, vreg: u8) ?i32 {
+        if (self.spill_slots) |slots| {
+            if (vreg < 32) {
+                return slots[vreg];
+            }
+        }
+        return null;
+    }
+
     /// Convert IR register to x86-64 register using mapping if available
+    /// For spilled registers, returns SPILL_TEMP_REG (caller must handle load/store)
     fn irRegToX86(self: *Self, ir_reg: u8) Reg64 {
         if (self.reg_mapping) |mapping| {
             if (ir_reg < 32) {
                 if (mapping[ir_reg]) |phys_reg| {
                     return phys_regs[phys_reg & 0x7];
+                } else {
+                    // Spilled - use temp register
+                    return SPILL_TEMP_REG;
                 }
             }
         }
@@ -522,11 +590,27 @@ pub const NativeCompiler = struct {
         return irRegToX86Default(ir_reg);
     }
 
+    /// Load spilled register from stack into temp register
+    fn loadSpilled(self: *Self, vreg: u8) !void {
+        if (self.getSpillOffset(vreg)) |offset| {
+            try self.emitter.movRegMem(SPILL_TEMP_REG, offset);
+        }
+    }
+
+    /// Store temp register to spilled register's stack slot
+    fn storeSpilled(self: *Self, vreg: u8) !void {
+        if (self.getSpillOffset(vreg)) |offset| {
+            try self.emitter.movMemReg(offset, SPILL_TEMP_REG);
+        }
+    }
+
     pub fn init(allocator: Allocator) Self {
         return .{
             .emitter = X86_64Emitter.init(allocator),
             .allocator = allocator,
             .reg_mapping = null,
+            .spill_slots = null,
+            .spill_stack_size = 0,
         };
     }
 
@@ -536,6 +620,19 @@ pub const NativeCompiler = struct {
             .emitter = X86_64Emitter.init(allocator),
             .allocator = allocator,
             .reg_mapping = mapping,
+            .spill_slots = null,
+            .spill_stack_size = 0,
+        };
+    }
+
+    /// Initialize with full register mapping including spill info
+    pub fn initWithSpillInfo(allocator: Allocator, mapping: [32]?u8, spill_slots: [32]?i32, spill_stack_size: u32) Self {
+        return .{
+            .emitter = X86_64Emitter.init(allocator),
+            .allocator = allocator,
+            .reg_mapping = mapping,
+            .spill_slots = spill_slots,
+            .spill_stack_size = spill_stack_size,
         };
     }
 
@@ -544,14 +641,38 @@ pub const NativeCompiler = struct {
         self.reg_mapping = mapping;
     }
 
+    /// Set spill information
+    pub fn setSpillInfo(self: *Self, spill_slots: [32]?i32, spill_stack_size: u32) void {
+        self.spill_slots = spill_slots;
+        self.spill_stack_size = spill_stack_size;
+    }
+
     pub fn deinit(self: *Self) void {
         self.emitter.deinit();
     }
 
     pub fn compile(self: *Self, ir: []const IRInstruction) ![]u8 {
+        // Emit prologue if we have spills
+        if (self.spill_stack_size > 0) {
+            // push rbp; mov rbp, rsp; sub rsp, spill_size
+            try self.emitter.pushReg(.RBP);
+            try self.emitter.movRegReg(.RBP, .RSP);
+            if (self.spill_stack_size > 0) {
+                try self.emitter.subRegImm(.RSP, @intCast(self.spill_stack_size));
+            }
+        }
+
         for (ir) |instr| {
             try self.compileInstruction(instr);
         }
+
+        // Emit epilogue if we have spills
+        if (self.spill_stack_size > 0) {
+            // mov rsp, rbp; pop rbp
+            try self.emitter.movRegReg(.RSP, .RBP);
+            try self.emitter.popReg(.RBP);
+        }
+
         // Add return at end
         try self.emitter.ret();
         return try self.emitter.code.toOwnedSlice();
