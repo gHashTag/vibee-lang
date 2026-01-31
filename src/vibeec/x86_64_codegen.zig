@@ -542,6 +542,8 @@ pub const NativeCompiler = struct {
     spill_stack_size: u32 = 0,
     /// Temporary register for spill operations (R15)
     const SPILL_TEMP_REG: Reg64 = .R15;
+    /// Second temporary register for when both src operands are spilled (R14)
+    const SPILL_TEMP_REG2: Reg64 = .R14;
 
     const Self = @This();
 
@@ -554,10 +556,11 @@ pub const NativeCompiler = struct {
     }
 
     /// Check if virtual register is spilled
+    /// Check if virtual register is spilled (has a spill slot assigned)
     fn isSpilled(self: *Self, vreg: u8) bool {
-        if (self.reg_mapping) |mapping| {
+        if (self.spill_slots) |slots| {
             if (vreg < 32) {
-                return mapping[vreg] == null;
+                return slots[vreg] != null;
             }
         }
         return false;
@@ -590,17 +593,53 @@ pub const NativeCompiler = struct {
         return irRegToX86Default(ir_reg);
     }
 
+    /// Load spilled register from stack into specified temp register
+    fn loadSpilledTo(self: *Self, vreg: u8, temp_reg: Reg64) !void {
+        if (self.getSpillOffset(vreg)) |offset| {
+            try self.emitter.movRegMem(temp_reg, offset);
+        }
+    }
+
     /// Load spilled register from stack into temp register
     fn loadSpilled(self: *Self, vreg: u8) !void {
+        try self.loadSpilledTo(vreg, SPILL_TEMP_REG);
+    }
+
+    /// Store from specified register to spilled register's stack slot
+    fn storeSpilledFrom(self: *Self, vreg: u8, src_reg: Reg64) !void {
         if (self.getSpillOffset(vreg)) |offset| {
-            try self.emitter.movRegMem(SPILL_TEMP_REG, offset);
+            try self.emitter.movMemReg(offset, src_reg);
         }
     }
 
     /// Store temp register to spilled register's stack slot
     fn storeSpilled(self: *Self, vreg: u8) !void {
-        if (self.getSpillOffset(vreg)) |offset| {
-            try self.emitter.movMemReg(offset, SPILL_TEMP_REG);
+        try self.storeSpilledFrom(vreg, SPILL_TEMP_REG);
+    }
+
+    /// Get register for src operand, loading from spill slot if needed
+    /// Returns the register to use and whether it was loaded from spill
+    fn getSrcReg(self: *Self, vreg: u8, use_temp2: bool) !Reg64 {
+        if (self.isSpilled(vreg)) {
+            const temp = if (use_temp2) SPILL_TEMP_REG2 else SPILL_TEMP_REG;
+            try self.loadSpilledTo(vreg, temp);
+            return temp;
+        }
+        return self.irRegToX86(vreg);
+    }
+
+    /// Get register for dest operand
+    fn getDstReg(self: *Self, vreg: u8) Reg64 {
+        if (self.isSpilled(vreg)) {
+            return SPILL_TEMP_REG;
+        }
+        return self.irRegToX86(vreg);
+    }
+
+    /// Store dest register to spill slot if needed
+    fn storeDstIfSpilled(self: *Self, vreg: u8) !void {
+        if (self.isSpilled(vreg)) {
+            try self.storeSpilled(vreg);
         }
     }
 
@@ -681,53 +720,58 @@ pub const NativeCompiler = struct {
     fn compileInstruction(self: *Self, instr: IRInstruction) !void {
         switch (instr.opcode) {
             .LOAD_CONST => {
-                const dst = self.irRegToX86(instr.dest);
+                const dst = self.getDstReg(instr.dest);
                 try self.emitter.movImm64(dst, instr.imm);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .LOAD_LOCAL => {
                 // Load from stack: [rbp - (idx+1)*8]
-                const dst = self.irRegToX86(instr.dest);
+                const dst = self.getDstReg(instr.dest);
                 const offset: i32 = -@as(i32, @intCast((instr.imm + 1) * 8));
                 try self.emitter.movRegMem(dst, offset);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .STORE_LOCAL => {
                 // Store to stack: [rbp - (idx+1)*8]
-                const src = self.irRegToX86(instr.src1);
+                const src = try self.getSrcReg(instr.src1, false);
                 const offset: i32 = -@as(i32, @intCast((instr.imm + 1) * 8));
                 try self.emitter.movMemReg(offset, src);
             },
 
             .ADD_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 if (dst != src1) try self.emitter.movRegReg(dst, src1);
                 try self.emitter.addRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .SUB_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 if (dst != src1) try self.emitter.movRegReg(dst, src1);
                 try self.emitter.subRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .MUL_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 if (dst != src1) try self.emitter.movRegReg(dst, src1);
                 try self.emitter.imulRegReg(dst, src2);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .DIV_INT => {
                 // Division: RAX = src1 / src2
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 // Move dividend to RAX
                 try self.emitter.movRegReg(.RAX, src1);
                 // Sign-extend RAX to RDX:RAX
@@ -736,13 +780,14 @@ pub const NativeCompiler = struct {
                 try self.emitter.idivReg(src2);
                 // Move result to dst
                 if (dst != .RAX) try self.emitter.movRegReg(dst, .RAX);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .MOD_INT => {
                 // Modulo: RDX = src1 % src2
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 // Move dividend to RAX
                 try self.emitter.movRegReg(.RAX, src1);
                 // Sign-extend RAX to RDX:RAX
@@ -751,47 +796,52 @@ pub const NativeCompiler = struct {
                 try self.emitter.idivReg(src2);
                 // Move remainder (RDX) to dst
                 if (dst != .RDX) try self.emitter.movRegReg(dst, .RDX);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .NEG_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 if (dst != src) try self.emitter.movRegReg(dst, src);
                 try self.emitter.negReg(dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .INC_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 if (dst != src) try self.emitter.movRegReg(dst, src);
                 try self.emitter.incReg(dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .DEC_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 if (dst != src) try self.emitter.movRegReg(dst, src);
                 try self.emitter.decReg(dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .SHL => {
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 if (dst != src) try self.emitter.movRegReg(dst, src);
                 // Use immediate shift if imm is set, otherwise use CL register
                 if (instr.imm != 0) {
                     try self.emitter.shlRegImm(dst, @intCast(instr.imm & 0x3F));
                 } else {
                     // Move src2 to RCX for variable shift
-                    const shift_src = self.irRegToX86(instr.src2);
+                    const shift_src = try self.getSrcReg(instr.src2, self.isSpilled(instr.src1));
                     try self.emitter.movRegReg(.RCX, shift_src);
                     try self.emitter.shlRegCL(dst);
                 }
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .SHR => {
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 if (dst != src) try self.emitter.movRegReg(dst, src);
                 // Use immediate shift if imm is set, otherwise use CL register
                 if (instr.imm != 0) {
@@ -799,17 +849,18 @@ pub const NativeCompiler = struct {
                     try self.emitter.sarRegImm(dst, @intCast(instr.imm & 0x3F));
                 } else {
                     // Move src2 to RCX for variable shift
-                    const shift_src = self.irRegToX86(instr.src2);
+                    const shift_src = try self.getSrcReg(instr.src2, self.isSpilled(instr.src1));
                     try self.emitter.movRegReg(.RCX, shift_src);
                     try self.emitter.shrRegCL(dst);
                 }
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .LEA => {
                 // LEA for multiply by 3, 5, 9: dst = src1 + src1 * scale
                 // imm contains scale (2, 4, or 8)
-                const dst = self.irRegToX86(instr.dest);
-                const src = self.irRegToX86(instr.src1);
+                const dst = self.getDstReg(instr.dest);
+                const src = try self.getSrcReg(instr.src1, false);
                 const scale: X86_64Emitter.Scale = switch (instr.imm) {
                     2 => .x2, // x*3 = x + x*2
                     4 => .x4, // x*5 = x + x*4
@@ -817,60 +868,67 @@ pub const NativeCompiler = struct {
                     else => .x1,
                 };
                 try self.emitter.leaRegRegScale(dst, src, src, scale);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_LT_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.setl(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_LE_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.setle(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_GT_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.setg(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_EQ_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.sete(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_NE_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.setne(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .CMP_GE_INT => {
-                const dst = self.irRegToX86(instr.dest);
-                const src1 = self.irRegToX86(instr.src1);
-                const src2 = self.irRegToX86(instr.src2);
+                const dst = self.getDstReg(instr.dest);
+                const src1 = try self.getSrcReg(instr.src1, false);
+                const src2 = try self.getSrcReg(instr.src2, instr.src1 != instr.src2 and self.isSpilled(instr.src1));
                 try self.emitter.cmpRegReg(src1, src2);
                 try self.emitter.setge(dst);
                 try self.emitter.movzxReg64Reg8(dst, dst);
+                try self.storeDstIfSpilled(instr.dest);
             },
 
             .JUMP => {
@@ -881,7 +939,7 @@ pub const NativeCompiler = struct {
 
             .JUMP_IF_ZERO => {
                 // Test src1 and jump if zero
-                const src = self.irRegToX86(instr.src1);
+                const src = try self.getSrcReg(instr.src1, false);
                 try self.emitter.testRegReg(src, src);
                 const offset: i32 = @intCast(instr.imm);
                 try self.emitter.jeRel32(offset);
@@ -889,7 +947,7 @@ pub const NativeCompiler = struct {
 
             .JUMP_IF_NOT_ZERO => {
                 // Test src1 and jump if not zero
-                const src = self.irRegToX86(instr.src1);
+                const src = try self.getSrcReg(instr.src1, false);
                 try self.emitter.testRegReg(src, src);
                 const offset: i32 = @intCast(instr.imm);
                 try self.emitter.jneRel32(offset);
@@ -897,7 +955,7 @@ pub const NativeCompiler = struct {
 
             .RETURN => {
                 // Move result to RAX
-                const src = self.irRegToX86(instr.dest);
+                const src = try self.getSrcReg(instr.dest, false);
                 try self.emitter.movRegReg(.RAX, src);
             },
 

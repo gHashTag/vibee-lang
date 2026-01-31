@@ -7238,3 +7238,102 @@ test "RegisterMapping with spill info" {
     }
     try std.testing.expectEqual(mapping.spilled.len, spilled_count);
 }
+
+test "Execute code with spilled registers" {
+    const allocator = std.testing.allocator;
+
+    // Create mapping where vreg 0 is spilled
+    var mapping: [32]?u8 = [_]?u8{null} ** 32;
+    mapping[1] = 0; // vreg 1 -> R8
+    mapping[2] = 1; // vreg 2 -> R9
+    mapping[3] = 2; // vreg 3 -> R10
+    // vreg 0 is NOT mapped (will use default)
+
+    var spill_slots: [32]?i32 = [_]?i32{null} ** 32;
+    spill_slots[0] = -8; // vreg 0 spilled to [RBP-8]
+
+    var compiler = NativeCompiler.initWithSpillInfo(allocator, mapping, spill_slots, 16);
+    defer compiler.deinit();
+
+    // IR: r0 = 10, r1 = 20, r2 = r0 + r1, return r2
+    // r0 is spilled, so it should be stored to stack and loaded when used
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 }, // r0 = 10 (spilled)
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 }, // r1 = 20
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 }, // r2 = r0 + r1 (load r0 from spill)
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Execute Spilled Code Test ===\n", .{});
+        std.debug.print("Code size: {d} bytes\n", .{code.len});
+        std.debug.print("Spill stack size: 16 bytes\n", .{});
+    }
+
+    // Execute and verify result
+    if (ExecutableCode.init(code)) |exec| {
+        var exec_mut = exec;
+        defer exec_mut.deinit();
+        const result = exec_mut.call();
+
+        if (@import("builtin").mode == .Debug) {
+            std.debug.print("Result: {d} (expected 30)\n", .{result});
+        }
+
+        try std.testing.expectEqual(@as(i64, 30), result);
+    } else |_| {
+        return error.ExecutableCodeFailed;
+    }
+}
+
+test "Execute code with multiple spilled registers" {
+    const allocator = std.testing.allocator;
+
+    // Create mapping where vreg 0 and 1 are spilled
+    var mapping: [32]?u8 = [_]?u8{null} ** 32;
+    mapping[2] = 0; // vreg 2 -> R8
+    mapping[3] = 1; // vreg 3 -> R9
+    // vreg 0 and 1 are NOT mapped
+
+    var spill_slots: [32]?i32 = [_]?i32{null} ** 32;
+    spill_slots[0] = -8;  // vreg 0 spilled to [RBP-8]
+    spill_slots[1] = -16; // vreg 1 spilled to [RBP-16]
+
+    var compiler = NativeCompiler.initWithSpillInfo(allocator, mapping, spill_slots, 24);
+    defer compiler.deinit();
+
+    // IR: r0 = 5, r1 = 7, r2 = r0 * r1, return r2
+    // Both r0 and r1 are spilled
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },  // r0 = 5 (spilled)
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 7 },  // r1 = 7 (spilled)
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },     // r2 = r0 * r1
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Execute Multiple Spilled Registers Test ===\n", .{});
+        std.debug.print("Code size: {d} bytes\n", .{code.len});
+    }
+
+    // Execute and verify result
+    if (ExecutableCode.init(code)) |exec| {
+        var exec_mut = exec;
+        defer exec_mut.deinit();
+        const result = exec_mut.call();
+
+        if (@import("builtin").mode == .Debug) {
+            std.debug.print("Result: {d} (expected 35)\n", .{result});
+        }
+
+        try std.testing.expectEqual(@as(i64, 35), result);
+    } else |_| {
+        return error.ExecutableCodeFailed;
+    }
+}
