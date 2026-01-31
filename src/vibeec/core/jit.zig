@@ -465,6 +465,9 @@ pub const JitCompiler = struct {
     // Halt patches - jumps to epilogue
     halt_patches: std.ArrayList(HaltPatch),
 
+    // Optimization: track if last op was comparison (for jump fusion)
+    last_was_cmp: bool,
+
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -473,6 +476,7 @@ pub const JitCompiler = struct {
             .allocator = allocator,
             .labels = std.AutoHashMap(u32, u32).init(allocator),
             .patches = std.ArrayList(JumpPatch).init(allocator),
+            .last_was_cmp = false,
             .call_patches = std.ArrayList(CallPatch).init(allocator),
             .halt_patches = std.ArrayList(HaltPatch).init(allocator),
         };
@@ -867,6 +871,7 @@ pub const JitCompiler = struct {
         self.patches.clearRetainingCapacity();
         self.call_patches.clearRetainingCapacity();
         self.halt_patches.clearRetainingCapacity();
+        self.last_was_cmp = false;
 
         // Prologue - save callee-saved registers
         try self.encoder.push(.rbp);
@@ -1024,8 +1029,18 @@ pub const JitCompiler = struct {
                     try self.emitVPop();
                     // For eq, compare full NaN-boxed values
                     try self.encoder.cmpReg(.rax, .rbx);
+                    // Check if next opcode is jump_if/jump_if_not for fusion
+                    if (ip < bytecode.len) {
+                        const next_op: Opcode = @enumFromInt(bytecode[ip]);
+                        if (next_op == .jump_if or next_op == .jump_if_not) {
+                            // Don't push result - jump will use flags directly
+                            self.last_was_cmp = true;
+                            continue; // Skip to next opcode
+                        }
+                    }
                     try self.emitSetBoolEq();
                     try self.emitVPush();
+                    self.last_was_cmp = false;
                 },
 
                 // Jump opcodes
@@ -1045,13 +1060,21 @@ pub const JitCompiler = struct {
                         (@as(u32, bytecode[ip + 2]) << 8) |
                         @as(u32, bytecode[ip + 3]);
                     ip += 4;
-                    // Pop condition from value stack
-                    try self.emitVPop();
-                    // Test if true (bit 0 for bool)
-                    try self.encoder.testReg(.rax, 1);
-                    // JNZ (jump if not zero = jump if true)
-                    try self.encoder.code.append(0x0F);
-                    try self.encoder.code.append(0x85); // JNZ rel32
+
+                    if (self.last_was_cmp) {
+                        // Fused: previous cmp set flags, use JE (jump if equal)
+                        // jump_if after eq means "jump if values were equal"
+                        try self.encoder.code.append(0x0F);
+                        try self.encoder.code.append(0x84); // JE rel32
+                        self.last_was_cmp = false;
+                    } else {
+                        // Normal: pop condition and test
+                        try self.emitVPop();
+                        try self.encoder.testReg(.rax, 1);
+                        // JNZ (jump if not zero = jump if true)
+                        try self.encoder.code.append(0x0F);
+                        try self.encoder.code.append(0x85); // JNZ rel32
+                    }
                     try self.emitJumpPatch(target);
                 },
 
@@ -1061,13 +1084,20 @@ pub const JitCompiler = struct {
                         (@as(u32, bytecode[ip + 2]) << 8) |
                         @as(u32, bytecode[ip + 3]);
                     ip += 4;
-                    // Pop condition from value stack
-                    try self.emitVPop();
-                    // Test if true
-                    try self.encoder.testReg(.rax, 1);
-                    // JZ (jump if zero = jump if false)
-                    try self.encoder.code.append(0x0F);
-                    try self.encoder.code.append(0x84); // JZ rel32
+
+                    if (self.last_was_cmp) {
+                        // Fused: previous cmp set flags, use JNE (jump if not equal)
+                        try self.encoder.code.append(0x0F);
+                        try self.encoder.code.append(0x85); // JNE rel32
+                        self.last_was_cmp = false;
+                    } else {
+                        // Normal: pop condition and test
+                        try self.emitVPop();
+                        try self.encoder.testReg(.rax, 1);
+                        // JZ (jump if zero = jump if false)
+                        try self.encoder.code.append(0x0F);
+                        try self.encoder.code.append(0x84); // JZ rel32
+                    }
                     try self.emitJumpPatch(target);
                 },
 
