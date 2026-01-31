@@ -10,6 +10,7 @@ const coptic_parser = @import("coptic_parser_real.zig");
 const bytecode_compiler = @import("bytecode_compiler.zig");
 const vm_runtime = @import("vm_runtime.zig");
 const tri_cmd = @import("tri_cmd.zig");
+const jit_adapter = @import("jit_adapter.zig");
 // NOTE: coptic_interpreter.zig is DEPRECATED - use VM only!
 
 pub const PHI: f64 = 1.6180339887498948482;
@@ -20,6 +21,7 @@ const Command = enum {
     compile,
     run, // Run via bytecode VM (the only way!)
     vm, // Fast VM mode for .999 files
+    jit, // Run with JIT compilation
     bench, // Benchmark with detailed timing
     profile, // Profile opcodes
     check,
@@ -71,6 +73,14 @@ pub fn main() !void {
                 return;
             }
             try runFastVM(args[2], allocator);
+        },
+        .jit => {
+            // Run with JIT compilation
+            if (args.len < 3) {
+                printError("Missing file argument for 'jit'");
+                return;
+            }
+            try runWithJIT(args[2], allocator);
         },
         .bench => {
             // Benchmark with detailed timing
@@ -140,6 +150,7 @@ fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "compile") or std.mem.eql(u8, arg, "c")) return .compile;
     if (std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "r")) return .run;
     if (std.mem.eql(u8, arg, "vm")) return .vm;
+    if (std.mem.eql(u8, arg, "jit") or std.mem.eql(u8, arg, "j")) return .jit;
     if (std.mem.eql(u8, arg, "bench") or std.mem.eql(u8, arg, "b")) return .bench;
     if (std.mem.eql(u8, arg, "profile") or std.mem.eql(u8, arg, "p")) return .profile;
     if (std.mem.eql(u8, arg, "check") or std.mem.eql(u8, arg, "k")) return .check;
@@ -321,6 +332,70 @@ fn profileVM(path: []const u8, allocator: std.mem.Allocator) !void {
     vm.printProfile(15);
 
     std.debug.print("\nTotal: {d} ops in {d:.2} µs ({d:.0} ops/s)\n", .{ vm.instructions_executed, vm.getExecutionTimeUs(), vm.getOpsPerSecond() });
+}
+
+// JIT mode - tiered compilation with hot path detection
+fn runWithJIT(path: []const u8, allocator: std.mem.Allocator) !void {
+    // Read and parse file
+    const source = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
+        printError("Failed to read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parser = coptic_parser.Parser.init(allocator, source);
+    var ast = parser.parseProgram() catch |err| {
+        printError("Parse error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer ast.deinit();
+
+    // Compile to bytecode
+    var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
+    defer compiler.deinit();
+
+    compiler.compile(&ast) catch |err| {
+        printError("Compilation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const code = compiler.getCode();
+    const constants = compiler.getConstants();
+
+    // Run with JIT adapter
+    var jit_vm = jit_adapter.JITAdapter.init(allocator) catch |err| {
+        printError("JIT initialization failed");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer jit_vm.deinit();
+
+    const start_time = std.time.nanoTimestamp();
+    const result = jit_vm.executeTiered(code, constants) catch |err| {
+        printError("JIT execution error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    const end_time = std.time.nanoTimestamp();
+    const elapsed_ns: u64 = @intCast(@max(0, end_time - start_time));
+    const elapsed_us = @as(f64, @floatFromInt(elapsed_ns)) / 1000.0;
+
+    // Print result
+    printSuccess("JIT execution complete");
+    std.debug.print("  Time: {d:.2} µs\n", .{elapsed_us});
+    std.debug.print("  Interpreter instructions: {}\n", .{jit_vm.interpreter_instructions});
+    std.debug.print("  JIT instructions: {}\n", .{jit_vm.jit_instructions});
+    std.debug.print("  Native instructions: {}\n", .{jit_vm.native_instructions});
+    
+    var buf: [256]u8 = undefined;
+    const result_str = std.fmt.bufPrint(&buf, "{}", .{result.value}) catch "?";
+    if (!std.mem.eql(u8, result_str, "nil")) {
+        std.debug.print("  Result: {s}\n", .{result_str});
+    }
 }
 
 // Fast VM mode - minimal overhead, maximum performance
