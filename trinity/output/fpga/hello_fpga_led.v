@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// trinity_fpga_mvp v1.0.0 - Generated Verilog from .vibee specification
+// hello_fpga_led v1.0.0 - Generated Verilog from .vibee specification
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // Sacred Formula: V = n × 3^k × π^m × φ^p × e^q
@@ -20,7 +20,7 @@
 // SACRED CONSTANTS MODULE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-module trinity_fpga_mvp_sacred_constants (
+module hello_fpga_led_sacred_constants (
     output wire [63:0] phi,
     output wire [63:0] phi_sq,
     output wire [63:0] phi_inv_sq,
@@ -41,7 +41,7 @@ endmodule
 // TOP MODULE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-module trinity_fpga_mvp_top (
+module hello_fpga_led_top (
     input  wire        clk,
 input  wire        rst_n,
     input  wire [31:0] data_in,
@@ -63,7 +63,7 @@ input  wire        rst_n,
     wire [63:0] phi, phi_sq, phi_inv_sq, trinity;
     wire [31:0] phoenix;
 
-trinity_fpga_mvp_sacred_constants sacred_inst (
+hello_fpga_led_sacred_constants sacred_inst (
         .phi(phi),
         .phi_sq(phi_sq),
         .phi_inv_sq(phi_inv_sq),
@@ -110,7 +110,7 @@ endmodule
 // TESTBENCH
 // ═══════════════════════════════════════════════════════════════════════════════
 
-module trinity_fpga_mvp_tb;
+module hello_fpga_led_tb;
 
     // Testbench signals
     reg         clk;
@@ -122,7 +122,7 @@ module trinity_fpga_mvp_tb;
     wire        ready;
 
     // DUT instantiation
-trinity_fpga_mvp_top dut (
+hello_fpga_led_top dut (
         .clk(clk),
         .rst_n(rst_n),
         .data_in(data_in),
@@ -139,7 +139,7 @@ trinity_fpga_mvp_top dut (
     // Test sequence
     initial begin
         $display("═══════════════════════════════════════════════════════════════");
-$display("trinity_fpga_mvp Testbench - φ² + 1/φ² = 3");
+$display("hello_fpga_led Testbench - φ² + 1/φ² = 3");
         $display("═══════════════════════════════════════════════════════════════");
 
         // Initialize

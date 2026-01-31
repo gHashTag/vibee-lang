@@ -12,8 +12,8 @@ pub const ValidationError = struct {
 };
 
 pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const ValidationError {
-    var errors = try std.ArrayList(ValidationError).initCapacity(std.heap.page_allocator, 16);
-    defer errors.deinit(std.heap.page_allocator);
+    var errors = std.ArrayList(ValidationError).init(std.heap.page_allocator);
+    defer errors.deinit();
 
     var line_num: usize = 1;
     var has_output = false;
@@ -42,7 +42,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
 
     // Check 1: Mandatory output: key
     if (!has_output) {
-        try errors.append(std.heap.page_allocator, .{
+        try errors.append( .{
             .code = "missing_output",
             .message = "❌ Missing mandatory 'output:' key",
             .line = 1,
@@ -54,7 +54,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
     if (tri_idx != 0) {
         const after_tri = file_path[tri_idx + "specs/tri/".len ..];
         if (std.mem.indexOfScalar(u8, after_tri, '/') == null) {
-            try errors.append(std.heap.page_allocator, .{
+            try errors.append( .{
                 .code = "root_folder",
                 .message = "❌ Spec must be in subfolder (core/, compiler/, runtime/, etc.)",
                 .line = 1,
@@ -64,7 +64,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
 
     // Check 3: Duplicate .tri files
     if (std.mem.endsWith(u8, file_path, ".tri")) {
-        try errors.append(std.heap.page_allocator, .{
+        try errors.append( .{
             .code = "duplicate_tri",
             .message = "❌ .tri files not allowed (use .vibee only)",
             .line = 1,
@@ -73,7 +73,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
 
     // Check 4: Mandatory name: field (NEW)
     if (!has_name) {
-        try errors.append(std.heap.page_allocator, .{
+        try errors.append( .{
             .code = "missing_name",
             .message = "❌ Missing mandatory 'name:' field",
             .line = 1,
@@ -83,7 +83,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
     // Check 5: Mandatory version: field (NEW)
     if (!has_version) {
         std.debug.print("DEBUG: Missing version field detected, adding error\n", .{});
-        try errors.append(std.heap.page_allocator, .{
+        try errors.append( .{
             .code = "missing_version",
             .message = "❌ Missing mandatory 'version:' field",
             .line = 1,
@@ -103,7 +103,7 @@ pub fn validateSpec(source: []const u8, file_path: []const u8) ![]const Validati
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub fn runValidation(args: []const []const u8) !u8 {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = std.io.getStdOut().writer();
 
     if (args.len < 2) {
         try stdout.print("Usage: vibee validate <spec.vibee>\n", .{});

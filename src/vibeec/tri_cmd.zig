@@ -235,7 +235,7 @@ fn handleCommit(allocator: std.mem.Allocator, message: ?[]const u8) !void {
 fn handleLog(allocator: std.mem.Allocator) !void {
     printInfo("Commit history...");
     
-    const commits_dir = std.fs.cwd().openDir(TVC_COMMITS_DIR, .{}) catch {
+    var commits_dir = std.fs.cwd().openDir(TVC_COMMITS_DIR, .{}) catch {
         printError("Not a TVC repository");
         return error.NotATVCRepository;
     };
@@ -288,7 +288,7 @@ fn handleStatus(allocator: std.mem.Allocator) !void {
     std.debug.print("  HEAD: {s}\n", .{head_content});
 
     // Count commits
-    const commits_dir = std.fs.cwd().openDir(TVC_COMMITS_DIR, .{}) catch return;
+    var commits_dir = std.fs.cwd().openDir(TVC_COMMITS_DIR, .{}) catch return;
     defer commits_dir.close();
 
     var iter = commits_dir.iterate();
@@ -402,7 +402,8 @@ fn handleEncode(allocator: std.mem.Allocator, text: []const u8) !void {
     // Print trit representation
     std.debug.print("  Trit stream: ", .{});
     for (trit_stream) |trit| {
-        const trit_char = switch (trit) {
+        const trit_val: i8 = trit;
+        const trit_char: u8 = switch (trit_val) {
             -1 => '-',
             0 => '0',
             1 => '+',
@@ -422,7 +423,7 @@ fn handleDecode(allocator: std.mem.Allocator, trits_str: []const u8) !void {
     defer trit_stream.deinit(allocator);
 
     for (trits_str) |c| {
-        const trit = switch (c) {
+        const trit: i8 = switch (c) {
             '-' => -1,
             '0' => 0,
             '+' => 1,
@@ -451,7 +452,7 @@ fn handlePack(allocator: std.mem.Allocator, file: []const u8) !void {
     defer trit_stream.deinit(allocator);
 
     for (content) |c| {
-        const trit = switch (c) {
+        const trit: i8 = switch (c) {
             '-' => -1,
             '0' => 0,
             '+' => 1,
@@ -498,7 +499,8 @@ fn handleUnpack(allocator: std.mem.Allocator, file: []const u8) !void {
 
     // Write trit representation
     for (trit_stream) |trit| {
-        const trit_char = switch (trit) {
+        const trit_val: i8 = trit;
+        const trit_char: u8 = switch (trit_val) {
             -1 => '-',
             0 => '0',
             1 => '+',

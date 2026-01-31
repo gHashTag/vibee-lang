@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 const vibee_parser = @import("vibee_parser.zig");
 
 const VibeeSpec = vibee_parser.VibeeSpec;
@@ -32,7 +32,7 @@ pub const ExtractedSignal = struct {
 
 /// Extract signals from spec types for SVA checker
 pub fn extractSignalsFromTypes(types: []const TypeDef, allocator: Allocator) !ArrayList(ExtractedSignal) {
-    var signals: ArrayList(ExtractedSignal) = .empty;
+    var signals: ArrayList(ExtractedSignal) = .{};
 
     for (types) |t| {
         for (t.fields.items) |field| {
@@ -108,7 +108,7 @@ const signal_keywords = [_]struct { keyword: []const u8, signal: []const u8 }{
 
 /// Extract signal references from behavior text
 pub fn extractSignalReferences(text: []const u8, allocator: Allocator) !ArrayList([]const u8) {
-    var refs: ArrayList([]const u8) = .empty;
+    var refs: ArrayList([]const u8) = .{};
 
     for (signal_keywords) |kw| {
         if (containsIgnoreCase(text, kw.keyword)) {
@@ -155,7 +155,7 @@ pub fn validateBehaviorSignals(
     extracted: []const ExtractedSignal,
     allocator: Allocator,
 ) !ArrayList(ValidationWarning) {
-    var warnings: ArrayList(ValidationWarning) = .empty;
+    var warnings: ArrayList(ValidationWarning) = .{};
 
     for (behaviors) |behavior| {
         // Check given clause
@@ -224,7 +224,7 @@ pub const VerilogBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = .empty,
+            .buffer = .{},
             .indent = 0,
         };
     }
@@ -2234,11 +2234,11 @@ pub const VerilogCodeGen = struct {
         if (spec.behaviors.items.len == 0) return;
 
         // Extract signals from types
-        var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal).empty;
+        var extracted_signals = extractSignalsFromTypes(spec.types.items, self.allocator) catch ArrayList(ExtractedSignal){};
         defer extracted_signals.deinit(self.allocator);
 
         // Validate behavior signals
-        var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning).empty;
+        var warnings = validateBehaviorSignals(spec.behaviors.items, extracted_signals.items, self.allocator) catch ArrayList(ValidationWarning){};
         defer warnings.deinit(self.allocator);
 
         // Print warnings to stderr (visible during generation)

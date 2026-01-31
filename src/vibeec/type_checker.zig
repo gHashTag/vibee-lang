@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 const StringHashMap = std.StringHashMap;
 const parser = @import("parser_v3.zig");
 const Specification = parser.Specification;
@@ -231,7 +231,7 @@ pub const TypeCheckResult = struct {
         return .{
             .success = true,
             .resolved_type = null,
-            .errors = .empty,
+            .errors = .{},
         };
     }
 

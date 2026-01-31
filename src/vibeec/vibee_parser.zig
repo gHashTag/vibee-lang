@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ТИПЫ СПЕЦИФИКАЦИИ
@@ -46,19 +46,19 @@ pub const VibeeSpec = struct {
             .language = "zig", // Default to Zig
             .author = "",
             .license = "",
-            .targets = .empty,
+            .targets = .{},
             .fpga_target = "generic",
             .pipeline = "none",
             .target_frequency = 100,
-            .constants = .empty,
-            .types = .empty,
-            .creation_patterns = .empty,
-            .behaviors = .empty,
-            .algorithms = .empty,
+            .constants = .{},
+            .types = .{},
+            .creation_patterns = .{},
+            .behaviors = .{},
+            .algorithms = .{},
             .wasm_exports = WasmExports.init(allocator),
-            .pas_predictions = .empty,
-            .signals = .empty,
-            .fsms = .empty,
+            .pas_predictions = .{},
+            .signals = .{},
+            .fsms = .{},
             .reset = ResetDef{ .reset_type = "async", .level = "low" }, // Default
             .allocator = allocator,
         };
@@ -124,8 +124,8 @@ pub const TypeDef = struct {
         return TypeDef{
             .name = "",
             .base = null,
-            .fields = .empty,
-            .constraints = .empty,
+            .fields = .{},
+            .constraints = .{},
             .generic = null,
             .description = "",
         };
@@ -193,10 +193,10 @@ pub const FSMDef = struct {
             .name = "",
             .initial_state = "",
             .encoding = "onehot",
-            .states = .empty,
-            .transitions = .empty,
-            .outputs = .empty,
-            .timers = .empty,
+            .states = .{},
+            .transitions = .{},
+            .outputs = .{},
+            .timers = .{},
         };
     }
 };
@@ -224,7 +224,7 @@ pub const Behavior = struct {
             .when = "",
             .then = "",
             .implementation = "",
-            .test_cases = .empty,
+            .test_cases = .{},
         };
     }
 };
@@ -250,7 +250,7 @@ pub const Algorithm = struct {
             .description = "",
             .complexity = "",
             .pattern = "",
-            .steps = .empty,
+            .steps = .{},
         };
     }
 };
@@ -262,8 +262,8 @@ pub const WasmExports = struct {
     pub fn init(allocator: Allocator) WasmExports {
         _ = allocator;
         return WasmExports{
-            .functions = .empty,
-            .memory = .empty,
+            .functions = .{},
+            .memory = .{},
         };
     }
 

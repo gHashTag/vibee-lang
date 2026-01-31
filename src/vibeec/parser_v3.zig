@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SACRED CONSTANTS
@@ -54,6 +54,8 @@ pub const Keyword = enum(u8) {
     pas_analysis = 18,
     sacred_formula = 19,
     constants = 20,
+    description = 21,
+    implementation = 22,
     // Unknown
     unknown = 31,
 
@@ -156,9 +158,9 @@ pub const Specification = struct {
     pub fn init(allocator: Allocator) Specification {
         _ = allocator;
         return .{
-            .behaviors = .empty,
-            .types = .empty,
-            .constants = .empty,
+            .behaviors = .{},
+            .types = .{},
+            .constants = .{},
         };
     }
 
@@ -189,7 +191,7 @@ pub const Behavior = struct {
     pub fn init(allocator: Allocator) Behavior {
         _ = allocator;
         return .{
-            .test_cases = .empty,
+            .test_cases = .{},
             .description = "", // ✅ ДОБАВЛЕНО
             .implementation = "", // ✅ ДОБАВЛЕНО
         };
@@ -219,9 +221,9 @@ pub const TypeDef = struct {
     pub fn init(allocator: Allocator) TypeDef {
         _ = allocator;
         return .{
-            .fields = .empty,
-            .methods = .empty,
-            .values = .empty,
+            .fields = .{},
+            .methods = .{},
+            .values = .{},
         };
     }
 
@@ -258,7 +260,7 @@ pub const PASAnalysis = struct {
     pub fn init(allocator: Allocator) PASAnalysis {
         _ = allocator;
         return .{
-            .improvements = .empty,
+            .improvements = .{},
         };
     }
 
@@ -310,9 +312,9 @@ pub const ParserV3 = struct {
         return .{
             .allocator = allocator,
             .source = "",
-            .lines = .empty,
+            .lines = .{},
             .current_line = 0,
-            .indent_stack = .empty,
+            .indent_stack = .{},
             .lines_parsed = 0,
             .keywords_matched = 0,
             .cache_hits = 0,
@@ -328,7 +330,7 @@ pub const ParserV3 = struct {
         self.source = source;
         self.current_line = 0;
         self.lines.deinit(self.allocator);
-        self.lines = .empty;
+        self.lines = .{};
 
         // Split into lines
         var iter = std.mem.splitScalar(u8, source, '\n');
@@ -435,35 +437,13 @@ pub const ParserV3 = struct {
                         }
                     },
                     .then => {
-                        if (current_behavior) |*b| {
+                        if (current_behavior) |b| {
                             b.then = value;
                         }
                     },
                     .code => {
-                        if (current_behavior) |*b| {
-                            if (b.implementation.len > 0) self.allocator.free(b.implementation);
-                            var code_lines = std.ArrayList([]const u8).init(self.allocator);
-                            defer code_lines.deinit(self.allocator);
-
-                            if (value.len > 0) {
-                                try code_lines.append(try self.allocator.dupe(u8, value));
-                            }
-
-                            state = .in_code_block;
-                            b.implementation = try self.allocator.dupe(u8, code_lines.items);
-                        }
-                    },
-                    .code => {
-                        if (current_behavior) |*b| {
-                            if (b.implementation.len > 0) allocator.free(b.implementation);
-                            var code_lines = std.ArrayList([]const u8).init(self.allocator);
-                            defer code_lines.deinit(self.allocator);
-
+                        if (current_behavior) |b| {
                             // Start multi-line string accumulation
-                            if (value.len > 0) {
-                                try code_lines.append(value);
-                            }
-
                             state = .in_code_block;
                             b.implementation = value;
                         }
@@ -564,6 +544,7 @@ const ParseState = enum {
     in_pas,
     in_sacred,
     in_constants,
+    in_code_block,
 };
 
 pub const ParseMetrics = struct {

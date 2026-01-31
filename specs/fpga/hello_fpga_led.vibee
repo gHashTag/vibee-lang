@@ -1,0 +1,182 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# HELLO FPGA - LED BLINKER
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Первый шаг к воплощению: мигающий светодиод на FPGA
+# Доказательство работы .vibee -> Verilog -> FPGA цепочки
+#
+# V = n × 3^k × π^m × φ^p × e^q
+# φ² + 1/φ² = 3 = TRINITY
+#
+# Target: Digilent Arty A7-35T (100 MHz clock)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: hello_fpga_led
+version: "1.0.0"
+language: varlog
+module: hello_fpga_led
+
+description: |
+  Простейший проект для FPGA: мигание светодиодом.
+  Демонстрирует полный цикл .vibee -> Verilog -> FPGA.
+  Целевая плата: Digilent Arty A7-35T с 100 MHz тактовой частотой.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SACRED CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constants:
+  CLOCK_FREQ_HZ: 100000000      # 100 MHz (Arty A7)
+  BLINK_FREQ_HZ: 1              # 1 Hz blink rate
+  COUNTER_MAX: 50000000         # CLOCK_FREQ / (2 * BLINK_FREQ)
+  PHOENIX: 999
+  TRINITY: 3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TYPE DEFINITIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+types:
+  LedState:
+    description: "State of the LED blinker"
+    fields:
+      counter: Int
+      led_on: Bool
+      
+  ClockDomain:
+    description: "Clock and reset signals"
+    fields:
+      clk: Bool
+      rst_n: Bool
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL DEFINITIONS (for Verilog generation)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+signals:
+  - name: clk
+    width: 1
+    direction: input
+    description: "100 MHz system clock"
+    
+  - name: rst_n
+    width: 1
+    direction: input
+    description: "Active-low reset"
+    
+  - name: led
+    width: 4
+    direction: output
+    description: "4 LEDs on Arty A7"
+    
+  - name: counter
+    width: 27
+    direction: internal
+    description: "Counter for timing (27 bits for 100M)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FSM DEFINITION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fsm:
+  - name: LedBlinkFSM
+    initial: IDLE
+    encoding: onehot
+    states:
+      - IDLE
+      - COUNTING
+      - TOGGLE
+    transitions:
+      - from: IDLE
+        to: COUNTING
+        condition: "rst_n == 1"
+      - from: COUNTING
+        to: TOGGLE
+        condition: "counter >= COUNTER_MAX"
+      - from: TOGGLE
+        to: COUNTING
+        condition: "always"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BEHAVIORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+behaviors:
+  - name: reset_counter
+    given: "Reset signal is active (rst_n == 0)"
+    when: "System reset occurs"
+    then: "Counter resets to 0, LED turns off"
+    
+  - name: increment_counter
+    given: "System is running (rst_n == 1)"
+    when: "Rising edge of clock"
+    then: "Counter increments by 1"
+    
+  - name: toggle_led
+    given: "Counter reaches COUNTER_MAX"
+    when: "Counter overflow detected"
+    then: "LED state toggles, counter resets to 0"
+    
+  - name: output_led
+    given: "Current LED state"
+    when: "Output requested"
+    then: "All 4 LEDs show same state (for visibility)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSTRAINTS (for Arty A7-35T)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+constraints:
+  target_device: "xc7a35ticsg324-1L"
+  clock_period_ns: 10.0
+  
+  pin_assignments:
+    clk: "E3"           # 100 MHz oscillator
+    rst_n: "C2"         # Reset button (active low)
+    led[0]: "H5"        # LED0
+    led[1]: "J5"        # LED1
+    led[2]: "T9"        # LED2
+    led[3]: "T10"       # LED3
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTBENCH SPECIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+testbench:
+  clock_period_ns: 10
+  
+  test_cases:
+    - name: "Reset test"
+      description: "Verify reset clears counter and LED"
+      steps:
+        - set: rst_n = 0
+        - wait: 100ns
+        - assert: counter == 0
+        - assert: led == 0
+        
+    - name: "Counting test"
+      description: "Verify counter increments"
+      steps:
+        - set: rst_n = 1
+        - wait: 1000ns
+        - assert: counter > 0
+        
+    - name: "Toggle test"
+      description: "Verify LED toggles after COUNTER_MAX"
+      steps:
+        - set: rst_n = 1
+        - wait: 500ms  # Half second
+        - assert: led != 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METADATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+metadata:
+  author: "VIBEE Trinity Team"
+  project: "IRON COVENANT - Hello FPGA"
+  date: "January 2026"
+  license: "MIT"
+  sacred_formula: "V = n × 3^k × π^m × φ^p × e^q"
+  golden_identity: "φ² + 1/φ² = 3"

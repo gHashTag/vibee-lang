@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 const vibee_parser = @import("vibee_parser.zig");
 
 const VibeeSpec = vibee_parser.VibeeSpec;
@@ -34,7 +34,7 @@ pub const CodeBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = .empty,
+            .buffer = .{},
             .indent = 0,
         };
     }

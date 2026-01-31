@@ -36,12 +36,14 @@ pub const OutputTarget = enum {
     zig,
     code999,
     both,
+    verilog,
 
     pub fn toString(self: OutputTarget) []const u8 {
         return switch (self) {
             .zig => "Zig",
             .code999 => ".999",
             .both => "Zig + .999",
+            .verilog => "Verilog",
         };
     }
 };
