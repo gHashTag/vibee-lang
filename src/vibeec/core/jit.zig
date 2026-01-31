@@ -149,6 +149,38 @@ pub const X64Encoder = struct {
         try self.modrm(3, @truncate(dst_val & 0x7), @truncate(src_val & 0x7));
     }
 
+    // AND reg, reg
+    pub fn andReg(self: *Self, dst: Reg64, src: Reg64) !void {
+        const dst_val = @intFromEnum(dst);
+        const src_val = @intFromEnum(src);
+        try self.rex(true, src_val >= 8, false, dst_val >= 8);
+        try self.code.append(0x21); // AND r/m64, r64
+        try self.modrm(3, @truncate(src_val & 0x7), @truncate(dst_val & 0x7));
+    }
+
+    // OR reg, reg
+    pub fn orReg(self: *Self, dst: Reg64, src: Reg64) !void {
+        const dst_val = @intFromEnum(dst);
+        const src_val = @intFromEnum(src);
+        try self.rex(true, src_val >= 8, false, dst_val >= 8);
+        try self.code.append(0x09); // OR r/m64, r64
+        try self.modrm(3, @truncate(src_val & 0x7), @truncate(dst_val & 0x7));
+    }
+
+    // CQO - sign extend rax into rdx:rax
+    pub fn cqo(self: *Self) !void {
+        try self.rex(true, false, false, false); // REX.W
+        try self.code.append(0x99); // CQO
+    }
+
+    // IDIV reg - signed divide rdx:rax by reg, result in rax, remainder in rdx
+    pub fn idivReg(self: *Self, src: Reg64) !void {
+        const src_val = @intFromEnum(src);
+        try self.rex(true, false, false, src_val >= 8);
+        try self.code.append(0xF7); // IDIV r/m64
+        try self.modrm(3, 7, @truncate(src_val & 0x7)); // /7 = IDIV
+    }
+
     // CMP reg, reg
     pub fn cmpReg(self: *Self, a: Reg64, b: Reg64) !void {
         const a_val = @intFromEnum(a);
@@ -309,6 +341,16 @@ pub const ExecutableMemory = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// NaN-BOXING CONSTANTS FOR JIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const QNAN: u64 = 0x7FFC_0000_0000_0000;
+const TAG_SHIFT: u6 = 45;
+const TAG_INT: u64 = @as(u64, 2) << TAG_SHIFT; // 0x0000_4000_0000_0000
+const PAYLOAD_MASK: u64 = (@as(u64, 1) << 45) - 1; // 0x1FFF_FFFF_FFFF
+const QNAN_INT: u64 = QNAN | TAG_INT; // 0x7FFC_4000_0000_0000
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // JIT COMPILER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -327,6 +369,34 @@ pub const JitCompiler = struct {
 
     pub fn deinit(self: *Self) void {
         self.encoder.deinit();
+    }
+
+    /// Extract int payload from NaN-boxed value in rax -> rax
+    /// rax = rax & PAYLOAD_MASK (45-bit signed)
+    fn emitExtractInt(self: *Self) !void {
+        // mov rcx, PAYLOAD_MASK
+        try self.encoder.movImm64(.rcx, PAYLOAD_MASK);
+        // and rax, rcx
+        try self.encoder.andReg(.rax, .rcx);
+    }
+
+    /// Extract int payload from NaN-boxed value in rbx -> rbx
+    fn emitExtractIntRbx(self: *Self) !void {
+        // mov rcx, PAYLOAD_MASK
+        try self.encoder.movImm64(.rcx, PAYLOAD_MASK);
+        // and rbx, rcx
+        try self.encoder.andReg(.rbx, .rcx);
+    }
+
+    /// Pack int in rax back to NaN-boxed format -> rax
+    /// rax = QNAN_INT | (rax & PAYLOAD_MASK)
+    fn emitPackInt(self: *Self) !void {
+        // and rax, PAYLOAD_MASK (ensure only 45 bits)
+        try self.encoder.movImm64(.rcx, PAYLOAD_MASK);
+        try self.encoder.andReg(.rax, .rcx);
+        // or rax, QNAN_INT
+        try self.encoder.movImm64(.rcx, QNAN_INT);
+        try self.encoder.orReg(.rax, .rcx);
     }
 
     /// Compile bytecode to x86-64 machine code
@@ -355,23 +425,50 @@ pub const JitCompiler = struct {
                 },
 
                 .add => {
-                    try self.encoder.pop(.rbx);
-                    try self.encoder.pop(.rax);
+                    // Pop operands
+                    try self.encoder.pop(.rbx); // b
+                    try self.encoder.pop(.rax); // a
+                    // Extract int payloads
+                    try self.emitExtractInt(); // rax = a.payload
+                    try self.emitExtractIntRbx(); // rbx = b.payload
+                    // Add
                     try self.encoder.addReg(.rax, .rbx);
+                    // Pack result
+                    try self.emitPackInt();
+                    // Push result
                     try self.encoder.push(.rax);
                 },
 
                 .sub => {
                     try self.encoder.pop(.rbx);
                     try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
                     try self.encoder.subReg(.rax, .rbx);
+                    try self.emitPackInt();
                     try self.encoder.push(.rax);
                 },
 
                 .mul => {
                     try self.encoder.pop(.rbx);
                     try self.encoder.pop(.rax);
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
                     try self.encoder.imulReg(.rax, .rbx);
+                    try self.emitPackInt();
+                    try self.encoder.push(.rax);
+                },
+
+                .div => {
+                    try self.encoder.pop(.rbx); // divisor
+                    try self.encoder.pop(.rax); // dividend
+                    try self.emitExtractInt();
+                    try self.emitExtractIntRbx();
+                    // Sign extend rax into rdx:rax for idiv
+                    try self.encoder.cqo();
+                    // idiv rbx (rax = rdx:rax / rbx)
+                    try self.encoder.idivReg(.rbx);
+                    try self.emitPackInt();
                     try self.encoder.push(.rax);
                 },
 
@@ -554,7 +651,7 @@ test "JitExecutor simple constant" {
     try std.testing.expectEqual(@as(i64, 42), val.asInt());
 }
 
-test "JitExecutor addition" {
+test "JitExecutor addition correctness" {
     var executor = JitExecutor.init(std.testing.allocator);
     defer executor.deinit();
 
@@ -571,14 +668,14 @@ test "JitExecutor addition" {
     };
 
     const result = try executor.run(&bytecode, &constants);
-    _ = Value{ .bits = @bitCast(result) };
+    const val = Value{ .bits = @bitCast(result) };
 
-    // Note: JIT does raw integer add on NaN-boxed bits
-    // For proper NaN-boxed arithmetic, we'd need more complex codegen
-    try std.testing.expect(result != 0);
+    // Verify correct NaN-boxed result
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
 }
 
-test "JitExecutor subtraction" {
+test "JitExecutor subtraction correctness" {
     var executor = JitExecutor.init(std.testing.allocator);
     defer executor.deinit();
 
@@ -594,10 +691,13 @@ test "JitExecutor subtraction" {
     };
 
     const result = try executor.run(&bytecode, &constants);
-    try std.testing.expect(result != 0);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 70), val.asInt());
 }
 
-test "JitExecutor multiplication" {
+test "JitExecutor multiplication correctness" {
     var executor = JitExecutor.init(std.testing.allocator);
     defer executor.deinit();
 
@@ -613,7 +713,58 @@ test "JitExecutor multiplication" {
     };
 
     const result = try executor.run(&bytecode, &constants);
-    try std.testing.expect(result != 0);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 42), val.asInt());
+}
+
+test "JitExecutor division correctness" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    const constants = [_]Value{
+        Value.int(100),
+        Value.int(5),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0,
+        @intFromEnum(Opcode.load_const), 0, 1,
+        @intFromEnum(Opcode.div),
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 20), val.asInt());
+}
+
+test "JitExecutor complex expression" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // (10 + 5) * 2 = 30
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(5),
+        Value.int(2),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10
+        @intFromEnum(Opcode.load_const), 0, 1, // push 5
+        @intFromEnum(Opcode.add), // 10 + 5 = 15
+        @intFromEnum(Opcode.load_const), 0, 2, // push 2
+        @intFromEnum(Opcode.mul), // 15 * 2 = 30
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -659,17 +810,21 @@ test "Benchmark VM vs JIT" {
     try executor.compile(&bytecode, &constants);
 
     const jit_start = std.time.nanoTimestamp();
-    var jit_result: i64 = 0;
+    var jit_result_raw: i64 = 0;
     for (0..iterations) |_| {
-        jit_result = try executor.execute();
+        jit_result_raw = try executor.execute();
     }
     const jit_end = std.time.nanoTimestamp();
     const jit_ns = @as(u64, @intCast(jit_end - jit_start));
 
+    // Extract JIT result
+    const jit_val = Value{ .bits = @bitCast(jit_result_raw) };
+    const jit_result = jit_val.asInt();
+
     // Calculate speedup
     const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
 
-    // Print results (visible in test output with --summary)
+    // Print results
     std.debug.print("\n=== BENCHMARK RESULTS ===\n", .{});
     std.debug.print("Iterations: {}\n", .{iterations});
     std.debug.print("VM:  {} ns total, {} ns/iter\n", .{ vm_ns, vm_ns / iterations });
@@ -677,6 +832,10 @@ test "Benchmark VM vs JIT" {
     std.debug.print("Speedup: {d:.2}x\n", .{speedup});
     std.debug.print("VM result: {}, JIT result: {}\n", .{ vm_result, jit_result });
 
-    // JIT should be faster (at least 2x for simple ops)
+    // Verify correctness: both should return 3 (1 + 2)
+    try std.testing.expectEqual(@as(i64, 3), vm_result);
+    try std.testing.expectEqual(@as(i64, 3), jit_result);
+
+    // JIT should be faster
     try std.testing.expect(speedup > 1.0);
 }
