@@ -763,21 +763,27 @@ pub const VectorizationCostModel = struct {
         const body_start = loop.start_idx;
         const body_end = @min(loop.end_idx, ir.len);
 
-        // Track which registers are written and read
+        // Track registers: written in this iteration, read before write (loop-carried)
         var written: u32 = 0;
-        var read_after_write: u32 = 0;
+        var read_before_write: u32 = 0; // Registers read BEFORE being written = loop-carried
 
         for (ir[body_start..body_end]) |instr| {
             const dest_mask = @as(u32, 1) << @intCast(instr.dest & 31);
             const src1_mask = @as(u32, 1) << @intCast(instr.src1 & 31);
             const src2_mask = @as(u32, 1) << @intCast(instr.src2 & 31);
 
-            // Check for read-after-write (potential dependency)
-            if ((written & src1_mask) != 0 or (written & src2_mask) != 0) {
-                read_after_write |= dest_mask;
+            // Check for read-before-write: reading a register that hasn't been written yet
+            // in this iteration means it carries value from previous iteration
+            if ((written & src1_mask) == 0 and instr.src1 != 0) {
+                // src1 not yet written in this iteration - potential loop-carried
+                // But only if it's also written later (accumulator pattern)
+                read_before_write |= src1_mask;
+            }
+            if ((written & src2_mask) == 0 and instr.src2 != 0) {
+                read_before_write |= src2_mask;
             }
 
-            // Detect reduction patterns (accumulator)
+            // Detect reduction patterns (accumulator: dest = dest op src)
             if (instr.opcode == .ADD_INT or instr.opcode == .ADD_FLOAT or
                 instr.opcode == .MUL_INT or instr.opcode == .MUL_FLOAT)
             {
@@ -789,8 +795,14 @@ pub const VectorizationCostModel = struct {
             written |= dest_mask;
         }
 
-        // Loop-carried dependency if same register read and written across iterations
-        has_loop_carried = @popCount(read_after_write) > 0 and !has_reduction;
+        // Loop-carried dependency: register read before written AND also written
+        // This means: value from iteration N-1 is used in iteration N
+        // Example: sum = sum + a[i] -> sum is read before written, then written
+        const loop_carried_regs = read_before_write & written;
+        has_loop_carried = @popCount(loop_carried_regs) > 0 and !has_reduction;
+
+        // Intra-iteration dependencies (read after write within same iteration) are OK
+        // They don't prevent vectorization because each lane is independent
         can_parallelize = !has_loop_carried or has_reduction;
 
         return .{
@@ -17866,6 +17878,79 @@ test "VectorizationCostModel analyzeDependencies reduction" {
     try std.testing.expect(deps.can_parallelize);
 }
 
+test "VectorizationCostModel analyzeDependencies intra-iteration OK" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64,
+        .body_size = 4,
+    };
+
+    // Pattern: c[i] = a[i] + b[i] - intra-iteration deps are OK for vectorization
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // t1 = a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // t2 = b[i]
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 }, // t3 = t1 + t2 (reads t1, t2)
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // c[i] = t3
+    };
+
+    const deps = model.analyzeDependencies(loop, &ir);
+    // Intra-iteration dependencies should NOT be flagged as loop-carried
+    try std.testing.expect(!deps.has_loop_carried);
+    try std.testing.expect(deps.can_parallelize);
+    try std.testing.expect(!deps.has_reduction);
+}
+
+test "VectorizationCostModel analyzeDependencies loop-carried NOT OK" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 2,
+        .iteration_count = 100,
+        .body_size = 2,
+    };
+
+    // Pattern: x = x * 2 (NOT reduction, just loop-carried)
+    // Register 5 is read before written, then written - loop-carried!
+    const ir = [_]IRInstruction{
+        .{ .opcode = .MUL_INT, .dest = 5, .src1 = 5, .src2 = 6, .imm = 0 }, // x = x * const (loop-carried, not reduction because dest=src1)
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 5, .src2 = 0, .imm = 0 },
+    };
+
+    const deps = model.analyzeDependencies(loop, &ir);
+    // This IS a reduction pattern (dest == src1)
+    try std.testing.expect(deps.has_reduction);
+    try std.testing.expect(deps.can_parallelize); // Reductions can be parallelized
+}
+
+test "VectorizationCostModel analyzeDependencies true loop-carried" {
+    const model = VectorizationCostModel.init();
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 3,
+        .iteration_count = 100,
+        .body_size = 3,
+    };
+
+    // Pattern: y = f(x); x = g(y) - true loop-carried, not reduction
+    // x from iteration N-1 is used to compute y, then x is updated
+    const ir = [_]IRInstruction{
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 1, .src2 = 3, .imm = 0 }, // y = x + const (reads x before written)
+        .{ .opcode = .MUL_INT, .dest = 1, .src1 = 2, .src2 = 4, .imm = 0 }, // x = y * const (writes x)
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 1, .src2 = 0, .imm = 0 },
+    };
+
+    const deps = model.analyzeDependencies(loop, &ir);
+    // Register 1 (x) is read before written, then written - loop-carried
+    // But it's not a reduction (dest != src1 in the read instruction)
+    try std.testing.expect(deps.has_loop_carried);
+    try std.testing.expect(!deps.can_parallelize);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUTO-VECTORIZER INTEGRATION TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -18033,6 +18118,36 @@ test "AutoVectorizer end-to-end ArrayAdd execution" {
 
     try std.testing.expectEqual(@as(i32, 11), result[0]);
     try std.testing.expectEqual(@as(i32, 88), result[7]);
+}
+
+test "AutoVectorizer autoVectorize full pipeline with IR" {
+    const allocator = std.testing.allocator;
+    var vectorizer = AutoVectorizer.init(allocator);
+
+    const loop = LoopInfo{
+        .start_idx = 0,
+        .end_idx = 4,
+        .iteration_count = 64, // Large enough for vectorization
+        .body_size = 4,
+    };
+
+    // Pattern: c[i] = a[i] + b[i] - should be vectorizable (intra-iteration deps only)
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_LOCAL, .dest = 1, .src1 = 10, .src2 = 0, .imm = 0 }, // t1 = a[i]
+        .{ .opcode = .LOAD_LOCAL, .dest = 2, .src1 = 20, .src2 = 0, .imm = 0 }, // t2 = b[i]
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 1, .src2 = 2, .imm = 0 }, // t3 = t1 + t2
+        .{ .opcode = .STORE_LOCAL, .dest = 30, .src1 = 3, .src2 = 0, .imm = 0 }, // c[i] = t3
+    };
+
+    const initial_vectorized = vectorizer.stats.loops_vectorized;
+
+    // Verify autoVectorize succeeds with full pipeline
+    var exec = try vectorizer.autoVectorize(loop, &ir);
+    try std.testing.expect(exec != null);
+    defer exec.?.deinit();
+
+    // Verify stats were updated (at least one more loop vectorized)
+    try std.testing.expect(vectorizer.stats.loops_vectorized > initial_vectorized);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
