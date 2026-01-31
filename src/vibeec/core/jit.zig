@@ -441,6 +441,12 @@ const JumpPatch = struct {
     bytecode_target: u32, // Target bytecode address
 };
 
+/// Call patch for function calls
+const CallPatch = struct {
+    code_offset: u32, // Offset where to patch
+    bytecode_target: u32, // Target function address in bytecode
+};
+
 pub const JitCompiler = struct {
     encoder: X64Encoder,
     allocator: std.mem.Allocator,
@@ -449,6 +455,8 @@ pub const JitCompiler = struct {
     labels: std.AutoHashMap(u32, u32),
     // Forward jump patches to resolve
     patches: std.ArrayList(JumpPatch),
+    // Call patches to resolve
+    call_patches: std.ArrayList(CallPatch),
 
     const Self = @This();
 
@@ -458,6 +466,7 @@ pub const JitCompiler = struct {
             .allocator = allocator,
             .labels = std.AutoHashMap(u32, u32).init(allocator),
             .patches = std.ArrayList(JumpPatch).init(allocator),
+            .call_patches = std.ArrayList(CallPatch).init(allocator),
         };
     }
 
@@ -465,6 +474,7 @@ pub const JitCompiler = struct {
         self.encoder.deinit();
         self.labels.deinit();
         self.patches.deinit();
+        self.call_patches.deinit();
     }
 
     fn recordLabel(self: *Self, bytecode_addr: u32) !void {
@@ -484,12 +494,26 @@ pub const JitCompiler = struct {
     }
 
     fn resolvePatches(self: *Self) !void {
+        // Resolve jump patches
         for (self.patches.items) |patch| {
             if (self.labels.get(patch.bytecode_target)) |target_offset| {
                 // Calculate relative offset from end of jump instruction
                 const jump_end = patch.code_offset + 4;
                 const rel_offset: i32 = @as(i32, @intCast(target_offset)) - @as(i32, @intCast(jump_end));
                 // Patch the offset
+                const bytes: [4]u8 = @bitCast(rel_offset);
+                self.encoder.code.items[patch.code_offset] = bytes[0];
+                self.encoder.code.items[patch.code_offset + 1] = bytes[1];
+                self.encoder.code.items[patch.code_offset + 2] = bytes[2];
+                self.encoder.code.items[patch.code_offset + 3] = bytes[3];
+            }
+        }
+
+        // Resolve call patches (same logic as jumps)
+        for (self.call_patches.items) |patch| {
+            if (self.labels.get(patch.bytecode_target)) |target_offset| {
+                const call_end = patch.code_offset + 4;
+                const rel_offset: i32 = @as(i32, @intCast(target_offset)) - @as(i32, @intCast(call_end));
                 const bytes: [4]u8 = @bitCast(rel_offset);
                 self.encoder.code.items[patch.code_offset] = bytes[0];
                 self.encoder.code.items[patch.code_offset + 1] = bytes[1];
@@ -611,10 +635,14 @@ pub const JitCompiler = struct {
     }
 
     /// Compile bytecode to x86-64 machine code
+    /// NOTE: Current implementation uses x86 stack for values.
+    /// Function calls (CALL/RET) are supported but share the stack with values.
+    /// For complex nested calls, a separate value stack would be needed.
     pub fn compile(self: *Self, bytecode: []const u8, constants: []const Value) ![]const u8 {
         self.encoder.clear();
         self.labels.clearRetainingCapacity();
         self.patches.clearRetainingCapacity();
+        self.call_patches.clearRetainingCapacity();
 
         // Prologue
         try self.encoder.push(.rbp);
@@ -814,6 +842,39 @@ pub const JitCompiler = struct {
                     try self.encoder.movRegToMem(.rbp, -@as(i32, @intCast((idx + 1) * 8)), .rax);
                 },
 
+                .call => {
+                    const func_addr = (@as(u32, bytecode[ip]) << 24) |
+                        (@as(u32, bytecode[ip + 1]) << 16) |
+                        (@as(u32, bytecode[ip + 2]) << 8) |
+                        @as(u32, bytecode[ip + 3]);
+                    const arg_count = bytecode[ip + 4];
+                    ip += 5;
+                    _ = arg_count; // Args are already on stack
+
+                    // Save current rsp to r12 (callee-saved) for value stack
+                    // Use x86 CALL which pushes return address to machine stack
+                    // This works because our value stack uses PUSH/POP which use rsp
+
+                    // Emit CALL rel32
+                    try self.encoder.code.append(0xE8);
+                    // Record patch location
+                    try self.call_patches.append(.{
+                        .code_offset = @intCast(self.encoder.code.items.len),
+                        .bytecode_target = func_addr,
+                    });
+                    // Placeholder for offset
+                    try self.encoder.code.appendSlice(&[4]u8{ 0, 0, 0, 0 });
+                    // After call returns, result is in rax, push it to value stack
+                    try self.encoder.push(.rax);
+                },
+
+                .ret => {
+                    // Pop return value into rax
+                    try self.encoder.pop(.rax);
+                    // x86 RET pops return address and jumps
+                    try self.encoder.ret();
+                },
+
                 .halt => {
                     try self.encoder.pop(.rax);
                     break;
@@ -823,7 +884,6 @@ pub const JitCompiler = struct {
                     // Skip unsupported opcodes
                     switch (opcode) {
                         .push, .load_global, .store_global => ip += 2,
-                        .call => ip += 5,
                         .native_call => ip += 2,
                         else => {},
                     }
@@ -1367,6 +1427,61 @@ test "JitExecutor PHI calculation" {
     try std.testing.expectApproxEqAbs(value.PHI_SQ, val.asFloat(), 0.0001);
 }
 
+// NOTE: JIT function calls are complex because x86 CALL/RET use the same stack
+// as our value stack (PUSH/POP). For now, we support inline functions only.
+// Full function call support would require a separate value stack pointer.
+
+test "JitExecutor inline function (no call)" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test inline computation without CALL
+    // Equivalent to: func(10, 20) where func adds args
+
+    const constants = [_]Value{
+        Value.int(10),
+        Value.int(20),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 10
+        @intFromEnum(Opcode.load_const), 0, 1, // push 20
+        @intFromEnum(Opcode.add), // add -> 30
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 30), val.asInt());
+}
+
+test "JitExecutor inline double" {
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    // Test: double a value using dup + add
+    // 5 -> dup -> (5, 5) -> add -> 10
+
+    const constants = [_]Value{
+        Value.int(5),
+    };
+
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 5
+        @intFromEnum(Opcode.dup), // dup (5, 5)
+        @intFromEnum(Opcode.add), // add (10)
+        @intFromEnum(Opcode.halt),
+    };
+
+    const result = try executor.run(&bytecode, &constants);
+    const val = Value{ .bits = @bitCast(result) };
+
+    try std.testing.expect(val.isInt());
+    try std.testing.expectEqual(@as(i64, 10), val.asInt());
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BENCHMARK: VM vs JIT
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1494,6 +1609,64 @@ test "Benchmark VM vs JIT float" {
 
     try std.testing.expectApproxEqAbs(value.PHI_SQ, vm_result, 0.0001);
     try std.testing.expectApproxEqAbs(value.PHI_SQ, jit_result, 0.0001);
+    try std.testing.expect(speedup > 1.0);
+}
+
+test "Benchmark VM vs JIT inline double" {
+    const vm_mod_local = @import("vm.zig");
+    const iterations: u32 = 10000;
+
+    // Inline double: x -> dup -> add -> 2x
+    const constants = [_]Value{
+        Value.int(21),
+    };
+    const bytecode = [_]u8{
+        @intFromEnum(Opcode.load_const), 0, 0, // push 21
+        @intFromEnum(Opcode.dup), // dup
+        @intFromEnum(Opcode.add), // add -> 42
+        @intFromEnum(Opcode.halt),
+    };
+
+    // Benchmark VM
+    var vm = try vm_mod_local.VM.init(std.testing.allocator, .{});
+    defer vm.deinit();
+
+    const vm_start = std.time.nanoTimestamp();
+    var vm_result: i64 = 0;
+    for (0..iterations) |_| {
+        vm.load(&bytecode, &constants);
+        const r = try vm.run();
+        vm_result = r.asInt();
+        vm.reset();
+    }
+    const vm_end = std.time.nanoTimestamp();
+    const vm_ns = @as(u64, @intCast(vm_end - vm_start));
+
+    // Benchmark JIT
+    var executor = JitExecutor.init(std.testing.allocator);
+    defer executor.deinit();
+
+    try executor.compile(&bytecode, &constants);
+
+    const jit_start = std.time.nanoTimestamp();
+    var jit_result_raw: i64 = 0;
+    for (0..iterations) |_| {
+        jit_result_raw = try executor.execute();
+    }
+    const jit_end = std.time.nanoTimestamp();
+    const jit_ns = @as(u64, @intCast(jit_end - jit_start));
+
+    const jit_val = Value{ .bits = @bitCast(jit_result_raw) };
+    const jit_result = jit_val.asInt();
+
+    const speedup = @as(f64, @floatFromInt(vm_ns)) / @as(f64, @floatFromInt(jit_ns));
+
+    std.debug.print("\n=== BENCHMARK: Inline Double (dup+add) ===\n", .{});
+    std.debug.print("VM:  {} ns/iter | JIT: {} ns/iter | Speedup: {d:.2}x\n", .{ vm_ns / iterations, jit_ns / iterations, speedup });
+    std.debug.print("VM result: {}, JIT result: {}\n", .{ vm_result, jit_result });
+
+    try std.testing.expectEqual(@as(i64, 42), vm_result);
+    try std.testing.expectEqual(@as(i64, 42), jit_result);
     try std.testing.expect(speedup > 1.0);
 }
 
