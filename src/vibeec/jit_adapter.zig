@@ -2008,11 +2008,39 @@ pub const CSEOptimizer = struct {
 
 /// Simple Linear Scan Register Allocator
 /// Maps virtual registers to physical registers, minimizing spills
+/// Register mapping result for use by NativeCompiler
+pub const RegisterMapping = struct {
+    /// Virtual register -> physical register (0-7 for R8-R15, null if spilled)
+    mapping: [32]?u8,
+    /// List of spilled virtual registers
+    spilled: []const u8,
+    /// Allocator for cleanup
+    allocator: Allocator,
+
+    pub fn deinit(self: *RegisterMapping) void {
+        self.allocator.free(self.spilled);
+    }
+
+    /// Get physical register for virtual register (returns default if not mapped)
+    pub fn getPhysReg(self: RegisterMapping, vreg: u8) u8 {
+        if (vreg >= 32) return vreg & 0x7;
+        return self.mapping[vreg] orelse (vreg & 0x7);
+    }
+
+    /// Check if virtual register is spilled
+    pub fn isSpilled(self: RegisterMapping, vreg: u8) bool {
+        if (vreg >= 32) return false;
+        return self.mapping[vreg] == null;
+    }
+};
+
 pub const RegisterAllocator = struct {
     allocator: Allocator,
     /// Statistics
     registers_allocated: usize = 0,
     spills_generated: usize = 0,
+    /// Last computed mapping (for reuse)
+    last_mapping: ?RegisterMapping = null,
 
     /// Number of physical registers available (R8-R15 on x86-64)
     const NUM_PHYS_REGS: usize = 8;
@@ -2027,6 +2055,7 @@ pub const RegisterAllocator = struct {
             .allocator = allocator,
             .registers_allocated = 0,
             .spills_generated = 0,
+            .last_mapping = null,
         };
     }
 
@@ -2121,6 +2150,26 @@ pub const RegisterAllocator = struct {
             .allocated = self.registers_allocated,
             .spills = self.spills_generated,
         };
+    }
+
+    /// Allocate and return RegisterMapping for use by NativeCompiler
+    pub fn allocateMapping(self: *Self, ir: []const IRInstruction) !RegisterMapping {
+        var result = try self.allocate(ir);
+        const spilled_slice = try result.spilled.toOwnedSlice();
+
+        const mapping = RegisterMapping{
+            .mapping = result.mapping,
+            .spilled = spilled_slice,
+            .allocator = self.allocator,
+        };
+
+        self.last_mapping = mapping;
+        return mapping;
+    }
+
+    /// Get last computed mapping (if available)
+    pub fn getLastMapping(self: *Self) ?RegisterMapping {
+        return self.last_mapping;
     }
 };
 
@@ -2779,10 +2828,11 @@ pub const TieredCompiler = struct {
                 defer if (self.jit_ir_cache.get(address) == null) self.allocator.free(optimized_ir);
 
                 // Register allocation for native code generation
+                var reg_mapping: ?[32]?u8 = null;
                 if (self.enable_regalloc) {
                     var alloc_result = try self.regalloc.allocate(optimized_ir);
+                    reg_mapping = alloc_result.mapping;
                     alloc_result.spilled.deinit();
-                    // TODO: Use mapping for actual register assignment in native codegen
                 }
 
                 // PGO optimization at Native tier (use collected profile data)
@@ -2797,8 +2847,11 @@ pub const TieredCompiler = struct {
                     }
                 }
 
-                // Compile optimized IR to native
-                var native_compiler = NativeCompiler.init(self.allocator);
+                // Compile optimized IR to native with register mapping
+                var native_compiler = if (reg_mapping) |mapping|
+                    NativeCompiler.initWithMapping(self.allocator, mapping)
+                else
+                    NativeCompiler.init(self.allocator);
                 if (native_compiler.compile(optimized_ir)) |machine_code| {
                     defer self.allocator.free(machine_code);
                     native_compiler.deinit();
@@ -6779,5 +6832,193 @@ test "PGO in TieredCompiler" {
             std.debug.print("Blocks instrumented: {d}\n", .{inst_stats.blocks});
         }
         try std.testing.expect(inst_stats.branches >= 1);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REGISTER MAPPING INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "RegisterMapping basic usage" {
+    const allocator = std.testing.allocator;
+
+    var regalloc = RegisterAllocator.init(allocator);
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 20 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    var mapping = try regalloc.allocateMapping(&ir);
+    defer mapping.deinit();
+
+    // Check that registers are mapped
+    const phys0 = mapping.getPhysReg(0);
+    const phys1 = mapping.getPhysReg(1);
+    const phys2 = mapping.getPhysReg(2);
+
+    // Physical registers should be in range 0-7
+    try std.testing.expect(phys0 < 8);
+    try std.testing.expect(phys1 < 8);
+    try std.testing.expect(phys2 < 8);
+
+    // No spills for simple case
+    try std.testing.expect(!mapping.isSpilled(0));
+    try std.testing.expect(!mapping.isSpilled(1));
+    try std.testing.expect(!mapping.isSpilled(2));
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== RegisterMapping Test ===\n", .{});
+        std.debug.print("vreg 0 -> phys {d}\n", .{phys0});
+        std.debug.print("vreg 1 -> phys {d}\n", .{phys1});
+        std.debug.print("vreg 2 -> phys {d}\n", .{phys2});
+    }
+}
+
+test "NativeCompiler with custom mapping" {
+    const allocator = std.testing.allocator;
+
+    // Create custom mapping: vreg 0 -> phys 2, vreg 1 -> phys 3, vreg 2 -> phys 4
+    var mapping: [32]?u8 = [_]?u8{null} ** 32;
+    mapping[0] = 2; // R10
+    mapping[1] = 3; // R11
+    mapping[2] = 4; // R12
+
+    var compiler = NativeCompiler.initWithMapping(allocator, mapping);
+    defer compiler.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 7 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 6 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const code = try compiler.compile(&ir);
+    defer allocator.free(code);
+
+    // Execute and verify result
+    if (ExecutableCode.init(code)) |exec| {
+        var exec_mut = exec;
+        defer exec_mut.deinit();
+        const result = exec_mut.call();
+        try std.testing.expectEqual(@as(i64, 42), result);
+    } else |_| {
+        return error.ExecutableCodeFailed;
+    }
+}
+
+test "TieredCompiler Native tier with register mapping" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.initWithThresholds(allocator, .{
+        .tier1_threshold = 5,
+        .tier2_threshold = 10,
+    });
+    defer compiler.deinit();
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .ADD_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const addr: u32 = 0x3000;
+
+    // Promote to JIT_IR tier
+    for (0..6) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    _ = try compiler.promote(addr, &ir);
+    try std.testing.expectEqual(CompilationTier.JIT_IR, compiler.getTier(addr));
+
+    // Promote to Native tier (with register mapping)
+    for (0..11) |_| {
+        _ = try compiler.recordExecution(addr, 100);
+    }
+    const promoted_native = try compiler.promote(addr, &ir);
+    try std.testing.expect(promoted_native);
+    try std.testing.expectEqual(CompilationTier.Native, compiler.getTier(addr));
+
+    // Execute native code
+    if (compiler.native_cache.getPtr(addr)) |exec| {
+        const result = exec.call();
+        try std.testing.expectEqual(@as(i64, 15), result);
+
+        if (@import("builtin").mode == .Debug) {
+            std.debug.print("\n=== Native Tier with Register Mapping ===\n", .{});
+            std.debug.print("Result: {d} (expected 15)\n", .{result});
+            std.debug.print("RegAlloc stats: allocated={d}, spills={d}\n", .{
+                compiler.regalloc.getStats().allocated,
+                compiler.regalloc.getStats().spills,
+            });
+        }
+    }
+}
+
+test "Benchmark: Register mapping vs default allocation" {
+    const allocator = std.testing.allocator;
+
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 100 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 50 },
+        .{ .opcode = .LOAD_CONST, .dest = 2, .src1 = 0, .src2 = 0, .imm = 25 },
+        .{ .opcode = .ADD_INT, .dest = 3, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .ADD_INT, .dest = 4, .src1 = 3, .src2 = 2, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 4, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    // Compile without mapping
+    var compiler_default = NativeCompiler.init(allocator);
+    const code_default = try compiler_default.compile(&ir);
+    defer allocator.free(code_default);
+    compiler_default.deinit();
+
+    // Compile with mapping
+    var regalloc = RegisterAllocator.init(allocator);
+    var mapping = try regalloc.allocateMapping(&ir);
+    defer mapping.deinit();
+
+    var compiler_mapped = NativeCompiler.initWithMapping(allocator, mapping.mapping);
+    const code_mapped = try compiler_mapped.compile(&ir);
+    defer allocator.free(code_mapped);
+    compiler_mapped.deinit();
+
+    // Execute both and verify correctness
+    var exec_default = ExecutableCode.init(code_default) catch return;
+    defer exec_default.deinit();
+    const result_default = exec_default.call();
+
+    var exec_mapped = ExecutableCode.init(code_mapped) catch return;
+    defer exec_mapped.deinit();
+    const result_mapped = exec_mapped.call();
+
+    try std.testing.expectEqual(@as(i64, 175), result_default);
+    try std.testing.expectEqual(@as(i64, 175), result_mapped);
+
+    // Benchmark
+    const iterations: usize = 10000;
+
+    const start_default = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        _ = exec_default.call();
+    }
+    const time_default: u64 = @intCast(@max(0, std.time.nanoTimestamp() - start_default));
+
+    const start_mapped = std.time.nanoTimestamp();
+    for (0..iterations) |_| {
+        _ = exec_mapped.call();
+    }
+    const time_mapped: u64 = @intCast(@max(0, std.time.nanoTimestamp() - start_mapped));
+
+    if (@import("builtin").mode == .Debug) {
+        std.debug.print("\n=== Register Mapping Benchmark ===\n", .{});
+        std.debug.print("Iterations: {d}\n", .{iterations});
+        std.debug.print("Default: {d:.2} ns/iter\n", .{@as(f64, @floatFromInt(time_default)) / @as(f64, @floatFromInt(iterations))});
+        std.debug.print("Mapped:  {d:.2} ns/iter\n", .{@as(f64, @floatFromInt(time_mapped)) / @as(f64, @floatFromInt(iterations))});
+        std.debug.print("Code size: default={d} bytes, mapped={d} bytes\n", .{ code_default.len, code_mapped.len });
     }
 }
