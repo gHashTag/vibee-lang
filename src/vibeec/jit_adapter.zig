@@ -2034,6 +2034,425 @@ pub const SpeculationState = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ADAPTIVE RECOMPILATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Recompilation strategy based on deopt analysis
+pub const RecompilationStrategy = enum(u8) {
+    /// Keep current compilation, no changes
+    keep_current,
+    /// Recompile with same optimizations (transient failure)
+    recompile_same,
+    /// Recompile with fewer optimizations (conservative)
+    recompile_conservative,
+    /// Recompile with type specialization disabled
+    disable_type_speculation,
+    /// Recompile with bounds check hoisting disabled
+    disable_bounds_hoisting,
+    /// Recompile with inlining disabled
+    disable_inlining,
+    /// Fall back to interpreter (too many failures)
+    fallback_interpreter,
+};
+
+/// Deoptimization history for a function
+pub const DeoptHistory = struct {
+    /// Function address
+    func_addr: u32,
+    /// Total deopt count
+    total_deopts: u64,
+    /// Deopts by reason
+    type_guard_deopts: u64,
+    bounds_check_deopts: u64,
+    null_check_deopts: u64,
+    overflow_deopts: u64,
+    other_deopts: u64,
+    /// Number of recompilations
+    recompilation_count: u32,
+    /// Last recompilation timestamp
+    last_recompile_time: i64,
+    /// Current optimization level
+    opt_level: u8,
+    /// Disabled optimizations (bitmask)
+    disabled_opts: u32,
+
+    pub fn init(func_addr: u32) DeoptHistory {
+        return .{
+            .func_addr = func_addr,
+            .total_deopts = 0,
+            .type_guard_deopts = 0,
+            .bounds_check_deopts = 0,
+            .null_check_deopts = 0,
+            .overflow_deopts = 0,
+            .other_deopts = 0,
+            .recompilation_count = 0,
+            .last_recompile_time = 0,
+            .opt_level = 3, // Start with max optimization
+            .disabled_opts = 0,
+        };
+    }
+
+    pub fn recordDeopt(self: *DeoptHistory, reason: DeoptReason) void {
+        self.total_deopts += 1;
+        switch (reason) {
+            .type_guard_failed => self.type_guard_deopts += 1,
+            .bounds_check_failed => self.bounds_check_deopts += 1,
+            .null_check_failed => self.null_check_deopts += 1,
+            .overflow => self.overflow_deopts += 1,
+            else => self.other_deopts += 1,
+        }
+    }
+
+    pub fn recordRecompilation(self: *DeoptHistory) void {
+        self.recompilation_count += 1;
+        self.last_recompile_time = std.time.timestamp();
+    }
+
+    pub fn getDominantDeoptReason(self: *const DeoptHistory) DeoptReason {
+        var max_count = self.type_guard_deopts;
+        var reason = DeoptReason.type_guard_failed;
+
+        if (self.bounds_check_deopts > max_count) {
+            max_count = self.bounds_check_deopts;
+            reason = .bounds_check_failed;
+        }
+        if (self.null_check_deopts > max_count) {
+            max_count = self.null_check_deopts;
+            reason = .null_check_failed;
+        }
+        if (self.overflow_deopts > max_count) {
+            reason = .overflow;
+        }
+
+        return reason;
+    }
+
+    pub fn getDeoptRate(self: *const DeoptHistory) f64 {
+        if (self.recompilation_count == 0) return 0.0;
+        return @as(f64, @floatFromInt(self.total_deopts)) / @as(f64, @floatFromInt(self.recompilation_count));
+    }
+};
+
+/// Optimization flags for recompilation
+pub const OptimizationFlags = struct {
+    pub const TYPE_SPECULATION: u32 = 1 << 0;
+    pub const BOUNDS_HOISTING: u32 = 1 << 1;
+    pub const INLINING: u32 = 1 << 2;
+    pub const LOOP_UNROLLING: u32 = 1 << 3;
+    pub const CONSTANT_FOLDING: u32 = 1 << 4;
+    pub const DEAD_CODE_ELIM: u32 = 1 << 5;
+    pub const STRENGTH_REDUCTION: u32 = 1 << 6;
+    pub const LICM: u32 = 1 << 7;
+
+    pub const ALL: u32 = 0xFFFFFFFF;
+    pub const NONE: u32 = 0;
+    pub const SAFE: u32 = CONSTANT_FOLDING | DEAD_CODE_ELIM; // Always safe opts
+};
+
+/// Recompilation policy - decides when and how to recompile
+pub const RecompilationPolicy = struct {
+    /// Threshold for triggering recompilation
+    deopt_threshold: u64,
+    /// Maximum recompilations before fallback
+    max_recompilations: u32,
+    /// Cooldown period between recompilations (ns)
+    recompile_cooldown_ns: i64,
+    /// Deopt rate threshold for conservative recompilation
+    conservative_threshold: f64,
+    /// Deopt rate threshold for fallback to interpreter
+    fallback_threshold: f64,
+
+    pub fn init() RecompilationPolicy {
+        return .{
+            .deopt_threshold = 10,
+            .max_recompilations = 5,
+            .recompile_cooldown_ns = 1_000_000_000, // 1 second
+            .conservative_threshold = 5.0,
+            .fallback_threshold = 20.0,
+        };
+    }
+
+    /// Decide recompilation strategy based on history
+    pub fn decideStrategy(self: *const RecompilationPolicy, history: *const DeoptHistory) RecompilationStrategy {
+        // Check if too many recompilations
+        if (history.recompilation_count >= self.max_recompilations) {
+            return .fallback_interpreter;
+        }
+
+        // Check cooldown
+        const now = std.time.timestamp();
+        if (now - history.last_recompile_time < @divFloor(self.recompile_cooldown_ns, 1_000_000_000)) {
+            return .keep_current;
+        }
+
+        // Check deopt rate
+        const deopt_rate = history.getDeoptRate();
+        if (deopt_rate >= self.fallback_threshold) {
+            return .fallback_interpreter;
+        }
+
+        // Analyze dominant deopt reason
+        const dominant_reason = history.getDominantDeoptReason();
+
+        if (deopt_rate >= self.conservative_threshold) {
+            // High deopt rate - disable specific optimization
+            return switch (dominant_reason) {
+                .type_guard_failed => .disable_type_speculation,
+                .bounds_check_failed => .disable_bounds_hoisting,
+                else => .recompile_conservative,
+            };
+        }
+
+        // Low deopt rate - try same optimizations
+        return .recompile_same;
+    }
+
+    /// Get optimization flags for a strategy
+    pub fn getOptFlags(self: *const RecompilationPolicy, strategy: RecompilationStrategy, current_disabled: u32) u32 {
+        _ = self;
+        return switch (strategy) {
+            .keep_current => current_disabled,
+            .recompile_same => current_disabled,
+            .recompile_conservative => current_disabled | OptimizationFlags.INLINING | OptimizationFlags.LOOP_UNROLLING,
+            .disable_type_speculation => current_disabled | OptimizationFlags.TYPE_SPECULATION,
+            .disable_bounds_hoisting => current_disabled | OptimizationFlags.BOUNDS_HOISTING,
+            .disable_inlining => current_disabled | OptimizationFlags.INLINING,
+            .fallback_interpreter => OptimizationFlags.ALL, // Disable all
+        };
+    }
+};
+
+/// Adaptive Recompiler - manages recompilation based on deopt feedback
+pub const AdaptiveRecompiler = struct {
+    allocator: Allocator,
+    /// Deopt history per function
+    histories: std.AutoHashMap(u32, DeoptHistory),
+    /// Recompilation policy
+    policy: RecompilationPolicy,
+    /// Pending recompilations
+    pending_recompiles: std.ArrayList(u32),
+    /// Statistics
+    total_recompilations: usize = 0,
+    conservative_recompilations: usize = 0,
+    fallbacks_to_interpreter: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .histories = std.AutoHashMap(u32, DeoptHistory).init(allocator),
+            .policy = RecompilationPolicy.init(),
+            .pending_recompiles = std.ArrayList(u32).init(allocator),
+            .total_recompilations = 0,
+            .conservative_recompilations = 0,
+            .fallbacks_to_interpreter = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.histories.deinit();
+        self.pending_recompiles.deinit();
+    }
+
+    /// Record a deoptimization event
+    pub fn recordDeopt(self: *Self, func_addr: u32, reason: DeoptReason) !RecompilationStrategy {
+        const result = try self.histories.getOrPut(func_addr);
+        if (!result.found_existing) {
+            result.value_ptr.* = DeoptHistory.init(func_addr);
+        }
+
+        result.value_ptr.recordDeopt(reason);
+
+        // Check if should recompile
+        if (result.value_ptr.total_deopts >= self.policy.deopt_threshold) {
+            const strategy = self.policy.decideStrategy(result.value_ptr);
+
+            if (strategy != .keep_current) {
+                try self.pending_recompiles.append(func_addr);
+            }
+
+            return strategy;
+        }
+
+        return .keep_current;
+    }
+
+    /// Get recompilation strategy for a function
+    pub fn getStrategy(self: *Self, func_addr: u32) RecompilationStrategy {
+        if (self.histories.get(func_addr)) |history| {
+            return self.policy.decideStrategy(&history);
+        }
+        return .keep_current;
+    }
+
+    /// Mark function as recompiled
+    pub fn markRecompiled(self: *Self, func_addr: u32, strategy: RecompilationStrategy) void {
+        if (self.histories.getPtr(func_addr)) |history| {
+            history.recordRecompilation();
+
+            // Update disabled opts based on strategy
+            history.disabled_opts = self.policy.getOptFlags(strategy, history.disabled_opts);
+
+            // Decrease opt level for conservative strategies
+            if (strategy == .recompile_conservative and history.opt_level > 0) {
+                history.opt_level -= 1;
+            }
+        }
+
+        self.total_recompilations += 1;
+        switch (strategy) {
+            .recompile_conservative, .disable_type_speculation, .disable_bounds_hoisting, .disable_inlining => {
+                self.conservative_recompilations += 1;
+            },
+            .fallback_interpreter => {
+                self.fallbacks_to_interpreter += 1;
+            },
+            else => {},
+        }
+    }
+
+    /// Get pending recompilations
+    pub fn getPendingRecompiles(self: *Self) []u32 {
+        const result = self.pending_recompiles.toOwnedSlice() catch return &[_]u32{};
+        return result;
+    }
+
+    /// Get disabled optimizations for a function
+    pub fn getDisabledOpts(self: *Self, func_addr: u32) u32 {
+        if (self.histories.get(func_addr)) |history| {
+            return history.disabled_opts;
+        }
+        return 0;
+    }
+
+    /// Get optimization level for a function
+    pub fn getOptLevel(self: *Self, func_addr: u32) u8 {
+        if (self.histories.get(func_addr)) |history| {
+            return history.opt_level;
+        }
+        return 3; // Default max
+    }
+
+    /// Check if function should use interpreter
+    pub fn shouldUseInterpreter(self: *Self, func_addr: u32) bool {
+        if (self.histories.get(func_addr)) |history| {
+            return history.disabled_opts == OptimizationFlags.ALL;
+        }
+        return false;
+    }
+
+    /// Get deopt history for a function
+    pub fn getHistory(self: *Self, func_addr: u32) ?DeoptHistory {
+        return self.histories.get(func_addr);
+    }
+
+    /// Get statistics
+    pub fn getStats(self: *Self) struct {
+        total: usize,
+        conservative: usize,
+        fallbacks: usize,
+        functions_tracked: usize,
+    } {
+        return .{
+            .total = self.total_recompilations,
+            .conservative = self.conservative_recompilations,
+            .fallbacks = self.fallbacks_to_interpreter,
+            .functions_tracked = self.histories.count(),
+        };
+    }
+};
+
+/// Recompilation request
+pub const RecompilationRequest = struct {
+    func_addr: u32,
+    strategy: RecompilationStrategy,
+    disabled_opts: u32,
+    opt_level: u8,
+    priority: u8, // Higher = more urgent
+
+    pub fn init(func_addr: u32, strategy: RecompilationStrategy, disabled_opts: u32, opt_level: u8) RecompilationRequest {
+        const priority: u8 = switch (strategy) {
+            .fallback_interpreter => 0, // Lowest - just use interpreter
+            .recompile_conservative => 2,
+            .disable_type_speculation, .disable_bounds_hoisting, .disable_inlining => 3,
+            .recompile_same => 4,
+            .keep_current => 0,
+        };
+
+        return .{
+            .func_addr = func_addr,
+            .strategy = strategy,
+            .disabled_opts = disabled_opts,
+            .opt_level = opt_level,
+            .priority = priority,
+        };
+    }
+};
+
+/// Recompilation queue with priority
+pub const RecompilationQueue = struct {
+    allocator: Allocator,
+    requests: std.ArrayList(RecompilationRequest),
+    max_size: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .requests = std.ArrayList(RecompilationRequest).init(allocator),
+            .max_size = 100,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.requests.deinit();
+    }
+
+    pub fn enqueue(self: *Self, request: RecompilationRequest) !void {
+        if (self.requests.items.len >= self.max_size) {
+            // Remove lowest priority
+            var min_idx: usize = 0;
+            var min_priority: u8 = 255;
+            for (self.requests.items, 0..) |req, i| {
+                if (req.priority < min_priority) {
+                    min_priority = req.priority;
+                    min_idx = i;
+                }
+            }
+            _ = self.requests.orderedRemove(min_idx);
+        }
+
+        try self.requests.append(request);
+    }
+
+    pub fn dequeue(self: *Self) ?RecompilationRequest {
+        if (self.requests.items.len == 0) return null;
+
+        // Find highest priority
+        var max_idx: usize = 0;
+        var max_priority: u8 = 0;
+        for (self.requests.items, 0..) |req, i| {
+            if (req.priority > max_priority) {
+                max_priority = req.priority;
+                max_idx = i;
+            }
+        }
+
+        return self.requests.orderedRemove(max_idx);
+    }
+
+    pub fn isEmpty(self: *const Self) bool {
+        return self.requests.items.len == 0;
+    }
+
+    pub fn size(self: *const Self) usize {
+        return self.requests.items.len;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANT FOLDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -6599,6 +7018,12 @@ pub const TieredCompiler = struct {
     deopt_manager: DeoptimizationManager,
     /// Speculation state
     speculation_state: SpeculationState,
+    /// Enable adaptive recompilation
+    enable_adaptive_recompile: bool,
+    /// Adaptive recompiler
+    adaptive_recompiler: AdaptiveRecompiler,
+    /// Recompilation queue
+    recompile_queue: RecompilationQueue,
     /// Enable CFG/dominator analysis
     enable_cfg_analysis: bool,
     /// Statistics
@@ -6660,6 +7085,9 @@ pub const TieredCompiler = struct {
             .enable_deopt = true,
             .deopt_manager = DeoptimizationManager.init(allocator),
             .speculation_state = SpeculationState.init(allocator),
+            .enable_adaptive_recompile = true,
+            .adaptive_recompiler = AdaptiveRecompiler.init(allocator),
+            .recompile_queue = RecompilationQueue.init(allocator),
             .enable_cfg_analysis = true,
             .stats = TieredStats.init(),
         };
@@ -6710,6 +7138,10 @@ pub const TieredCompiler = struct {
         // Free deoptimization
         self.deopt_manager.deinit();
         self.speculation_state.deinit();
+
+        // Free adaptive recompilation
+        self.adaptive_recompiler.deinit();
+        self.recompile_queue.deinit();
     }
 
     /// Enable PGO instrumentation
@@ -6848,6 +7280,75 @@ pub const TieredCompiler = struct {
     pub fn isSpeculationSafe(self: *Self) bool {
         // If too many failures, disable speculation
         return self.speculation_state.failed_speculations < 10;
+    }
+
+    /// Get adaptive recompiler
+    pub fn getAdaptiveRecompiler(self: *Self) *AdaptiveRecompiler {
+        return &self.adaptive_recompiler;
+    }
+
+    /// Record deopt and get recompilation strategy
+    pub fn recordDeoptForRecompile(self: *Self, func_addr: u32, reason: DeoptReason) !RecompilationStrategy {
+        if (!self.enable_adaptive_recompile) return .keep_current;
+
+        const strategy = try self.adaptive_recompiler.recordDeopt(func_addr, reason);
+
+        // If recompilation needed, queue it
+        if (strategy != .keep_current) {
+            const disabled_opts = self.adaptive_recompiler.getDisabledOpts(func_addr);
+            const opt_level = self.adaptive_recompiler.getOptLevel(func_addr);
+            const request = RecompilationRequest.init(func_addr, strategy, disabled_opts, opt_level);
+            try self.recompile_queue.enqueue(request);
+        }
+
+        return strategy;
+    }
+
+    /// Process pending recompilations
+    pub fn processPendingRecompiles(self: *Self) !usize {
+        var processed: usize = 0;
+
+        while (self.recompile_queue.dequeue()) |request| {
+            // Mark as recompiled
+            self.adaptive_recompiler.markRecompiled(request.func_addr, request.strategy);
+
+            // Invalidate current compilation
+            if (self.jit_ir_cache.contains(request.func_addr)) {
+                if (self.jit_ir_cache.fetchRemove(request.func_addr)) |entry| {
+                    self.allocator.free(entry.value);
+                }
+            }
+
+            // Update function state based on strategy
+            if (request.strategy == .fallback_interpreter) {
+                // Demote to interpreter
+                if (self.function_states.getPtr(request.func_addr)) |state| {
+                    state.current_tier = .Interpreter;
+                }
+            }
+
+            processed += 1;
+        }
+
+        return processed;
+    }
+
+    /// Check if function should use interpreter (due to too many deopts)
+    pub fn shouldFallbackToInterpreter(self: *Self, func_addr: u32) bool {
+        if (!self.enable_adaptive_recompile) return false;
+        return self.adaptive_recompiler.shouldUseInterpreter(func_addr);
+    }
+
+    /// Get optimization flags for a function (considering disabled opts)
+    pub fn getEffectiveOptFlags(self: *Self, func_addr: u32) u32 {
+        if (!self.enable_adaptive_recompile) return OptimizationFlags.ALL;
+        const disabled = self.adaptive_recompiler.getDisabledOpts(func_addr);
+        return OptimizationFlags.ALL & ~disabled;
+    }
+
+    /// Get recompilation queue
+    pub fn getRecompileQueue(self: *Self) *RecompilationQueue {
+        return &self.recompile_queue;
     }
 
     /// Get or create function state
@@ -13644,6 +14145,246 @@ test "Deoptimization in TieredCompiler" {
 
     // Check speculation safety
     try std.testing.expect(compiler.isSpeculationSafe());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADAPTIVE RECOMPILATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "DeoptHistory basic operations" {
+    var history = DeoptHistory.init(0x1000);
+
+    try std.testing.expectEqual(@as(u32, 0x1000), history.func_addr);
+    try std.testing.expectEqual(@as(u64, 0), history.total_deopts);
+    try std.testing.expectEqual(@as(u8, 3), history.opt_level);
+
+    // Record deopts
+    history.recordDeopt(.type_guard_failed);
+    history.recordDeopt(.type_guard_failed);
+    history.recordDeopt(.bounds_check_failed);
+
+    try std.testing.expectEqual(@as(u64, 3), history.total_deopts);
+    try std.testing.expectEqual(@as(u64, 2), history.type_guard_deopts);
+    try std.testing.expectEqual(@as(u64, 1), history.bounds_check_deopts);
+}
+
+test "DeoptHistory dominant reason" {
+    var history = DeoptHistory.init(0x1000);
+
+    // Type guard is dominant
+    history.recordDeopt(.type_guard_failed);
+    history.recordDeopt(.type_guard_failed);
+    history.recordDeopt(.bounds_check_failed);
+
+    try std.testing.expectEqual(DeoptReason.type_guard_failed, history.getDominantDeoptReason());
+
+    // Now bounds check is dominant
+    history.recordDeopt(.bounds_check_failed);
+    history.recordDeopt(.bounds_check_failed);
+
+    try std.testing.expectEqual(DeoptReason.bounds_check_failed, history.getDominantDeoptReason());
+}
+
+test "DeoptHistory deopt rate" {
+    var history = DeoptHistory.init(0x1000);
+
+    // No recompilations yet
+    try std.testing.expectEqual(@as(f64, 0.0), history.getDeoptRate());
+
+    // Record deopts and recompilation
+    history.recordDeopt(.type_guard_failed);
+    history.recordDeopt(.type_guard_failed);
+    history.recordRecompilation();
+
+    try std.testing.expectEqual(@as(f64, 2.0), history.getDeoptRate());
+}
+
+test "RecompilationPolicy basic strategy" {
+    var policy = RecompilationPolicy.init();
+    policy.recompile_cooldown_ns = 0; // Disable cooldown for test
+    var history = DeoptHistory.init(0x1000);
+
+    // Low deopt rate - should recompile same
+    history.total_deopts = 2;
+    history.recompilation_count = 1;
+    history.last_recompile_time = 0; // Long ago
+
+    const strategy = policy.decideStrategy(&history);
+    // With low deopt rate (2/1 = 2.0), should be recompile_same
+    try std.testing.expectEqual(RecompilationStrategy.recompile_same, strategy);
+}
+
+test "RecompilationPolicy max recompilations" {
+    const policy = RecompilationPolicy.init();
+    var history = DeoptHistory.init(0x1000);
+
+    history.recompilation_count = 10; // Exceeds max
+
+    try std.testing.expectEqual(RecompilationStrategy.fallback_interpreter, policy.decideStrategy(&history));
+}
+
+test "RecompilationPolicy opt flags" {
+    const policy = RecompilationPolicy.init();
+
+    // Conservative disables inlining and loop unrolling
+    const conservative_flags = policy.getOptFlags(.recompile_conservative, 0);
+    try std.testing.expect((conservative_flags & OptimizationFlags.INLINING) != 0);
+    try std.testing.expect((conservative_flags & OptimizationFlags.LOOP_UNROLLING) != 0);
+
+    // Type speculation disabled
+    const type_flags = policy.getOptFlags(.disable_type_speculation, 0);
+    try std.testing.expect((type_flags & OptimizationFlags.TYPE_SPECULATION) != 0);
+
+    // Fallback disables all
+    const fallback_flags = policy.getOptFlags(.fallback_interpreter, 0);
+    try std.testing.expectEqual(OptimizationFlags.ALL, fallback_flags);
+}
+
+test "AdaptiveRecompiler record deopt" {
+    const allocator = std.testing.allocator;
+
+    var recompiler = AdaptiveRecompiler.init(allocator);
+    defer recompiler.deinit();
+
+    // Record deopts below threshold
+    for (0..5) |_| {
+        const strategy = try recompiler.recordDeopt(0x1000, .type_guard_failed);
+        try std.testing.expectEqual(RecompilationStrategy.keep_current, strategy);
+    }
+
+    // Record more to exceed threshold
+    for (0..6) |_| {
+        _ = try recompiler.recordDeopt(0x1000, .type_guard_failed);
+    }
+
+    // Should have history now
+    const history = recompiler.getHistory(0x1000);
+    try std.testing.expect(history != null);
+    try std.testing.expectEqual(@as(u64, 11), history.?.total_deopts);
+}
+
+test "AdaptiveRecompiler mark recompiled" {
+    const allocator = std.testing.allocator;
+
+    var recompiler = AdaptiveRecompiler.init(allocator);
+    defer recompiler.deinit();
+
+    // Record enough deopts
+    for (0..15) |_| {
+        _ = try recompiler.recordDeopt(0x1000, .type_guard_failed);
+    }
+
+    // Mark as recompiled
+    recompiler.markRecompiled(0x1000, .disable_type_speculation);
+
+    // Check disabled opts
+    const disabled = recompiler.getDisabledOpts(0x1000);
+    try std.testing.expect((disabled & OptimizationFlags.TYPE_SPECULATION) != 0);
+
+    const stats = recompiler.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.total);
+    try std.testing.expectEqual(@as(usize, 1), stats.conservative);
+}
+
+test "AdaptiveRecompiler should use interpreter" {
+    const allocator = std.testing.allocator;
+
+    var recompiler = AdaptiveRecompiler.init(allocator);
+    defer recompiler.deinit();
+
+    // Initially should not use interpreter
+    try std.testing.expect(!recompiler.shouldUseInterpreter(0x1000));
+
+    // Record deopts and mark as fallback
+    for (0..15) |_| {
+        _ = try recompiler.recordDeopt(0x1000, .type_guard_failed);
+    }
+    recompiler.markRecompiled(0x1000, .fallback_interpreter);
+
+    // Now should use interpreter
+    try std.testing.expect(recompiler.shouldUseInterpreter(0x1000));
+}
+
+test "RecompilationQueue basic operations" {
+    const allocator = std.testing.allocator;
+
+    var queue = RecompilationQueue.init(allocator);
+    defer queue.deinit();
+
+    try std.testing.expect(queue.isEmpty());
+
+    // Enqueue requests
+    try queue.enqueue(RecompilationRequest.init(0x1000, .recompile_same, 0, 3));
+    try queue.enqueue(RecompilationRequest.init(0x2000, .recompile_conservative, 0, 2));
+
+    try std.testing.expectEqual(@as(usize, 2), queue.size());
+
+    // Dequeue highest priority first
+    const first = queue.dequeue();
+    try std.testing.expect(first != null);
+    try std.testing.expectEqual(@as(u32, 0x1000), first.?.func_addr); // recompile_same has higher priority
+
+    const second = queue.dequeue();
+    try std.testing.expect(second != null);
+    try std.testing.expectEqual(@as(u32, 0x2000), second.?.func_addr);
+
+    try std.testing.expect(queue.isEmpty());
+}
+
+test "RecompilationQueue priority ordering" {
+    const allocator = std.testing.allocator;
+
+    var queue = RecompilationQueue.init(allocator);
+    defer queue.deinit();
+
+    // Enqueue in reverse priority order
+    try queue.enqueue(RecompilationRequest.init(0x1000, .fallback_interpreter, 0, 0)); // priority 0
+    try queue.enqueue(RecompilationRequest.init(0x2000, .recompile_conservative, 0, 2)); // priority 2
+    try queue.enqueue(RecompilationRequest.init(0x3000, .recompile_same, 0, 3)); // priority 4
+
+    // Should dequeue highest priority first
+    try std.testing.expectEqual(@as(u32, 0x3000), queue.dequeue().?.func_addr);
+    try std.testing.expectEqual(@as(u32, 0x2000), queue.dequeue().?.func_addr);
+    try std.testing.expectEqual(@as(u32, 0x1000), queue.dequeue().?.func_addr);
+}
+
+test "Adaptive Recompilation in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    try std.testing.expect(compiler.enable_adaptive_recompile);
+
+    // Record deopts
+    for (0..5) |_| {
+        const strategy = try compiler.recordDeoptForRecompile(0x1000, .type_guard_failed);
+        _ = strategy;
+    }
+
+    // Check effective opt flags (should still be all enabled)
+    const flags = compiler.getEffectiveOptFlags(0x1000);
+    try std.testing.expectEqual(OptimizationFlags.ALL, flags);
+
+    // Should not fallback yet
+    try std.testing.expect(!compiler.shouldFallbackToInterpreter(0x1000));
+}
+
+test "TieredCompiler process pending recompiles" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Manually enqueue a recompilation
+    try compiler.recompile_queue.enqueue(RecompilationRequest.init(0x1000, .recompile_same, 0, 3));
+
+    // Process
+    const processed = try compiler.processPendingRecompiles();
+    try std.testing.expectEqual(@as(usize, 1), processed);
+
+    // Queue should be empty
+    try std.testing.expect(compiler.recompile_queue.isEmpty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
