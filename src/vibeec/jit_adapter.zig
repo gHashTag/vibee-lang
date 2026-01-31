@@ -2687,6 +2687,279 @@ pub const LICMOptimizer = struct {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STRENGTH REDUCTION OPTIMIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Induction Variable - a variable that changes by a constant amount each iteration
+pub const InductionVariable = struct {
+    register: u8, // The register holding the induction variable
+    init_value: i32, // Initial value (if known)
+    step: i32, // Increment per iteration
+    def_idx: usize, // Index where it's defined/updated in loop
+};
+
+/// Strength Reduction Optimizer - replaces expensive operations with cheaper ones
+/// Primary optimization: i * constant -> accumulator += constant (in loops)
+/// Example: arr[i*4] in loop -> acc = 0; arr[acc]; acc += 4;
+pub const StrengthReductionOptimizer = struct {
+    allocator: Allocator,
+    /// Statistics
+    loops_analyzed: usize = 0,
+    multiplications_reduced: usize = 0,
+    divisions_reduced: usize = 0,
+    induction_vars_found: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return .{
+            .allocator = allocator,
+            .loops_analyzed = 0,
+            .multiplications_reduced = 0,
+            .divisions_reduced = 0,
+            .induction_vars_found = 0,
+        };
+    }
+
+    /// Detect induction variables in a loop
+    /// An induction variable is updated by a constant amount each iteration
+    /// Pattern: reg = reg + const OR reg = reg - const
+    pub fn detectInductionVariables(self: *Self, ir: []const IRInstruction, loop: LoopInfo) ![]InductionVariable {
+        var ivs = std.ArrayList(InductionVariable).init(self.allocator);
+        errdefer ivs.deinit();
+
+        // Scan loop body for patterns like: r1 = r1 + const
+        for (loop.start_idx..loop.end_idx) |i| {
+            const instr = ir[i];
+
+            // Look for ADD_INT or SUB_INT where dest == src1 (self-update)
+            if (instr.opcode == .ADD_INT or instr.opcode == .SUB_INT) {
+                if (instr.dest == instr.src1) {
+                    // Check if src2 is a constant (defined by LOAD_CONST before loop)
+                    const step = self.getConstantValue(ir, loop, instr.src2);
+                    if (step) |s| {
+                        const actual_step = if (instr.opcode == .SUB_INT) -s else s;
+                        self.induction_vars_found += 1;
+                        try ivs.append(InductionVariable{
+                            .register = instr.dest,
+                            .init_value = self.getInitialValue(ir, loop, instr.dest) orelse 0,
+                            .step = actual_step,
+                            .def_idx = i,
+                        });
+                    }
+                }
+            }
+        }
+
+        return ivs.toOwnedSlice();
+    }
+
+    /// Get constant value of a register if it's defined by LOAD_CONST before loop
+    fn getConstantValue(self: *Self, ir: []const IRInstruction, loop: LoopInfo, reg: u8) ?i32 {
+        _ = self;
+        // Search backwards from loop start for LOAD_CONST defining this register
+        var i: usize = loop.start_idx;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+            if (instr.dest == reg) {
+                if (instr.opcode == .LOAD_CONST) {
+                    return @intCast(instr.imm);
+                }
+                // Defined by something else, not a constant
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /// Get initial value of a register before loop
+    fn getInitialValue(self: *Self, ir: []const IRInstruction, loop: LoopInfo, reg: u8) ?i32 {
+        _ = self;
+        var i: usize = loop.start_idx;
+        while (i > 0) {
+            i -= 1;
+            const instr = ir[i];
+            if (instr.dest == reg and instr.opcode == .LOAD_CONST) {
+                return @intCast(instr.imm);
+            }
+        }
+        return null;
+    }
+
+    /// Strength reduction candidate
+    const SRCandidate = struct {
+        instr_idx: usize,
+        iv: InductionVariable,
+        multiplier: i32,
+    };
+
+    /// Find multiplications involving induction variables
+    /// Pattern: result = iv * constant
+    fn findStrengthReductionCandidates(
+        self: *Self,
+        ir: []const IRInstruction,
+        loop: LoopInfo,
+        ivs: []const InductionVariable,
+    ) ![]SRCandidate {
+        var candidates = std.ArrayList(SRCandidate).init(self.allocator);
+        errdefer candidates.deinit();
+
+        for (loop.start_idx..loop.end_idx) |i| {
+            const instr = ir[i];
+
+            // Look for MUL_INT
+            if (instr.opcode == .MUL_INT) {
+                // Check if one operand is an induction variable
+                for (ivs) |iv| {
+                    if (instr.src1 == iv.register) {
+                        // src2 should be a constant
+                        if (self.getConstantValue(ir, loop, instr.src2)) |mult| {
+                            try candidates.append(.{
+                                .instr_idx = i,
+                                .iv = iv,
+                                .multiplier = mult,
+                            });
+                        }
+                    } else if (instr.src2 == iv.register) {
+                        // src1 should be a constant
+                        if (self.getConstantValue(ir, loop, instr.src1)) |mult| {
+                            try candidates.append(.{
+                                .instr_idx = i,
+                                .iv = iv,
+                                .multiplier = mult,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return candidates.toOwnedSlice();
+    }
+
+    /// Optimize IR by applying strength reduction
+    /// Replaces: i * k (in loop) with: acc += k (where acc = i_init * k before loop)
+    pub fn optimize(self: *Self, ir: []const IRInstruction) ![]IRInstruction {
+        // Detect loops
+        var loop_unroller = LoopUnroller.init(self.allocator);
+        const loops = try loop_unroller.detectLoops(ir);
+        defer self.allocator.free(loops);
+
+        if (loops.len == 0) {
+            return try self.allocator.dupe(IRInstruction, ir);
+        }
+
+        self.loops_analyzed += loops.len;
+
+        var result = std.ArrayList(IRInstruction).init(self.allocator);
+        errdefer result.deinit();
+
+        // Track which instructions to replace
+        var replacements = std.AutoHashMap(usize, IRInstruction).init(self.allocator);
+        defer replacements.deinit();
+
+        // Track preheader instructions to add before each loop
+        var preheader_instrs = std.AutoHashMap(usize, std.ArrayList(IRInstruction)).init(self.allocator);
+        defer {
+            var it = preheader_instrs.valueIterator();
+            while (it.next()) |list| {
+                list.deinit();
+            }
+            preheader_instrs.deinit();
+        }
+
+        // Analyze each loop
+        for (loops) |loop| {
+            const ivs = try self.detectInductionVariables(ir, loop);
+            defer self.allocator.free(ivs);
+
+            if (ivs.len == 0) continue;
+
+            const candidates = try self.findStrengthReductionCandidates(ir, loop, ivs);
+            defer self.allocator.free(candidates);
+
+            for (candidates) |cand| {
+                // Replace MUL with ADD
+                // Original: r_dest = iv * k
+                // New: r_dest = r_dest + (iv.step * k)
+                // Preheader: r_dest = iv.init_value * k
+
+                const dest = ir[cand.instr_idx].dest;
+                const step_times_mult = cand.iv.step * cand.multiplier;
+                const init_times_mult = cand.iv.init_value * cand.multiplier;
+
+                // Create preheader instruction: dest = init * mult
+                var pre_list = preheader_instrs.get(loop.start_idx) orelse std.ArrayList(IRInstruction).init(self.allocator);
+                try pre_list.append(IRInstruction{
+                    .opcode = .LOAD_CONST,
+                    .dest = dest,
+                    .src1 = 0,
+                    .src2 = 0,
+                    .imm = init_times_mult,
+                });
+                try preheader_instrs.put(loop.start_idx, pre_list);
+
+                // We need a temp register for the step constant
+                // Use a high register number to avoid conflicts
+                const step_reg: u8 = 250; // Temporary register for step
+
+                // Add step constant load to preheader
+                var pre_list2 = preheader_instrs.get(loop.start_idx) orelse std.ArrayList(IRInstruction).init(self.allocator);
+                try pre_list2.append(IRInstruction{
+                    .opcode = .LOAD_CONST,
+                    .dest = step_reg,
+                    .src1 = 0,
+                    .src2 = 0,
+                    .imm = step_times_mult,
+                });
+                try preheader_instrs.put(loop.start_idx, pre_list2);
+
+                // Replace MUL with ADD in loop body
+                try replacements.put(cand.instr_idx, IRInstruction{
+                    .opcode = .ADD_INT,
+                    .dest = dest,
+                    .src1 = dest,
+                    .src2 = step_reg,
+                    .imm = 0,
+                });
+
+                self.multiplications_reduced += 1;
+            }
+        }
+
+        // Build result with preheader instructions and replacements
+        var i: usize = 0;
+        while (i < ir.len) : (i += 1) {
+            // Insert preheader instructions before loop start
+            if (preheader_instrs.get(i)) |pre_list| {
+                for (pre_list.items) |pre_instr| {
+                    try result.append(pre_instr);
+                }
+            }
+
+            // Check for replacement
+            if (replacements.get(i)) |replacement| {
+                try result.append(replacement);
+            } else {
+                try result.append(ir[i]);
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    pub fn getStats(self: *Self) struct { loops: usize, muls_reduced: usize, divs_reduced: usize, ivs_found: usize } {
+        return .{
+            .loops = self.loops_analyzed,
+            .muls_reduced = self.multiplications_reduced,
+            .divs_reduced = self.divisions_reduced,
+            .ivs_found = self.induction_vars_found,
+        };
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TAIL CALL OPTIMIZATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3109,6 +3382,8 @@ pub const TieredCompiler = struct {
     tco: TailCallOptimizer,
     /// LICM optimizer
     licm: LICMOptimizer,
+    /// Loop-based strength reduction optimizer
+    loop_strength_reduction: StrengthReductionOptimizer,
     /// Enable loop unrolling optimization
     enable_unrolling: bool,
     /// Enable constant folding optimization
@@ -3133,6 +3408,8 @@ pub const TieredCompiler = struct {
     enable_tco: bool,
     /// Enable LICM
     enable_licm: bool,
+    /// Enable loop-based strength reduction
+    enable_loop_strength_reduction: bool,
     /// Statistics
     stats: TieredStats,
 
@@ -3159,6 +3436,7 @@ pub const TieredCompiler = struct {
             .inliner = InlineExpander.init(allocator),
             .tco = TailCallOptimizer.init(allocator),
             .licm = LICMOptimizer.init(allocator),
+            .loop_strength_reduction = StrengthReductionOptimizer.init(allocator),
             .enable_unrolling = true,
             .enable_folding = true,
             .enable_dce = true,
@@ -3171,6 +3449,7 @@ pub const TieredCompiler = struct {
             .enable_inlining = true,
             .enable_tco = true,
             .enable_licm = true,
+            .enable_loop_strength_reduction = true,
             .stats = TieredStats.init(),
         };
     }
@@ -3288,6 +3567,13 @@ pub const TieredCompiler = struct {
                     optimized_ir = licm_result;
                 }
 
+                // Loop-based strength reduction (i*k -> acc+=k in loops)
+                if (self.enable_loop_strength_reduction) {
+                    const lsr_result = try self.loop_strength_reduction.optimize(optimized_ir);
+                    self.allocator.free(optimized_ir);
+                    optimized_ir = lsr_result;
+                }
+
                 if (self.enable_strength_reduction) {
                     const reduced = try self.strength_reducer.optimize(optimized_ir);
                     self.allocator.free(optimized_ir);
@@ -3356,6 +3642,13 @@ pub const TieredCompiler = struct {
                 // Get optimized IR from cache or optimize now
                 const optimized_ir = self.jit_ir_cache.get(address) orelse blk: {
                     var opt_ir = try self.allocator.dupe(IRInstruction, ir);
+
+                    // Loop-based strength reduction (i*k -> acc+=k in loops)
+                    if (self.enable_loop_strength_reduction) {
+                        const lsr_result = try self.loop_strength_reduction.optimize(opt_ir);
+                        self.allocator.free(opt_ir);
+                        opt_ir = lsr_result;
+                    }
 
                     if (self.enable_strength_reduction) {
                         const reduced = try self.strength_reducer.optimize(opt_ir);
@@ -8416,4 +8709,116 @@ test "LICMOptimizer no loops" {
 
     // Output should be same as input
     try std.testing.expectEqual(ir.len, optimized.len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRENGTH REDUCTION OPTIMIZER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test "StrengthReductionOptimizer detect induction variable" {
+    const allocator = std.testing.allocator;
+
+    var sr = StrengthReductionOptimizer.init(allocator);
+
+    // Loop with induction variable: i = i + 1
+    // r0 = 0 (init)
+    // r1 = 1 (step)
+    // loop_start:
+    //   r0 = r0 + r1  (induction variable update)
+    //   ... loop body ...
+    //   LOOP_BACK -2
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 0 }, // i = 0
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 1 }, // step = 1
+        .{ .opcode = .ADD_INT, .dest = 0, .src1 = 0, .src2 = 1, .imm = 0 }, // i = i + step (loop body start)
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 }, // back to ADD_INT
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 2,
+        .end_idx = 3,
+        .iteration_count = null,
+        .body_size = 1,
+    };
+
+    const ivs = try sr.detectInductionVariables(&ir, loop);
+    defer allocator.free(ivs);
+
+    // Should detect r0 as induction variable with step 1
+    try std.testing.expectEqual(@as(usize, 1), ivs.len);
+    try std.testing.expectEqual(@as(u8, 0), ivs[0].register);
+    try std.testing.expectEqual(@as(i32, 1), ivs[0].step);
+}
+
+test "StrengthReductionOptimizer no induction variables" {
+    const allocator = std.testing.allocator;
+
+    var sr = StrengthReductionOptimizer.init(allocator);
+
+    // Loop without induction variable pattern
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .ADD_INT, .dest = 1, .src1 = 0, .src2 = 0, .imm = 0 }, // r1 = r0 + r0 (not self-update)
+        .{ .opcode = .LOOP_BACK, .dest = 0, .src1 = 0, .src2 = 0, .imm = -1 },
+    };
+
+    const loop = LoopInfo{
+        .start_idx = 1,
+        .end_idx = 2,
+        .iteration_count = null,
+        .body_size = 1,
+    };
+
+    const ivs = try sr.detectInductionVariables(&ir, loop);
+    defer allocator.free(ivs);
+
+    // No induction variables (dest != src1)
+    try std.testing.expectEqual(@as(usize, 0), ivs.len);
+}
+
+test "StrengthReductionOptimizer optimize no loops" {
+    const allocator = std.testing.allocator;
+
+    var sr = StrengthReductionOptimizer.init(allocator);
+
+    // IR without loops
+    const ir = [_]IRInstruction{
+        .{ .opcode = .LOAD_CONST, .dest = 0, .src1 = 0, .src2 = 0, .imm = 5 },
+        .{ .opcode = .LOAD_CONST, .dest = 1, .src1 = 0, .src2 = 0, .imm = 10 },
+        .{ .opcode = .MUL_INT, .dest = 2, .src1 = 0, .src2 = 1, .imm = 0 },
+        .{ .opcode = .RETURN, .dest = 2, .src1 = 0, .src2 = 0, .imm = 0 },
+    };
+
+    const optimized = try sr.optimize(&ir);
+    defer allocator.free(optimized);
+
+    // No loops, should return copy of original
+    try std.testing.expectEqual(ir.len, optimized.len);
+    try std.testing.expectEqual(@as(usize, 0), sr.multiplications_reduced);
+}
+
+test "StrengthReductionOptimizer in TieredCompiler" {
+    const allocator = std.testing.allocator;
+
+    var compiler = TieredCompiler.init(allocator);
+    defer compiler.deinit();
+
+    // Verify loop strength reduction is enabled by default
+    try std.testing.expect(compiler.enable_loop_strength_reduction);
+
+    // Verify the optimizer is initialized
+    try std.testing.expectEqual(@as(usize, 0), compiler.loop_strength_reduction.loops_analyzed);
+}
+
+test "StrengthReductionOptimizer getStats" {
+    const allocator = std.testing.allocator;
+
+    var sr = StrengthReductionOptimizer.init(allocator);
+
+    const stats = sr.getStats();
+
+    try std.testing.expectEqual(@as(usize, 0), stats.loops);
+    try std.testing.expectEqual(@as(usize, 0), stats.muls_reduced);
+    try std.testing.expectEqual(@as(usize, 0), stats.divs_reduced);
+    try std.testing.expectEqual(@as(usize, 0), stats.ivs_found);
 }
