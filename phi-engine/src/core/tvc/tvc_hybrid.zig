@@ -164,7 +164,7 @@ pub const HybridBigInt = struct {
     }
 
     /// Ensure unpacked cache is valid
-    fn ensureUnpacked(self: *Self) void {
+    pub fn ensureUnpacked(self: *Self) void {
         if (self.mode == .unpacked_mode) return;
 
         // Unpack from packed_data to unpacked_cache
