@@ -363,6 +363,11 @@ fn runOptimized(path: []const u8, allocator: std.mem.Allocator) !void {
     const code = compiler.getCode();
     const constants = compiler.getConstants();
 
+    // Debug: dump bytecode (disabled)
+    // std.debug.print("Bytecode ({} bytes): ", .{code.len});
+    // for (code) |b| std.debug.print("{x:0>2} ", .{b});
+    // std.debug.print("\n", .{});
+
     // Convert bytecode to SSA IR
     var converter = bytecode_to_ssa.BytecodeToSSA.init(allocator, path);
     defer converter.deinit();

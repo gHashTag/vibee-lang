@@ -39,6 +39,9 @@ pub const BytecodeToSSA = struct {
     // Local variable tracking
     locals: [MAX_STACK]u32,
     
+    // Track which SSA values are known constants (for copy propagation)
+    known_constants: [MAX_STACK]?i64,
+    
     // Constants from bytecode
     constants: []const Value,
     
@@ -55,6 +58,7 @@ pub const BytecodeToSSA = struct {
             .stack = [_]u32{SSA_UNDEF} ** MAX_STACK,
             .stack_top = 0,
             .locals = [_]u32{SSA_UNDEF} ** MAX_STACK,
+            .known_constants = [_]?i64{null} ** MAX_STACK,
             .constants = &[_]Value{},
             .instructions_converted = 0,
             .stack_ops_eliminated = 0,
@@ -135,6 +139,10 @@ pub const BytecodeToSSA = struct {
                     
                     const dest = self.func.newValue();
                     _ = self.emit(SSAInstr.constInt(dest, imm));
+                    // Track this as a known constant
+                    if (dest < MAX_STACK) {
+                        self.known_constants[dest] = imm;
+                    }
                     self.push(dest);
                 },
 
@@ -194,6 +202,7 @@ pub const BytecodeToSSA = struct {
                     const val = self.pop();
                     self.locals[idx] = val;
                     // Store is implicit in SSA - the value is now associated with the local
+                    // No instruction emitted - SSA tracks the value directly
                 },
 
                 // ═══════════════════════════════════════════════════════════
@@ -412,6 +421,98 @@ pub const BytecodeToSSA = struct {
                     const dest = self.func.newValue();
                     _ = self.emit(SSAInstr.constInt(dest, 2718281828459045));
                     self.push(dest);
+                },
+
+                // ═══════════════════════════════════════════════════════════
+                // SUPERINSTRUCTIONS
+                // ═══════════════════════════════════════════════════════════
+                .LOAD_ADD => {
+                    // LOAD_ADD idx: load local[idx] and add to TOS
+                    const idx = readU16(code, ip);
+                    ip += 2;
+                    
+                    const local_val = self.locals[idx];
+                    const tos = self.pop();
+                    const dest = self.func.newValue();
+                    
+                    if (local_val != SSA_UNDEF) {
+                        _ = self.emit(SSAInstr.binop(.add, dest, tos, local_val));
+                    } else {
+                        // Local not yet defined - create load
+                        const load_dest = self.func.newValue();
+                        _ = self.emit(SSAInstr{
+                            .op = .load,
+                            .dest = load_dest,
+                            .src1 = @intCast(idx),
+                            .src2 = 0,
+                            .imm = 0,
+                        });
+                        _ = self.emit(SSAInstr.binop(.add, dest, tos, load_dest));
+                    }
+                    self.push(dest);
+                },
+                
+                .LOAD_SUB => {
+                    const idx = readU16(code, ip);
+                    ip += 2;
+                    
+                    const local_val = self.locals[idx];
+                    const tos = self.pop();
+                    const dest = self.func.newValue();
+                    
+                    if (local_val != SSA_UNDEF) {
+                        _ = self.emit(SSAInstr.binop(.sub, dest, tos, local_val));
+                    } else {
+                        const load_dest = self.func.newValue();
+                        _ = self.emit(SSAInstr{
+                            .op = .load,
+                            .dest = load_dest,
+                            .src1 = @intCast(idx),
+                            .src2 = 0,
+                            .imm = 0,
+                        });
+                        _ = self.emit(SSAInstr.binop(.sub, dest, tos, load_dest));
+                    }
+                    self.push(dest);
+                },
+                
+                .LOAD_MUL => {
+                    const idx = readU16(code, ip);
+                    ip += 2;
+                    
+                    const local_val = self.locals[idx];
+                    const tos = self.pop();
+                    const dest = self.func.newValue();
+                    
+                    if (local_val != SSA_UNDEF) {
+                        _ = self.emit(SSAInstr.binop(.mul, dest, tos, local_val));
+                    } else {
+                        const load_dest = self.func.newValue();
+                        _ = self.emit(SSAInstr{
+                            .op = .load,
+                            .dest = load_dest,
+                            .src1 = @intCast(idx),
+                            .src2 = 0,
+                            .imm = 0,
+                        });
+                        _ = self.emit(SSAInstr.binop(.mul, dest, tos, load_dest));
+                    }
+                    self.push(dest);
+                },
+
+                // ═══════════════════════════════════════════════════════════
+                // PRINT (native function)
+                // ═══════════════════════════════════════════════════════════
+                .CALL_NATIVE => {
+                    const name_idx = readU16(code, ip);
+                    ip += 2;
+                    _ = name_idx;
+                    // For print, pop the argument but don't push result
+                    // The value is consumed by print
+                    if (self.stack_top > 0) {
+                        _ = self.pop();
+                    }
+                    // print returns nil, so we don't push anything
                 },
 
                 // ═══════════════════════════════════════════════════════════
