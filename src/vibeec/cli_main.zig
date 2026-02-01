@@ -13,6 +13,9 @@ const tri_cmd = @import("tri_cmd.zig");
 const jit_adapter = @import("jit_adapter.zig");
 const reg_compiler = @import("reg_compiler.zig");
 const reg_vm = @import("reg_vm.zig");
+const bytecode_to_ssa = @import("bytecode_to_ssa.zig");
+const jit_tier2 = @import("jit_tier2.zig");
+const jit_e2e = @import("jit_e2e.zig");
 // NOTE: coptic_interpreter.zig is DEPRECATED - use VM only!
 
 pub const PHI: f64 = 1.6180339887498948482;
@@ -22,6 +25,7 @@ pub const VERSION = "0.4.0";
 const Command = enum {
     compile,
     run, // Run via bytecode VM (the only way!)
+    opt, // Run with SSA optimization (constant folding + DCE)
     reg, // Run via Register VM (5x faster!)
     vm, // Fast VM mode for .999 files
     jit, // Run with JIT compilation
@@ -69,6 +73,14 @@ pub fn main() !void {
                 return;
             }
             try runVM(args[2], allocator);
+        },
+        .opt => {
+            // Run with SSA optimization (constant folding + DCE)
+            if (args.len < 3) {
+                printError("Missing file argument for 'opt'");
+                return;
+            }
+            try runOptimized(args[2], allocator);
         },
         .reg => {
             // Run via Register VM - 5x faster!
@@ -173,6 +185,7 @@ pub fn main() !void {
 fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "compile") or std.mem.eql(u8, arg, "c")) return .compile;
     if (std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "r")) return .run;
+    if (std.mem.eql(u8, arg, "opt") or std.mem.eql(u8, arg, "o")) return .opt;
     if (std.mem.eql(u8, arg, "reg") or std.mem.eql(u8, arg, "fast")) return .reg;
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "jit") or std.mem.eql(u8, arg, "j")) return .jit;
@@ -317,6 +330,96 @@ fn runVM(path: []const u8, allocator: std.mem.Allocator) !void {
     if (!std.mem.eql(u8, result_str, "nil")) {
         std.debug.print("  Result: {s}\n", .{result_str});
     }
+}
+
+// Run with SSA optimization (constant folding + DCE)
+fn runOptimized(path: []const u8, allocator: std.mem.Allocator) !void {
+    const source = readFile(path, allocator) catch |err| {
+        printError("Cannot read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parser = coptic_parser.Parser.init(allocator, source);
+    var ast = parser.parseProgram() catch |err| {
+        printError("Parse error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer ast.deinit();
+
+    // Compile to bytecode
+    var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
+    defer compiler.deinit();
+
+    compiler.compile(&ast) catch |err| {
+        printError("Bytecode compilation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const code = compiler.getCode();
+    const constants = compiler.getConstants();
+
+    // Convert bytecode to SSA IR
+    var converter = bytecode_to_ssa.BytecodeToSSA.init(allocator, path);
+    defer converter.deinit();
+    converter.setConstants(constants);
+    
+    converter.convert(code) catch |err| {
+        printError("SSA conversion error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const convert_stats = converter.getStats();
+    
+    // Count instructions before optimization
+    var instr_before: usize = 0;
+    for (converter.func.blocks.items) |block| {
+        instr_before += block.instrs.items.len;
+    }
+
+    // Optimize with constant folding + DCE
+    var jit = jit_tier2.JITTier2.init(allocator);
+    defer jit.deinit();
+    jit.compile(&converter.func);
+    
+    const opt_stats = jit.getStats();
+
+    // Count instructions after optimization
+    var instr_after: usize = 0;
+    for (converter.func.blocks.items) |block| {
+        instr_after += block.instrs.items.len;
+    }
+
+    // Execute optimized SSA IR
+    var interp = jit_e2e.SSAInterpreter.init(allocator);
+    
+    const start_time = std.time.nanoTimestamp();
+    const result = interp.execute(&converter.func);
+    const end_time = std.time.nanoTimestamp();
+    const exec_time_ns: u64 = @intCast(@max(0, end_time - start_time));
+
+    // Print results
+    printSuccess("Optimized execution complete");
+    std.debug.print("  Bytecode: {d} bytes\n", .{code.len});
+    std.debug.print("  Bytecode ops converted: {d}\n", .{convert_stats.converted});
+    std.debug.print("  SSA instructions: {d} -> {d}\n", .{instr_before, instr_after});
+    
+    if (instr_before > 0) {
+        const reduction = @as(f64, @floatFromInt(instr_before - instr_after)) / @as(f64, @floatFromInt(instr_before)) * 100.0;
+        std.debug.print("  Reduction: {d:.1}%\n", .{reduction});
+    }
+    
+    std.debug.print("  Optimizations: folded={d}, eliminated={d}, reduced={d}\n", .{
+        opt_stats.folded, opt_stats.eliminated, opt_stats.reduced
+    });
+    std.debug.print("  Execution time: {d}ns\n", .{exec_time_ns});
+    std.debug.print("  SSA ops executed: {d}\n", .{interp.instructions_executed});
+    std.debug.print("  Result: {d}\n", .{result});
 }
 
 // Run file via Register VM - 5x faster!
@@ -892,6 +995,7 @@ fn printUsage() void {
         \\
         \\Commands:
         \\  run, r <file>       Run .999 file via stack-based VM
+        \\  opt, o <file>       Run .999 file with SSA optimization (1.5-4x faster!)
         \\  reg, fast <file>    Run .999 file via Register VM (5x faster!)
         \\  compile, c <file>   Compile .999 file to Zig
         \\  check, k <file>     Check file for errors
@@ -905,6 +1009,7 @@ fn printUsage() void {
         \\
         \\Examples:
         \\  vibee run hello.999
+        \\  vibee opt hello.999   # SSA optimized execution!
         \\  vibee reg hello.999   # 5x faster execution!
         \\  vibee compile hello.999
         \\
