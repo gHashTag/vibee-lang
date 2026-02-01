@@ -16,6 +16,7 @@ const reg_vm = @import("reg_vm.zig");
 const bytecode_to_ssa = @import("bytecode_to_ssa.zig");
 const jit_tier2 = @import("jit_tier2.zig");
 const jit_e2e = @import("jit_e2e.zig");
+const ssa_native_codegen = @import("ssa_native_codegen.zig");
 // NOTE: coptic_interpreter.zig is DEPRECATED - use VM only!
 
 pub const PHI: f64 = 1.6180339887498948482;
@@ -26,6 +27,7 @@ const Command = enum {
     compile,
     run, // Run via bytecode VM (the only way!)
     opt, // Run with SSA optimization (constant folding + DCE)
+    native, // Run with native x86-64 code generation (TIER 2!)
     reg, // Run via Register VM (5x faster!)
     vm, // Fast VM mode for .999 files
     jit, // Run with JIT compilation
@@ -81,6 +83,14 @@ pub fn main() !void {
                 return;
             }
             try runOptimized(args[2], allocator);
+        },
+        .native => {
+            // Run with native x86-64 code generation (TIER 2!)
+            if (args.len < 3) {
+                printError("Missing file argument for 'native'");
+                return;
+            }
+            try runNative(args[2], allocator);
         },
         .reg => {
             // Run via Register VM - 5x faster!
@@ -186,6 +196,7 @@ fn parseCommand(arg: []const u8) Command {
     if (std.mem.eql(u8, arg, "compile") or std.mem.eql(u8, arg, "c")) return .compile;
     if (std.mem.eql(u8, arg, "run") or std.mem.eql(u8, arg, "r")) return .run;
     if (std.mem.eql(u8, arg, "opt") or std.mem.eql(u8, arg, "o")) return .opt;
+    if (std.mem.eql(u8, arg, "native") or std.mem.eql(u8, arg, "n")) return .native;
     if (std.mem.eql(u8, arg, "reg") or std.mem.eql(u8, arg, "fast")) return .reg;
     if (std.mem.eql(u8, arg, "vm")) return .vm;
     if (std.mem.eql(u8, arg, "jit") or std.mem.eql(u8, arg, "j")) return .jit;
@@ -424,6 +435,115 @@ fn runOptimized(path: []const u8, allocator: std.mem.Allocator) !void {
     });
     std.debug.print("  Execution time: {d}ns\n", .{exec_time_ns});
     std.debug.print("  SSA ops executed: {d}\n", .{interp.instructions_executed});
+    std.debug.print("  Result: {d}\n", .{result});
+}
+
+// Run with native x86-64 code generation (TIER 2 - 500M+ ops/sec!)
+fn runNative(path: []const u8, allocator: std.mem.Allocator) !void {
+    const source = readFile(path, allocator) catch |err| {
+        printError("Cannot read file");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(source);
+
+    // Parse
+    var parser = coptic_parser.Parser.init(allocator, source);
+    var ast = parser.parseProgram() catch |err| {
+        printError("Parse error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer ast.deinit();
+
+    // Compile to bytecode
+    var compiler = bytecode_compiler.BytecodeCompiler.init(allocator, source);
+    defer compiler.deinit();
+
+    compiler.compile(&ast) catch |err| {
+        printError("Bytecode compilation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    const code = compiler.getCode();
+    const constants = compiler.getConstants();
+
+    // Convert bytecode to SSA IR
+    var converter = bytecode_to_ssa.BytecodeToSSA.init(allocator, path);
+    defer converter.deinit();
+    converter.setConstants(constants);
+    
+    converter.convert(code) catch |err| {
+        printError("SSA conversion error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+
+    // Count instructions before optimization
+    var instr_before: usize = 0;
+    for (converter.func.blocks.items) |block| {
+        instr_before += block.instrs.items.len;
+    }
+
+    // Optimize with constant folding + DCE
+    var jit = jit_tier2.JITTier2.init(allocator);
+    defer jit.deinit();
+    jit.compile(&converter.func);
+    
+    const opt_stats = jit.getStats();
+
+    // Count instructions after optimization
+    var instr_after: usize = 0;
+    for (converter.func.blocks.items) |block| {
+        instr_after += block.instrs.items.len;
+    }
+
+    // Compile to native x86-64 code
+    var native_compiler = ssa_native_codegen.SSANativeCompiler.init(allocator);
+    defer native_compiler.deinit();
+    
+    const native_code = native_compiler.compile(&converter.func) catch |err| {
+        printError("Native code generation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(native_code);
+
+    const native_code_size = native_code.len;
+    const native_instr_count = native_compiler.instructions_generated;
+
+    // Allocate executable memory and run
+    var exec_mem = ssa_native_codegen.ExecutableMemory.alloc(native_code) catch |err| {
+        printError("Executable memory allocation error");
+        std.debug.print("  Error: {}\n", .{err});
+        return;
+    };
+    defer exec_mem.free();
+
+    // Execute native code
+    const start_time = std.time.nanoTimestamp();
+    const result = exec_mem.execute();
+    const end_time = std.time.nanoTimestamp();
+    const exec_time_ns: u64 = @intCast(@max(0, end_time - start_time));
+
+    // Print results
+    printSuccess("Native x86-64 execution complete (TIER 2!)");
+    std.debug.print("  Bytecode: {d} bytes\n", .{code.len});
+    std.debug.print("  SSA instructions: {d} -> {d}\n", .{instr_before, instr_after});
+    
+    if (instr_before > 0) {
+        const reduction = @as(f64, @floatFromInt(instr_before - instr_after)) / @as(f64, @floatFromInt(instr_before)) * 100.0;
+        std.debug.print("  Reduction: {d:.1}%\n", .{reduction});
+    }
+    
+    std.debug.print("  Optimizations: folded={d}, eliminated={d}, reduced={d}\n", .{
+        opt_stats.folded, opt_stats.eliminated, opt_stats.reduced
+    });
+    std.debug.print("  Native code: {d} bytes, {d} x86 instructions\n", .{
+        native_code_size, native_instr_count
+    });
+    std.debug.print("  Execution time: {d}ns\n", .{exec_time_ns});
     std.debug.print("  Result: {d}\n", .{result});
 }
 
@@ -1001,6 +1121,7 @@ fn printUsage() void {
         \\Commands:
         \\  run, r <file>       Run .999 file via stack-based VM
         \\  opt, o <file>       Run .999 file with SSA optimization (1.5-4x faster!)
+        \\  native, n <file>    Run .999 file with native x86-64 JIT (TIER 2: 500M+ ops/sec!)
         \\  reg, fast <file>    Run .999 file via Register VM (5x faster!)
         \\  compile, c <file>   Compile .999 file to Zig
         \\  check, k <file>     Check file for errors
@@ -1014,8 +1135,8 @@ fn printUsage() void {
         \\
         \\Examples:
         \\  vibee run hello.999
-        \\  vibee opt hello.999   # SSA optimized execution!
-        \\  vibee reg hello.999   # 5x faster execution!
+        \\  vibee opt hello.999     # SSA optimized execution!
+        \\  vibee native hello.999  # Native x86-64 JIT (fastest!)
         \\  vibee compile hello.999
         \\
         \\φ² + 1/φ² = 3

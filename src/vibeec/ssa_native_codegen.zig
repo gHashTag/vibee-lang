@@ -456,11 +456,17 @@ pub const SSANativeCompiler = struct {
         }
     }
 
+    /// Get stats - call BEFORE compile() returns owned slice
     pub fn getStats(self: *Self) struct { instructions: u32, code_size: usize } {
         return .{
             .instructions = self.instructions_generated,
             .code_size = self.emitter.code.items.len,
         };
+    }
+    
+    /// Get code size after compilation (before toOwnedSlice)
+    pub fn getCodeSize(self: *Self) usize {
+        return self.emitter.code.items.len;
     }
 };
 
