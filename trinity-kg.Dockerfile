@@ -1,7 +1,7 @@
 # Trinity Knowledge Graph Server
 # Multi-stage build for minimal image size
 
-FROM alpine:3.19 AS builder
+FROM alpine:3.23 AS builder
 
 # Install Zig
 RUN apk add --no-cache curl xz
@@ -15,7 +15,7 @@ COPY src/vibeec/trinity_kg_server.zig .
 RUN zig build-exe trinity_kg_server.zig -femit-bin=trinity-kg-server -OReleaseSafe
 
 # Runtime stage - minimal image
-FROM alpine:3.19
+FROM alpine:3.23
 
 RUN addgroup -g 1001 -S app && \
     adduser -u 1001 -S app -G app
