@@ -38,12 +38,14 @@ export default memo(function Navigation() {
           {item}
         </a>
       ))}
-      <a 
-        href="/play" 
-        style={{ 
-          color: 'var(--accent)', 
-          display: 'flex', 
-          alignItems: 'center', 
+      <a
+        href="https://gHashTag.github.io/trinity/"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          color: 'var(--accent)',
+          display: 'flex',
+          alignItems: 'center',
           gap: '6px',
           fontWeight: 600,
           textDecoration: 'none',
@@ -65,7 +67,7 @@ export default memo(function Navigation() {
            e.currentTarget.style.boxShadow = 'none';
         }}
       >
-        <span>⚡</span> Playground
+        <span>📖</span> Docs
       </a>
       <LanguageSwitcher />
     </nav>
